@@ -14,6 +14,13 @@ const VoiceChat = (() => {
     let _inVoice = false;
     let _muted = false;
     let _deafened = false;
+    // Moderation (1.20.0): a server mute is advisory (this client closes its own
+    // microphone and says so; a modified client could ignore it), the lock and
+    // the right to moderate come from the server with the room state.
+    let _serverMuted = false;
+    let _locked = false;
+    let _canModerate = false;
+    let _roomCap = null;
     let _localStream = null;
     let _vad = null;              // VAD analysis graph: {ctx, analyser, source, stream, track, data, timer, lastLoud}
     let _speaking = false;
@@ -261,6 +268,12 @@ const VoiceChat = (() => {
             // The seat was gone (grace over, or not ours to take back)
             if (_inVoice) { _cleanup(); _notifyState(); }
             if (window.Portal && Portal.toast) Portal.toast(data.message || 'Voice connection lost. Join voice again.', 'error');
+        } else if (type === 'voice_server_mute_changed') {
+            _handleServerMuteChanged(data);
+        } else if (type === 'voice_room_lock_changed') {
+            _locked = !!data.locked;
+            _toast(_locked ? 'A moderator locked this voice room. Nobody new can join.' : 'The voice room was unlocked.');
+            _notifyState();
         } else if (type === 'voice_user_reconnecting') {
             _setUserReconnecting(data.user_id, true);
         } else if (type === 'voice_user_resumed') {
@@ -321,6 +334,7 @@ const VoiceChat = (() => {
         _reconnecting = false;
         _muted = false;
         _deafened = false;
+        _serverMuted = false;
         _speaking = false;
 
         // Set up VAD or PTT
@@ -348,6 +362,10 @@ const VoiceChat = (() => {
         _swapEpoch++;
         _inVoice = false;
         _reconnecting = false;
+        _serverMuted = false;
+        _locked = false;
+        _canModerate = false;
+        _roomCap = null;
         _room = null;
         _resumeToken = null;
         _clearGiveUp();
@@ -399,6 +417,10 @@ const VoiceChat = (() => {
 
     function toggleMute() {
         if (!_inVoice) return;
+        if (_serverMuted) {
+            _toast('A moderator muted you in this voice room.', 'error');
+            return;
+        }
         _muted = !_muted;
         // The one gate decides what the track does (a PTT user stays silent
         // after unmuting until the key is pressed)
@@ -487,7 +509,7 @@ const VoiceChat = (() => {
     }
 
     function _txWanted() {
-        if (!_inVoice || _muted) return false;
+        if (!_inVoice || _muted || _serverMuted) return false;
         if (_prefs.mode === 'ptt') return _pttActive || _pttTail !== null;
         return !_vadLive() || _speaking;
     }
@@ -1234,6 +1256,8 @@ box-shadow:0 6px 24px rgba(0,0,0,.45);font-size:.9rem}
 .voice-user-menu .vum-pct{min-width:3.2em;text-align:right}
 .voice-user-menu .vum-note{font-size:.75rem;color:var(--text-muted,#72767d);margin-bottom:.6rem}
 .voice-user-menu .vum-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.voice-user-menu .vum-mod{margin-top:.6rem}
+.voice-user-menu .vum-modhelp{margin:.4rem 0 0}
 .voice-user-menu button{padding:.4rem .7rem;border-radius:4px;cursor:pointer;font:inherit;
 background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--border-color,#4f545c)}
 .voice-user-menu button[aria-pressed="true"]{color:var(--accent-red,#f04747);border-color:var(--accent-red,#f04747)}
@@ -1320,6 +1344,23 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         actions.appendChild(closeBtn);
         root.appendChild(actions);
 
+        // Moderators get two more actions and the honest help text about them.
+        let modMute = null, modKick = null;
+        if (_canModerate && !_isMe(uid)) {
+            const modRow = _el('div', 'vum-actions vum-mod');
+            modMute = _el('button', 'vum-server-mute', 'Server mute');
+            modMute.type = 'button';
+            modKick = _el('button', 'vum-kick', 'Kick');
+            modKick.type = 'button';
+            modRow.appendChild(modMute);
+            modRow.appendChild(modKick);
+            root.appendChild(modRow);
+            root.appendChild(_el('div', 'vum-note vum-modhelp',
+                'Server mute is cooperative: the member\'s own client closes the microphone and shows it. ' +
+                'A kick removes the member for everyone and blocks rejoining for 60 seconds. ' +
+                'It is enforced against normal clients only: a modified client keeps its existing direct links to others.'));
+        }
+
         const refresh = () => {
             const p = getPeerPref(uid);
             slider.value = String(p.volume);
@@ -1330,8 +1371,20 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
                 ? 'This device does not allow volume changes below 100%. Use Mute for me.'
                 : (max < MAX_VOLUME ? 'Volume is capped at 100% on this device.' : '');
             note.style.display = note.textContent ? '' : 'none';
+            if (modMute) {
+                const u = _voiceUsers.get(uid);
+                modMute.textContent = u && u.server_muted ? 'Server unmute' : 'Server mute';
+            }
         };
         refresh();
+        if (modMute) {
+            modMute.addEventListener('click', () => {
+                const u = _voiceUsers.get(uid);
+                serverMute(uid, !(u && u.server_muted));
+                _closeUserMenu(true);
+            });
+            modKick.addEventListener('click', () => { kick(uid); _closeUserMenu(true); });
+        }
 
         slider.addEventListener('input', () => {
             setPeerVolume(uid, slider.value);
@@ -1349,6 +1402,7 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
             } else if (ev.key === 'Tab') {
                 // keep keyboard focus inside the popover while it is open
                 const items = [slider, muteBtn, resetBtn, closeBtn];
+                if (modMute) items.push(modMute, modKick);
                 const i = items.indexOf(document.activeElement);
                 const next = ev.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i === items.length - 1 ? 0 : i + 1);
                 ev.preventDefault();
@@ -1576,6 +1630,9 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         const resumed = !!data.resumed;
         if (data.resume_token) _resumeToken = data.resume_token;
         if (data.channel) _room = data.channel;
+        _locked = !!data.locked;
+        _canModerate = !!data.can_moderate;
+        _roomCap = data.room_cap != null ? Number(data.room_cap) : null;
         if (resumed) {
             _reconnecting = false;
             _clearGiveUp();
@@ -1589,10 +1646,13 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
                 deafened: u.deafened,
                 speaking: u.speaking,
                 screen_sharing: u.screen_sharing || false,
-                reconnecting: !!u.reconnecting
+                reconnecting: !!u.reconnecting,
+                server_muted: !!u.server_muted
             });
             if (u.screen_sharing) _screenSharerId = u.user_id;
+            if (_isMe(u.user_id)) _serverMuted = !!u.server_muted;
         }
+        _applyTxGate();
         // Create peer connections to existing users (we're the offerer)
         for (const u of (data.users || [])) {
             // Don't create a peer to ourselves
@@ -1676,7 +1736,7 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         _voiceUsers.set(userId, {
             username: data.username,
             muted: false, deafened: false, speaking: false, screen_sharing: false,
-            reconnecting: false
+            reconnecting: false, server_muted: false
         });
         // The new joiner will receive voice_state and create offers to us
         // We wait for their offer — no action needed here
@@ -1899,6 +1959,42 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         _notifyState();
     }
 
+    function _handleServerMuteChanged(data) {
+        const user = _voiceUsers.get(data.user_id);
+        if (user) user.server_muted = !!data.server_muted;
+        if (_isMe(data.user_id)) {
+            const was = _serverMuted;
+            _serverMuted = !!data.server_muted;
+            _applyTxGate();
+            if (_serverMuted && !was) {
+                _setSpeaking(false);
+                _toast('A moderator muted you in this voice room. Your microphone is closed.', 'error');
+            } else if (!_serverMuted && was) {
+                _toast('A moderator lifted your voice mute.');
+            }
+        }
+        _notifyState();
+    }
+
+    // Moderator actions: the server decides again on every one (level, equal or
+    // higher rank, DM calls); a refusal comes back as an error frame.
+    function _sendMod(payload) {
+        if (!_inVoice || !_canModerate || !_ws || _ws.readyState !== WebSocket.OPEN) return false;
+        _ws.send(JSON.stringify(payload));
+        return true;
+    }
+    function kick(userId) {
+        const uid = _validPeerId(userId);
+        return uid !== null && _sendMod({ type: 'voice_kick', target_user_id: uid });
+    }
+    function serverMute(userId, on) {
+        const uid = _validPeerId(userId);
+        return uid !== null && _sendMod({ type: on ? 'voice_server_mute' : 'voice_server_unmute', target_user_id: uid });
+    }
+    function setRoomLocked(on) {
+        return _sendMod({ type: on ? 'voice_lock_room' : 'voice_unlock_room' });
+    }
+
     function _handleDeafenChanged(data) {
         const user = _voiceUsers.get(data.user_id);
         if (user) user.deafened = data.deafened;
@@ -1918,6 +2014,10 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
                 reconnecting: _reconnecting,
                 muted: _muted,
                 deafened: _deafened,
+                serverMuted: _serverMuted,
+                locked: _locked,
+                canModerate: _canModerate,
+                roomCap: _roomCap,
                 speaking: _speaking,
                 screenSharing: _screenSharing,
                 screenSharerId: _screenSharerId,
@@ -1936,6 +2036,10 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
             reconnecting: _reconnecting,
             muted: _muted,
             deafened: _deafened,
+            serverMuted: _serverMuted,
+            locked: _locked,
+            canModerate: _canModerate,
+            roomCap: _roomCap,
             speaking: _speaking,
             screenSharing: _screenSharing,
             screenSharerId: _screenSharerId,
@@ -1997,6 +2101,9 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         setPeerMuted,
         resetPeer,
         isInCall,
+        kick,
+        serverMute,
+        setRoomLocked,
         openUserMenu,
         closeUserMenu,
         attachUserMenu,

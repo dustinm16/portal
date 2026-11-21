@@ -1868,6 +1868,19 @@
                         </div>
                     </div>
 
+                    <!-- Voice rooms Card (1.20.0) -->
+                    <div class="admin-card" id="voicecap-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8M12 3a3 3 0 00-3 3v5a3 3 0 006 0V6a3 3 0 00-3-3z" />
+                            </svg>
+                            Voice rooms
+                        </h3>
+                        <div id="voicecap-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
                     <!-- Logged-out limit Card -->
                     <div class="admin-card" id="proxylimit-card">
                         <h3>
@@ -6575,6 +6588,60 @@
                 Portal.toast('Failed to save the setting', 'error');
             }
         }
+
+        // Voice room cap (1.20.0): its own loader, started on page load.
+        let voiceCapState = null;
+
+        async function loadVoiceCap() {
+            const el = document.getElementById('voicecap-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/voice');
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>'; return; }
+                voiceCapState = await res.json();
+                renderVoiceCap();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        function renderVoiceCap() {
+            const el = document.getElementById('voicecap-body');
+            const d = voiceCapState;
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    The most people one voice room holds, channel rooms and direct message calls alike
+                    (${parseInt(d.min)} to ${parseInt(d.max)}, default ${parseInt(d.default)}). Only a superadmin can change it.
+                    A lower number does not remove anyone who is already in a room. A resume after a dropped connection is never refused for the cap.
+                </p>
+                <label style="font-size:0.8rem;color:var(--text-muted);display:block;">People per voice room</label>
+                <input type="number" id="vc-cap" value="${parseInt(d.voice_room_cap) || 0}" min="${parseInt(d.min)}" max="${parseInt(d.max)}" style="${NB_FIELD_STYLE}">
+                <div style="margin:0.5rem 0;"><button class="btn btn-primary" data-voicecap-action="save">Save</button></div>`;
+        }
+
+        async function saveVoiceCap() {
+            const value = parseInt(document.getElementById('vc-cap').value, 10);
+            try {
+                const res = await Portal.fetch('/api/admin/voice', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ voice_room_cap: value })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { Portal.toast(data.error || 'Failed to save', 'error'); return; }
+                voiceCapState = data;
+                Portal.toast('Saved', 'success');
+                renderVoiceCap();
+            } catch (e) {
+                Portal.toast('Failed to save the setting', 'error');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadVoiceCap);
+        document.addEventListener('click', function(e) {
+            const vc = e.target.closest('[data-voicecap-action]');
+            if (vc && vc.getAttribute('data-voicecap-action') === 'save') saveVoiceCap();
+        });
 
         let proxyLimitState = null;
 

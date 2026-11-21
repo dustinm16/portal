@@ -519,6 +519,28 @@ for js, ver in (("terminal.js", 7), ("recordings-admin.js", 1)):
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that", loaded == {str(ver)}, str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",
       all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
+# --- 1.20.0 notes: voice moderation and the room cap -----------------------------------
+m20 = re.search(r"### Upgrade notes for 1\.20\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.20.0' section directly before the 1.19.0 one",
+      m20 is not None and text.index("### Upgrade notes for 1.20.0") < text.index("### Upgrade notes for 1.19.0"))
+low20 = (m20.group(1) if m20 else "").lower()
+for name, needles in (("who is refused at join", ("timed out or muted", "locked room", "60 seconds", "resume")),
+                      ("the cap, its range and who sets it", ("voice_room_cap", "2 to 25", "default 8", "superadmin", "does not remove anyone")),
+                      ("the behaviour change", ("behaviour change", "ninth")),
+                      ("the frames and the rule", ("voice_kick", "voice_server_mute", "voice_lock_room", "chat_mod_level", "equal or higher")),
+                      ("server mute is advisory and a kick is enforced against normal clients", ("advisory", "modified client")),
+                      ("the lock and the block are in memory", ("in memory", "restart")),
+                      ("signalling is re-checked", ("dropped unless the sender is currently in that room",)),
+                      ("a penalty ends the call", ("timeout or mute", "removes the member from that channel's voice room")),
+                      ("the static version", ("voice.js", "version 14")),
+                      ("rollback", ("1.19.0", "ignores the setting")),
+                      ("what is not tested", ("not tested", "no browser", "microphone", "cloudflare"))):
+    check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
+check("1.20.0: the cap range and the default stated are the ones in the code",
+      all(re.search(p_, (ROOT / "server.py").read_text()) for p_ in (
+          r"VOICE_CAP_DEFAULT, VOICE_CAP_MIN, VOICE_CAP_MAX = 8, 2, 25", r"VOICE_KICK_BLOCK = 60\.0")))
+_vj = {m for p_ in ("chat.html", "watch.html") for m in re.findall(r"/static/js/voice\.js\?v=(\d+)", (ROOT / "static" / p_).read_text())}
+check("1.20.0 states voice.js as version 14 and chat.html and watch.html load exactly that", _vj == {"14"}, str(_vj))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

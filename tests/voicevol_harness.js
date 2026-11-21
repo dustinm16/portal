@@ -541,5 +541,66 @@ async function scenario(name, fn) {
     check('a refused microphone closes the playback context again', env.ctxs.length === 1 && env.ctxs[0].closed && !env.VC.isInVoice());
   });
 
+  // ---- 1.20.0: moderation (server mute, lock, kick, the popover) -------------------
+  await scenario('moderation', async () => {
+    const track = { enabled: true, stop() {} };
+    const env = makeEnv({ mode: 'vad' });
+    env.sandbox.navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [track], getAudioTracks: () => [track] });
+    let last = null;
+    env.VC.init(env.ws, (st) => { last = st; }, null, 1);
+    await env.VC.join();
+    const users = [1, 2, 3].map(id => ({ user_id: id, username: 'u' + id, muted: false, deafened: false, speaking: false }));
+    env.VC.handleMessage({ type: 'voice_state', channel: 'general', resume_token: 'tok', users, locked: false, can_moderate: true, room_cap: 8 });
+    await tick(); await tick();
+    const { VC } = env;
+    const sentTypes = () => env.sent.map(m => JSON.parse(m).type);
+    check('the state carries the moderator right, the lock and the cap',
+      VC.getState().canModerate === true && VC.getState().locked === false && VC.getState().roomCap === 8);
+    check('the microphone is open before a server mute', track.enabled === true);
+    VC.handleMessage({ type: 'voice_server_mute_changed', user_id: 1, server_muted: true });
+    check('a server mute of me closes the microphone and shows it',
+      track.enabled === false && VC.getState().serverMuted === true && last.serverMuted === true);
+    const before = env.sent.length;
+    VC.toggleMute();
+    check('I cannot unmute myself while server muted', VC.getState().muted === false && env.sent.length === before && track.enabled === false);
+    VC.handleMessage({ type: 'voice_server_mute_changed', user_id: 2, server_muted: true });
+    check('everyone sees the server-muted mark', VC.getState().users.find(u => u.user_id === 2).server_muted === true
+      && VC.getState().users.find(u => u.user_id === 3).server_muted === false);
+    VC.handleMessage({ type: 'voice_server_mute_changed', user_id: 1, server_muted: false });
+    check('lifting it opens the microphone again', track.enabled === true && VC.getState().serverMuted === false);
+    VC.handleMessage({ type: 'voice_room_lock_changed', locked: true });
+    check('the lock state follows the server', VC.getState().locked === true);
+    env.sent.length = 0;
+    check('kick, server mute and lock send their frames', VC.kick(3) && VC.serverMute(2, false) && VC.serverMute(3, true) && VC.setRoomLocked(false)
+      && sentTypes().join() === 'voice_kick,voice_server_unmute,voice_server_mute,voice_unlock_room'
+      && JSON.parse(env.sent[0]).target_user_id === 3, env.sent.join(' '));
+    check('an invalid id is refused', VC.kick('abc') === false && VC.serverMute(-4, true) === false);
+    VC.openUserMenu(2, 'u2', null, { x: 1, y: 1 });
+    let menu = env.doc.querySelector('.voice-user-menu');
+    check('a moderator sees Kick and a server mute action in the popover with the help text',
+      !!menu.querySelector('.vum-kick') && !!menu.querySelector('.vum-server-mute')
+      && /cooperative/.test(menu.textContent) && /enforced against normal clients only/.test(menu.textContent));
+    check('the action says Server unmute for a muted member', menu.querySelector('.vum-server-mute').textContent === 'Server unmute');
+    env.sent.length = 0;
+    menu.querySelector('.vum-kick').fire('click');
+    check('Kick in the popover sends voice_kick for that member and closes it',
+      sentTypes().join() === 'voice_kick' && JSON.parse(env.sent[0]).target_user_id === 2 && !env.doc.querySelector('.voice-user-menu'));
+    VC.leave();
+
+    // a member without the right
+    const env2 = makeEnv({ mode: 'vad' });
+    env2.VC.init(env2.ws, null, null, 1);
+    await env2.VC.join();
+    env2.VC.handleMessage({ type: 'voice_state', channel: 'general', resume_token: 'tok', users, locked: true, can_moderate: false });
+    await tick(); await tick();
+    env2.sent.length = 0;
+    check('without the right no moderation frame is sent', !env2.VC.kick(2) && !env2.VC.serverMute(2, true) && !env2.VC.setRoomLocked(true) && env2.sent.length === 0);
+    env2.VC.openUserMenu(2, 'u2', null, { x: 1, y: 1 });
+    const m2 = env2.doc.querySelector('.voice-user-menu');
+    check('the popover of an ordinary member has no Kick and no server mute', !m2.querySelector('.vum-kick') && !m2.querySelector('.vum-server-mute'));
+    env2.VC.handleMessage({ type: 'voice_denied', code: 'kicked', message: 'A moderator removed you from this voice chat.' });
+    check('a kick ends the call on this client', !env2.VC.isInVoice() && env2.VC.getState().canModerate === false && env2.VC.getState().locked === false);
+  });
+
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'harness', ok: false, detail: String(e && e.stack || e) })); });

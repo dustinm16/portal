@@ -1,7 +1,7 @@
 """Smoke check: per-user voice volume and local mute.
 
 Proves what can be proven without a browser or a phone:
-  - the chat page and the watch page are served with voice.js v13 and the
+  - the chat page and the watch page are served with voice.js v14 and the
     popover hooks, and voice.js is served as JavaScript;
   - the served voice.js passes the same Node harness as tests/test_voicevol.py
     (fake AudioContext, gain nodes, audio elements, DOM, peer connections and
@@ -118,14 +118,14 @@ async def run(ctx):
                 body = await r.text()
                 status = r.status
             ok(f"voicevol: the {label} loads", status == 200, f"status {status}")
-            ok(f"voicevol: the {label} loads voice.js v13 and wires the popover",
-               "/static/js/voice.js?v=13" in body and "voice.js?v=12" not in body
+            ok(f"voicevol: the {label} loads voice.js v14 and wires the popover",
+               "/static/js/voice.js?v=14" in body and "voice.js?v=13" not in body
                and "VoiceChat.attachUserMenu" in body and "data-voice-uid" in body, "")
-        async with s_alice.get(f"{ctx.base_url}/static/js/voice.js?v=13") as r:
+        async with s_alice.get(f"{ctx.base_url}/static/js/voice.js?v=14") as r:
             script = await r.text()
             ctype = r.headers.get("Content-Type", "")
             status = r.status
-        ok("voicevol: voice.js v13 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
+        ok("voicevol: voice.js v14 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
         ok("voicevol: the served script has the per-user API and no markup injection",
            "setPeerVolume" in script and "attachUserMenu" in script and "innerHTML" not in script, "")
 
@@ -206,7 +206,7 @@ async def run(ctx):
                    bool(vs_a) and names.get(alice) == "Anonymous", json.dumps(vs_b)[:300])
                 keys = {k for u in (vs_b or {}).get("users", []) for k in u}
                 ok("voicevol: the voice payload carries no volume or preference field",
-                   keys <= {"user_id", "username", "muted", "deafened", "speaking", "screen_sharing", "reconnecting"},
+                   keys <= {"user_id", "username", "muted", "deafened", "speaking", "screen_sharing", "reconnecting", "server_muted"},
                    str(sorted(keys)))
                 await ca2.send(type="voice_leave")
                 await cb.send(type="voice_leave")

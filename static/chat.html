@@ -2991,6 +2991,9 @@
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.421 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.421-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.116l.094-.318z"/></svg>
                 </button>
                 <span class="voice-mode-indicator" id="voice-mode-indicator">VAD</span>
+                <button class="voice-ctrl-btn" id="voice-lock-btn" type="button" style="display:none;" aria-pressed="false" title="Lock the room so nobody new can join (moderators can still join). Server mute is cooperative: the member's own client closes the microphone. A kick is enforced against normal clients only; a modified client keeps its existing direct links to others.">
+                    <span id="voice-lock-label">Lock room</span>
+                </button>
                 <div class="voice-users-mini" id="voice-users-mini"></div>
                 <button class="voice-disconnect-btn" onclick="VoiceChat.leave()" title="Disconnect from voice">Disconnect</button>
             </div>
@@ -3239,7 +3242,7 @@
 
     <script src="/static/js/portal.js?v=46"></script>
     <script src="/static/js/push.js?v=4"></script>
-    <script src="/static/js/voice.js?v=13"></script>
+    <script src="/static/js/voice.js?v=14"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
@@ -7453,6 +7456,11 @@
                 { selector: '[data-voice-uid]', nameFor, enterOpens: true });
             VoiceChat.attachUserMenu(document.getElementById('user-list'),
                 { selector: '.user-item[data-voice-uid]', nameFor });
+            const lockBtn = document.getElementById('voice-lock-btn');
+            if (lockBtn && !lockBtn.__bound) {
+                lockBtn.__bound = true;
+                lockBtn.addEventListener('click', () => VoiceChat.setRoomLocked(!VoiceChat.getState().locked));
+            }
         }
 
         function onVoiceStateChange(state) {
@@ -7475,7 +7483,13 @@
                 joinLabel.textContent = 'Leave Voice';
                 controls.classList.add('active');
                 muteBtn.classList.toggle('active', state.muted);
-                muteLabel.textContent = state.muted ? 'Unmute' : 'Mute';
+                muteLabel.textContent = state.serverMuted ? 'Muted by a moderator' : (state.muted ? 'Unmute' : 'Mute');
+                muteBtn.classList.toggle('active', state.muted || state.serverMuted);
+                const lockBtn = document.getElementById('voice-lock-btn');
+                lockBtn.style.display = state.canModerate ? '' : 'none';
+                lockBtn.setAttribute('aria-pressed', state.locked ? 'true' : 'false');
+                lockBtn.classList.toggle('active', !!state.locked);
+                document.getElementById('voice-lock-label').textContent = state.locked ? 'Unlock room' : 'Lock room';
                 deafenBtn.classList.toggle('active', state.deafened);
                 deafenLabel.textContent = state.deafened ? 'Undeafen' : 'Deafen';
                 modeIndicator.textContent = state.mode === 'ptt' ? 'PTT' : 'VAD';
@@ -7500,8 +7514,8 @@
                     usersMini.innerHTML = state.users.map(u => {
                         const mine = u.user_id === currentUser?.id;
                         const tag = u.local_muted ? ' (muted by you)' : (u.local_volume !== 100 ? ` (${Number(u.local_volume)}%)` : '');
-                        const attrs = mine ? '' : ` data-voice-uid="${Number(u.user_id)}" tabindex="0" title="Right-click, long-press or press Enter to set volume"`;
-                        return `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}${u.reconnecting ? ' reconnecting' : ''}${u.local_muted ? ' local-muted' : ''}"${attrs}>${escapeHtml(u.username)}${u.reconnecting ? ' (reconnecting)' : ''}${u.muted ? ' 🔇' : ''}${u.screen_sharing ? ' 🖥️' : ''}<span class="vum-tag">${tag}</span></span>`;
+                        const attrs = mine ? '' : ` data-voice-uid="${Number(u.user_id)}" tabindex="0" title="${state.canModerate ? 'Right-click, long-press or press Enter for volume, server mute and kick' : 'Right-click, long-press or press Enter to set volume'}"`;
+                        return `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}${u.reconnecting ? ' reconnecting' : ''}${u.local_muted ? ' local-muted' : ''}"${attrs}>${escapeHtml(u.username)}${u.reconnecting ? ' (reconnecting)' : ''}${u.server_muted ? ' (server muted)' : ''}${u.muted ? ' 🔇' : ''}${u.screen_sharing ? ' 🖥️' : ''}<span class="vum-tag">${tag}</span></span>`;
                     }).join('');
                 });
             } else {
@@ -7510,6 +7524,7 @@
                 controls.classList.remove('active');
                 shareBtn.style.display = 'none';
                 usersMini.innerHTML = '';
+                document.getElementById('voice-lock-btn').style.display = 'none';
                 // Hide screen share panel
                 document.getElementById('screen-share-panel').classList.remove('active');
             }

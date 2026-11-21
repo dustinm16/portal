@@ -3455,7 +3455,25 @@ ws.send(JSON.stringify({
                         <td>speaking (bool)</td>
                         <td>Voice activity indicator (rate-limited to 1/100ms)</td>
                     </tr>
+                    <tr>
+                        <td><span class="param-name">voice_kick</span></td>
+                        <td>target_user_id</td>
+                        <td>Moderators only. Removes the member from the call for everyone and blocks their rejoin to that room for 60 seconds. The target receives <code>voice_denied</code> with <code>code: "kicked"</code>.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_server_mute / voice_server_unmute</span></td>
+                        <td>target_user_id</td>
+                        <td>Moderators only. Sets or clears a mark everyone receives as <code>voice_server_mute_changed</code>. Advisory: the target client closes its own microphone and shows it. It ends when the member leaves.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_lock_room / voice_unlock_room</span></td>
+                        <td>(none)</td>
+                        <td>Moderators only. A locked room refuses joiners without moderation power (<code>voice_denied</code>, code <code>locked</code>); everyone receives <code>voice_room_lock_changed</code>. Held in memory: ends when the room empties or the server restarts.</td>
+                    </tr>
                 </table>
+
+                <h3>Voice Moderation and the Room Cap</h3>
+                <p><code>voice_state</code> (join and resume) also carries <code>locked</code>, <code>can_moderate</code> (staff, and in a stream's own chat its owner and stream mods; never in a DM call) and <code>room_cap</code>; each user entry has <code>server_muted</code>. A <code>voice_join</code> is refused with <code>voice_denied</code> carrying a <code>code</code> and a <code>message</code>, sent to the joiner only and nothing to the room: <code>timed_out</code> (timed out or muted in that channel; moderators are exempt), <code>room_full</code> (the room holds <code>voice_room_cap</code> people, default 8, 2 to 25, DM calls included; a resume of a member already in the room is never refused for it), <code>locked</code> (the room is locked and the member has no moderation power), <code>kicked</code> (removed by a moderator less than 60 seconds ago). The moderation frames need a moderation level in that chat (<code>error</code> "Moderator access required"), never act on oneself or on a member of equal or higher level (<code>error</code> "Not allowed") and are refused in a DM call; each change is audited as <code>voice_kick</code>, <code>voice_server_mute</code>, <code>voice_server_unmute</code>, <code>voice_lock</code> or <code>voice_unlock</code>. A timeout or mute in a channel also removes the member from that channel's voice room. Every <code>voice_signal</code> is dropped unless the sender is in that room and so is the target. Server mute is cooperative, and a kick is enforced against normal clients only: the server cannot cut an existing peer-to-peer link of a modified client. The cap is set with <code>PUT /api/admin/voice</code> (superadmin).</p>
 
                 <h3>Voice Reconnect</h3>
                 <p>When the socket that owns a voice session closes, the session is kept for 20 seconds. Other members receive <code>voice_user_reconnecting</code> instead of <code>voice_user_left</code>, then <code>voice_user_resumed</code> if the same account resumes in time, or <code>voice_user_left</code> after about 20 seconds. Members that are reconnecting show <code>reconnecting: true</code> in <code>voice_state</code> and <code>voice_reconnecting: true</code> in the <code>users</code> list, receive no voice messages and are skipped when broadcasting. A password reset, role change, account delete, logout, a revoked session or anonymous mode ends a session at once, also while it is being held; making the channel private removes the members who may not stay. Closing a second tab does not affect the call. Audio between browsers does not go through the socket, so a short drop often does not interrupt it; the client re-negotiates only the peers that are no longer connected (an offer with <code>fresh: true</code>). iOS suspends background pages, which still ends a call.</p>
@@ -6268,6 +6286,31 @@ Headers:
                 </div>
 
                 <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/voice</span>
+                        <span class="endpoint-desc">Voice room cap</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"voice_room_cap": 8, "default": 8, "min": 2, "max": 25}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/voice</span>
+                        <span class="endpoint-desc">Set the voice room cap</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>{"voice_room_cap": 6}</code>, a whole number from 2 to 25 (anything else, a boolean, an unknown key or a non-object body is <code>400</code> and nothing changes). Response (200): the same object as GET plus <code>"saved": true</code>. A lower cap does not remove anyone already in a room.</p>
+                        <p>Auth: superadmin. Audited as <code>voice.room_cap</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/admin/proxy-limit</span>
@@ -6759,6 +6802,12 @@ X-RateLimit-Reset: 1704067200</pre>
     <script src="/static/js/portal.js?v=46"></script>
     <script src="/static/js/push.js?v=4"></script>
     <script>
+        // Headers added since 1.20.0 carry data-toggle-endpoint instead of an inline onclick.
+        document.addEventListener('click', function (e) {
+            const h = e.target.closest && e.target.closest('[data-toggle-endpoint]');
+            if (h) toggleEndpoint(h);
+        });
+
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');
             endpoint.classList.toggle('expanded');

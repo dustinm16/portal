@@ -889,6 +889,7 @@
                 <button id="wv-mute-btn" onclick="VoiceChat.toggleMute()">Mute</button>
                 <button id="wv-deafen-btn" onclick="VoiceChat.toggleDeafen()">Deafen</button>
                 <button id="wv-share-btn" onclick="toggleWatchScreenShare()" style="display:none;">Share</button>
+                <button id="wv-lock-btn" type="button" style="display:none;" aria-pressed="false" title="Lock the room so nobody new can join (moderators can still join). Server mute is cooperative: the member's own client closes the microphone. A kick is enforced against normal clients only; a modified client keeps its existing direct links to others.">Lock room</button>
                 <span class="watch-voice-users" id="wv-users"></span>
                 <button class="vc-disconnect" onclick="VoiceChat.leave()">X</button>
             </div>
@@ -929,7 +930,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=46"></script>
-    <script src="/static/js/voice.js?v=13"></script>
+    <script src="/static/js/voice.js?v=14"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -2273,6 +2274,11 @@
         // Per-user volume popover on the participant names (wired once; the
         // names are re-rendered on every voice event).
         function setupWatchVoiceMenu() {
+            const lockBtn = document.getElementById('wv-lock-btn');
+            if (lockBtn && !lockBtn.__bound) {
+                lockBtn.__bound = true;
+                lockBtn.addEventListener('click', () => VoiceChat.setRoomLocked(!VoiceChat.getState().locked));
+            }
             VoiceChat.attachUserMenu(document.getElementById('wv-users'), {
                 selector: '[data-voice-uid]',
                 enterOpens: true,
@@ -2298,7 +2304,12 @@
                 btn.textContent = 'Leave Voice';
                 controls.classList.add('active');
                 muteBtn.classList.toggle('active', state.muted);
-                muteBtn.textContent = state.muted ? 'Unmute' : 'Mute';
+                muteBtn.textContent = state.serverMuted ? 'Muted by a moderator' : (state.muted ? 'Unmute' : 'Mute');
+                muteBtn.classList.toggle('active', state.muted || state.serverMuted);
+                const lockBtn = document.getElementById('wv-lock-btn');
+                lockBtn.style.display = state.canModerate ? '' : 'none';
+                lockBtn.setAttribute('aria-pressed', state.locked ? 'true' : 'false');
+                lockBtn.textContent = state.locked ? 'Unlock room' : 'Lock room';
                 deafenBtn.classList.toggle('active', state.deafened);
                 deafenBtn.textContent = state.deafened ? 'Undeafen' : 'Deafen';
                 // Screen share button
@@ -2319,11 +2330,11 @@
                         const tag = u.local_muted ? ' (muted by you)' : (u.local_volume !== 100 ? ` (${Number(u.local_volume)}%)` : '');
                         const span = document.createElement('span');
                         span.className = 'wv-user' + (u.local_muted ? ' local-muted' : '');
-                        span.textContent = u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' (screen)' : '') + tag;
+                        span.textContent = u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.server_muted ? ' (server muted)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' (screen)' : '') + tag;
                         if (u.user_id !== currentUser?.id) {
                             span.setAttribute('data-voice-uid', String(Number(u.user_id)));
                             span.tabIndex = 0;
-                            span.title = 'Right-click, long-press or press Enter to set volume';
+                            span.title = state.canModerate ? 'Right-click, long-press or press Enter for volume, server mute and kick' : 'Right-click, long-press or press Enter to set volume';
                         }
                         users.appendChild(span);
                         if (i < state.users.length - 1) users.appendChild(document.createTextNode(', '));
@@ -2334,6 +2345,7 @@
                 btn.textContent = 'Join Voice';
                 controls.classList.remove('active');
                 shareBtn.style.display = 'none';
+                document.getElementById('wv-lock-btn').style.display = 'none';
                 document.getElementById('watch-screen-share').classList.remove('active');
             }
         }

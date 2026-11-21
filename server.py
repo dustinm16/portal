@@ -18437,6 +18437,7 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
             if am_action == "timeout":
                 duration = automod_result.get("duration") or 300
                 await db.create_chat_timeout(user_id, penalty_by, "timeout", channel["id"], reason, duration)
+                await _voice_drop_for_penalty(user_id, channel)
                 await broadcast_to_channel(channel_name, {
                     "type": "user_timed_out",
                     "user_id": user_id,
@@ -18447,6 +18448,7 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
                 }, anon_subject=anon)
             else:
                 await db.create_chat_timeout(user_id, penalty_by, "mute", channel["id"], reason)
+                await _voice_drop_for_penalty(user_id, channel)
                 await broadcast_to_channel(channel_name, {
                     "type": "user_muted",
                     "user_id": user_id,
@@ -22513,6 +22515,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                                 continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
+                        await _voice_drop_for_penalty(target_user_id, channel)
                         display_name = (ANON_MODERATOR_LABEL if _anon_actor(user_role, my_state)
                                         else my_state.get("nickname") or username)
                         target_anon = msg_anon or bool(target_user.get("chat_anonymous"))
@@ -22565,6 +22568,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
                             continue
                         await db.create_chat_timeout(target_user_id, user_id, "mute", channel["id"], reason)
+                        await _voice_drop_for_penalty(target_user_id, channel)
                         display_name = my_state.get("nickname") or username
                         target_anon = bool(target_user.get("chat_anonymous"))
                         target_name = "Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])
@@ -23159,91 +23163,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     # Voice Chat Signaling
                     # =========================================================
                     elif msg_type == "voice_join":
-                        # A resume re-attaches this socket to the voice entry
-                        # the user already has (see _voice_resume).
-                        if data.get("resume"):
-                            resumed_room = await _voice_resume(
-                                ws, user_id, user_role, token.token_id, my_state, data)
-                            if resumed_room:
-                                voice_room = resumed_room
-                            continue
+                        # Refusals (timed out or muted, room full, locked, kick block) and
+                        # the resume branch live in _voice_join.
+                        joined_room = await _voice_join(
+                            ws, user_id, user_role, token.token_id, my_state,
+                            username, current_channel, data)
+                        if joined_room:
+                            voice_room = joined_room
 
-                        # Determine voice room: channel name or dm:{conv_id}
-                        requested_room = data.get("room")
-                        if requested_room and requested_room.startswith("dm:"):
-                            try:
-                                dm_conv_id = int(requested_room.split(":", 1)[1])
-                            except (ValueError, IndexError):
-                                continue
-                            if not await db.is_dm_participant(dm_conv_id, user_id):
-                                await ws.send_json({"type": "error", "message": "Not a participant"})
-                                continue
-                            target_room = requested_room
-                        elif current_channel:
-                            target_room = current_channel
-                            # A socket whose channel it can no longer read does not join its voice
-                            # room. voice_denied, like the other refusals here: the client ends the
-                            # join it started (a plain error would leave it waiting)
-                            voice_ch = await db.get_chat_channel_by_name(current_channel)
-                            voice_access = await _can_read_channel(voice_ch, user_id, user_role)
-                            if not voice_access:
-                                await ws.send_json({"type": "voice_denied", "message": voice_access.message})
-                                continue
-                        else:
-                            await ws.send_json({"type": "error", "message": "Join a channel first"})
-                            continue
-
-                        # Voice payloads carry the real account id of every
-                        # participant, so an anonymous member cannot be in a
-                        # channel voice room (direct messages are between
-                        # people who already know each other).
-                        if my_state["anonymous"] and not target_room.startswith("dm:"):
-                            await ws.send_json({"type": "voice_denied",
-                                                "message": ANON_VOICE_MESSAGE})
-                            continue
-
-                        # One voice session per account: a second tab is
-                        # refused, also while the first one is reconnecting
-                        # (only a resume with the join's token takes it over).
-                        if _voice_find(user_id)[1] is not None:
-                            await ws.send_json({"type": "voice_denied",
-                                                "message": "Already in voice chat"})
-                            continue
-
-                        # Add to voice state
-                        display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                        if target_room not in voice_state:
-                            voice_state[target_room] = {}
-                        voice_state[target_room][user_id] = {
-                            "ws": ws,
-                            "username": display_name,
-                            "muted": False,
-                            "deafened": False,
-                            "speaking": False,
-                            "screen_sharing": False,
-                            "reconnecting": False,
-                            "resume_token": secrets.token_urlsafe(16),
-                            "token_id": token.token_id,
-                        }
-                        voice_room = target_room
-
-                        # Send current voice users to joiner
-                        await ws.send_json({
-                            "type": "voice_state",
-                            "channel": voice_room,
-                            "users": _voice_users_payload(voice_room),
-                            "resume_token": voice_state[voice_room][user_id]["resume_token"]
-                        })
-
-                        # Broadcast join to voice room participants
-                        await broadcast_to_voice_room(voice_room, {
-                            "type": "voice_user_joined",
-                            "user_id": user_id,
-                            "username": display_name
-                        }, exclude=ws)
-                        if not voice_room.startswith("dm:"):
-                            await broadcast_users_list(voice_room)
-                        logger.info(f"[Voice] {display_name} joined voice in {voice_room}")
+                    elif msg_type in VOICE_MOD_FRAMES:
+                        await _voice_moderate(ws, user_id, user_role, username, voice_room, msg_type, data)
 
                     elif msg_type == "voice_leave":
                         # With the resume token this ends the account's own
@@ -23295,6 +23224,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         muted = bool(data.get("muted", False))
                         own_entry = _voice_owned(voice_room, user_id, ws)
                         if own_entry is not None:
+                            muted = muted or bool(own_entry.get("server_muted"))   # a server mute is not lifted by the member
                             own_entry["muted"] = muted
                             bcast = {"type": "voice_mute_changed", "user_id": user_id, "muted": muted}
                             await broadcast_to_voice_room(voice_room, bcast)
@@ -24436,6 +24366,7 @@ def _voice_users_payload(room: str) -> list:
             "speaking": vdata["speaking"],
             "screen_sharing": vdata.get("screen_sharing", False),
             "reconnecting": bool(vdata.get("reconnecting")),
+            "server_muted": bool(vdata.get("server_muted")),
         }
         for vid, vdata in voice_state.get(room, {}).items()
     ]
@@ -24453,6 +24384,7 @@ async def _voice_remove(room: str, user_id: int, expected=None) -> bool:
     del users[user_id]
     if not users:
         voice_state.pop(room, None)
+        _voice_locked.discard(room)
     task = entry.pop("grace_task", None)
     if task is not None and task is not asyncio.current_task():
         task.cancel()
@@ -24622,6 +24554,7 @@ async def _voice_resume(ws, user_id: int, user_role: str, token_id, my_state: di
     if not await _voice_room_allowed(room, user_id, user_role):
         await _voice_remove(room, user_id, entry)
         return await fail()
+    info = await _voice_room_info(room, user_id, user_role)
 
     # No await from here to the swap: the grace timer cannot slip in between.
     if voice_state.get(room, {}).get(user_id) is not entry:
@@ -24648,6 +24581,7 @@ async def _voice_resume(ws, user_id: int, user_role: str, token_id, my_state: di
             "users": _voice_users_payload(room),
             "resume_token": entry["resume_token"],
             "resumed": True,
+            **info,
         })
     except (ConnectionError, ConnectionResetError, TypeError):
         pass
@@ -24657,6 +24591,305 @@ async def _voice_resume(ws, user_id: int, user_role: str, token_id, my_state: di
             await broadcast_users_list(room)
         logger.info(f"[Voice] {entry['username']} resumed voice in {room}")
     return room
+
+
+# ---------------------------------------------------------------------------
+# Voice moderation and the room cap (1.20.0)
+#
+# The room cap is a setting (voice_room_cap, 2 to 25, default 8) cached in
+# _voice_cfg and invalidated when the admin endpoint writes it. A room lock is
+# in memory only (_voice_locked: cleared when the room empties, gone on a
+# restart). A kick leaves a rejoin block of VOICE_KICK_BLOCK seconds. Server
+# mute is a flag on the voice entry, so it ends when the member leaves.
+# ---------------------------------------------------------------------------
+VOICE_CAP_DEFAULT, VOICE_CAP_MIN, VOICE_CAP_MAX = 8, 2, 25
+VOICE_CAP_SETTING = "voice_room_cap"
+VOICE_KICK_BLOCK = 60.0
+_voice_cfg: dict = {"room_cap": None, "gen": 0}
+_voice_locked: set = set()
+_voice_kick_blocks: dict = {}       # (room, user_id) -> monotonic time the block ends
+
+
+def _voice_cap_value(raw) -> int:
+    """The cap a stored value stands for; anything unusable is the default."""
+    try:
+        n = int(str(raw).strip())
+    except (ValueError, TypeError):
+        return VOICE_CAP_DEFAULT
+    return n if VOICE_CAP_MIN <= n <= VOICE_CAP_MAX else VOICE_CAP_DEFAULT
+
+
+def voice_cap_invalidate() -> None:
+    _voice_cfg["room_cap"] = None
+    _voice_cfg["gen"] += 1
+
+
+async def voice_room_cap() -> int:
+    """The people limit of one voice room, from the in-memory copy of the setting."""
+    cap = _voice_cfg["room_cap"]
+    if cap is not None:
+        return cap
+    gen = _voice_cfg["gen"]
+    try:
+        raw = await db.get_setting(VOICE_CAP_SETTING)
+    except Exception:
+        return VOICE_CAP_DEFAULT
+    cap = VOICE_CAP_DEFAULT if raw is None else _voice_cap_value(raw)
+    if gen == _voice_cfg["gen"]:        # not invalidated while the read ran
+        _voice_cfg["room_cap"] = cap
+    return cap
+
+
+def _voice_kick_block_left(room: str, user_id: int) -> float:
+    """Seconds of rejoin block left for this member in this room (0 when none).
+    Expired blocks are dropped as they are found."""
+    now = monotonic()
+    for key in [k for k, until in _voice_kick_blocks.items() if until <= now]:
+        _voice_kick_blocks.pop(key, None)
+    until = _voice_kick_blocks.get((room, user_id))
+    return max(0.0, until - now) if until is not None else 0.0
+
+
+def _voice_join_refusal(room: str, user_id: int, *, cap: int, is_mod: bool, timed_out):
+    """(code, message) when this member may not join the room now, else None.
+
+    Synchronous on purpose: the caller has done every lookup that needs an await
+    and inserts the entry with no await after this, so two joiners cannot both
+    take the last seat. A direct message room only has the cap."""
+    if not room.startswith("dm:"):
+        left = _voice_kick_block_left(room, user_id)
+        if left > 0:
+            return ("kicked", f"A moderator removed you from this voice chat. You can join again in {int(left) + 1} seconds.")
+        if timed_out and not is_mod:
+            kind = "muted" if timed_out.get("type") == "mute" else "timed out"
+            return ("timed_out", f"You are {kind} in this channel and cannot join its voice chat.")
+        if room in _voice_locked and not is_mod:
+            return ("locked", "This voice room is locked by a moderator.")
+    if len(voice_state.get(room, {})) >= cap:
+        return ("room_full", f"This voice room is full ({cap} people).")
+    return None
+
+
+async def _voice_mod_level(room: str, user_id: int, role: str, channel=None) -> int:
+    """The member's moderation level for a channel voice room; none for a DM room."""
+    if room.startswith("dm:"):
+        return CHAT_LEVEL_NONE
+    if channel is None:
+        channel = await db.get_chat_channel_by_name(room)
+    return await chat_mod_level(channel, {"id": user_id, "role": role})
+
+
+async def _voice_room_info(room: str, user_id: int, role: str) -> dict:
+    """The room facts the joiner's client needs: lock state, whether it may
+    moderate, and the cap."""
+    try:
+        level = await _voice_mod_level(room, user_id, role)
+    except Exception:
+        level = CHAT_LEVEL_NONE
+    return {"locked": room in _voice_locked,
+            "can_moderate": level != CHAT_LEVEL_NONE,
+            "room_cap": await voice_room_cap()}
+
+
+async def _voice_join(ws, user_id: int, user_role: str, token_id, my_state: dict,
+                      username: str, current_channel, data: dict):
+    """The voice_join frame. Returns the voice room the socket is in afterwards,
+    or None (refused, failed or a resume that did not take). A refusal is one
+    voice_denied frame to the joiner (with a code) and nothing to the room."""
+    if data.get("resume"):
+        # A resume re-attaches this socket to the voice entry the user already
+        # has (see _voice_resume); it is never refused for the cap.
+        return await _voice_resume(ws, user_id, user_role, token_id, my_state, data)
+
+    channel = None
+    requested_room = data.get("room")
+    if isinstance(requested_room, str) and requested_room.startswith("dm:"):
+        try:
+            dm_conv_id = int(requested_room.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return None
+        if not await db.is_dm_participant(dm_conv_id, user_id):
+            await ws.send_json({"type": "error", "message": "Not a participant"})
+            return None
+        target_room = requested_room
+    elif current_channel:
+        target_room = current_channel
+        # A socket whose channel it can no longer read does not join its voice
+        # room. voice_denied, like the other refusals here: the client ends the
+        # join it started (a plain error would leave it waiting)
+        channel = await db.get_chat_channel_by_name(current_channel)
+        voice_access = await _can_read_channel(channel, user_id, user_role)
+        if not voice_access:
+            await ws.send_json({"type": "voice_denied", "message": voice_access.message})
+            return None
+    else:
+        await ws.send_json({"type": "error", "message": "Join a channel first"})
+        return None
+
+    # Voice payloads carry the real account id of every participant, so an
+    # anonymous member cannot be in a channel voice room (direct messages are
+    # between people who already know each other).
+    if my_state["anonymous"] and not target_room.startswith("dm:"):
+        await ws.send_json({"type": "voice_denied", "message": ANON_VOICE_MESSAGE})
+        return None
+
+    # Every lookup that awaits comes first; the refusal checks and the insert
+    # below have no await between them.
+    is_mod, timed_out = False, None
+    if channel is not None and not target_room.startswith("dm:"):
+        is_mod = await chat_mod_level(channel, {"id": user_id, "role": user_role}) != CHAT_LEVEL_NONE
+        if not is_mod:
+            timed_out = await db.is_user_timed_out(user_id, channel["id"])
+    cap = await voice_room_cap()
+
+    # One voice session per account: a second tab is refused, also while the
+    # first one is reconnecting (only a resume with the join's token takes it over).
+    if _voice_find(user_id)[1] is not None:
+        await ws.send_json({"type": "voice_denied", "message": "Already in voice chat"})
+        return None
+    refusal = _voice_join_refusal(target_room, user_id, cap=cap, is_mod=is_mod, timed_out=timed_out)
+    if refusal:
+        await ws.send_json({"type": "voice_denied", "code": refusal[0], "message": refusal[1]})
+        return None
+
+    display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+    voice_state.setdefault(target_room, {})[user_id] = {
+        "ws": ws,
+        "username": display_name,
+        "muted": False,
+        "deafened": False,
+        "speaking": False,
+        "screen_sharing": False,
+        "reconnecting": False,
+        "server_muted": False,
+        "resume_token": secrets.token_urlsafe(16),
+        "token_id": token_id,
+    }
+    room = target_room
+    frame = {
+        "type": "voice_state",
+        "channel": room,
+        "users": _voice_users_payload(room),
+        "resume_token": voice_state[room][user_id]["resume_token"],
+        "locked": room in _voice_locked,
+        "can_moderate": is_mod,
+        "room_cap": cap,
+    }
+    await ws.send_json(frame)
+    await broadcast_to_voice_room(room, {
+        "type": "voice_user_joined",
+        "user_id": user_id,
+        "username": display_name,
+    }, exclude=ws)
+    if not room.startswith("dm:"):
+        await broadcast_users_list(room)
+    logger.info(f"[Voice] {display_name} joined voice in {room}")
+    return room
+
+
+async def _voice_notify_denied(entry: dict, code: str, message: str) -> None:
+    """Tell a live voice member why they are being taken out (best effort)."""
+    ws = entry.get("ws")
+    if ws is None or entry.get("reconnecting"):
+        return
+    try:
+        await asyncio.wait_for(ws.send_json(
+            {"type": "voice_denied", "code": code, "message": message}), 2)
+    except (asyncio.TimeoutError, ConnectionError, ConnectionResetError, TypeError, RuntimeError):
+        pass
+
+
+async def _voice_drop_for_penalty(user_id: int, channel) -> None:
+    """A timeout or mute in a channel also ends the member's call in that
+    channel's voice room. Never raises."""
+    try:
+        if not channel:
+            return
+        room = channel["name"]
+        entry = (voice_state.get(room) or {}).get(user_id)
+        if entry is None:
+            return
+        await _voice_notify_denied(entry, "timed_out", "You were timed out or muted in this channel and were removed from its voice chat.")
+        await _voice_remove(room, user_id, entry)
+    except Exception as e:
+        logger.warning(f"[Voice] Could not remove user {user_id} from voice after a penalty: {e}")
+
+
+VOICE_MOD_FRAMES = ("voice_kick", "voice_server_mute", "voice_server_unmute",
+                    "voice_lock_room", "voice_unlock_room")
+
+
+async def _voice_moderate(ws, user_id: int, user_role: str, username: str, room, msg_type: str, data: dict) -> None:
+    """voice_kick, voice_server_mute, voice_server_unmute, voice_lock_room and
+    voice_unlock_room, on the room the socket is in. The decision is
+    chat_mod_level (and chat_mod_may_act for a target): a moderator cannot act on
+    someone of equal or higher level, and nobody on themselves. One audit entry
+    per change. Refused frames get one error to the sender and nothing goes to
+    the room. Never available in a direct message room."""
+    async def refuse(message):
+        try:
+            await ws.send_json({"type": "error", "message": message})
+        except (ConnectionError, ConnectionResetError, TypeError, RuntimeError):
+            pass
+
+    if _voice_owned(room, user_id, ws) is None:
+        return          # not in that room (or not the socket that owns the seat): dropped
+    if room.startswith("dm:"):
+        await refuse("Kick, lock and server mute are not available in a direct message call")
+        return
+    channel = await db.get_chat_channel_by_name(room)
+    actor = {"id": user_id, "role": user_role}
+    level = await chat_mod_level(channel, actor)
+    if level == CHAT_LEVEL_NONE:
+        await refuse("Moderator access required")
+        return
+
+    if msg_type in ("voice_lock_room", "voice_unlock_room"):
+        lock = msg_type == "voice_lock_room"
+        if (room in _voice_locked) == lock or _voice_owned(room, user_id, ws) is None:
+            return
+        (_voice_locked.add if lock else _voice_locked.discard)(room)
+        await broadcast_to_voice_room(room, {"type": "voice_room_lock_changed", "locked": lock})
+        await _audit_chat_mod("voice_lock" if lock else "voice_unlock", user_id, username, level, channel,
+                              target_type="voice_room", target_name=room)
+        return
+
+    try:
+        target_id = _ws_id(data.get("target_user_id"))
+    except (ValueError, TypeError):
+        await refuse("Invalid user_id")
+        return
+    target_entry = (voice_state.get(room) or {}).get(target_id)
+    if target_entry is None:
+        await refuse("That member is not in this voice chat")
+        return
+    if not await chat_mod_may_act(channel, actor, target_id):
+        await refuse(_CHAT_REFUSED_TARGET)
+        return
+    # the room may have changed while the checks awaited
+    if _voice_owned(room, user_id, ws) is None or (voice_state.get(room) or {}).get(target_id) is not target_entry:
+        return
+    target_name = target_entry.get("username")
+
+    if msg_type == "voice_kick":
+        # the block first, so the target cannot slip back in while this runs
+        _voice_kick_block_left(room, target_id)        # prunes expired blocks
+        _voice_kick_blocks[(room, target_id)] = monotonic() + VOICE_KICK_BLOCK
+        await _voice_notify_denied(target_entry, "kicked", "A moderator removed you from this voice chat.")
+        await _voice_remove(room, target_id, target_entry)
+        await _audit_chat_mod("voice_kick", user_id, username, level, channel,
+                              target_id=target_id, target_name=target_name,
+                              extra={"block_seconds": int(VOICE_KICK_BLOCK)})
+        return
+
+    mute = msg_type == "voice_server_mute"
+    if bool(target_entry.get("server_muted")) == mute:
+        return
+    target_entry["server_muted"] = mute
+    await broadcast_to_voice_room(room, {"type": "voice_server_mute_changed",
+                                         "user_id": target_id, "server_muted": mute})
+    await _audit_chat_mod("voice_server_mute" if mute else "voice_server_unmute", user_id, username, level, channel,
+                          target_id=target_id, target_name=target_name)
 
 
 async def broadcast_to_voice_room(room: str, message: dict, exclude=None):
@@ -25672,6 +25905,50 @@ async def http_put_login_ban(request: web.Request) -> web.Response:
                         details={"was": {k: before[k] for k in changed}, "now": changed})
         logger.info(f"Failed-sign-in ban settings changed by user {user['id']}: {changed}")
     view = _login_ban_view(request)
+    view["saved"] = True
+    return web.json_response(view)
+
+
+async def _voice_settings_view() -> dict:
+    return {"voice_room_cap": await voice_room_cap(), "default": VOICE_CAP_DEFAULT,
+            "min": VOICE_CAP_MIN, "max": VOICE_CAP_MAX}
+
+
+async def http_get_voice_settings(request: web.Request) -> web.Response:
+    """GET /api/admin/voice - the voice room cap (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(await _voice_settings_view())
+
+
+async def http_put_voice_settings(request: web.Request) -> web.Response:
+    """PUT /api/admin/voice - set voice_room_cap, 2 to 25 (superadmin). A lower cap
+    does not remove anyone who is already in a room."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    unknown = sorted(str(k) for k in data if k != "voice_room_cap")
+    if unknown:
+        return web.json_response({"error": f"Unknown setting: {unknown[0][:40]}"}, status=400)
+    value = data.get("voice_room_cap")
+    if isinstance(value, bool) or not isinstance(value, int) or not VOICE_CAP_MIN <= value <= VOICE_CAP_MAX:
+        return web.json_response(
+            {"error": f"voice_room_cap must be a whole number from {VOICE_CAP_MIN} to {VOICE_CAP_MAX}"}, status=400)
+    before = await voice_room_cap()
+    await db.set_setting(VOICE_CAP_SETTING, str(value))
+    voice_cap_invalidate()
+    if before != value:
+        await audit_log("voice.room_cap", user["id"], user.get("username", "unknown"),
+                        details=json.dumps({"was": before, "now": value}))
+        logger.info(f"Voice room cap changed from {before} to {value} by user {user['id']}")
+    view = await _voice_settings_view()
     view["saved"] = True
     return web.json_response(view)
 
@@ -26796,6 +27073,8 @@ def create_app() -> web.Application:
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
     app.router.add_get("/api/admin/login-ban", http_get_login_ban)
     app.router.add_put("/api/admin/login-ban", http_put_login_ban)
+    app.router.add_get("/api/admin/voice", http_get_voice_settings)
+    app.router.add_put("/api/admin/voice", http_put_voice_settings)
     app.router.add_get("/api/admin/proxy-limit", http_get_proxy_limit)
     app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)

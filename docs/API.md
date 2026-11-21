@@ -2425,7 +2425,7 @@ The rebuild writes the operator flags itself and marks the backfill as done.
 
 ### Voice Chat
 
-Live voice chat uses WebRTC P2P mesh (2-10 users per room). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
+Live voice chat uses WebRTC P2P mesh (up to `voice_room_cap` users per room, default 8). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
 
 Voice signaling piggybacks on the existing `/ws/chat` WebSocket. No separate WebSocket connection is needed.
 
@@ -2463,6 +2463,11 @@ TURN server is optional — only included if configured via environment variable
 {"type": "voice_mute", "muted": true}
 {"type": "voice_deafen", "deafened": true}
 {"type": "voice_speaking", "speaking": true}
+{"type": "voice_kick", "target_user_id": 5}
+{"type": "voice_server_mute", "target_user_id": 5}
+{"type": "voice_server_unmute", "target_user_id": 5}
+{"type": "voice_lock_room"}
+{"type": "voice_unlock_room"}
 ```
 
 **Server → Client:**
@@ -2478,8 +2483,12 @@ TURN server is optional — only included if configured via environment variable
 {"type": "voice_mute_changed", "user_id": 2, "muted": true}
 {"type": "voice_deafen_changed", "user_id": 2, "deafened": true}
 {"type": "voice_speaking_changed", "user_id": 2, "speaking": true}
+{"type": "voice_denied", "code": "room_full", "message": "This voice room is full (8 people)."}
+{"type": "voice_server_mute_changed", "user_id": 2, "server_muted": true}
+{"type": "voice_room_lock_changed", "locked": true}
 ```
 
+- **Voice moderation and the room cap (1.20.0).** `voice_state` (join and resume) also carries `"locked"` (bool), `"can_moderate"` (bool, true for staff and, in a stream's own chat, its owner and stream mods; always false in a DM call) and `"room_cap"`; each user entry has `"server_muted"`. A `voice_join` is refused with `voice_denied` (a `code` and a `message`, sent to the joiner only, nothing to the room) when: the member is timed out or muted in that channel (`"timed_out"`; anyone with moderation power there is exempt), the room already holds `voice_room_cap` people (`"room_full"`, default 8, 2 to 25; counts members that are reconnecting; applies to DM calls too; a resume of a member already in the room is never refused for it), the room is locked and the member has no moderation power (`"locked"`), or the member was removed by a moderator less than 60 seconds ago (`"kicked"`). A refusal for a channel the member cannot read stays as before (no code, nothing about the room). `voice_kick` removes the target for everyone (they receive `voice_denied` with code `"kicked"`, the others `voice_user_left`) and blocks their rejoin to that room for 60 seconds. `voice_server_mute` / `voice_server_unmute` set or clear a mark that everyone receives as `voice_server_mute_changed`; it is advisory (the target client closes its own microphone; an unmute the member sends is ignored while the mark is set) and ends when the member leaves. `voice_lock_room` / `voice_unlock_room` broadcast `voice_room_lock_changed`; a lock is held in memory and ends when the room empties or the server restarts. The sender must be in the room and have a moderation level there (`error` "Moderator access required" otherwise); nobody can act on themselves, and a moderator cannot act on a member of equal or higher level (`error` "Not allowed"). The five frames are refused with an `error` in a DM call. Each change is audited (`voice_kick`, `voice_server_mute`, `voice_server_unmute`, `voice_lock`, `voice_unlock`, with the level). A timeout or mute in a channel (by a moderator or AutoMod) also removes the member from that channel's voice room (`voice_denied`, code `"timed_out"`). Every `voice_signal` (and the mute, deafen, speaking and screen share frames) is dropped unless the sender is currently in that room, on the socket that owns the session, and the target is too. A kick is enforced against normal clients only: the server cannot cut an existing peer-to-peer link of a modified client.
 - `voice_state`: Sent to joiner with list of all current voice users in the channel, plus `resume_token` (random per join, sent only to the joining socket). After a resume the same message is sent with `"resumed": true`
 - One voice session per account. A second `voice_join` from another socket of the same account (a second tab) is answered with `voice_denied` ("Already in voice chat"), also while the first session is waiting to reconnect. Closing a tab that does not own the session does not affect the call, and only the owning socket can leave, mute, deafen, signal or share a screen
 - **Reconnecting:** when the socket that owns a session closes, the session is kept for 20 seconds. Other members receive `voice_user_reconnecting` (no `voice_user_left`), and the member's entry has `"reconnecting": true` in `voice_state` and `voice_reconnecting: true` in the `users` list. Reconnecting members receive no voice messages and cannot be signalled. If nothing resumes the session within 20 seconds, `voice_user_left` is sent
@@ -3978,6 +3987,16 @@ Change any of `enabled` (boolean), `max_failures`, `find_minutes`, `base_minutes
 The caller's address is counted for each wrong password on the web login and `POST /api/token` and each wrong 2FA code (a code refused by the 2FA limiter is not a failure here); there is no 4xx counter and no account lockout. After `max_failures` within `find_minutes` the address is blocked with kind `login` for `base_minutes`; each repeat within 7 days doubles the time up to 24 hours (a longer base is kept), and no automatic block is permanent. **Off by default**; with it off the count is still kept and nothing is blocked. Never applied to an exempt address (loopback, private, trusted proxy and Cloudflare, this host, `NEVER_BAN_CIDRS`, the never-ban list) and not counted when any account signed in from that address within the last 30 days. Every ban is an `ip_blocked` security event (no user, `result` `auto`, details `kind`, `target_ip`, `expires_at`, `seconds`, `offences`).
 
 **Auth**: Superadmin. Audited as `login_ban.update` and recorded as a `login_ban_changed` security event (`was` and `now` of the changed values).
+
+#### GET /api/admin/voice
+The voice room cap: `{"voice_room_cap": 8, "default": 8, "min": 2, "max": 25}`.
+
+**Auth**: Admin
+
+#### PUT /api/admin/voice
+Body `{"voice_room_cap": 6}`: a whole number from 2 to 25 (anything else, a boolean, an unknown key or a non-object body is `400` and nothing changes). Response (200): the same object as GET plus `"saved": true`. The value is read from memory and the copy is dropped on every write, so it applies to the next join; a lower cap does not remove anyone already in a room.
+
+**Auth**: Superadmin. Audited as `voice.room_cap` (`was` and `now`).
 
 #### GET /api/admin/proxy-limit
 The logged-out request limit settings: `{"enabled": true, "per_minute": 30, "defaults": {...}, "limits": {"per_minute": {"min": 5, "max": 600}}, "your_ip": "...", "your_ip_exempt": null}` (`your_ip_exempt` names the reason when the caller's address is never limited).
