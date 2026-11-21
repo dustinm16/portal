@@ -128,6 +128,12 @@ const CR = require(path.resolve(process.argv[2]));
   const remove = find('Remove'), count = find('Count');
   check('Remove is disabled until a count was made', remove.disabled === true);
   check('keep pinned is on by default', !!pin);
+  const anonNote = modal.all().find(x => x.id === 'prune-anon-note');
+  check('the prune dialog says what a range prune does with anonymous posts, before any count',
+    !!anonNote && /moderator or a stream owner, a range prune removes the anonymous posts/.test(anonNote.textContent)
+    && /administrator, a range prune with no user filter leaves every anonymous post in place/.test(anonNote.textContent)
+    && /name the user/.test(anonNote.textContent));
+  check('the anonymous note is fixed text: no digit, so no count of anonymous posts', !/\d/.test(anonNote.textContent));
   calls.length = 0; script = [{ status: 200, data: { count: 4, dry_run: true } }];
   await count.click();
   check('Count sends a dry run', calls[0].method === 'POST' && calls[0].body.dry_run === true && calls[0].body.skip_pinned === true && /\/channels\/7\/prune$/.test(calls[0].url), JSON.stringify(calls[0]));

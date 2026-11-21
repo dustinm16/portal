@@ -576,6 +576,7 @@ for name, needles in (
         ("prune: rank rules of a single delete, own posts, user filter counts 0", ("rank", "lower role", "counts and removes 0")),
         ("prune: anonymous ids of a user-filtered prune go to staff and the author only", ("not told which ids", "staff and the author", "next load")),
         ("prune status counts go to staff and the starter only", ("`removed`, `total` and `files`", "stream owner or stream mod gets `running` and `status` only")),
+        ("prune dialog: the fixed anonymous-post sentence", ("fixed sentence", "leaves every anonymous post in place whenever the rank rules exclude any author")),
         ("anonymous posts are not revealed", ("anonymous", "never matches an anonymous message", "neither the frames nor the audit entry")),
         ("DMs and stream chats are not covered", ("direct messages", "stream's own chat")),
         ("the rollback consequence", ("rolling back", "retention_chat_days")),
@@ -583,8 +584,8 @@ for name, needles in (
     check(f"1.20.0 states: retention {name}", all(n in low20r for n in needles), str(needles))
 _pages20 = {p_.name: p_.read_text(encoding="utf-8") for p_ in (ROOT / "static").glob("*.html")}
 _loaded20 = {m_ for t_ in _pages20.values() for m_ in re.findall(r"/static/js/chat-retention\.js\?v=(\d+)", t_)}
-check("1.20.0 states chat-retention.js as version 1 and the pages load exactly that",
-      _loaded20 == {"1"} and re.search(r"`chat-retention\.js` version 1", m20r.group(1) if m20r else "") is not None, str(_loaded20))
+check("1.20.0 states chat-retention.js as version 2 and the pages load exactly that",
+      _loaded20 == {"2"} and re.search(r"`chat-retention\.js` version 2", m20r.group(1) if m20r else "") is not None, str(_loaded20))
 _srv20 = (ROOT / "server.py").read_text(encoding="utf-8")
 check("the margin and the batch size stated are the ones in the code",
       "return max(2, int(shown) // 50)" in _srv20 and "PRUNE_BATCH = 200" in _srv20)
