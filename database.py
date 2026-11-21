@@ -6875,8 +6875,8 @@ class Database:
                     anonymous_rankless: bool = False) -> tuple[str, tuple]:
         """The one WHERE clause (and its parameters) of a prune, used by the dry run and the
         real run so they cannot differ. The range is on the stored created_at strings
-        (UTC isoformat). A user filter from someone who may not see anonymous authors never
-        matches an anonymous message (the count would reveal it). `exclude_users` are the
+        (UTC isoformat). A user filter never matches an anonymous message, whoever asks (what
+        stays in the history would reveal the author). `exclude_users` are the
         authors the caller may not act on (the rank rules of a single delete) and, unless
         `allow_authorless`, posts with no author are left alone too. With `anonymous_rankless` (every
         caller but an administrator) an anonymous message is never excluded because of its author, so
@@ -6889,10 +6889,10 @@ class Database:
         if skip_pinned:
             where += " AND is_pinned = 0"
         if user_id is not None:
-            where += " AND user_id = ?"
+            # never an anonymous post, for any caller: a user filter that took them would let anyone who
+            # watches the history tell, after the prune, which posts were that user's
+            where += " AND user_id = ? AND COALESCE(anonymous, 0) = 0"
             params.append(user_id)
-            if not may_name_anonymous:
-                where += " AND COALESCE(anonymous, 0) = 0"
         if exclude_users:
             rankless = " OR COALESCE(anonymous, 0) = 1" if anonymous_rankless else ""
             where += f" AND (user_id IS NULL{rankless} OR user_id NOT IN ({','.join('?' * len(exclude_users))}))"

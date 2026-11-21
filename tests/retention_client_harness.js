@@ -132,7 +132,7 @@ const CR = require(path.resolve(process.argv[2]));
   check('the prune dialog says what a range prune does with anonymous posts, before any count',
     !!anonNote && /moderator or a stream owner, a range prune removes the anonymous posts/.test(anonNote.textContent)
     && /administrator, a range prune with no user filter leaves every anonymous post in place/.test(anonNote.textContent)
-    && /name the user/.test(anonNote.textContent));
+    && /user filter never matches an anonymous post/.test(anonNote.textContent));
   check('the anonymous note is fixed text: no digit, so no count of anonymous posts', !/\d/.test(anonNote.textContent));
   calls.length = 0; script = [{ status: 200, data: { count: 4, dry_run: true } }];
   await count.click();

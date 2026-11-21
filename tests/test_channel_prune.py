@@ -10,8 +10,8 @@ Real handlers and the real chat websocket against a temporary database and uploa
 * who may: an administrator; the moderators of that chat (chat_mod_level: global staff, a stream's owner
   or stream mod); a stream mod of another chat, an ordinary member and a member who may not read the
   channel all get the 404 of a missing channel
-* an anonymous poster: a user filter from anybody but an administrator never matches that poster's
-  anonymous messages (the count would reveal them), an administrator's does; the frames and the
+* an anonymous poster: a user filter never matches that poster's anonymous messages, for an
+  administrator either (what stays in the history would reveal whose they were); the frames and the
   audit entry carry no poster for a prune without a user filter; without one an anonymous post is
   rankless for everybody but an administrator (the count is the same whoever wrote it), and an
   administrator's range prune leaves them all alone when it has authors to exclude (the frames and
@@ -270,7 +270,7 @@ def test_anonymous_posters():
         st, r = await env.call("POST", w.gmod, path, json=body_for(user="talker", dry_run=True))
         check("a global moderator's user filter does not match it either", r["count"] == 1, str(r))
         st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", dry_run=True))
-        check("an administrator's user filter matches both (count 2)", r["count"] == 2, str(r))
+        check("an administrator's user filter does not match the anonymous message either (count 1)", r["count"] == 1, str(r))
         st, r = await env.call("POST", w.owner, path, json=body_for(dry_run=True))
         check("a prune of the whole range counts the anonymous message too", r["count"] == 2, str(r))
         sock = await env.sock(w.viewer)
@@ -284,14 +284,17 @@ def test_anonymous_posters():
               det["user"] is None and det["user_id"] is None and "talker" not in blob and str(w.talker) not in
               json.dumps([e for e in sock.events if e.get("type") == "messages_pruned"]), blob)
         check("both messages were removed", not ({anon, named} & await env.ids(w.chat)))
-        # an administrator naming the poster: recorded for staff, flagged
+        # an administrator naming the poster removes the named posts only; the anonymous one stays
         a2 = await env.message(w.chat, w.talker, "again anonymous", hours_old=0.2, anonymous=True)
+        n2 = await env.message(w.chat, w.talker, "again named", hours_old=0.2)
         st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", expected_count=1))
         await env.wait_prune(w.chat)
         entries = await env.audit("chat_prune")
-        check("an administrator's prune by user removes the anonymous message", a2 not in await env.ids(w.chat) and len(entries) == 2)
-        check("... and the entry says anonymous messages were included",
-              any(e["details"].get("anonymous_included") for e in entries))
+        left = await env.ids(w.chat)
+        check("an administrator's prune by user keeps the anonymous message and removes the named one",
+              a2 in left and n2 not in left and len(entries) == 2, str(left))
+        check("... and no entry talks of anonymous messages included",
+              not any("anonymous_included" in e["details"] for e in entries))
     run(body)
 
 
@@ -711,9 +714,9 @@ def test_administrator_prune_does_not_show_the_rank_of_anonymous_authors():
     anonymous posts (owner, stream mod, ordinary member, global moderator, administrators, both
     superadmins), an ordinary viewer's frames, the stream owner's and a stream mod's status and what
     is left are the same: every anonymous post stays and the frames carry the named ones only, so
-    nothing shows that one of them was written by a higher-ranked author. A user filter still reaches
-    the anonymous posts of that one user (rank rules applying), and with nobody to exclude (the only
-    superadmin) the anonymous posts go with the rest."""
+    nothing shows that one of them was written by a higher-ranked author. A user filter never reaches
+    anonymous posts, and with nobody to exclude (the only superadmin) the anonymous posts go with
+    the rest."""
     async def populate(env, w, authors):
         posts = {}
         for i, (name, uid) in enumerate(authors):
@@ -791,25 +794,28 @@ def test_administrator_prune_does_not_show_the_rank_of_anonymous_authors():
         theirs = await env.message(w.chat, w.adm2, "anon adm2", hours_old=0.3, anonymous=True)
         path = f"/api/chat/channels/{w.chat}/prune"
         st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", dry_run=True))
-        check("an administrator's user filter matches that user's anonymous post (1)", r["count"] == 1, str(r))
+        check("an administrator's user filter does not match that user's anonymous post (0)", r["count"] == 0, str(r))
         st, r = await env.call("POST", w.admin, path, json=body_for(user="adm2", dry_run=True))
-        check("... but the rank rules still keep another administrator's (0)", r["count"] == 0, str(r))
+        check("... nor another administrator's (0)", r["count"] == 0, str(r))
+        named_mine = await env.message(w.chat, w.talker, "named member", hours_old=0.3)
         st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", expected_count=1))
         await env.wait_prune(w.chat)
         left = await env.ids(w.chat)
-        check("only the filtered user's anonymous post went", mine not in left and theirs in left, str(left))
+        check("only the named post went; both anonymous posts stay in the history",
+              named_mine not in left and mine in left and theirs in left, str(left))
     run(body_filter)
 
 
-def test_anonymous_ids_stay_off_ordinary_frames():
-    """An administrator's prune by user that includes the user's anonymous post: an ordinary member never
-    gets the anonymous id (they would see it vanish with the named posts), staff and the author do."""
+def test_user_prune_leaves_anonymous_posts_in_history_and_frames():
+    """An administrator's prune by user: the anonymous post of that user stays in the history, so a
+    viewer who reloads sees the same anonymous posts as before, and no frame names its id."""
     async def body(env):
         w = await world(env)
         server.PRUNE_BATCH = 1
         try:
             named = await env.message(w.chat, w.talker, "named", hours_old=0.3)
             anon = await env.message(w.chat, w.talker, "hidden", hours_old=0.2, anonymous=True)
+            other_anon = await env.message(w.chat, w.viewer, "hidden too", hours_old=0.2, anonymous=True)
             named2 = await env.message(w.chat, w.talker, "named again", hours_old=0.1)
             socks = {}
             for who in ("viewer", "gmod", "talker", "owner"):
@@ -817,52 +823,21 @@ def test_anonymous_ids_stay_off_ordinary_frames():
                 await socks[who].join(w.chat)
             path = f"/api/chat/channels/{w.chat}/prune"
             st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", dry_run=True))
-            check("the dry run counts all three", r["count"] == 3, str(r))
-            st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", expected_count=3))
+            check("the dry run counts the two named posts only", r["count"] == 2, str(r))
+            st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", expected_count=2))
             await env.wait_prune(w.chat)
             await asyncio.sleep(0.3)
-
-            def got(who):
-                return [i for e in socks[who].events if e.get("type") == "messages_pruned" for i in e["ids"]]
-            check("all three messages are gone", not ({named, anon, named2} & await env.ids(w.chat)))
-            check("an ordinary viewer never receives the anonymous id", anon not in got("viewer"), str(got("viewer")))
-            check("... but does receive the named ones", sorted(got("viewer")) == sorted([named, named2]), str(got("viewer")))
-            check("the stream owner (not staff) does not get it either", anon not in got("owner"), str(got("owner")))
-            check("a global moderator gets every id", sorted(got("gmod")) == sorted([named, anon, named2]), str(got("gmod")))
-            check("the author gets every id", sorted(got("talker")) == sorted([named, anon, named2]), str(got("talker")))
+            left = await env.ids(w.chat)
+            check("the named posts are gone and every anonymous post is still in the history",
+                  not ({named, named2} & left) and {anon, other_anon} <= left, str(left))
+            for who in socks:
+                ids = [i for e in socks[who].events if e.get("type") == "messages_pruned" for i in e["ids"]]
+                check(f"{who}: the frames carry the named ids and no anonymous one",
+                      sorted(ids) == sorted([named, named2]), str(ids))
+            st, r = await env.call("GET", w.owner, path)
+            check("the stream owner's status shows the counts of the named posts", r.get("removed") == 2 and r.get("total") == 2, str(r))
         finally:
             server.PRUNE_BATCH = 200
-    run(body)
-
-
-def test_status_counts_do_not_reveal_anonymous_posts():
-    """The status route after an administrator's user-filtered prune that included anonymous posts: the
-    counts include them, so only staff and the one who started it get counts; a stream owner and a
-    stream mod get running and status only (3 posts removed, the frames showed 2). A prune that cannot
-    match anonymous posts still shows its counts to everybody who passes the gate."""
-    async def body(env):
-        w = await world(env)
-        await env.message(w.chat, w.talker, "named", hours_old=0.3)
-        await env.message(w.chat, w.talker, "hidden", hours_old=0.2, anonymous=True)
-        await env.message(w.chat, w.talker, "hidden too", hours_old=0.15, anonymous=True)
-        path = f"/api/chat/channels/{w.chat}/prune"
-        st, r = await env.call("POST", w.admin, path, json=body_for(user="talker", expected_count=3))
-        check("the administrator's prune starts", st == 202, f"{st} {r}")
-        await env.wait_prune(w.chat)
-        for who, label in ((w.owner, "the stream owner"), (w.smod, "a stream mod")):
-            st, r = await env.call("GET", who, path)
-            check(f"{label} gets running and status only", st == 200 and r == {"running": False, "status": "completed"}, str(r))
-        for who, label in ((w.admin, "the administrator who ran it"), (w.gmod, "a global moderator")):
-            st, r = await env.call("GET", who, path)
-            check(f"{label} gets the counts", st == 200 and r.get("removed") == 3 and r.get("total") == 3
-                  and "files" in r, str(r))
-        check("no internal field leaks", not [k for k in r if k.startswith("_")], str(r))
-        # a prune that is not matchable for anonymous posts shows its counts to the owner as before
-        await env.message(w.chat, w.talker, "plain", hours_old=0.1)
-        st, r = await env.call("POST", w.owner, path, json=body_for(user="talker", expected_count=1))
-        await env.wait_prune(w.chat)
-        st, r = await env.call("GET", w.smod, path)
-        check("an owner's own prune shows counts to a stream mod", r.get("removed") == 1 and r.get("total") == 1, str(r))
     run(body)
 
 

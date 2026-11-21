@@ -19511,10 +19511,6 @@ async def http_get_prune_status(request: web.Request) -> web.Response:
     if not st:
         return web.json_response({"running": False, "status": "none"})
     out = {k: v for k, v in st.items() if not k.startswith("_")}
-    # The counts of an administrator's user-filtered prune include that user's anonymous posts: only
-    # staff and the one who started it may see them (an owner or stream mod would learn how many)
-    if st.get("_anonymous_matchable") and role not in _CHAT_STAFF_ROLES and token.user_id != st.get("_actor_id"):
-        out = {"running": out.get("running"), "status": out.get("status")}
     return web.json_response(out)
 
 
@@ -19528,8 +19524,9 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
     run must echo that count as expected_count: it is refused with 409 when the live count differs by
     more than max(2, 2 percent of it). It then runs as a background task (202) in batches of
     PRUNE_BATCH, broadcasts one messages_pruned frame (ids only) per batch to the room and writes one
-    audit entry at the end. One prune per channel at a time (409). A user filter never matches the
-    anonymous messages of that user unless the caller is an administrator. The caller prunes only
+    audit entry at the end. One prune per channel at a time (409). A user filter never matches an
+    anonymous message, for anybody (the history afterwards would show whose they were); an
+    administrator removes those one at a time. The caller prunes only
     what a single delete would let them delete (_prune_protected): a stream mod ordinary members, the
     owner everybody but staff, staff everybody of a lower role; their own posts always. That rank rule
     covers named posts only: for every caller but an administrator an anonymous post is rankless, and
@@ -19597,39 +19594,15 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
         return web.json_response({"error": "The number of messages changed since the dry run; run it again",
                                   "count": live, "expected_count": expected,
                                   "margin": _prune_margin(expected)}, status=409)
-    state = {"running": True, "removed": 0, "total": live, "status": "running", "_actor_id": token.user_id,
-             "_anonymous_matchable": bool(user_id is not None and may_name_anonymous)}
+    state = {"running": True, "removed": 0, "total": live, "status": "running", "_actor_id": token.user_id}
     _prune_status[channel["id"]] = state
     task = asyncio.create_task(_run_prune(
         channel["id"], token.user_id, user["username"], level, where, params, state, {
             "from": start, "to": end, "user_id": None if user_id is None else (user_id if user_id > 0 else None),
-            "user": user_label, "skip_pinned": skip_pinned, "expected_count": expected,
-            "anonymous_matchable": bool(user_id is not None and may_name_anonymous)}))
+            "user": user_label, "skip_pinned": skip_pinned, "expected_count": expected}))
     _prune_tasks[channel["id"]] = task
     task.add_done_callback(lambda t, cid=channel["id"]: _prune_tasks.pop(cid, None) if _prune_tasks.get(cid) is t else None)
     return web.json_response({"started": True, "count": live}, status=202)
-
-
-async def _broadcast_pruned_hiding(channel: str, ids: list, anon_ids: set, subject_id: int) -> None:
-    """One messages_pruned frame per socket of the room: staff and the author (_viewer_sees_identity)
-    get every id; everybody else only the ids that are not anonymous posts of that author, and no frame
-    when nothing is left. Their clients drop the anonymous posts at the next load."""
-    named = [i for i in ids if i not in anon_ids]
-    dead = set()
-    for entry in list(chat_rooms.get(channel, ())):
-        ws = entry[0]
-        out = ids if _viewer_sees_identity(entry[1], entry[3] if len(entry) > 3 else None, subject_id) else named
-        if not out:
-            continue
-        try:
-            if not ws.closed:
-                await ws.send_json({"type": "messages_pruned", "channel": channel, "ids": out})
-            else:
-                dead.add(entry)
-        except (ConnectionError, ConnectionResetError, TypeError):
-            dead.add(entry)
-    if dead and channel in chat_rooms:
-        chat_rooms[channel] -= dead
 
 
 async def _run_prune(channel_id: int, actor_id: int, actor_name: str, level: int, where: str, params: tuple,
@@ -19641,23 +19614,15 @@ async def _run_prune(channel_id: int, actor_id: int, actor_name: str, level: int
     status = "completed"
     error = None
 
-    # A prune by one user that includes their anonymous posts (administrator only): the room must not
-    # watch those vanish together with that user's named posts, so only staff and the author hear of them
-    subject = rng["user_id"] if rng.get("anonymous_matchable") else None
-
-    async def on_batch(ids, anon_ids=()):
+    async def on_batch(ids):
         state["removed"] += len(ids)
         ch = await db.get_chat_channel(channel_id)
         if not ch:
             return
-        if subject is None or not anon_ids:
-            await broadcast_to_channel(ch["name"], {"type": "messages_pruned", "channel": ch["name"], "ids": ids})
-            return
-        await _broadcast_pruned_hiding(ch["name"], ids, set(anon_ids), subject)
+        await broadcast_to_channel(ch["name"], {"type": "messages_pruned", "channel": ch["name"], "ids": ids})
 
     try:
         await db.prune_chat_messages(where, params, stats, names, on_batch, batch_size=PRUNE_BATCH,
-                                     flag_anonymous=subject is not None,
                                      should_stop=lambda: bool(state.get("_stop")))
     except PurgeStopped:
         status = "interrupted"
@@ -19687,8 +19652,6 @@ async def _run_prune(channel_id: int, actor_id: int, actor_name: str, level: int
                    "user": rng["user"], "user_id": rng["user_id"], "skip_pinned": rng["skip_pinned"],
                    "expected_count": rng["expected_count"], "count": state["removed"], "status": status,
                    "files_removed": stats["files"]}
-        if rng.get("anonymous_matchable"):
-            details["anonymous_included"] = True
         if error:
             details["error"] = error
         await asyncio.shield(audit_log(

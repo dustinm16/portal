@@ -225,10 +225,10 @@
     // Fixed text for everybody who can open the dialog: it says what the rules are, never what the data
     // holds, so it reveals nothing about any anonymous post (no count, no author, no rank).
     var PRUNE_ANON_NOTE = 'Anonymous posts: for a moderator or a stream owner, a range prune removes the ' +
-        'anonymous posts in the range along with the others, and a user filter never matches them. For an ' +
-        'administrator, a range prune with no user filter leaves every anonymous post in place whenever the ' +
-        'rank rules exclude any author (for example another administrator exists); name the user to ' +
-        'remove that user\'s anonymous posts.';
+        'anonymous posts in the range along with the others. For an administrator, a range prune with no ' +
+        'user filter leaves every anonymous post in place whenever the rank rules exclude any author ' +
+        '(for example another administrator exists). A user filter never matches an anonymous post, for ' +
+        'anybody; anonymous posts are removed one at a time.';
     function openPrune() {
         if (!cur) return;
         var chan = cur;
