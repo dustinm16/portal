@@ -1878,6 +1878,26 @@ Read older messages of a channel, or a window around one message (for a link to 
 
 **Errors:** `400` (bad parameter), `401` (not authenticated), `404 {"error": "Channel not found"}` for a channel the caller cannot read (private and not a member, banned from the stream chat, removed member, the chat of a stream that is not public and the caller is neither owner nor admin) and for one that does not exist, `429` with `Retry-After` when the caller made more than 30 history requests in a minute (this budget is shared with the WebSocket `history_page` message and all of the caller's sockets).
 
+
+#### GET /api/chat/channels/:id/notify
+
+The caller's own notification choice for one channel they may read (added in 1.19.0). Nobody can read another member's choice.
+
+```json
+{"channel_id": 3, "notify_level": null, "muted_until": 0}
+```
+
+- `notify_level` is `"all"`, `"mentions"`, `"none"` or `null` (no choice made: the default, which gives a live unread badge and nothing else).
+- `muted_until` is the end of a timed mute in epoch seconds, `0` when not muted (an ended mute reads as `0`).
+- **Errors:** `401`; `404 {"error": "Channel not found"}` for a channel that does not exist and, byte for byte the same, for one the caller may not read (private and not a member, banned from the stream chat, the chat of a stream that is not public and the caller is neither its owner nor an admin).
+
+#### PUT /api/chat/channels/:id/notify
+
+Sets the caller's level and/or timed mute for a channel they may read. Body: `{"level": "all" | "mentions" | "none" | "default", "mute_hours": 0 | 1 | 8 | 24}`; send either key or both, a missing key keeps its value. `"default"` removes the choice; `mute_hours: 0` ends a mute. The answer is the new state in the shape of the GET route. The server keeps the choice in memory for every member with an open chat socket and replaces it on this write, so it applies to the next message.
+
+- Level `all`: badge, and the chat page plays a sound and shows a desktop alert. `mentions`: only an @mention counts. `none`: nothing, an @mention does not notify either. An active mute stops the badge and the ordinary signal; an @mention still notifies (unless the level is `none`).
+- **Errors:** `400` (neither key, a level or an hour count that is not in the lists above), `401`, `404` as above. `GET /api/chat/channels` also carries `notify_level` and `muted_until` on every channel.
+
 ---
 
 ### Direct Messages
@@ -2511,6 +2531,7 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 - `pin_message` / `unpin_message`: Moderator/admin only. Pin or unpin a message in the current channel.
 - `mark_read`: Update the user's read position for unread tracking.
 - `history_page`: Read more of the channel this socket joined (the channel is never taken from the request). `before_id` asks for the page older than that message, `around_id` for a window around a message, neither for the newest page again (used by "Jump to present"). `limit` defaults to 50 and is capped at 100; an id outside 1 to 9223372036854775807 is a `history_error` with `invalid` and the socket stays open; `req` (a number or short string, optional) is echoed in the reply so a client can drop replies it no longer wants. The access check runs on every request, so a member removed from a private channel, or banned from the stream chat, gets `history_error` with `not_found` even on a socket that joined earlier. At most 30 requests per minute per member over all sockets (and the HTTP route): then `history_error` with `rate_limited` and `retry_after` seconds. Never marks anything as read.
+- `channel_activity` (server to client, 1.19.0): an ephemeral signal that a channel has a new message, so a page can raise the unread badge of a channel it has not joined. The frame holds the channel id and nothing else: no text, no author, no flag. It goes to the sockets of online members who are not in that channel's room (not to the sender, not to a member who is in the room), and only to a member who may read the channel (the same check as join and history), so a private channel's or a non-public stream chat's signal never reaches anyone else. A member whose level for the channel is `mentions` or `none`, or whose timed mute is running, gets none (an @mention reaches them as a notification). Direct messages do not use it (`dm_unread_update`). Nothing is stored. `message` frames of a channel also carry `channel` (name) and `channel_id` now, so a client can tell which room a frame is from while it switches.
 - **Access is checked again on every action.** `message`, `edit_message`, `react`, `create_poll`, `vote_poll`, `close_poll`, `delete`, `pin_message`, `unpin_message`, `timeout_user`, `mute_user`, `unmute_user` and `history_page` are refused with the error of a missing channel (`Channel not found`, or the stream-ban or private-channel text) when the socket's channel has been closed to the member since it joined: the stream was made private, the member was banned from its chat or removed from the private channel. A `voice_join` into the channel's voice room gets `voice_denied` with that text instead (so the client ends the join it started), and a `voice_join` with `resume` for a room the member can no longer read gets `voice_resume_failed` and the held call is dropped. `typing` is dropped without an answer. A `join` that is refused (same checks) answers with an `error` frame that carries the same `channel` field (the channel's name; for a join by `channel` name of a channel that does not exist, the name asked for; absent for a join by id or stream key that finds nothing) and leaves the socket in no channel, so its next `message`, `react`, `create_poll` or `history_page` is dropped or answered as above; the client must send a successful `join` first.
 - **Sockets are put out when access is lost.** When the stream is made not public, a member is removed from a private channel (`DELETE /api/chat/channels/{id}/members/{user_id}`, by a moderator or by the member), a member is banned from a stream's chat (the `ban` message or `POST /api/streams/{id}/bans`) or a channel is made private, every socket in that channel's room whose member can no longer read it is removed from the room at once. It receives one `{"type": "error", "message": "Channel not found", "channel": "<name>"}` frame (`channel` is the name of the room it was put out of, so a page showing another channel ignores it) and nothing more from the room (no messages, edits, reactions, typing or user lists), its voice call in that room ends (`voice_denied`, then `voice_user_left` for the others), and it has no current channel until it sends a successful `join`. The others in the room get `user_left` and a new `users` list.
 
@@ -2522,6 +2543,7 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 {"type": "history_around", "req": 8, "channel_id": 3, "messages": [...], "has_more": true, "has_newer": true, "found": true}
 {"type": "history_error", "req": 7, "error_code": "rate_limited", "message": "Too many history requests, try again shortly", "retry_after": 12}
 {"type": "users", "users": [{"user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {...}}]}
+{"type": "channel_activity", "channel_id": 3}
 {"type": "message", "id": 43, "user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {"color": "#3b82f6", "emoji": "🚀"}, "message": "Reply!", "reply_to": 42, "reply_preview": {"id": 42, "username": "alice", "message": "Hello!"}}
 {"type": "user_joined", "username": "newuser", "role": "user", "anonymous": false}
 {"type": "user_left", "username": "newuser"}

@@ -5783,7 +5783,7 @@ def _spawn_go_live(stream_id: int) -> asyncio.Task:
 async def _cancel_golive_tasks() -> None:
     """Stop the go-live announcements still running and wait for them, so none of their
     inserts runs against a database that is closing. Never raises."""
-    tasks = [t for t in list(_golive_tasks) if not t.done()]
+    tasks = [t for t in list(_golive_tasks) + list(_activity_tasks) if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:
@@ -5852,7 +5852,9 @@ async def _post_go_live_card(stream: dict, payload: dict, channel: dict) -> Opti
         "message": _go_live_card_text(payload), "message_type": "stream_card",
         "card": card,
         "role": "user", "anonymous": False, "avatar": {}, "reactions": [],
+        "channel": channel["name"], "channel_id": channel["id"],
         "created_at": datetime.now(timezone.utc).isoformat()})
+    _spawn_channel_activity(channel, stream["user_id"])
     return msg_id
 
 
@@ -9529,8 +9531,11 @@ async def http_incoming_webhook(request: web.Request) -> web.Response:
         "username": f"[hook] {display_name}",
         "message": content,
         "webhook": True,
+        "channel": channel["name"],
+        "channel_id": channel_id,
         "created_at": datetime.now(timezone.utc).isoformat()
     })
+    _spawn_channel_activity(channel)
 
     asyncio.create_task(fire_webhook_event("message.created", {
         "message_id": msg_id,
@@ -18062,8 +18067,10 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
             ch["stream_owner"] = stream.get("owner_nickname") or stream.get("owner_username", "")
     # Enrich with unread counts
     unread_counts = await db.get_unread_counts(token.user_id)
+    notify_prefs = await _notify_prefs_for(token.user_id)
     for ch in channels:
         ch["unread_count"] = unread_counts.get(ch["id"], 0)
+        ch.update(_notify_pref_public(notify_prefs.get(ch["id"])))
     return web.json_response({"channels": channels})
 
 
@@ -19394,6 +19401,7 @@ async def _evict_unreadable_sockets(channel) -> int:
     """
     if not channel:
         return 0
+    _forget_activity_verdicts(channel["id"])
     name = channel["name"]
     evicted = []
     try:
@@ -19447,6 +19455,248 @@ async def _evict_unreadable_by_id(channel_id) -> int:
     except Exception as e:
         logger.warning(f"[Chat] Could not re-check access to channel {channel_id}: {e}")
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Per-channel notification levels and the channel_activity signal
+#
+# A member picks, per channel they may read, a level (all, mentions, none) and an optional
+# timed mute (table channel_notify_prefs; no row = the default, which behaves like "all" for
+# the live badge). The choice is held in memory for every member with an open chat socket
+# (loaded when the first socket opens, replaced on every write, dropped when the last socket
+# closes), so the message path never reads the database for it.
+#
+# channel_activity is an ephemeral frame {type, channel_id} and nothing else (no text, no
+# author). It goes to the sockets of online members who are not joined to that room. For a
+# private channel or a stream chat only to members _can_read_channel allows; that verdict is
+# remembered per channel for a few seconds (_ACTIVITY_VERDICT_TTL) and forgotten in
+# _evict_unreadable_sockets, which every access-loss path runs. A warm channel therefore costs
+# no database read per member; the first message after a cold start (or after a loss of
+# access) asks _can_read_channel once per member.
+# ---------------------------------------------------------------------------
+
+NOTIFY_LEVELS = ("all", "mentions", "none")
+NOTIFY_MUTE_HOURS = (0, 1, 8, 24)
+_notify_clock = time                       # injectable in tests
+_ACTIVITY_VERDICT_TTL = 60.0
+_notify_prefs_cache: dict[int, dict[int, tuple[str, int]]] = {}
+_notify_prefs_gen: dict[int, int] = {}
+_chat_sockets: dict = {}                   # chat socket -> (user_id, role), for open chat sockets only
+_activity_verdicts: dict[int, dict] = {}   # channel id -> {(user_id, role): (allowed, expiry)}
+_activity_gen: dict[int, int] = {}         # channel id -> bumped when access was lost
+_activity_tasks: set = set()
+
+
+def _notify_quiet(prefs: dict, channel_id: int, now: float = None) -> bool:
+    """True when ordinary (not mention) activity in this channel is not wanted: level mentions
+    or none, or a mute that has not ended."""
+    level, muted_until = prefs.get(channel_id, ("default", 0))
+    if level in ("none", "mentions"):
+        return True
+    return bool(muted_until) and muted_until > (_notify_clock() if now is None else now)
+
+
+async def _notify_prefs_load(user_id: int) -> None:
+    """Load one member's choices into the cache. A write that lands while the read is in
+    flight bumps the generation and the read is repeated, so a stale copy is never stored."""
+    for _ in range(3):
+        gen = _notify_prefs_gen.get(user_id, 0)
+        prefs = await db.get_notify_prefs(user_id)
+        if _notify_prefs_gen.get(user_id, 0) == gen:
+            _notify_prefs_cache[user_id] = prefs
+            return
+    _notify_prefs_cache[user_id] = await db.get_notify_prefs(user_id)
+
+
+async def _notify_prefs_for(user_id: int) -> dict:
+    """A member's choices: the cache when they are online, else one read (not cached)."""
+    cached = _notify_prefs_cache.get(user_id)
+    if cached is not None:
+        return cached
+    try:
+        return await db.get_notify_prefs(user_id)
+    except Exception as e:
+        logger.warning(f"[Chat] Could not read notification levels of user {user_id}: {e}")
+        return {}
+
+
+def _notify_prefs_replace(user_id: int, channel_id: int, entry) -> None:
+    """Write-through: the cached copy of an online member changes with the write."""
+    _notify_prefs_gen[user_id] = _notify_prefs_gen.get(user_id, 0) + 1
+    cached = _notify_prefs_cache.get(user_id)
+    if cached is not None:
+        if entry is None:
+            cached.pop(channel_id, None)
+        else:
+            cached[channel_id] = entry
+
+
+def _chat_socket_open(ws, user_id: int, role: str) -> None:
+    _chat_sockets[ws] = (user_id, role)
+
+
+def _chat_socket_close(ws, user_id: int) -> None:
+    _chat_sockets.pop(ws, None)
+    if not any(uid == user_id for uid, _ in _chat_sockets.values()):
+        _notify_prefs_cache.pop(user_id, None)
+        _notify_prefs_gen.pop(user_id, None)
+
+
+def _forget_activity_verdicts(channel_id) -> None:
+    if channel_id is not None:
+        _activity_verdicts.pop(channel_id, None)
+        _activity_gen[channel_id] = _activity_gen.get(channel_id, 0) + 1
+
+
+async def _activity_may_read(channel, stream, user_id: int, role: str) -> bool:
+    """_can_read_channel for the activity signal, remembered briefly per channel and member."""
+    cid = channel["id"]
+    now = monotonic()
+    hit = _activity_verdicts.get(cid, {}).get((user_id, role))
+    if hit and hit[1] > now:
+        return hit[0]
+    gen = _activity_gen.get(cid, 0)
+    try:
+        allowed = bool(await _can_read_channel(channel, user_id, role, stream))
+    except Exception as e:
+        logger.warning(f"[Chat] Activity access check failed for channel {cid}: {e}")
+        return False
+    if _activity_gen.get(cid, 0) == gen:
+        memo = _activity_verdicts.setdefault(cid, {})
+        if len(memo) > 1000:    # entries are only replaced when asked again: drop the ended ones
+            for k in [k for k, v in memo.items() if v[1] <= now]:
+                memo.pop(k, None)
+        memo[(user_id, role)] = (allowed, now + _ACTIVITY_VERDICT_TTL)
+    return allowed
+
+
+async def _send_activity(ws, payload: dict) -> None:
+    try:
+        if not ws.closed:
+            await asyncio.wait_for(ws.send_json(payload), 2)
+    except Exception:
+        pass
+
+
+async def _signal_channel_activity(channel, sender_id=None) -> int:
+    """Tell online members who are not joined to this channel's room that it has news.
+
+    The frame holds the channel id only. A member whose choice is level none or an active
+    mute gets nothing (a mention reaches them as a notification instead). A private channel
+    or a stream chat goes only to members _can_read_channel allows. Never raises; returns
+    the number of sockets written to."""
+    try:
+        if not channel or not _chat_sockets:
+            return 0
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+        restricted = channel.get("visibility", "public") == "private" or bool(stream)
+        joined = {entry[1] for entry in chat_rooms.get(channel["name"], ())}
+        now = _notify_clock()
+        payload = {"type": "channel_activity", "channel_id": channel["id"]}
+        decided: dict = {}
+        targets = []
+        for ws, (uid, role) in list(_chat_sockets.items()):
+            if uid == sender_id or uid in joined:
+                continue
+            key = (uid, role)
+            if key not in decided:
+                ok = not _notify_quiet(_notify_prefs_cache.get(uid) or {}, channel["id"], now)
+                if ok and restricted:
+                    ok = await _activity_may_read(channel, stream, uid, role)
+                decided[key] = ok
+            if decided[key]:
+                targets.append(ws)
+        if targets:
+            await asyncio.gather(*(_send_activity(ws, payload) for ws in targets))
+        return len(targets)
+    except Exception as e:
+        logger.warning(f"[Chat] Channel activity signal failed: {e}")
+        return 0
+
+
+def _spawn_channel_activity(channel, sender_id=None) -> None:
+    """Run _signal_channel_activity off the message path."""
+    if not channel or not _chat_sockets:
+        return
+    task = asyncio.create_task(_signal_channel_activity(channel, sender_id))
+    _activity_tasks.add(task)
+    task.add_done_callback(_activity_tasks.discard)
+
+
+def _notify_pref_public(entry) -> dict:
+    """The shape the routes and the channel list show: level (null = default) and the mute end."""
+    if entry is None:
+        return {"notify_level": None, "muted_until": 0}
+    level, muted_until = entry
+    level = level if level in NOTIFY_LEVELS else None
+    return {"notify_level": level, "muted_until": muted_until if muted_until > _notify_clock() else 0}
+
+
+async def _notify_route_channel(request):
+    """(token, channel, None) for a caller who may read the channel; otherwise (token, None,
+    response): the same 401 as everywhere, and one 404 for a missing and an unreadable channel."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, None, unauthorized_response(request)
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return token, None, web.json_response({"error": "Channel not found"}, status=404)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    channel = await db.get_chat_channel(channel_id)
+    if not await _can_read_channel(channel, token.user_id, role):
+        return token, None, web.json_response({"error": "Channel not found"}, status=404)
+    return token, channel, None
+
+
+async def http_get_channel_notify(request: web.Request) -> web.Response:
+    """The caller's own notification choice for one channel they may read."""
+    token, channel, refused = await _notify_route_channel(request)
+    if refused is not None:
+        return refused
+    prefs = await _notify_prefs_for(token.user_id)
+    return web.json_response({"channel_id": channel["id"], **_notify_pref_public(prefs.get(channel["id"]))})
+
+
+async def http_put_channel_notify(request: web.Request) -> web.Response:
+    """Set the caller's own level and/or timed mute for one channel they may read.
+
+    Body: {"level": "all"|"mentions"|"none"|"default", "mute_hours": 0|1|8|24}; either key
+    may be left out (the other part keeps its value). "default" removes the row; mute_hours 0
+    ends a mute."""
+    token, channel, refused = await _notify_route_channel(request)
+    if refused is not None:
+        return refused
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(body, dict) or not ({"level", "mute_hours"} & set(body)):
+        return web.json_response({"error": "Send level and/or mute_hours"}, status=400)
+    level = body.get("level")
+    if "level" in body and level not in NOTIFY_LEVELS + ("default",):
+        return web.json_response({"error": "level must be all, mentions, none or default"}, status=400)
+    hours = body.get("mute_hours")
+    if "mute_hours" in body and (isinstance(hours, bool) or hours not in NOTIFY_MUTE_HOURS):
+        return web.json_response({"error": "mute_hours must be 0, 1, 8 or 24"}, status=400)
+    uid, cid = token.user_id, channel["id"]
+    current = (await _notify_prefs_for(uid)).get(cid)
+    new_level = current[0] if current and current[0] in NOTIFY_LEVELS else None
+    muted_until = current[1] if current else 0
+    if "level" in body:
+        new_level = None if level == "default" else level
+    if "mute_hours" in body:
+        muted_until = int(_notify_clock() + hours * 3600) if hours else 0
+    if new_level is None and not muted_until:
+        await db.delete_notify_pref(uid, cid)
+        entry = None
+    else:
+        # "default" is stored only for a timed mute on a channel with no chosen level
+        entry = (new_level or "default", muted_until)
+        await db.set_notify_pref(uid, cid, entry[0], entry[1])
+    _notify_prefs_replace(uid, cid, entry)
+    return web.json_response({"channel_id": cid, **_notify_pref_public(entry)})
 
 
 async def _broadcast_stream_info(stream: dict) -> int:
@@ -20543,11 +20793,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             await raw_ws.close(code=1013, message=b"too many connections")
             return raw_ws
         _register_user_ws(user_id, raw_ws, token.token_id)
+        _chat_socket_open(user_entry[0], user_id, user_role)
         # Authentication and the upgrade awaited before this point; a revocation in that
         # window did not see this socket, so check the credential once it is registered.
         if not await _credential_still_valid(token):
             await raw_ws.close(code=4001, message=b"session revoked")
             return raw_ws
+        try:
+            await _notify_prefs_load(user_id)
+        except Exception as e:
+            logger.warning(f"[Chat] Could not load notification levels of user {user_id}: {e}")
 
         # Send DM conversations list on connect
         try:
@@ -20924,6 +21179,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "anonymous": my_state["anonymous"],
                             "avatar": my_state["avatar"] if not my_state["anonymous"] else {},
                             "message": message_text,
+                            "channel": channel["name"],
+                            "channel_id": channel["id"],
                             "created_at": datetime.now(timezone.utc).isoformat()
                         }
                         if reply_to_id and reply_preview:
@@ -20967,6 +21224,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         m_role = m_user.get("role") or ("superadmin" if m_user.get("is_admin") else "user")
                                         if not await _can_read_channel(channel, mid, m_role):
                                             continue
+                                        # level none turns mentions off too; a mute or level mentions does not
+                                        if (await _notify_prefs_for(mid)).get(channel["id"], ("default", 0))[0] == "none":
+                                            continue
                                         await send_notification(
                                             mid, "mention",
                                             f"{display_name} mentioned you in #{current_channel}",
@@ -20975,6 +21235,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         )
                             except Exception as e:
                                 logger.error(f"Mention notification error: {e}")
+                        # Members not in this room: a badge signal (no text, no author)
+                        _spawn_channel_activity(channel, user_id)
 
                     elif msg_type == "typing":
                         now_typing = monotonic()
@@ -22382,6 +22644,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         # Clean up global connection tracking
         active_connections.discard(raw_ws)
         _unregister_user_ws(user_id, raw_ws)
+        _chat_socket_close(user_entry[0], user_id)
         traffic_metrics.end_connection(chat_conn_id)
         count = _online_users.get(user_id, 1) - 1
         if count <= 0:
@@ -25565,6 +25828,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/chat/link-preview", http_link_preview)
     app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
     app.router.add_get("/api/chat/channels/{id}/messages", http_get_channel_messages)
+    app.router.add_get("/api/chat/channels/{id}/notify", http_get_channel_notify)
+    app.router.add_put("/api/chat/channels/{id}/notify", http_put_channel_notify)
 
     # Custom Emotes
     app.router.add_get("/api/emotes", http_list_emotes)

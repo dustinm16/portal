@@ -680,6 +680,17 @@ MIGRATIONS = [
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_stream_follow_stream ON stream_follow(stream_id)",
+    # Per-channel notification choice of one member (private to them): level all, mentions
+    # or none, and an optional end of a timed mute (epoch seconds). No row means the default.
+    """CREATE TABLE IF NOT EXISTS channel_notify_prefs (
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        level TEXT NOT NULL DEFAULT 'all',
+        muted_until INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, channel_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
+    )""",
     # The go-live card posted into a chat channel: which message, for which stream, and what
     # it shows. The message text is the plain-text fallback; this row lets history rebuild
     # the card and lets the card be removed when the stream becomes private or is deleted.
@@ -2496,6 +2507,8 @@ class Database:
             ("stream_bans", "DELETE FROM stream_bans WHERE user_id = ?"),
             # Stream follows
             ("stream_follow", "DELETE FROM stream_follow WHERE user_id = ?"),
+            # Notification levels per channel
+            ("channel_notify_prefs", "DELETE FROM channel_notify_prefs WHERE user_id = ?"),
             # Recordings
             ("recordings", "DELETE FROM recordings WHERE user_id = ?"),
             # SSH keys
@@ -6591,6 +6604,30 @@ class Database:
                    updated_at = CURRENT_TIMESTAMP""",
             (user_id, channel_id, message_id)
         )
+        await self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # Per-channel notification levels (a member's own rows only)
+    # ------------------------------------------------------------------
+
+    async def get_notify_prefs(self, user_id: int) -> dict[int, tuple[str, int]]:
+        """channel_id -> (level, muted_until epoch seconds) of one member."""
+        cursor = await self.conn.execute(
+            "SELECT channel_id, level, muted_until FROM channel_notify_prefs WHERE user_id = ?", (user_id,))
+        return {r["channel_id"]: (r["level"], int(r["muted_until"] or 0)) for r in await cursor.fetchall()}
+
+    async def set_notify_pref(self, user_id: int, channel_id: int, level: str, muted_until: int) -> None:
+        await self.conn.execute(
+            """INSERT INTO channel_notify_prefs (user_id, channel_id, level, muted_until)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id, channel_id) DO UPDATE SET level = excluded.level,
+                                                              muted_until = excluded.muted_until""",
+            (user_id, channel_id, level, int(muted_until)))
+        await self.conn.commit()
+
+    async def delete_notify_pref(self, user_id: int, channel_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM channel_notify_prefs WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
         await self.conn.commit()
 
     async def get_unread_counts(self, user_id: int) -> dict[int, int]:

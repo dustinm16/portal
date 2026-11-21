@@ -80,6 +80,23 @@
         .channel-item:hover .ch-notif-bell { opacity: 0.5; }
         .ch-notif-bell:hover { opacity: 1 !important; color: var(--text-primary); }
         .ch-notif-bell.active { opacity: 1; color: var(--accent-blue, #60a5fa); }
+        .ch-notif-bell.muted { opacity: 1; color: var(--text-muted); text-decoration: line-through; }
+        .notify-menu {
+            position: fixed; z-index: 10000; min-width: 220px; padding: 4px;
+            background: var(--bg-secondary, #1f2430); color: var(--text-primary, #e6e6e6);
+            border: 1px solid var(--border-color, rgba(255,255,255,0.15)); border-radius: 6px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.4); display: flex; flex-direction: column; gap: 2px;
+        }
+        .notify-menu-item {
+            background: none; border: none; color: inherit; text-align: left; cursor: pointer;
+            padding: 6px 10px; border-radius: 4px; font: inherit; font-size: 0.85rem;
+        }
+        .notify-menu-item:hover, .notify-menu-item:focus { background: rgba(255,255,255,0.08); }
+        .notify-menu-item.current { color: var(--accent-blue, #60a5fa); }
+        .notify-menu-sep { height: 1px; background: var(--border-color, rgba(255,255,255,0.12)); margin: 3px 0; }
+        .notify-menu-note { color: var(--text-muted, #9aa); font-size: 0.75rem; padding: 4px 10px; }
+        .sound-settings { padding: 8px; gap: 8px; }
+        .sound-row { display: block; font-size: 0.85rem; }
 
         .channel-item:hover {
             background: rgba(255,255,255,0.07);
@@ -2850,6 +2867,9 @@
                 <button class="btn btn-secondary btn-sm" onclick="showCreateChannelModal()" style="width: 100%;">
                     + New Channel
                 </button>
+                <button class="btn btn-secondary btn-sm" onclick="toggleSoundSettings(event)" style="width: 100%; margin-top: 0.4rem;" aria-haspopup="true">
+                    Sound and quiet hours
+                </button>
             </div>
             <h3 class="dm-section-header" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
                 Direct Messages
@@ -3207,8 +3227,9 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=45"></script>
+    <script src="/static/js/portal.js?v=46"></script>
     <script src="/static/js/voice.js?v=13"></script>
+    <script src="/static/js/chat-notify.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3253,15 +3274,13 @@
         let pendingJoin = null; // channel name of the join sent and not yet answered
         let channelUnavailable = false; // the open channel was lost (access removed): no sending until another is chosen
 
-        // Per-channel/stream desktop notification subscriptions (localStorage)
-        let _subscribedChannels = new Set(JSON.parse(localStorage.getItem('portal_notif_channels') || '[]'));
+        // Per-channel notification choices (level, mute) live on the server and come with the
+        // channel list (notify_level, muted_until); the old localStorage star is moved once
+        // (ChatNotify.migrateStars). Streams are followed on the server too.
         // Streams are followed on the server (the member's own list), not in localStorage:
         // a follow also brings the in-app go-live notification, on any device.
         let _followedStreams = new Set();
         try { localStorage.removeItem('portal_notif_streams'); } catch (e) { /* ignore */ }
-        function _saveNotifSubscriptions() {
-            localStorage.setItem('portal_notif_channels', JSON.stringify([..._subscribedChannels]));
-        }
         async function loadFollowedStreams() {
             try {
                 const res = await fetch('/api/me/follows', { credentials: 'include' });
@@ -3300,40 +3319,218 @@
             renderChannels(channelsList);
         }
         function toggleChannelNotif(channelName, isStream, e) {
-            if (isStream) return toggleStreamFollow(channelName, e);
             if (e) e.stopPropagation();
-            if (!('Notification' in window)) {
-                Portal.toast('Desktop notifications not supported in this browser', 'error');
-                return;
-            }
-            if (Notification.permission === 'denied') {
-                Portal.toast('Notifications blocked — enable them in your browser settings', 'error');
-                return;
-            }
-            const doToggle = () => {
-                if (_subscribedChannels.has(channelName)) { _subscribedChannels.delete(channelName); Portal.toast('Message alerts off for #' + channelName, 'info'); }
-                else { _subscribedChannels.add(channelName); Portal.toast('Will alert on new messages in #' + channelName, 'success'); }
-                _saveNotifSubscriptions();
-                renderChannels(channelsList);
-            };
-            if (Notification.permission === 'granted') { doToggle(); return; }
-            Notification.requestPermission().then(r => { if (r === 'granted') doToggle(); else Portal.toast('Desktop alerts blocked', 'error'); });
+            if (isStream) return toggleStreamFollow(channelName, e);
         }
-        function _sendChannelDesktopNotification(data) {
-            if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
-            if (!document.hidden && document.hasFocus()) return;
-            const name = data.username || 'Someone';
-            const text = data.message || (data.image_url ? '[image]' : '[attachment]');
-            try {
-                const n = new Notification(`#${currentChannel} — ${name}`, {
-                    body: text.length > 120 ? text.slice(0, 120) + '…' : text,
-                    icon: '/favicon.ico',
-                    tag: 'portal-channel-' + currentChannel,
-                    silent: false
+
+        // ---- Per-channel notification level and mute (the bell menu) ----
+        let _notifyMenu = null;
+        function closeNotifyMenu() {
+            if (_notifyMenu) { _notifyMenu.remove(); _notifyMenu = null; }
+        }
+        function openNotifyMenu(channelId, e) {
+            if (e) { e.stopPropagation(); e.preventDefault(); }
+            closeNotifyMenu();
+            const ch = channelsList.find(c => Number(c.id) === Number(channelId));
+            if (!ch) return;
+            const muted = ChatNotify.isMuted(ch);
+            const items = [
+                ['level', 'all', 'All messages (badge, sound, alert)'],
+                ['level', 'mentions', 'Mentions only'],
+                ['level', 'none', 'Nothing'],
+                ['level', 'default', 'Default (badge only)'],
+                ['sep'],
+                ['mute', 1, 'Mute for 1 hour'],
+                ['mute', 8, 'Mute for 8 hours'],
+                ['mute', 24, 'Mute for 24 hours']
+            ];
+            if (muted) items.push(['mute', 0, 'Unmute']);
+            const menu = document.createElement('div');
+            menu.className = 'notify-menu';
+            menu.setAttribute('role', 'menu');
+            items.forEach(it => {
+                if (it[0] === 'sep') { const hr = document.createElement('div'); hr.className = 'notify-menu-sep'; menu.appendChild(hr); return; }
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.setAttribute('role', 'menuitem');
+                const current = it[0] === 'level' && ((it[1] === 'default' && !ch.notify_level) || it[1] === ch.notify_level);
+                b.className = 'notify-menu-item' + (current ? ' current' : '');
+                b.textContent = (current ? '\u2713 ' : '') + it[2];
+                b.addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    closeNotifyMenu();
+                    setChannelNotify(ch.id, it[0] === 'level' ? { level: it[1] } : { mute_hours: it[1] });
                 });
+                menu.appendChild(b);
+            });
+            if (muted) {
+                const note = document.createElement('div');
+                note.className = 'notify-menu-note';
+                note.textContent = 'Muted until ' + new Date(ch.muted_until * 1000).toLocaleString();
+                menu.insertBefore(note, menu.firstChild);
+            }
+            document.body.appendChild(menu);
+            const r = e && e.currentTarget && e.currentTarget.getBoundingClientRect ? e.currentTarget.getBoundingClientRect() : { left: 20, bottom: 60 };
+            menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 4)) + 'px';
+            menu.style.top = Math.max(4, Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 4)) + 'px';
+            _notifyMenu = menu;
+        }
+        document.addEventListener('click', closeNotifyMenu);
+        document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeNotifyMenu(); });
+
+        async function putChannelNotify(channelId, body) {
+            try {
+                const res = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/notify`, {
+                    method: 'PUT', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+                });
+                if (!res.ok) return null;
+                return await res.json();
+            } catch (err) { return null; }
+        }
+        async function setChannelNotify(channelId, body) {
+            const ch = channelsList.find(c => Number(c.id) === Number(channelId));
+            const got = await putChannelNotify(channelId, body);
+            if (!got) { Portal.toast('Could not save the notification setting', 'error'); return; }
+            if (ch) {
+                ch.notify_level = got.notify_level;
+                ch.muted_until = got.muted_until;
+                if (ChatNotify.badgeMode(ch) !== 'all') unreadCounts.delete(ch.name);
+                renderChannels(channelsList);
+                Portal.toast(notifySummary(ch, true), 'info');
+            }
+        }
+        function notifySummary(ch, withName) {
+            const who = withName ? '#' + ch.name + ': ' : '';
+            if (ChatNotify.isMuted(ch)) return who + 'muted until ' + new Date(ch.muted_until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return who + ({ all: 'all messages', mentions: 'mentions only', none: 'nothing' }[ch.notify_level] || 'default');
+        }
+
+        // What an alert (sound and desktop) does for a message that is not in the room on screen
+        function _playChatSound() {
+            ChatNotify.playSound({ storage: localStorage, navigator: navigator, window: window, now: Date.now, date: new Date() });
+        }
+        function _showChannelAlert(alert, ch) {
+            if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
+            try {
+                const n = new Notification(alert.title, {
+                    body: alert.body, icon: '/favicon.ico', tag: alert.tag, silent: true
+                });
+                n.onclick = () => { window.focus(); n.close(); if (alert.channel) switchChannel(alert.channel); };
                 setTimeout(() => n.close(), 8000);
             } catch (e) { /* ignore */ }
         }
+        function _pageInView() { return !document.hidden && document.hasFocus(); }
+        // A message frame (the room this socket is in); data.channel names its room
+        function onChannelMessageFrame(data) {
+            const frameChannel = data.channel || currentChannel;
+            const own = data.user_id != null && data.user_id === currentUser?.id;
+            const ch = channelsList.find(c => c.name === frameChannel);
+            if (pendingJoin && frameChannel !== currentChannel) {
+                // A frame of the room the socket is still in while a switch is on its way
+                // (pendingJoin is set until the new room's channel_info): it is not for the
+                // channel on screen. Outside that window every frame is shown as before, so a
+                // rename or a difference in spelling cannot hide messages.
+                if (!own) bumpChannelUnread(ch, false);
+            } else {
+                appendLiveMessage(data);
+            }
+            if (own || !ch) return;
+            const onScreen = frameChannel === currentChannel && currentView === 'channel' && _pageInView();
+            if (onScreen || !ChatNotify.alertWanted(ch, false)) return;
+            _playChatSound();
+            const alert = ChatNotify.channelAlert(data, channelsList);
+            if (alert && !_pageInView()) _showChannelAlert(alert, ch);
+        }
+        function bumpChannelUnread(ch, isMention) {
+            if (!ch) return;
+            const mode = ChatNotify.badgeMode(ch);
+            if (mode === 'all' && !isMention) {
+                unreadCounts.set(ch.name, (unreadCounts.get(ch.name) || 0) + 1);
+            } else if (mode === 'mentions' && isMention) {
+                unreadMentions.set(ch.name, (unreadMentions.get(ch.name) || 0) + 1);
+            } else {
+                return;
+            }
+            renderChannels(channelsList);
+        }
+        // channel_activity: {channel_id} only. The channel is looked up by id; an unknown id
+        // (a new or newly opened channel) refreshes the list.
+        function onChannelActivity(data) {
+            const ch = channelsList.find(c => Number(c.id) === Number(data.channel_id));
+            if (!ch) { reconcileChannels(); return; }
+            if (ch.name === currentChannel && currentView === 'channel') return;
+            bumpChannelUnread(ch, false);
+            if (ChatNotify.alertWanted(ch, false)) {
+                _playChatSound();
+                if (!_pageInView()) {
+                    _showChannelAlert({ channel: ch.name, title: '#' + ch.name, body: 'New messages',
+                                        tag: 'portal-channel-' + ch.id }, ch);
+                }
+            }
+        }
+        // A mention notification (the in-app row the server stored)
+        function onMentionNotification(n) {
+            const d = (n && n.data) || {};
+            const ch = channelsList.find(c => Number(c.id) === Number(d.channel_id));
+            if (!ch) return;
+            if (!(ch.name === currentChannel && currentView === 'channel')) bumpChannelUnread(ch, true);
+            if (!_pageInView() || ch.name !== currentChannel) _playChatSound();
+        }
+        // Counts and choices come back from the server after a reconnect and when the window
+        // is used again (a frame may have been missed while the socket was down or asleep)
+        let _lastReconcile = 0;
+        function reconcileChannels() {
+            const now = Date.now();
+            if (now - _lastReconcile < 2000) return;
+            _lastReconcile = now;
+            loadChannels();
+        }
+        window.addEventListener('focus', reconcileChannels);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) reconcileChannels(); });
+        document.addEventListener('click', () => ChatNotify.unlockAudio(window), { once: true });
+        document.addEventListener('keydown', () => ChatNotify.unlockAudio(window), { once: true });
+
+        // ---- Sound settings ----
+        function toggleSoundSettings(e) {
+            if (e) e.stopPropagation();
+            let box = document.getElementById('sound-settings');
+            if (box) { box.remove(); return; }
+            const s = ChatNotify.readSoundSettings(localStorage);
+            box = document.createElement('div');
+            box.id = 'sound-settings';
+            box.className = 'notify-menu sound-settings';
+            box.addEventListener('click', ev => ev.stopPropagation());
+            const row = (labelText, input) => {
+                const l = document.createElement('label'); l.className = 'sound-row';
+                l.appendChild(input); l.appendChild(document.createTextNode(' ' + labelText)); return l;
+            };
+            const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = s.enabled;
+            const quiet = document.createElement('input'); quiet.type = 'checkbox'; quiet.checked = s.quiet;
+            const start = document.createElement('input'); start.type = 'time'; start.value = s.start;
+            const end = document.createElement('input'); end.type = 'time'; end.value = s.end;
+            const save = () => ChatNotify.writeSoundSettings(localStorage, {
+                enabled: enabled.checked, quiet: quiet.checked, start: start.value || s.start, end: end.value || s.end });
+            [enabled, quiet, start, end].forEach(i => i.addEventListener('change', save));
+            box.appendChild(row('Play a sound for new messages and mentions', enabled));
+            box.appendChild(row('Quiet hours (no sound)', quiet));
+            const times = document.createElement('div'); times.className = 'sound-row';
+            times.appendChild(document.createTextNode('From ')); times.appendChild(start);
+            times.appendChild(document.createTextNode(' to ')); times.appendChild(end);
+            box.appendChild(times);
+            const test = document.createElement('button'); test.type = 'button'; test.className = 'btn btn-secondary btn-sm';
+            test.textContent = 'Play test sound';
+            test.addEventListener('click', () => { ChatNotify.unlockAudio(window); ChatNotify.beep(window); });
+            box.appendChild(test);
+            const note = document.createElement('div'); note.className = 'notify-menu-note';
+            note.textContent = 'Kept in this browser only. Only one open tab plays a sound.';
+            box.appendChild(note);
+            document.body.appendChild(box);
+            const r = e && e.currentTarget ? e.currentTarget.getBoundingClientRect() : { left: 20, top: 100 };
+            box.style.left = Math.max(4, r.left) + 'px';
+            box.style.top = Math.max(4, r.top - box.offsetHeight - 4) + 'px';
+        }
+        document.addEventListener('click', () => { const b = document.getElementById('sound-settings'); if (b) b.remove(); });
         function _sendStreamLiveDesktopNotification(ch) {
             if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
             try {
@@ -3660,13 +3857,22 @@
                 const response = await fetch('/api/chat/channels', { credentials: 'include' });
                 const data = await response.json();
                 const channels = data.channels || [];
-                // Populate unread counts
+                // Rebuild the unread counts from the server (a reconnect or a refocus may have
+                // missed frames; a count read elsewhere must go)
+                unreadCounts = new Map();
                 channels.forEach(ch => {
-                    if (ch.unread_count > 0 && ch.name !== currentChannel) {
+                    if (ch.unread_count > 0 && !(ch.name === currentChannel && currentView === 'channel')) {
                         unreadCounts.set(ch.name, ch.unread_count);
+                    } else {
+                        unreadMentions.delete(ch.name);
                     }
                 });
                 renderChannels(channels);
+                if (!_starsMigrated) {
+                    _starsMigrated = true;
+                    ChatNotify.migrateStars(localStorage, channels, async (id, body) => !!(await putChannelNotify(id, body)))
+                        .then(n => { if (n) renderChannels(channelsList); });
+                }
             } catch (error) {
                 console.error('Failed to load channels:', error);
             }
@@ -3755,17 +3961,23 @@
         }
 
         function renderChannelItem(ch, extraClass) {
-            const unread = unreadCounts.get(ch.name) || 0;
+            const mode = ChatNotify.badgeMode(ch);
+            const unread = mode === 'all' ? (unreadCounts.get(ch.name) || 0)
+                : (mode === 'mentions' ? (unreadMentions.get(ch.name) || 0) : 0);
             const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
             const slowBadge = ch.slowmode_seconds > 0 ? `<span class="slowmode-badge" title="Slowmode: ${ch.slowmode_seconds}s">&#9201;</span>` : '';
             const lockIcon = ch.visibility === 'private' ? '<span title="Private" style="opacity:0.5;margin-right:2px;">&#128274;</span>' : '';
             const readonlyIcon = ch.mode === 'readonly' ? '<span title="Read-only" style="opacity:0.5;margin-right:2px;">&#128263;</span>' : '';
             const isStream = !!ch.is_stream_channel;
-            const notifActive = isStream ? _followedStreams.has(Number(ch.stream_id)) : _subscribedChannels.has(ch.name);
+            const muted = ChatNotify.isMuted(ch);
+            const notifActive = isStream ? _followedStreams.has(Number(ch.stream_id)) : (!!ch.notify_level || muted);
             const bellTitle = isStream
                 ? (notifActive ? 'Stop following this stream' : 'Follow: tell me when this stream goes live')
-                : (notifActive ? 'Stop message alerts' : 'Alert me on new messages');
-            const bellBtn = `<button class="ch-notif-bell${notifActive ? ' active' : ''}" onclick="toggleChannelNotif('${CSS.escape(ch.name)}',${isStream},event)" title="${bellTitle}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
+                : 'Notifications: ' + notifySummary(ch, false);
+            const bellClick = isStream
+                ? `toggleChannelNotif('${CSS.escape(ch.name)}',true,event)`
+                : `openNotifyMenu(${Number(ch.id)},event)`;
+            const bellBtn = `<button class="ch-notif-bell${notifActive ? ' active' : ''}${muted || ch.notify_level === 'none' ? ' muted' : ''}" onclick="${bellClick}" title="${escapeHtml(bellTitle)}" aria-haspopup="${isStream ? 'false' : 'menu'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
@@ -3790,6 +4002,7 @@
             currentView = 'channel';
             currentDmConversationId = null;
             _lastReadMessageId = 0;
+            unreadMentions.delete(channelName);
             resetHistoryState();
 
             // Restore channel UI elements
@@ -3821,6 +4034,7 @@
             ws.onopen = () => {
                 console.log('Chat connected');
                 updateConnectionStatus(true);
+                if (reconnectAttempts > 0) reconcileChannels();   // frames were missed while down
                 reconnectAttempts = 0;
 
                 // Initialize voice chat with this WebSocket
@@ -3873,8 +4087,10 @@
         function handleMessage(data) {
             switch (data.type) {
                 case 'message':
-                    appendLiveMessage(data);
-                    if (_subscribedChannels.has(currentChannel)) _sendChannelDesktopNotification(data);
+                    onChannelMessageFrame(data);
+                    break;
+                case 'channel_activity':
+                    onChannelActivity(data);
                     break;
                 case 'history':
                     renderHistory(data.messages);
@@ -3903,6 +4119,7 @@
                 case 'notification':
                     if (typeof NotificationBell !== 'undefined' && data.notification) {
                         NotificationBell.handlePush(data.notification);
+                        if (data.notification.type === 'mention') onMentionNotification(data.notification);
                     }
                     break;
                 case 'users':
@@ -4999,6 +5216,8 @@
         // === Unread Tracking ===
 
         let unreadCounts = new Map();
+        let unreadMentions = new Map();   // channel name -> mentions seen live (level Mentions only)
+        let _starsMigrated = false;
         let _lastReadMessageId = 0;
 
         // IntersectionObserver: marks messages as read when they scroll into view
@@ -5036,8 +5255,9 @@
                 }
             } else {
                 ws.send(JSON.stringify({ type: 'mark_read', message_id: messageId }));
-                if (unreadCounts.has(currentChannel)) {
+                if (unreadCounts.has(currentChannel) || unreadMentions.has(currentChannel)) {
                     unreadCounts.delete(currentChannel);
+                    unreadMentions.delete(currentChannel);
                     renderChannels(channelsList);
                 }
             }

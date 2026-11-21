@@ -1098,6 +1098,13 @@ const NotificationBell = {
         }
     },
 
+    _desktopTag(notification) {
+        const d = notification.data || {};
+        if (d.channel_id) return 'portal-mention-' + d.channel_id + '-' + (d.message_id || notification.id);
+        if (d.stream_id) return 'portal-stream-' + d.stream_id;
+        return (notification.type || 'portal-notif') + '-' + notification.id;
+    },
+
     _sendDesktopNotification(notification) {
         if (!this._isEnabled()) return;
         // Only show when page is in background — the toast covers the foreground case
@@ -1106,7 +1113,9 @@ const NotificationBell = {
         const n = new Notification(notification.title, {
             body: notification.message || '',
             icon: '/favicon.ico',
-            tag: notification.type || ('portal-notif-' + notification.id),
+            // One tag per notification target: sharing the type as tag made a second mention
+            // in another channel replace the first one's text
+            tag: this._desktopTag(notification),
             silent: false
         });
         n.onclick = () => {
@@ -1116,6 +1125,14 @@ const NotificationBell = {
                 const data = notification.data || {};
                 if (data.stream_id) {
                     window.open('/watch/' + data.stream_id, '_blank');
+                } else if (data.channel_id && data.message_id) {
+                    // A mention: open that channel and message, as a click in the bell list does
+                    if (typeof window.chatJumpToMessage === 'function') {
+                        window.chatJumpToMessage(data.channel_id, data.message_id);
+                    } else {
+                        window.open('/chat?channel_id=' + encodeURIComponent(data.channel_id) +
+                            '&message_id=' + encodeURIComponent(data.message_id), '_blank', 'noopener');
+                    }
                 }
             } catch (e) { /* ignore */ }
         };

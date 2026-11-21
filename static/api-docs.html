@@ -3057,6 +3057,32 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/notify</span>
+                        <span class="endpoint-desc">Your notification choice for a channel</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Your own level and timed mute for one channel you may read (1.19.0). <code>notify_level</code> is <code>all</code>, <code>mentions</code>, <code>none</code> or <code>null</code> (no choice: a live badge and nothing else); <code>muted_until</code> is epoch seconds, <code>0</code> when not muted. <code>GET /api/chat/channels</code> carries both on every channel.</p>
+                        <h4>Errors</h4>
+                        <p><code>401</code>. <code>404</code> <code>{"error": "Channel not found"}</code> for a missing channel and, identically, for one you may not read.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/notify</span>
+                        <span class="endpoint-desc">Set your level and mute for a channel</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>{"level": "all" | "mentions" | "none" | "default", "mute_hours": 0 | 1 | 8 | 24}</code>; send either or both. <code>default</code> removes the choice, <code>mute_hours: 0</code> ends a mute. An active mute stops the badge and the ordinary signal; an @mention still notifies unless the level is <code>none</code>. The answer has the shape of the GET route.</p>
+                        <h4>Errors</h4>
+                        <p><code>400</code> (neither key, or a value not in the lists). <code>401</code>. <code>404</code> as for GET.</p>
+                    </div>
+                </div>
+
                 <h3>WebSocket API</h3>
                 <p>Connect to the chat WebSocket for real-time messaging:</p>
                 <div class="code-block">
@@ -3154,6 +3180,9 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Online users list (with profile data)</span>
 {<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [{<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {...}}]}
+<span class="comment">// New message in a channel you are not joined to (1.19.0): channel id only, no text, no author.
+// Sent only to members who may read the channel and whose level and mute allow it; never to the sender.</span>
+{<span class="string">"type"</span>: <span class="string">"channel_activity"</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>}
 
 <span class="comment">// Message deleted (deleted_by is null for ordinary members when the message was posted anonymously)</span>
 {<span class="string">"type"</span>: <span class="string">"message_deleted"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"deleted_by"</span>: <span class="number">1</span>}
@@ -6594,7 +6623,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=45"></script>
+    <script src="/static/js/portal.js?v=46"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

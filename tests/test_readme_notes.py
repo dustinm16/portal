@@ -391,6 +391,24 @@ for pic in ("share-expiry", "api-keys", "admin-signin-limits"):
           f"docs/screenshots/{pic}.png" in text and (shots / f"{pic}.png").is_file())
 check("make_screenshots takes the 1.18.0 pictures", all(f'@shot("{n}")' in mk for n in ("share-expiry", "api-keys", "admin-signin-limits")))
 
+# --- 1.19.0 notes: notification levels --------------------------------------------------
+m19 = re.search(r"### Upgrade notes for 1\.19\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.19.0' section after the 1.18.0 one",
+      m19 is not None and text.index("### Upgrade notes for 1.19.0") > text.index("### Upgrade notes for 1.18.0"))
+low19 = (m19.group(1) if m19 else "").lower()
+for name, needles in (("the table and the routes", ("channel_notify_prefs", "/api/chat/channels/{id}/notify")),
+                      ("the levels and the mute lengths", ("mentions only", "nothing", "1, 8 or 24 hours")),
+                      ("a mention still notifies while muted but not at level nothing", ("still notifies", "unless the level is nothing")),
+                      ("the signal holds the channel id only and never reaches a non-reader", ("channel_activity", "nothing else", "same read check")),
+                      ("the memory cache and the verdict memory", ("60 seconds", "forgotten whenever access is lost")),
+                      ("the sound is local, with quiet hours and one tab", ("webaudio", "localstorage", "only one plays")),
+                      ("the star migration", ("portal_notif_channels", "level all")),
+                      ("the alert bug", ("wrong channel", "own tag")),
+                      ("the static versions", ("chat-notify.js", "version 46")),
+                      ("rollback", ("1.18.0", "ignores the table")),
+                      ("what is not tested", ("not tested", "no browser", "phone", "push service", "cloudflare"))):
+    check(f"1.19.0 states: {name}", all(n in low19 for n in needles), str(needles))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
