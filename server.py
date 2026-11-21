@@ -2837,6 +2837,8 @@ async def http_push_subscribe(request: web.Request) -> web.Response:
     if result == "conflict":
         return web.json_response(
             {"error": "This browser is registered to another account; remove it there first"}, status=409)
+    if result == "revoked":
+        return web.json_response({"error": "This session has ended; sign in again"}, status=401)
     return web.json_response({"status": result}, status=201 if result == "created" else 200)
 
 
@@ -16285,9 +16287,12 @@ async def http_logout(request: web.Request) -> web.Response:
         try:
             token = await authenticate_request(request)
             if token:
+                # Revoke first: a subscribe still in flight is then refused by the database
+                # (its write is conditional on a live session), and the device of this session
+                # goes with the revoke; the endpoint of an earlier session's device is removed after.
+                await db.revoke_token(token.token_id)
                 if endpoint:
                     await db.delete_push_subscription(token.user_id, endpoint=endpoint)
-                await db.revoke_token(token.token_id)
                 # The chat sockets opened with this session and its voice call
                 # end with it (code 4001); the user's other sessions stay.
                 await close_user_websockets(token.user_id, only_token_id=token.token_id)

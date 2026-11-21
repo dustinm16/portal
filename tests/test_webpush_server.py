@@ -640,6 +640,61 @@ async def main():
         else:
             print("skip: node is not installed, the worker behaviour was not run")
 
+        # ------------------------------------------------------------ fix pass: revoked sessions, cap, races
+        for name in ("erin", "fay"):       # alice was deleted above; fresh members for this block
+            w.ids[name] = await w.db.create_user(name, server.hash_password("old-password-1"))
+            await w.db.create_token(w.ids[name], f"t{w.ids[name]}", FULL, name="web_session")
+        server._push_subscribe_log.clear()
+        server._PUSH_SUBSCRIBE_LIMIT = 1000
+        aid, bid = w.ids["erin"], w.ids["fay"]
+        # cleanup of revoked sessions takes their devices first: they must not come back to life
+        await w.db.create_token(aid, "t-gone", FULL, name="web_session")
+        dg = Receiver(w.service, "gone")
+        s, _b = await w.subscribe("erin", dg, headers={"X-Test-Tid": "t-gone"})
+        await w.db.conn.execute("UPDATE tokens SET revoked = 1 WHERE token_id = 't-gone'")   # a path that did not delete
+        await w.db.conn.commit()
+        check("before cleanup the revoked session's device is skipped", await w.db.push_subscriptions_for_send(aid) == [])
+        await w.db.cleanup_expired_tokens()
+        check("cleaning up revoked sessions removes the devices they registered (they do not become live again)",
+              await w.db.push_subscriptions_for_send(aid) == [] and await w.rows("erin") == [])
+        # a subscribe that was in flight while the session was revoked leaves no row
+        await w.db.create_token(aid, "t-late", FULL, name="web_session")
+        await w.db.revoke_token("t-late")
+        s, _b = await w.subscribe("erin", dg, headers={"X-Test-Tid": "t-late"})
+        check("a subscribe with an already revoked session is refused (401) and stores nothing",
+              s == 401 and await w.rows("erin") == [], str(s))
+        # the logout route: revoked first, then the named device removed
+        await w.db.create_token(aid, "t-out", FULL, name="web_session")
+        await w.subscribe("erin", dg, headers={"X-Test-Tid": "t-out"})
+        await w.db.revoke_token("t-out")
+        check("revoking a session removes its device in the same step", await w.rows("erin") == [])
+
+        # the cap holds under concurrent subscribes
+        devs = [Receiver(w.service, f"cap{i}") for i in range(15)]
+        res = await asyncio.gather(*(w.db.add_push_subscription(
+            aid, d.endpoint, d.sub()["keys"]["p256dh"], d.sub()["keys"]["auth"], "x", f"t{aid}",
+            wp.MAX_DEVICES_PER_USER) for d in devs))
+        n = len(await w.rows("erin"))
+        check("15 concurrent subscribes leave exactly 10 devices (the cap is atomic)",
+              n == wp.MAX_DEVICES_PER_USER and res.count("created") == 10 and res.count("limit") == 5, f"{n} {res}")
+        await w.call("DELETE", "erin", "/api/push/subscriptions")
+        # the same endpoint twice at once: created and updated, no error
+        dd = Receiver(w.service, "twice")
+        outs = await asyncio.gather(*(w.call("POST", "erin", "/api/push/subscriptions", json=dd.sub()) for _ in range(4)))
+        codes = sorted(o[0] for o in outs)
+        check("concurrent subscribes of one endpoint answer 201 once and 200 for the rest (no 500)",
+              codes == [200, 200, 200, 201] and len(await w.rows("erin")) == 1, str(codes))
+        # ownership: the newest sign-in on the same browser (same keys) owns the endpoint; other keys never take it
+        s, b = await w.subscribe("fay", dd)
+        check("the same browser signed in as another member moves the device: one row, the other member's is gone",
+              s == 201 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], f"{s} {b}")
+        other = Receiver(w.service, "twice")           # same endpoint, different keys
+        s, _b = await w.subscribe("erin", other)
+        check("another key pair cannot take over a registered endpoint (409), the owner's row stays",
+              s == 409 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], str(s))
+        await w.call("DELETE", "fay", "/api/push/subscriptions")
+        server._PUSH_SUBSCRIBE_LIMIT = 3
+
         # ------------------------------------------------------------ CSP
         s, _b, h = await w.call("GET", None, "/html")
         old_csp = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:; "

@@ -1362,6 +1362,8 @@ class Database:
         self.live_recording_ids: set[int] = set()
         # Held while the search index backfill runs (see backfill_search_flags).
         self._search_backfill_lock = asyncio.Lock()
+        # One add_push_subscription at a time: the device cap and the same-endpoint race.
+        self._push_sub_lock = asyncio.Lock()
         self.live_recording_files: set[str] = set()
         # Folder holding chat uploads (a test points this at a temporary folder).
         self.chat_upload_dir: str = str(chat_uploads.DEFAULT_DIR)
@@ -4678,6 +4680,16 @@ class Database:
             logger.warning(f"push_subscriptions cleanup skipped: {type(e).__name__}")
             return 0
 
+    async def _delete_push_subscriptions_of_revoked_tokens(self) -> int:
+        """Delete devices whose registering session is revoked, without committing."""
+        try:
+            cursor = await self.conn.execute(
+                "DELETE FROM push_subscriptions WHERE token_id IN (SELECT token_id FROM tokens WHERE revoked = 1)")
+            return cursor.rowcount
+        except Exception as e:
+            logger.warning(f"push_subscriptions cleanup skipped: {type(e).__name__}")
+            return 0
+
     async def delete_user_push_subscriptions(self, user_id: int, except_token_id: str | None = None) -> int:
         n = await self._delete_push_subscriptions(user_id, except_token_id)
         await self.conn.commit()
@@ -4685,34 +4697,63 @@ class Database:
 
     async def add_push_subscription(self, user_id: int, endpoint: str, p256dh: str, auth: str,
                                     user_agent: str | None, token_id: str | None, limit: int) -> str:
-        """Register or refresh a device. Returns 'created', 'updated', 'limit' or 'conflict'.
-        An endpoint that exists under another user moves to this one only when the browser's
-        keys are the same ones (one browser, a new sign-in); with different keys the answer is
-        'conflict' and nothing changes. The cap does not count the moved device."""
-        cursor = await self.conn.execute(
-            "SELECT id, user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
-        row = await cursor.fetchone()
-        if row and row["user_id"] != user_id and (row["p256dh"] != p256dh or row["auth"] != auth):
-            return "conflict"
-        if row and row["user_id"] == user_id:
-            await self.conn.execute(
-                """UPDATE push_subscriptions SET p256dh = ?, auth = ?, user_agent = ?, token_id = ?,
-                   failure_count = 0 WHERE id = ?""",
-                (p256dh, auth, user_agent, token_id, row["id"]))
-            await self.conn.commit()
-            return "updated"
-        cursor = await self.conn.execute(
-            "SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?", (user_id,))
-        if (await cursor.fetchone())["n"] >= limit:
-            return "limit"
-        if row:
-            await self.conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (row["id"],))
-        await self.conn.execute(
-            """INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, token_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, endpoint, p256dh, auth, user_agent, token_id))
-        await self.conn.commit()
-        return "created"
+        """Register or refresh a device. Returns 'created', 'updated', 'limit', 'conflict' or
+        'revoked'.
+
+        Ownership rule: one browser registration has one owner and the newest sign-in on that
+        browser owns it. An endpoint held by another user moves to this one only when the
+        browser's keys are the same ones (it is the same browser, signed in as someone else
+        now); the other user's row is deleted in the same transaction, never shared or left
+        behind. With different keys the answer is 'conflict' and nothing changes.
+
+        The whole call runs under one lock (one process, one connection), so the per-user cap
+        and the same-endpoint race cannot be beaten by concurrent calls. The write itself is
+        conditional on the registering session still being live ('revoked' otherwise), so a
+        subscribe that was in flight while its session was revoked leaves no row behind."""
+        live = "EXISTS (SELECT 1 FROM tokens WHERE token_id = ? AND revoked = 0)"
+        async with self._push_sub_lock:
+            try:
+                cursor = await self.conn.execute(
+                    "SELECT id, user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+                row = await cursor.fetchone()
+                if row and row["user_id"] != user_id and (row["p256dh"] != p256dh or row["auth"] != auth):
+                    return "conflict"
+                if row and row["user_id"] == user_id:
+                    cursor = await self.conn.execute(
+                        f"""UPDATE push_subscriptions SET p256dh = ?, auth = ?, user_agent = ?, token_id = ?,
+                            failure_count = 0 WHERE id = ? AND user_id = ? AND {live}""",
+                        (p256dh, auth, user_agent, token_id, row["id"], user_id, token_id))
+                    await self.conn.commit()
+                    if cursor.rowcount > 0:
+                        return "updated"
+                    row = None               # gone meanwhile, or the session ended: the insert decides
+                cursor = await self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?", (user_id,))
+                if (await cursor.fetchone())["n"] >= limit:
+                    return "limit"
+                if row:
+                    await self.conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (row["id"],))
+                # ON CONFLICT is the last line of defence: a row that appeared for another
+                # user is never overwritten (WHERE), the statement then changes nothing.
+                cursor = await self.conn.execute(
+                    f"""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, token_id)
+                        SELECT ?, ?, ?, ?, ?, ? WHERE {live}
+                        ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
+                            user_agent = excluded.user_agent, token_id = excluded.token_id, failure_count = 0
+                            WHERE push_subscriptions.user_id = excluded.user_id""",
+                    (user_id, endpoint, p256dh, auth, user_agent, token_id, token_id))
+                await self.conn.commit()
+                if cursor.rowcount > 0:
+                    return "created"
+                cursor = await self.conn.execute(
+                    f"SELECT 1 WHERE {live}", (token_id,))
+                return "conflict" if await cursor.fetchone() else "revoked"
+            except BaseException:
+                try:
+                    await self.conn.rollback()
+                except Exception:
+                    pass
+                raise
 
     async def list_push_subscriptions(self, user_id: int) -> list[dict]:
         cursor = await self.conn.execute(
@@ -8552,6 +8593,10 @@ class Database:
     async def cleanup_expired_tokens(self) -> int:
         """Delete expired or revoked tokens. Returns count deleted."""
         now = datetime.now(timezone.utc).isoformat()
+        # A device must not outlive the revoked session that registered it: the send filter
+        # skips it only while the revoked row exists, so drop the devices before the row.
+        # (A session that merely expired keeps its devices on purpose: see push_subscriptions_for_send.)
+        await self._delete_push_subscriptions_of_revoked_tokens()
         cursor = await self.conn.execute(
             "DELETE FROM tokens WHERE (expires_at IS NOT NULL AND expires_at < ?) OR revoked = 1",
             (now,)
