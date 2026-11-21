@@ -256,6 +256,50 @@ def test_route_admin_only_and_rules():
     run(body)
 
 
+def test_a_stored_value_of_zero_or_less_is_no_value():
+    """Only a manual edit can store 0 or less. It means "no own value": the channel follows the global
+    setting (7 days here) in the cleanup, in the file pass, in the SQL lists and in what the pages are shown."""
+    async def body(env):
+        d = env.db
+        uid = await env.user("poster")
+        plain = await env.user("plain")
+        await d.set_retention_config({"retention_chat_days": 7})
+        zero = await d.create_chat_channel("zero", created_by=uid)
+        neg = await d.create_chat_channel("negative", created_by=uid)
+        zfile = await d.create_chat_channel("zero-files", created_by=uid)
+        await d.conn.execute("UPDATE chat_channels SET retention_days = 0, file_retention_days = 0 WHERE id = ?", (zero,))
+        await d.conn.execute("UPDATE chat_channels SET retention_days = -5, file_retention_days = -5 WHERE id = ?", (neg,))
+        await d.conn.execute("UPDATE chat_channels SET retention_days = 30, file_retention_days = 0 WHERE id = ?", (zfile,))
+        await d.conn.commit()
+        f1, f2, f3 = (env.make_file(c * 32 + ".zip") for c in "123")
+        young0 = await env.message(zero, uid, "three days old, zero stored", days_old=3, upload=f1)
+        youngn = await env.message(neg, uid, "three days old, negative stored", days_old=3, upload=f2)
+        youngf = await env.message(zfile, uid, "three days old, zero file value", days_old=3, upload=f3)
+        old0 = await env.message(zero, uid, "ten days old, zero stored", days_old=10)
+        own = {c["id"] for c in await d.get_channels_with_own_retention()}
+        check("the SQL list of channels with their own retention leaves out 0 and negative values",
+              zero not in own and neg not in own and zfile in own, str(own))
+        check("the SQL list of channels with a file retention leaves out 0 and negative values",
+              not ({zero, neg, zfile} & {c["id"] for c in await d.get_channels_with_file_retention()}))
+        stats = {"files": 0, "bytes": 0}
+        await server._run_chat_retention(await d.get_retention_config(), stats)
+        ids_zero, ids_neg, ids_zf = await env.ids(zero), await env.ids(neg), await env.ids(zfile)
+        check("a three-day-old message survives a stored 0, a stored negative value and a stored 0 file value",
+              young0 in ids_zero and youngn in ids_neg and youngf in ids_zf)
+        check("their files survive too", all((env.up / f).exists() for f in (f1, f2, f3)) and stats["files"] == 0, str(stats))
+        check("the channel then follows the global setting (a ten-day-old message goes)", old0 not in ids_zero)
+        server._cleanup_next_at = 2_000_000_000.0
+        try:
+            st, r = await env.call("GET", plain, "/api/chat/channels")
+        finally:
+            server._cleanup_next_at = 0.0
+        by = {c["name"]: c for c in r["channels"]}
+        check("the channel list shows no value and no next cleanup for them",
+              by["zero"]["retention_days"] is None and by["negative"]["retention_days"] is None
+              and by["zero"].get("file_retention_days") is None and "retention_next_cleanup" not in by["zero"], str(by["zero"]))
+    run(body)
+
+
 def test_channel_list_carries_the_notice_data():
     async def body(env):
         d = env.db

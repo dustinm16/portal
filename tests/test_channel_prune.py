@@ -227,6 +227,8 @@ def test_range_and_input():
                 ("no range", {"dry_run": True}), ("only from", {"from": iso(3), "dry_run": True}),
                 ("only to", {"to": iso(0), "dry_run": True}),
                 ("garbage date", {"from": "yesterday", "to": iso(0), "dry_run": True}),
+                ("from out of range once the offset is applied", {"from": "0001-01-01T00:00:00+05:00", "to": iso(0), "dry_run": True}),
+                ("to out of range once the offset is applied", {"from": iso(3), "to": "9999-12-31T23:59:59-05:00", "dry_run": True}),
                 ("reversed range", {"from": iso(0), "to": iso(3), "dry_run": True}),
                 ("skip_pinned not a boolean", body_for(skip_pinned="no", dry_run=True)),
                 ("user is a list", body_for(user=[1], dry_run=True))):

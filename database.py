@@ -6679,10 +6679,11 @@ class Database:
         """Delete a chat message (optionally verify ownership)."""
         return await self._delete_one_message("chat_messages", "channel", message_id, user_id)
 
-    # A channel whose own retention_days applies: it has a value and is not a stream's own chat.
+    # A channel whose own retention_days applies: it has a positive value (0 or less, only by a manual edit,
+    # is no value) and is not a stream's own chat.
     # A stream chat keeps following the global setting even if a stale value is stored on it.
     _OWN_RETENTION_SQL = (
-        "retention_days IS NOT NULL AND (is_default = 1 OR id NOT IN "
+        "retention_days > 0 AND (is_default = 1 OR id NOT IN "
         "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
 
     async def cleanup_old_chat_messages(self, days: int = 7, stats: dict = None,
@@ -6710,7 +6711,7 @@ class Database:
         """Channels with a file_retention_days value that are not a stream's own chat."""
         cursor = await self.conn.execute(
             "SELECT id, name, retention_days, file_retention_days FROM chat_channels "
-            "WHERE file_retention_days IS NOT NULL AND (is_default = 1 OR id NOT IN "
+            "WHERE file_retention_days > 0 AND (is_default = 1 OR id NOT IN "
             "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
         return [dict(r) for r in await cursor.fetchall()]
 

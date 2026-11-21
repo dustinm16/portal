@@ -18893,6 +18893,8 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
         # when the channel's own retention applies (a stream's chat follows the global setting)
         # the next periodic cleanup is stated next to it
         stream_bound = bool(ch.get("is_stream_channel")) and not ch.get("is_default")
+        for field in ("retention_days", "file_retention_days"):
+            ch[field] = _own_retention_value(ch.get(field))
         if ch.get("retention_days") is not None and not stream_bound:
             ch["retention_next_cleanup"] = next_cleanup
         elif stream_bound:
@@ -19197,13 +19199,24 @@ def _prune_count_changed(live: int, expected: int) -> bool:
     return abs(int(live) - int(expected)) > _prune_margin(expected)
 
 
+def _own_retention_value(value):
+    """A channel's stored retention (message or file) as a positive number of days, or None when it is
+    unset or 0 or less. Only a manual edit of the database can store 0 or less; it is treated as "no own
+    value" (the channel follows the global setting), never as one day."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None
+    return days if days > 0 else None
+
+
 def _chat_message_retention_days(channel: dict, config: dict):
     """Days after which the next cleanup removes this channel's messages: its own value as stored (the
     cap setting limits a value when it is set, never afterwards: lowering the cap shortens nothing that
     is already stored), else the global chat retention, else None (kept)."""
-    own = channel.get("retention_days")
+    own = _own_retention_value(channel.get("retention_days"))
     if own is not None:
-        return max(1, int(own))
+        return own
     try:
         glob = int(config.get("retention_chat_days", 7))
     except (TypeError, ValueError):
@@ -19244,7 +19257,9 @@ async def _run_chat_retention(config: dict, stats: dict) -> int:
         channels = []
     for ch in channels:
         try:
-            days = max(1, int(ch["retention_days"]))      # as stored: a lowered cap shortens nothing
+            days = _own_retention_value(ch["retention_days"])      # as stored: a lowered cap shortens nothing
+            if days is None:
+                continue
             d = await db.cleanup_channel_messages(ch["id"], days, stats, names=names)
             if d > 0:
                 logger.info(f"[Retention] Cleaned {d} messages older than {days} days in channel {ch['id']}")
@@ -19259,7 +19274,9 @@ async def _run_chat_retention(config: dict, stats: dict) -> int:
     for ch in file_channels:
         try:
             limit = _chat_message_retention_days(ch, config)
-            days = max(1, int(ch["file_retention_days"]))
+            days = _own_retention_value(ch["file_retention_days"])
+            if days is None:
+                continue
             if limit:
                 days = min(days, limit)
             n = await db.remove_channel_files(ch["id"], days, stats, names)
@@ -19341,8 +19358,8 @@ async def http_set_channel_retention(request: web.Request) -> web.Response:
 
     config = await db.get_retention_config()
     cap = _chat_retention_cap(config)
-    old = {"retention_days": channel.get("retention_days"),
-           "file_retention_days": channel.get("file_retention_days")}
+    old = {"retention_days": _own_retention_value(channel.get("retention_days")),
+           "file_retention_days": _own_retention_value(channel.get("file_retention_days"))}
     new = dict(old)
     capped = False
     forever_file = False
@@ -19499,7 +19516,10 @@ def _parse_prune_time(raw, field: str) -> str:
         raise ValueError(f"{field} is not an ISO 8601 date and time")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+    try:
+        return dt.astimezone(timezone.utc).isoformat()
+    except (OverflowError, ValueError):
+        raise ValueError(f"{field} is out of range")
 
 
 async def http_get_prune_status(request: web.Request) -> web.Response:
@@ -22537,10 +22557,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "stream_chat": _real_stream_chat(check_stream),
                             # the channel's own retention (a stream's chat follows the global setting), for
                             # the notice and the administrators' settings window
-                            "retention_days": None if check_stream and not channel.get("is_default") else channel.get("retention_days"),
-                            "file_retention_days": None if check_stream and not channel.get("is_default") else channel.get("file_retention_days"),
+                            "retention_days": None if check_stream and not channel.get("is_default") else _own_retention_value(channel.get("retention_days")),
+                            "file_retention_days": None if check_stream and not channel.get("is_default") else _own_retention_value(channel.get("file_retention_days")),
                             "retention_next_cleanup": (datetime.fromtimestamp(_cleanup_next_at, timezone.utc).isoformat()
-                                                       if _cleanup_next_at and channel.get("retention_days") is not None
+                                                       if _cleanup_next_at and _own_retention_value(channel.get("retention_days")) is not None
                                                        and not (check_stream and not channel.get("is_default")) else None),
                             # @here / @everyone: the channel's switch and whether this member may use them
                             "allow_mass_mentions": bool(channel.get("allow_mass_mentions")),
