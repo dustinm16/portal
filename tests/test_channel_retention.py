@@ -190,6 +190,14 @@ def test_route_admin_only_and_rules():
         for bad in (-1, "soon", 1.5, True, [3]):
             st, _ = await env.call("PUT", admin, path, json={"retention_days": bad})
             check(f"{bad!r} is refused", st == 400, str(st))
+        # JSON Infinity, -Infinity and NaN (Python's encoder writes them) and absurd sizes: 400, never 500
+        for field in ("retention_days", "file_retention_days"):
+            for bad in (float("inf"), float("-inf"), float("nan"), 1e308, -1e308, 10 ** 12, "9" * 400):
+                st, _ = await env.call("PUT", admin, path, json={field: bad})
+                check(f"{field} {bad!r} is 400", st == 400, str(st))
+        async with env.http.put(env.url(path), data='{"retention_days": Infinity}',
+                                headers={"X-Test-User": str(admin), "Content-Type": "application/json"}) as resp:
+            check("the literal JSON Infinity is 400", resp.status == 400, str(resp.status))
         # file retention: never longer than the message retention
         st, r = await env.call("PUT", admin, path, json={"retention_days": 20, "confirm": True})
         st, r = await env.call("PUT", admin, path, json={"file_retention_days": 25, "confirm": True})

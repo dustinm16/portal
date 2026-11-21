@@ -19170,10 +19170,20 @@ def _chat_retention_cap(config: dict) -> int:
     return max(1, min(cap, 3650))
 
 
-def _prune_margin(expected: int) -> int:
+_PRUNE_COUNT_MAX = 10 ** 9      # a count above this is not a count of messages: 400, not a comparison
+
+
+def _prune_margin(shown: int) -> int:
     """How far the live count of a prune may be from the count the dry run showed: 2 messages
-    or 2 percent of the count, whichever is larger (messages arrive and go while the dialog is open)."""
-    return max(2, int(expected) // 50)
+    or 2 percent of the shown count, whichever is larger (messages arrive and go while the dialog
+    is open). The one rule: the margin is always taken from the count the dry run showed, which is
+    the live count of the dry run and the expected_count a real run sends back."""
+    return max(2, int(shown) // 50)
+
+
+def _prune_count_changed(live: int, expected: int) -> bool:
+    """Whether the live count is further from the shown (expected) count than its margin."""
+    return abs(int(live) - int(expected)) > _prune_margin(expected)
 
 
 def _chat_message_retention_days(channel: dict, config: dict):
@@ -19266,7 +19276,10 @@ def _parse_retention_value(raw, cap: int):
         if not text.isdigit() or len(text) > 9:
             raise ValueError("a number of days, 0, \"forever\" or null")
         raw = int(text)
-    if isinstance(raw, float) and raw == int(raw):
+    if isinstance(raw, float):
+        # JSON Infinity, -Infinity and NaN parse to floats; int() of them raises, so refuse them first
+        if not math.isfinite(raw) or raw != int(raw):
+            raise ValueError("a number of days, 0, \"forever\" or null")
         raw = int(raw)
     if not isinstance(raw, int) or raw < 0 or raw > 10 ** 9:
         raise ValueError("a number of days, 0, \"forever\" or null")
@@ -19540,7 +19553,9 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
     if raw_user is not None and raw_user != "":
         target = None
         if isinstance(raw_user, int) and not isinstance(raw_user, bool):
-            target = await db.get_user_by_id(raw_user) if abs(raw_user) <= _SQLITE_INT_MAX else None
+            if abs(raw_user) > _SQLITE_INT_MAX:
+                return web.json_response({"error": "user must be an account id or a name"}, status=400)
+            target = await db.get_user_by_id(raw_user)
         elif isinstance(raw_user, str) and len(raw_user) <= 64:
             target = (await db.get_user_by_id(int(raw_user)) if raw_user.strip().isdigit()
                       and len(raw_user.strip()) < 15 else None) or await db.get_user_by_username(raw_user.strip())
@@ -19553,7 +19568,7 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
     where, params = db.prune_where(channel["id"], start, end, user_id, skip_pinned, may_name_anonymous,
                                    excluded, authorless_ok, anonymous_rankless=not may_name_anonymous)
     live = await db.count_where_chat_messages(where, params)
-    margin = _prune_margin(live)
+    margin = _prune_margin(live)        # of the count shown, which a real run sends back as expected_count
     if dry_run:
         return web.json_response({"dry_run": True, "count": live, "margin": margin,
                                   "skip_pinned": skip_pinned})
@@ -19562,11 +19577,12 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
     if running is not None and not running.done():
         return web.json_response({"error": "A prune is already running in this channel"}, status=409)
     expected = data.get("expected_count")
-    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0:
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0 or expected > _PRUNE_COUNT_MAX:
         return web.json_response({"error": "expected_count (the count of the dry run) is required"}, status=400)
-    if abs(live - expected) > _prune_margin(expected):
+    if _prune_count_changed(live, expected):
         return web.json_response({"error": "The number of messages changed since the dry run; run it again",
-                                  "count": live, "expected_count": expected}, status=409)
+                                  "count": live, "expected_count": expected,
+                                  "margin": _prune_margin(expected)}, status=409)
     state = {"running": True, "removed": 0, "total": live, "status": "running", "_actor_id": token.user_id,
              "_anonymous_matchable": bool(user_id is not None and may_name_anonymous)}
     _prune_status[channel["id"]] = state

@@ -138,6 +138,21 @@ def test_batches_and_margin():
             await env.message(w.chat, w.talker, "again", hours_old=0.1)
             st, r = await env.call("POST", w.admin, path, json=body_for(expected_count=4))
             check("a count off by more than the margin (4 against 1 is 3 > 2) is 409", st == 409, str(r))
+            # one rule: the margin of the count the dry run showed, in the dry run and in the check
+            for k in range(1, 201):
+                await env.message(w.chat, w.talker, f"b{k}", hours_old=0.1)
+            st, dry = await env.call("POST", w.admin, path, json=body_for(dry_run=True))
+            check("a dry run of 201 shows a margin of 4", st == 200 and dry["count"] == 201 and dry["margin"] == 4, str(dry))
+            shown = dry["count"]
+            await env.message(w.chat, w.talker, "late", hours_old=0.1)
+            for extra in range(3):
+                await env.message(w.chat, w.talker, f"late{extra}", hours_old=0.1)
+            # live is now shown + 4: inside the margin the dry run reported
+            st, r = await env.call("POST", w.admin, path, json=body_for(expected_count=shown - 1))
+            check("live 205 against 200 shown: 5 > margin 4 of 200 is 409 and reports that margin",
+                  st == 409 and r["margin"] == 4 and r["count"] == 205, str(r))
+            st, r = await env.call("POST", w.admin, path, json=body_for(expected_count=shown + 1))
+            check("live 205 against 202 shown: 3 <= margin 4 is accepted", st == 202, str(r))
         finally:
             server.PRUNE_BATCH = 200
     run(body)
@@ -193,6 +208,17 @@ def test_range_and_input():
             check(f"{label} is 400", st == 400, str(r))
         st, r = await env.call("POST", w.admin, path, data="nope")
         check("invalid JSON is 400", st == 400)
+        for label, payload in (
+                ("expected_count Infinity", body_for(expected_count=float("inf"))),
+                ("expected_count NaN", body_for(expected_count=float("nan"))),
+                ("expected_count absurd", body_for(expected_count=10 ** 15)),
+                ("expected_count huge float", body_for(expected_count=1e308)),
+                ("user Infinity", body_for(user=float("inf"), dry_run=True)),
+                ("user NaN", body_for(user=float("nan"), dry_run=True)),
+                ("user absurd id", body_for(user=10 ** 30, dry_run=True)),
+                ("from Infinity", {"from": float("inf"), "to": iso(0), "dry_run": True})):
+            st, r = await env.call("POST", w.admin, path, json=payload)
+            check(f"{label} is 400", st == 400, f"{st} {r}")
         await env.message(w.chat, w.talker, "inside", hours_old=1)
         await env.message(w.chat, w.talker, "outside", hours_old=5)
         st, r = await env.call("POST", w.admin, path, json={"from": iso(2), "to": iso(0), "dry_run": True})

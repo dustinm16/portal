@@ -587,7 +587,7 @@ check("1.20.0 states chat-retention.js as version 1 and the pages load exactly t
       _loaded20 == {"1"} and re.search(r"`chat-retention\.js` version 1", m20r.group(1) if m20r else "") is not None, str(_loaded20))
 _srv20 = (ROOT / "server.py").read_text(encoding="utf-8")
 check("the margin and the batch size stated are the ones in the code",
-      "return max(2, int(expected) // 50)" in _srv20 and "PRUNE_BATCH = 200" in _srv20)
+      "return max(2, int(shown) // 50)" in _srv20 and "PRUNE_BATCH = 200" in _srv20)
 check("the new audit actions are in the admin filter and the API reference",
       all(a in _pages20["admin.html"] and a in _pages20["api-docs.html"] for a in ("channel_retention_change", "chat_prune")))
 check("docs/API.md and api-docs.html both describe the retention route, the prune route and the frame",
