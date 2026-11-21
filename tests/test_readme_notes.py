@@ -435,8 +435,8 @@ for name, needles in (("what exists", ("web push foundation", "user settings > p
                       ("the sender", ("send_push", "30 pushes per user per minute", "429", "retry-after", "build_payload")),
                       ("the worker, scope and policy", ("no fetch handler", "service-worker-allowed: /push-sw/", "worker-src 'none'", "/manifest.webmanifest")),
                       ("the migration and the rollback", ("create table if not exists", "1.18.0 starts on the migrated database")),
-                      ("the static files", ("`push.js` is new", "`portal.js` is unchanged", "`admin.js` is now version 39")),
-                      ("what is not proven", ("not tested (web push)", "no browser", "real push service", "cloudflare", "rfc 8291 appendix vector"))):
+                      ("the static files", ("`push.js` is new", "`portal.js` is now version 46", "`admin.js` is now version 39")),
+                      ("what is not proven", ("not tested", "no browser", "real push service", "cloudflare", "rfc 8291 appendix vector"))):
     check(f"1.19.0 states: web push {name}", all(n in low19 for n in needles), str(needles))
 check("docs/API.md and api-docs.html describe the push routes",
       all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/push/subscriptions", "/api/admin/push/test", "/sw.js"))
@@ -461,6 +461,32 @@ check("the README names the same tag, topic and kinds as the code",
 check("docs/API.md and api-docs.html describe the prefs route and POST /logout",
       all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/push/prefs", "POST /logout"))
       and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/push/prefs", "/logout")))
+
+# --- 1.19.0: one coherent section, the administrator statement, What You Get ----------------
+sec19 = m19.group(1) if m19 else ""
+for lead in ("**Database.**", "**Static files.**", "**Rollback.**", "**Not tested.**"):
+    check(f"1.19.0 has exactly one bullet '{lead}'", len(re.findall(r"^- " + re.escape(lead), sec19, re.M)) == 1)
+check("1.19.0 keeps no leftovers of the lane and fix-pass assembly",
+      all(x not in low19 for x in ("fix pass", "not tested (web push)", "unchanged (version 46)")))
+for name, needles in (("push services are contacted only for members who enabled it", ("google, mozilla, apple or microsoft", "only for members who", "enabled notifications")),
+                      ("what those servers can see", ("that a notification was sent to a device and when", "its size", "encrypted", "no message text")),
+                      ("how to switch it off", ("admin > settings", "push notifications enabled", "push_enabled")),
+                      ("iOS needs the home screen", ("ios", "home screen", "16.4")),
+                      ("the portal's own address is visible to the push service", ("vapid", "push_vapid_subject"))):
+    check(f"1.19.0 tells administrators: {name}", all(n in low19 for n in needles), str(needles))
+get = text.split("## What You Get", 1)[1].split("\n## ", 1)[0]
+check("What You Get has a 'Phone Notifications' part", "### Phone Notifications" in get)
+check("the chat part of What You Get describes levels, mute, badges and mass mentions",
+      all(x in get.split("### Direct Messages")[0] for x in ("bell", "mute", "@everyone", "@here", "badge")))
+check("the old 'enable desktop alerts' star sentence is gone from the chat part",
+      "Enable desktop alerts to get browser notifications" not in text)
+_pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
+for js, ver in (("portal.js", 46), ("push.js", 3), ("admin.js", 39), ("chat-notify.js", 1)):
+    loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
+    check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
+          loaded == {str(ver)} and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
+check("api-docs.html and docs/API.md both describe the rebind call",
+      "rebind" in (ROOT / "docs" / "API.md").read_text() and "rebind" in _pages["api-docs.html"])
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
