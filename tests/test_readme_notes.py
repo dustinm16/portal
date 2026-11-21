@@ -416,7 +416,7 @@ for name, needles in (("the switch, the frame and who sets it", ("allow_mass_men
                       ("the recipients", ("@everyone** notifies every member who may read", "appear offline", "mentions only still gets it")),
                       ("the cap and the single transaction", ("500 members", "one transaction", "one row per member")),
                       ("anonymous senders", ("anonymous sender", "dropped")),
-                      ("automod weight", ("mention_spam", "counts as 5")),
+                      ("automod weight", ("mention_spam", "counts as 5", "staff are not exempt", "`max_mentions`", "cannot be chosen as a username or a nickname")),
                       ("code spans and no groups", ("code span", "no named groups")),
                       ("the column and the rollback", ("chat_channels.allow_mass_mentions", "1.18.0 ignores `allow_mass_mentions`")),
                       ("what is not proven", ("check_massmention", "real push service", "thousands of members"))):

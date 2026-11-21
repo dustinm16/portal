@@ -365,6 +365,30 @@ def test_automod_weighs_a_mass_mention_five_times():
     run(body)
 
 
+def test_automod_weighs_a_mass_mention_only_where_the_sender_may_use_it():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        await d.create_automod_rule("mention_spam", "spam", {"max_mentions": 5}, "warn", ids["boss"])
+        lobby = await nl.pub_channel(d, ids)
+        carol = await env.sock(ids["carol"])
+        await carol.join(lobby)
+        # a member who may not mass-mention here: plain text, two mentions, not blocked
+        mark = await post(carol, "@everyone @bob")
+        assert not any(e.get("error_code") == "automod" for e in carol.events[mark:]), carol.events[mark:]
+        assert await rows(d, lobby) == {ids["bob"]: 1}, "only the named member is notified"
+        assert server._check_mention_spam("@everyone @x", {"max_mentions": 5}, mass_allowed=False) is False
+        # the channel's switch lets every member use it: weight 5 applies again
+        boss = await env.sock(ids["boss"])
+        await boss.join(lobby)
+        await boss.send(type="set_mass_mentions", allowed=True)
+        assert await boss.wait(lambda e: e.get("type") == "mass_mentions_changed")
+        mark = carol.mark()
+        await carol.send(type="message", message="@everyone @bob")
+        assert await carol.wait(lambda e: e.get("error_code") == "automod", mark), carol.events[mark:]
+    run(body)
+
+
 def test_here_and_everyone_are_reserved_names_and_an_old_account_with_one_is_not_mentioned():
     async def body(env):
         d = env.db

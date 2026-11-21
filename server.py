@@ -18275,17 +18275,22 @@ def _check_caps_filter(text: str, config: dict) -> bool:
     return caps_pct > config.get("max_caps_percent", 70)
 
 
-def _check_mention_spam(text: str, config: dict) -> bool:
-    """Check if message has too many @mentions. An @here or @everyone counts MASS_MENTION_WEIGHT
-    times (it is already one hit of the pattern, so it adds weight - 1), in any channel and
-    whoever writes it: staff chose the limit, and an attempt to ping everybody is spam either way."""
+def _check_mention_spam(text: str, config: dict, mass_allowed: bool = True) -> bool:
+    """Check if message has too many @mentions. Where the sender may mass mention in the channel
+    (mass_allowed), an @here or @everyone counts MASS_MENTION_WEIGHT times (it is already one
+    hit of the pattern, so it adds weight - 1). Where they may not, the text is plain text and
+    counts as one mention like any other @name."""
     mentions = re.findall(r'@[\w\- ]+', text)
-    weight = len(mentions) + (MASS_MENTION_WEIGHT - 1) * len(_mass_mention_tokens(text))
+    weight = len(mentions)
+    if mass_allowed:
+        weight += (MASS_MENTION_WEIGHT - 1) * len(_mass_mention_tokens(text))
     return weight > config.get("max_mentions", 5)
 
 
-async def check_automod(text: str, user_id: int, channel_id: int, channel_name: str) -> dict | None:
-    """Check message against automod rules. Returns action dict if triggered, None if clean."""
+async def check_automod(text: str, user_id: int, channel_id: int, channel_name: str,
+                        mass_allowed: bool = True) -> dict | None:
+    """Check message against automod rules. Returns action dict if triggered, None if clean.
+    mass_allowed: the sender may use @here and @everyone in this channel (see _check_mention_spam)."""
     rules = await _get_automod_rules()
     for rule in rules:
         try:
@@ -18301,7 +18306,7 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
         elif rule_type == "caps_filter":
             triggered = _check_caps_filter(text, config)
         elif rule_type == "mention_spam":
-            triggered = _check_mention_spam(text, config)
+            triggered = _check_mention_spam(text, config, mass_allowed)
         if triggered:
             try:
                 await db.create_automod_action(
@@ -18340,7 +18345,13 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
     the stored message when the text is an edit of it.
     """
     try:
-        automod_result = await check_automod(text, user_id, channel["id"], channel_name)
+        # The weight of @here / @everyone applies only where the sender may use them; the
+        # permission is looked up only for a text that holds one
+        mass_allowed = True
+        if _mass_mention_tokens(text):
+            mass_allowed = await _may_mass_mention(
+                channel, user_id, user_role, await db.get_stream_by_chat_channel(channel["id"]))
+        automod_result = await check_automod(text, user_id, channel["id"], channel_name, mass_allowed)
     except automod.RegexCheckError:
         # A regex rule could not be evaluated in time: fail closed. The author is told
         # in neutral words; no penalty is booked and nobody else hears of it.
