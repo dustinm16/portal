@@ -4987,23 +4987,43 @@ class Database:
         return [dict(r) for r in await cursor.fetchall()]
 
     async def create_notifications_bulk(self, rows: list) -> list[tuple[int, int]]:
-        """Insert several notifications in one transaction (one commit).
+        """Insert several notifications as one atomic write.
 
         `rows` is a list of (user_id, type, title, message, data). Returns
-        [(user_id, notification_id)] in the same order."""
+        [(user_id, notification_id)] in the same order. The rows are encrypted here and then
+        written in ONE job on the connection's own thread, so no other coroutine's write can
+        land between two of them, and a failure rolls back (to a savepoint) only these rows,
+        never a write another coroutine has pending on the shared connection."""
+        prepared = [
+            (user_id, type_, encrypt_message(title) if title else title,
+             encrypt_message(message) if message else message, json.dumps(data or {}))
+            for user_id, type_, title, message, data in rows]
+        if not prepared:
+            return []
+        return await self.conn._execute(self._notifications_bulk_sync, prepared)
+
+    def _notifications_bulk_sync(self, prepared: list) -> list[tuple[int, int]]:
+        """The body of create_notifications_bulk. Runs on the connection's thread with the
+        sqlite3 connection itself; nothing in it awaits. The commit at the end is the
+        connection's own, so it also commits what else is pending there."""
+        raw = self._connection._conn
         out = []
+        raw.execute("SAVEPOINT notifications_bulk")
         try:
-            for user_id, type_, title, message, data in rows:
-                cursor = await self.conn.execute(
+            for row in prepared:
+                cursor = raw.execute(
                     """INSERT INTO notifications (user_id, type, title, message, data)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, type_, encrypt_message(title) if title else title,
-                     encrypt_message(message) if message else message, json.dumps(data or {})))
-                out.append((user_id, cursor.lastrowid))
-            await self.conn.commit()
-        except Exception:
-            await self.conn.rollback()
+                       VALUES (?, ?, ?, ?, ?)""", row)
+                out.append((row[0], cursor.lastrowid))
+            raw.execute("RELEASE notifications_bulk")
+        except BaseException:
+            try:
+                raw.execute("ROLLBACK TO notifications_bulk")
+                raw.execute("RELEASE notifications_bulk")
+            except sqlite3.Error:
+                pass    # the database already ended the transaction; the original error is the one to report
             raise
+        raw.commit()
         return out
 
     async def reset_all_streams_offline(self) -> int:
