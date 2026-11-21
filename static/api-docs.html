@@ -1962,6 +1962,7 @@
                     </div>
                 </div>
 
+                <p><code>@everyone</code> and <code>@here</code> in a chat <code>message</code> (plain text, not in a code span) notify members when the sender is global staff, has a moderator level in that chat or the channel's switch <code>allow_mass_mentions</code> is on; elsewhere they are ordinary text. <code>@everyone</code> reaches every member who may read the channel, <code>@here</code> those with an open chat socket who do not appear offline; members at level <code>none</code> or with a running mute, and the sender, are left out; at most 500 members, one <code>mention</code> notification each (<code>data.mass</code> is <code>everyone</code> or <code>here</code>), written in one transaction together with the members also named in the text (one row per member). A sender who is not admin gets one per 60 seconds (the message is posted, a <code>notice</code> frame with <code>code</code> <code>mass_mention_limited</code> goes to the sender only); an anonymous sender's is dropped. Each counts as 5 in the <code>mention_spam</code> rule. <code>set_mass_mentions</code> (<code>allowed</code> true or false; staff, and the owner of a stream in its own chat) answers the room with <code>mass_mentions_changed</code>; <code>channel_info</code> carries <code>allow_mass_mentions</code> and <code>can_mass_mention</code>.</p>
                 <p>Chat socket: <code>{"type": "set_slowmode", "seconds": 15}</code> (0, 5, 15 or 30; owner, mods and staff; stream chat only) answers the room with <code>slowmode_changed</code>. <code>timeout_user</code> takes <code>target_user_id</code> or the <code>message_id</code> of one of the member's messages (also for an anonymous post). <code>channel_info</code> carries <code>slowmode_seconds</code>, <code>mod_level</code> (<code>none</code>, <code>mod</code>, <code>owner</code>, <code>staff</code>) and <code>stream_chat</code>; messages of the owner and mods carry <code>stream_role</code>. A change of a member's level sends them a <code>mod_level</code> frame. Refusals on a target all read <code>Not allowed</code>.</p>
 
                 <h3>Watching Streams</h3>
@@ -3183,6 +3184,12 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <span class="comment">// New message in a channel you are not joined to (1.19.0): channel id only, no text, no author.
 // Sent only to members who may read the channel and whose level and mute allow it; never to the sender.</span>
 {<span class="string">"type"</span>: <span class="string">"channel_activity"</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>}
+
+<span class="comment">// @here / @everyone (1.19.0): switch for a channel (staff; the owner of a stream in its own chat), answered to the room</span>
+{<span class="string">"type"</span>: <span class="string">"set_mass_mentions"</span>, <span class="string">"allowed"</span>: <span class="keyword">true</span>}
+{<span class="string">"type"</span>: <span class="string">"mass_mentions_changed"</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>, <span class="string">"allowed"</span>: <span class="keyword">true</span>}
+<span class="comment">// To the sender only: the message was posted, its @here or @everyone was not carried out (one per 60 seconds unless admin)</span>
+{<span class="string">"type"</span>: <span class="string">"notice"</span>, <span class="string">"code"</span>: <span class="string">"mass_mention_limited"</span>, <span class="string">"retry_after"</span>: <span class="number">31</span>, <span class="string">"message"</span>: <span class="string">"..."</span>}
 
 <span class="comment">// Message deleted (deleted_by is null for ordinary members when the message was posted anonymously)</span>
 {<span class="string">"type"</span>: <span class="string">"message_deleted"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"deleted_by"</span>: <span class="number">1</span>}

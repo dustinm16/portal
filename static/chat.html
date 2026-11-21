@@ -2935,6 +2935,9 @@
                         <button class="watch-stream-btn" id="watch-stream-btn" onclick="openWatchStream()" title="Watch stream">
                             Watch Stream
                         </button>
+                        <button class="clear-channel-btn" id="mass-mention-btn" onclick="toggleMassMentions()" title="Let every member use @here and @everyone in this channel" style="display: none;">
+                            @everyone: off
+                        </button>
                         <button class="clear-channel-btn" id="clear-channel-btn" onclick="confirmClearChannel()" title="Clear channel history" style="display: none;">
                             🗑️ Clear
                         </button>
@@ -3271,6 +3274,10 @@
         let slowmodeCooldownTimer = null; // timer for slowmode countdown
         let blockedUsers = new Set(); // set of blocked user IDs
         let channelCanSend = true; // whether current user can send in current channel
+        // @here / @everyone in the open channel, from the server (channel_info, mod_level and
+        // mass_mentions_changed frames); the server decides again on every message
+        let channelModLevel = 'none';
+        let channelMassFlag = false;
         let pendingJoin = null; // channel name of the join sent and not yet answered
         let channelUnavailable = false; // the open channel was lost (access removed): no sending until another is chosen
 
@@ -4109,6 +4116,21 @@
                     pendingJoin = null;
                     updateChannelInfo(data);
                     break;
+                case 'mod_level':
+                    channelModLevel = data.mod_level || 'none';
+                    renderMassMentionButton();
+                    break;
+                case 'mass_mentions_changed':
+                    // sent to the room this socket is in only
+                    channelMassFlag = !!data.allowed;
+                    renderMassMentionButton();
+                    appendSystemMessage(channelMassFlag ? '@here and @everyone are now open to every member of this channel'
+                                                        : '@here and @everyone are now limited to moderators');
+                    break;
+                case 'notice':
+                    // A message that was posted but whose @here / @everyone was not carried out
+                    if (data.message) showToast(data.message, 'info');
+                    break;
                 case 'stream_status':
                     updateStreamStatus(data);
                     break;
@@ -4523,7 +4545,29 @@
         let currentStreamId = null;
         let currentStreamPublicKey = null;
 
+        // May this member use @here and @everyone here: any moderator level, or the channel's switch
+        function canMassMention() {
+            return channelModLevel !== 'none' || channelMassFlag;
+        }
+
+        // Staff and the owner of a stream's chat see the switch
+        function renderMassMentionButton() {
+            const btn = document.getElementById('mass-mention-btn');
+            if (!btn) return;
+            const mayToggle = channelModLevel === 'staff' || channelModLevel === 'owner';
+            btn.style.display = mayToggle ? '' : 'none';
+            btn.textContent = channelMassFlag ? '@everyone: on' : '@everyone: off';
+        }
+
+        function toggleMassMentions() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'set_mass_mentions', allowed: !channelMassFlag }));
+        }
+
         function updateChannelInfo(data) {
+            channelModLevel = data.mod_level || 'none';
+            channelMassFlag = !!data.allow_mass_mentions;
+            renderMassMentionButton();
             document.getElementById('channel-name').textContent = data.name;
             document.getElementById('channel-topic').textContent = data.topic || data.description || 'No topic set';
 
@@ -4759,6 +4803,14 @@
                 .filter(c => c.name.toLowerCase().startsWith(query) || c.username.toLowerCase().startsWith(query))
                 .sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name))
                 .slice(0, 8);
+            // @here and @everyone only where this member may use them
+            if (canMassMention()) {
+                const specials = [
+                    { name: 'everyone', username: 'everyone', avatar: { emoji: '@' }, online: true, special: 'Notify every member' },
+                    { name: 'here', username: 'here', avatar: { emoji: '@' }, online: true, special: 'Notify members who are online' },
+                ].filter(c => c.name.startsWith(query));
+                mentionMatches = specials.concat(mentionMatches).slice(0, 8);
+            }
 
             if (mentionMatches.length === 0) {
                 hideMentionDropdown();
@@ -4774,7 +4826,8 @@
             dropdown.innerHTML = mentionMatches.map((c, i) => {
                 const avatarColor = c.avatar.color || '#3b82f6';
                 const avatarContent = c.avatar.emoji || c.name[0].toUpperCase();
-                const showUsername = c.username !== c.name ? `<span class="mention-item-username">@${escapeHtml(c.username)}</span>` : '';
+                const showUsername = c.special ? `<span class="mention-item-username">${escapeHtml(c.special)}</span>`
+                    : (c.username !== c.name ? `<span class="mention-item-username">@${escapeHtml(c.username)}</span>` : '');
                 return `<div class="mention-item${i === 0 ? ' selected' : ''}" data-index="${i}" onmousedown="mentionClickSelect(${i})" onmouseenter="mentionHover(${i})">
                     <div class="mention-item-avatar" style="background: ${escapeHtml(avatarColor)}">${avatarContent}</div>
                     <span class="mention-item-name">${escapeHtml(c.name)}</span>

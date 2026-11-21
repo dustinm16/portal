@@ -872,6 +872,7 @@
                 <div style="display:flex;gap:0.3rem;align-items:center;">
                     <button class="chat-popout-btn" id="chat-popout-btn" type="button" onclick="popOutChat()" title="Open the chat in its own window">Pop out</button>
                     <button class="watch-voice-btn" id="watch-voice-btn" onclick="toggleWatchVoice()">Join Voice</button>
+                    <button class="mod-settings-btn" id="mass-mention-btn" type="button" style="display: none;" onclick="toggleMassMentions()" title="Let every viewer use @here and @everyone in this chat">@everyone: off</button>
                     <select class="mod-settings-btn" id="slowmode-select" style="display: none;" onchange="setSlowmode(this.value)" title="Slow mode: the wait between one viewer's messages (you and the mods are not held back)">
                         <option value="0">Slow mode off</option>
                         <option value="5">Slow 5s</option>
@@ -945,6 +946,7 @@
         // 'none', 'mod', 'owner' or 'staff'. The server decides again on every action.
         let modLevel = 'none';
         let streamChat = false;           // a chat that belongs to this stream alone
+        let massMentionFlag = false;      // @here / @everyone open to every member of this chat
         let pinnedList = [];
 
         // HLS buffer presets
@@ -1627,6 +1629,18 @@
                     streamChat = !!data.stream_chat;
                     applyModLevel(data.mod_level || 'none', streamChat);
                     setSlowmodeSelect(data.slowmode_seconds || 0);
+                    massMentionFlag = !!data.allow_mass_mentions;
+                    renderMassMentionButton();
+                    break;
+                case 'mass_mentions_changed':
+                    massMentionFlag = !!data.allowed;
+                    renderMassMentionButton();
+                    appendSystemMessage(massMentionFlag ? '@here and @everyone are now open to every viewer of this chat'
+                                                        : '@here and @everyone are now limited to moderators');
+                    break;
+                case 'notice':
+                    // posted, but its @here / @everyone was not carried out
+                    if (data.message) appendSystemMessage(data.message);
                     break;
                 default:
                     if (!chatOnly && data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
@@ -1646,7 +1660,21 @@
             // slow mode and polls belong to a chat of this stream alone
             document.getElementById('slowmode-select').style.display = on && isStreamChat ? 'block' : 'none';
             document.getElementById('poll-btn').style.display = on && isStreamChat ? 'block' : 'none';
+            renderMassMentionButton();
             renderPinned();
+        }
+
+        // the switch for @here / @everyone: the owner of this chat and staff (the server decides again)
+        function renderMassMentionButton() {
+            const btn = document.getElementById('mass-mention-btn');
+            if (!btn) return;
+            btn.style.display = (modLevel === 'owner' || modLevel === 'staff') && streamChat ? 'block' : 'none';
+            btn.textContent = massMentionFlag ? '@everyone: on' : '@everyone: off';
+        }
+
+        function toggleMassMentions() {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            chatWs.send(JSON.stringify({ type: 'set_mass_mentions', allowed: !massMentionFlag }));
         }
 
         function authorOutranks(msg) {

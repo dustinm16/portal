@@ -871,6 +871,9 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN invite_code_id INTEGER REFERENCES invite_codes(id)",
     # Chat features: slowmode, channel categories, timeouts, file attachments
     "ALTER TABLE chat_channels ADD COLUMN slowmode_seconds INTEGER DEFAULT 0",
+    # @here / @everyone are open to every member of the channel when staff (or a stream's owner)
+    # switch this on; 1.18.0 ignores the column
+    "ALTER TABLE chat_channels ADD COLUMN allow_mass_mentions INTEGER DEFAULT 0",
     "ALTER TABLE chat_channels ADD COLUMN category TEXT",
     """CREATE TABLE IF NOT EXISTS chat_timeouts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5928,6 +5931,48 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def set_allow_mass_mentions(self, channel_id: int, allowed: bool) -> bool:
+        """Switch @here / @everyone for every member of a channel on or off."""
+        cursor = await self.conn.execute(
+            "UPDATE chat_channels SET allow_mass_mentions = ? WHERE id = ?",
+            (1 if allowed else 0, channel_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_mass_mention_candidates(self, channel_id: int, private: bool,
+                                          limit: int = 20000) -> list[dict]:
+        """Accounts an @everyone / @here may reach, by id: the members of a private channel,
+        else every account. Read access is decided afterwards by the caller."""
+        if private:
+            cursor = await self.conn.execute(
+                """SELECT u.id, u.role, u.is_admin, u.status, u.status_preference
+                   FROM channel_members cm JOIN users u ON u.id = cm.user_id
+                   WHERE cm.channel_id = ? ORDER BY u.id LIMIT ?""", (channel_id, limit))
+        else:
+            cursor = await self.conn.execute(
+                "SELECT id, role, is_admin, status, status_preference FROM users ORDER BY id LIMIT ?",
+                (limit,))
+        out = []
+        for r in await cursor.fetchall():
+            row = dict(r)
+            row["role"] = row.get("role") or ("superadmin" if row.get("is_admin") else "user")
+            out.append(row)
+        return out
+
+    async def get_channel_notify_prefs(self, channel_id: int, user_ids: list[int]) -> dict[int, tuple[str, int]]:
+        """user_id -> (level, muted_until) of the given members for one channel (one query per
+        500 ids; members without a row are absent)."""
+        out = {}
+        ids = list(user_ids)
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            cursor = await self.conn.execute(
+                "SELECT user_id, level, muted_until FROM channel_notify_prefs WHERE channel_id = ? "
+                f"AND user_id IN ({','.join('?' * len(chunk))})", [channel_id] + chunk)
+            for r in await cursor.fetchall():
+                out[r["user_id"]] = (r["level"], int(r["muted_until"] or 0))
+        return out
 
     async def delete_chat_channel(self, channel_id: int) -> bool:
         """Delete a chat channel (cannot delete default channels)."""

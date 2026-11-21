@@ -17726,9 +17726,12 @@ def _check_caps_filter(text: str, config: dict) -> bool:
 
 
 def _check_mention_spam(text: str, config: dict) -> bool:
-    """Check if message has too many @mentions."""
+    """Check if message has too many @mentions. An @here or @everyone counts MASS_MENTION_WEIGHT
+    times (it is already one hit of the pattern, so it adds weight - 1), in any channel and
+    whoever writes it: staff chose the limit, and an attempt to ping everybody is spam either way."""
     mentions = re.findall(r'@[\w\- ]+', text)
-    return len(mentions) > config.get("max_mentions", 5)
+    weight = len(mentions) + (MASS_MENTION_WEIGHT - 1) * len(_mass_mention_tokens(text))
+    return weight > config.get("max_mentions", 5)
 
 
 async def check_automod(text: str, user_id: int, channel_id: int, channel_name: str) -> dict | None:
@@ -18009,6 +18012,170 @@ async def _parse_mentions(text: str) -> set[int]:
         if user:
             mentioned_user_ids.add(user["id"])
     return mentioned_user_ids
+
+
+# ---------------------------------------------------------------------------
+# @here and @everyone
+#
+# Resolved in _notify_mentions, the one place a posted message's @mentions become notifications.
+# The token is looked for in plain text only (fenced and inline code spans are removed first).
+# Who may use it: global staff and anyone with chat_mod_level above none in that channel, or
+# every member where staff (or the owner of a stream's chat) switched allow_mass_mentions on.
+# Elsewhere the text is ordinary text. A sender who is not admin or superadmin gets one mass
+# mention per MASS_MENTION_COOLDOWN seconds; the message is posted either way and the sender is
+# told through a notice frame. An anonymous sender's mass mention is dropped exactly like an
+# anonymous @mention (the caller never gets here). @everyone reaches every member who may read the
+# channel (private channel: its members; admins who are not members are not pinged), @here the
+# ones with an open chat socket who do not appear offline. A member whose level is none or whose
+# timed mute runs gets nothing; level mentions still does. Members in the room are included
+# (unlike a direct @mention, a mass mention is meant to be seen). At most MASS_MENTION_CAP members
+# are reached per message. When a mass mention is carried out, every row of the message (the
+# members it reaches and those named in the text) goes in one transaction, one row per member (a
+# member named in the text keeps the personal title); without one, named members are notified as
+# before through send_notification.
+# ---------------------------------------------------------------------------
+
+MASS_MENTION_RE = re.compile(r'(?<![\w@])@(everyone|here)(?![\w\-])', re.IGNORECASE)
+_CODE_SPAN_RE = re.compile(r'```.*?```|`[^`\n]*`', re.DOTALL)
+MASS_MENTION_WEIGHT = 5
+MASS_MENTION_COOLDOWN = 60.0
+MASS_MENTION_CAP = 500
+_mass_clock = monotonic                       # injectable in tests
+_mass_mention_last: dict[int, float] = {}     # sender id -> when their last effective one was
+
+
+def _mass_mention_tokens(text: str) -> list[str]:
+    """The @here / @everyone tokens in the plain text of a message (lower case)."""
+    return [m.lower() for m in MASS_MENTION_RE.findall(_CODE_SPAN_RE.sub(" ", text or ""))]
+
+
+def _mass_mention_kind(text: str) -> Optional[str]:
+    """"everyone", "here" (when only that is present) or None."""
+    found = _mass_mention_tokens(text)
+    if "everyone" in found:
+        return "everyone"
+    return "here" if found else None
+
+
+def _mass_mention_wait(user_id: int, role: str) -> int:
+    """0 and the slot is taken, or the seconds until the sender may try again. Checked and set with
+    no await in between, so two sockets of one sender cannot both pass. Admins are not limited."""
+    if role in ("admin", "superadmin"):
+        return 0
+    now = _mass_clock()
+    last = _mass_mention_last.get(user_id)
+    if last is not None and now - last < MASS_MENTION_COOLDOWN:
+        return int(MASS_MENTION_COOLDOWN - (now - last)) + 1
+    if len(_mass_mention_last) > 1000:
+        for k in [k for k, v in _mass_mention_last.items() if now - v >= MASS_MENTION_COOLDOWN]:
+            _mass_mention_last.pop(k, None)
+    _mass_mention_last[user_id] = now
+    return 0
+
+
+async def _may_mass_mention(channel, user_id: int, role: str, stream) -> bool:
+    if channel.get("allow_mass_mentions"):
+        return True
+    return await chat_mod_level(channel, {"id": user_id, "role": role}, stream) != CHAT_LEVEL_NONE
+
+
+async def _mass_mention_recipients(channel, kind: str, sender_id: int, stream) -> tuple[list, bool]:
+    """([user ids], capped) for an @everyone or @here in this channel, in id order."""
+    private = channel.get("visibility", "public") == "private"
+    candidates = await db.get_mass_mention_candidates(channel["id"], private)
+    online = {uid for uid, _ in _chat_sockets.values()} if kind == "here" else None
+    pool = []
+    for c in candidates:
+        uid = c["id"]
+        if uid == sender_id or (online is not None and uid not in online):
+            continue
+        if kind == "here" and (c.get("status") == "offline" or c.get("status_preference") == "offline"):
+            continue
+        pool.append(c)
+    prefs = await db.get_channel_notify_prefs(channel["id"], [c["id"] for c in pool])
+    now = _notify_clock()
+    out, capped = [], False
+    for c in pool:
+        level, muted_until = prefs.get(c["id"], ("default", 0))
+        if level == "none" or (muted_until and muted_until > now):
+            continue
+        if not await _can_read_channel(channel, c["id"], c["role"], stream):
+            continue
+        if len(out) >= MASS_MENTION_CAP:
+            capped = True
+            break
+        out.append(c["id"])
+    return out, capped
+
+
+async def _notify_mentions(ws, channel, user_id: int, user_role: str, display_name: str,
+                           text: str, msg_id: int) -> None:
+    """Notify the members a posted (non-anonymous) message mentions: by name, and by @here or
+    @everyone where the sender may. Never raises."""
+    try:
+        direct: dict[int, tuple] = {}     # named in the text
+        rows: dict[int, tuple] = {}       # reached by @here / @everyone (named members join them)
+        mass_done = False
+        data = {"channel": channel["name"], "channel_id": channel["id"], "message_id": msg_id}
+        mentioned_ids = await _parse_mentions(text)
+        if mentioned_ids:
+            channel_viewer_ids = {entry[1] for entry in chat_rooms.get(channel["name"], ())}
+            for mid in mentioned_ids:
+                if mid == user_id or mid in channel_viewer_ids:
+                    continue
+                # Don't notify members who cannot read the channel
+                m_user = await db.get_user_by_id(mid)
+                if not m_user:
+                    continue
+                m_role = m_user.get("role") or ("superadmin" if m_user.get("is_admin") else "user")
+                if not await _can_read_channel(channel, mid, m_role):
+                    continue
+                # level none turns mentions off too; a mute or level mentions does not
+                if (await _notify_prefs_for(mid)).get(channel["id"], ("default", 0))[0] == "none":
+                    continue
+                direct[mid] = (mid, "mention", f"{display_name} mentioned you in #{channel['name']}", None, dict(data))
+        kind = _mass_mention_kind(text)
+        if kind:
+            stream = await db.get_stream_by_chat_channel(channel["id"])
+            if await _may_mass_mention(channel, user_id, user_role, stream):
+                wait = _mass_mention_wait(user_id, user_role)
+                if wait:
+                    await ws.send_json({
+                        "type": "notice", "code": "mass_mention_limited", "retry_after": wait,
+                        "message": f"Your message was posted without @{kind}: "
+                                   f"one @here or @everyone per {int(MASS_MENTION_COOLDOWN)} seconds"})
+                else:
+                    mass_done = True
+                    ids, capped = await _mass_mention_recipients(channel, kind, user_id, stream)
+                    label = "everyone" if kind == "everyone" else "everyone online"
+                    for mid in ids:
+                        row = direct.get(mid)
+                        if row:      # also mentioned by name: one row, the personal one
+                            row[4]["mass"] = kind
+                        else:
+                            rows[mid] = (mid, "mention",
+                                         f"{display_name} mentioned {label} in #{channel['name']}",
+                                         None, {**data, "mass": kind})
+                    if capped:
+                        await ws.send_json({
+                            "type": "notice", "code": "mass_mention_capped",
+                            "message": f"@{kind} reached the first {MASS_MENTION_CAP} members"})
+        if mass_done:
+            # one transaction for everybody this message notifies; a member named in the text
+            # keeps the personal title and is in it once
+            rows = {**direct, **rows}
+        else:
+            for row in direct.values():
+                await send_notification(row[0], row[1], row[2], row[3], row[4])
+        if rows:
+            made = await db.create_notifications_bulk(list(rows.values()))
+            for (uid, nid), row in zip(made, rows.values()):
+                try:
+                    await _push_notification_frame(uid, nid, row[1], row[2], row[3] or "", row[4])
+                except Exception as e:
+                    logger.debug(f"Mention push failed: {e}")
+    except Exception as e:
+        logger.error(f"Mention notification error: {e}")
 
 
 async def http_chat_users(request: web.Request) -> web.Response:
@@ -20938,7 +21105,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             # what this member may do here (chat_mod_level), for the page's menus
                             "mod_level": CHAT_LEVEL_NAMES[await chat_mod_level(
                                 channel, {"id": user_id, "role": user_role}, check_stream)],
-                            "stream_chat": _real_stream_chat(check_stream)
+                            "stream_chat": _real_stream_chat(check_stream),
+                            # @here / @everyone: the channel's switch and whether this member may use them
+                            "allow_mass_mentions": bool(channel.get("allow_mass_mentions")),
+                            "can_mass_mention": await _may_mass_mention(channel, user_id, user_role, check_stream)
                         }
                         if stream:
                             channel_info["stream_id"] = stream["id"]
@@ -21206,35 +21376,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             broadcast_payload["created_at"], anonymous=bool(my_state["anonymous"])),
                             meta={"channel_id": channel["id"], "anonymous": bool(my_state["anonymous"])}))
 
-                        # Send @mention notifications
+                        # @mention, @here and @everyone notifications
                         if message_text and not my_state["anonymous"]:
-                            try:
-                                mentioned_ids = await _parse_mentions(message_text)
-                                if mentioned_ids:
-                                    channel_viewer_ids = set()
-                                    if current_channel in chat_rooms:
-                                        channel_viewer_ids = {entry[1] for entry in chat_rooms[current_channel]}
-                                    for mid in mentioned_ids:
-                                        if mid == user_id or mid in channel_viewer_ids:
-                                            continue
-                                        # Don't notify members who cannot read the channel
-                                        m_user = await db.get_user_by_id(mid)
-                                        if not m_user:
-                                            continue
-                                        m_role = m_user.get("role") or ("superadmin" if m_user.get("is_admin") else "user")
-                                        if not await _can_read_channel(channel, mid, m_role):
-                                            continue
-                                        # level none turns mentions off too; a mute or level mentions does not
-                                        if (await _notify_prefs_for(mid)).get(channel["id"], ("default", 0))[0] == "none":
-                                            continue
-                                        await send_notification(
-                                            mid, "mention",
-                                            f"{display_name} mentioned you in #{current_channel}",
-                                            None,
-                                            {"channel": current_channel, "channel_id": channel["id"], "message_id": msg_id}
-                                        )
-                            except Exception as e:
-                                logger.error(f"Mention notification error: {e}")
+                            await _notify_mentions(ws, channel, user_id, user_role, display_name,
+                                                   message_text, msg_id)
                         # Members not in this room: a badge signal (no text, no author)
                         _spawn_channel_activity(channel, user_id)
 
@@ -22098,6 +22243,31 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "channel_id": channel["id"]})
                         await _audit_chat_mod("slowmode_set", user_id, username, sm_level, channel,
                                               extra={"seconds": int(seconds), "stream_id": sm_stream["id"]})
+
+                    elif msg_type == "set_mass_mentions":
+                        # Open @here and @everyone to every member of this channel (or close them
+                        # again): staff in any channel they can read, the owner of a stream's chat
+                        # in that chat. Stream mods and everybody else are refused.
+                        if not current_channel:
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        mm_level = await chat_mod_level(channel, {"id": user_id, "role": user_role})
+                        if mm_level not in (CHAT_LEVEL_STAFF, CHAT_LEVEL_OWNER):
+                            await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+                        allowed = data.get("allowed")
+                        if not isinstance(allowed, bool):
+                            await ws.send_json({"type": "error", "message": "allowed must be true or false"})
+                            continue
+                        if bool(channel.get("allow_mass_mentions")) != allowed:
+                            await db.set_allow_mass_mentions(channel["id"], allowed)
+                            await broadcast_to_channel(current_channel, {
+                                "type": "mass_mentions_changed", "allowed": allowed,
+                                "channel_id": channel["id"]})
+                            await _audit_chat_mod("mass_mentions_set", user_id, username, mm_level, channel,
+                                                  extra={"allowed": allowed})
 
                     elif msg_type == "get_bans":
                         # Get list of banned users (stream owner only)

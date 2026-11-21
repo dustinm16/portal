@@ -409,6 +409,22 @@ for name, needles in (("the table and the routes", ("channel_notify_prefs", "/ap
                       ("what is not tested", ("not tested", "no browser", "phone", "push service", "cloudflare"))):
     check(f"1.19.0 states: {name}", all(n in low19 for n in needles), str(needles))
 
+# --- 1.19.0 notes: @here and @everyone ---------------------------------------------------
+for name, needles in (("the switch, the frame and who sets it", ("allow_mass_mentions", "set_mass_mentions", "stream mod", "mass_mentions_changed")),
+                      ("who may use it", ("chat_mod_level", "global staff")),
+                      ("the limit and its notice", ("60 seconds", "mass_mention_limited", "uses no slot")),
+                      ("the recipients", ("@everyone** notifies every member who may read", "appear offline", "mentions only still gets it")),
+                      ("the cap and the single transaction", ("500 members", "one transaction", "one row per member")),
+                      ("anonymous senders", ("anonymous sender", "dropped")),
+                      ("automod weight", ("mention_spam", "counts as 5")),
+                      ("code spans and no groups", ("code span", "no named groups")),
+                      ("the column and the rollback", ("chat_channels.allow_mass_mentions", "1.18.0 ignores `allow_mass_mentions`")),
+                      ("what is not proven", ("check_massmention", "real push service", "thousands of members"))):
+    check(f"1.19.0 states: @here/@everyone {name}", all(n in low19 for n in needles), str(needles))
+_defaults = (ROOT / "server.py").read_text()
+check("1.19.0: the cap and the cooldown stated are the ones in the code",
+      "MASS_MENTION_CAP = 500" in _defaults and "MASS_MENTION_COOLDOWN = 60.0" in _defaults and "MASS_MENTION_WEIGHT = 5" in _defaults)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
