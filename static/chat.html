@@ -83,6 +83,11 @@
         .ch-notif-bell:hover { opacity: 1 !important; color: var(--text-primary); }
         .ch-notif-bell.active { opacity: 1; color: var(--accent-blue, #60a5fa); }
         .ch-notif-bell.muted { opacity: 1; color: var(--text-muted); text-decoration: line-through; }
+        /* No hover on a touch screen: the bell is always visible (dimmed unless it is active or muted) and a
+           finger-sized target */
+        @media (hover: none) {
+            .ch-notif-bell { opacity: 0.55; min-width: 32px; min-height: 32px; justify-content: center; }
+        }
         .notify-menu {
             position: fixed; z-index: 10000; min-width: 220px; padding: 4px;
             background: var(--bg-secondary, #1f2430); color: var(--text-primary, #e6e6e6);

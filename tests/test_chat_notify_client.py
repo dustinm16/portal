@@ -47,6 +47,10 @@ check("the stream follow bell is kept", "toggleStreamFollow(channelName, e)" in 
 _bell = next((ln for ln in CHAT.splitlines() if "const bellBtn = " in ln), "")
 check("the bell button carries data attributes and no inline handler",
       bool(_bell) and "onclick" not in _bell and 'data-bell-channel-id="${Number(ch.id)}"' in _bell and "data-bell-kind=" in _bell, _bell[:120])
+_touch = re.search(r"@media \(hover: none\)\s*\{([^}]*\.ch-notif-bell[^}]*)\}", CHAT)
+check("on a touch screen (hover: none) the bell is visible at reduced opacity with a target of at least 32 px",
+      bool(_touch) and re.search(r"opacity:\s*0\.[3-9]", _touch.group(1)) and re.search(r"min-width:\s*(3[2-9]|[4-9]\d)px", _touch.group(1))
+      and re.search(r"min-height:\s*(3[2-9]|[4-9]\d)px", _touch.group(1)), str(_touch and _touch.group(1)))
 check("the bells are bound with addEventListener after each render",
       "bindChannelBells(list);" in CHAT and "btn.addEventListener('click'" in CHAT and "btn.dataset.bellChannelId" in CHAT)
 check("the PUT goes to the notify route", "/notify`" in CHAT and "method: 'PUT'" in CHAT)
