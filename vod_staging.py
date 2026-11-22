@@ -465,17 +465,33 @@ def backlog_bytes(session_dir: str, live: bool = False) -> int:
     return sum(_chunk_size(f) for f in files)
 
 
-def total_backlog_bytes(root: str, live_dirs=()) -> int:
+def total_backlog_bytes(root: str, live_dirs=(), owner_id: Optional[int] = None) -> int:
+    """Bytes waiting in all session folders under *root*, or, with *owner_id*, in that owner's folders only.
+
+    A folder belongs to the user named in its session record; a folder without a usable record
+    belongs to nobody and is left out of an owner's count (the free-space floor still covers it).
+    """
     live = {os.path.abspath(d) for d in live_dirs}
-    return sum(backlog_bytes(d, os.path.abspath(d) in live) for d in list_session_dirs(root))
+    total = 0
+    for d in list_session_dirs(root):
+        if owner_id is not None:
+            meta = read_sidecar(d)
+            if not meta or meta.get("user_id") != owner_id:
+                continue
+        total += backlog_bytes(d, os.path.abspath(d) in live)
+    return total
 
 
-def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_dir: Optional[str] = None):
+def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_dir: Optional[str] = None,
+                  owner_id: Optional[int] = None):
     """Why a recording must not run (or start), as (code, text), or None when all is well.
 
     *min_free* and *max_backlog* are bytes, 0 switches that check off. *live_dirs* are the
     session folders of running recordings (their unfinished chunk is not backlog); *own_dir*
-    is the recording being checked (None for a recording that has not started).
+    is the recording being checked (None for a recording that has not started). The free-space
+    floor is global; the backlog limit is counted for *owner_id* alone (the owner's own waiting
+    chunks across their folders), so one member's unreachable storage cannot stop other members'
+    recordings. Without *owner_id* every folder counts (a caller that does not know the owner).
     """
     try:
         free = free_bytes(root)
@@ -491,10 +507,11 @@ def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_
                 return ("session_backlog",
                         f"{format_size(own)} of this recording is waiting to be uploaded "
                         f"(limit {format_size(max_backlog)})")
-        total = total_backlog_bytes(root, live_dirs)
+        total = total_backlog_bytes(root, live_dirs, owner_id)
         if total > max_backlog:
+            whose = "of your recordings" if owner_id is not None else "of recordings"
             return ("total_backlog",
-                    f"{format_size(total)} of recordings are waiting to be uploaded "
+                    f"{format_size(total)} {whose} are waiting to be uploaded "
                     f"(limit {format_size(max_backlog)})")
     return None
 

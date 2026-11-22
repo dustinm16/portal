@@ -7854,13 +7854,17 @@ def _vod_live_dirs() -> list:
     return [rec["session_dir"] for rec in list(active_recordings.values()) if rec.get("session_dir")]
 
 
-async def _vod_guard_check(own_dir: Optional[str] = None):
-    """(code, text) when a recording may not run or start, else None. Runs the disk reads off the loop."""
+async def _vod_guard_check(own_dir: Optional[str] = None, owner_id: Optional[int] = None):
+    """(code, text) when a recording may not run or start, else None. Runs the disk reads off the loop.
+
+    The free-space floor is global. The backlog limit is the owner's own: *owner_id* is the streamer
+    whose recording is checked, and only that streamer's waiting chunks count.
+    """
     min_free, max_backlog, _age = await _vod_guard_limits()
     if not (min_free or max_backlog):
         return None
     return await asyncio.to_thread(
-        vod_staging.guard_verdict, VOD_TEMP_DIR, min_free, max_backlog, _vod_live_dirs(), own_dir)
+        vod_staging.guard_verdict, VOD_TEMP_DIR, min_free, max_backlog, _vod_live_dirs(), own_dir, owner_id)
 
 
 async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, verdict: tuple,
@@ -7950,7 +7954,7 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         try:
             own = os.path.abspath(VOD_TEMP_DIR) == Config.VOD_TEMP_DIR_DEFAULT
             vod_staging.ensure_private_dir(VOD_TEMP_DIR, (STATIC_DIR,), _PROJECT_ROOT, allow_temp=own)
-            guard_verdict = await _vod_guard_check()
+            guard_verdict = await _vod_guard_check(owner_id=user_id)
         except (OSError, ValueError) as e:
             skip_reason = f"VOD staging folder is not usable: {e}"
     if guard_verdict:
@@ -8091,7 +8095,7 @@ async def _vod_guard_loop(recording: dict) -> None:
     process = recording["process"]
     while not stop_event.is_set() and process.returncode is None:
         try:
-            verdict = await _vod_guard_check(recording["session_dir"])
+            verdict = await _vod_guard_check(recording["session_dir"], recording["user_id"])
         except Exception as e:
             verdict = None
             logger.debug(f"VOD disk guard check failed: {e}")

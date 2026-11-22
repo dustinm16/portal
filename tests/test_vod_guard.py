@@ -207,8 +207,10 @@ def test_total_backlog_of_other_folders_refuses_a_start():
     with tempfile.TemporaryDirectory(prefix="vodguard_") as t:
         env = Env(t, {"vod_min_free_gb": "0", "vod_max_backlog_gb": "0.00001"})  # about 10 KB
         vs.ensure_private_dir(env.stage)
-        os.makedirs(os.path.join(env.stage, "1_2026-01-01_1"))
-        Path(env.stage, "1_2026-01-01_1", "chunk_000.mkv").write_bytes(b"x" * 20000)
+        leftover = os.path.join(env.stage, "1_2026-01-01_1")
+        os.makedirs(leftover)
+        Path(leftover, "chunk_000.mkv").write_bytes(b"x" * 20000)
+        vs.write_sidecar(leftover, {"stream_id": 1, "user_id": 7, "stream_name": "s", "remote_session_dir": "/v/s/d"})
 
         async def go():
             with env:
@@ -217,6 +219,50 @@ def test_total_backlog_of_other_folders_refuses_a_start():
 
         state = asyncio.run(go())
         assert state[7]["kind"] == "refused" and state[7]["code"] == "total_backlog", state
+
+
+def test_the_backlog_limit_is_counted_per_owner_but_the_free_space_floor_stays_global():
+    with tempfile.TemporaryDirectory(prefix="vodguard_") as t:
+        stage = os.path.join(t, "stage")
+        vs.ensure_private_dir(stage)
+
+        def folder(name, user, size):
+            d = os.path.join(stage, name)
+            os.makedirs(d)
+            Path(d, "chunk_000.mkv").write_bytes(b"x" * size)
+            if user is not None:
+                vs.write_sidecar(d, {"stream_id": 1, "user_id": user, "stream_name": "s", "remote_session_dir": "/v/s"})
+
+        folder("1_a", 5, 20000)     # owner 5 is over a 10 KB limit
+        folder("2_b", 6, 4000)      # owner 6 is under it
+        folder("3_c", 6, 4000)      # a second folder of owner 6: 8000 in total, still under
+        folder("4_none", None, 50000)  # no session record: nobody's
+        limit = 10000
+        v = vs.guard_verdict
+        assert v(stage, 0, limit, (), None, 5)[0] == "total_backlog"
+        assert v(stage, 0, limit, (), None, 6) is None, "another owner's backlog must not refuse this owner"
+        assert v(stage, 0, limit, (), None, 99) is None
+        assert vs.total_backlog_bytes(stage, (), 6) == 8000 and vs.total_backlog_bytes(stage, (), 5) == 20000
+        assert vs.total_backlog_bytes(stage, ()) == 20000 + 8000 + 50000
+        # the owner's own folders add up across folders
+        folder("5_d", 6, 4000)
+        assert v(stage, 0, limit, (), None, 6)[0] == "total_backlog"
+        # the free-space floor is global: it refuses every owner
+        assert v(stage, 1 << 62, 0, (), None, 99)[0] == "low_free_space"
+
+        # end to end: owner 7 starts while owner 5 has a big backlog
+        env = Env(t, {"vod_min_free_gb": "0", "vod_max_backlog_gb": "0.00001"})
+        env.stage = stage
+
+        async def go():
+            with env:
+                await env.start()
+                ok = 9 in server.active_recordings
+                await server.stop_vod_recording(9, force=True)
+                return ok, dict(server._vod_guard_state)
+
+        ok, state = asyncio.run(go())
+        assert ok and 7 not in state, state
 
 
 def test_zero_switches_both_checks_off():
