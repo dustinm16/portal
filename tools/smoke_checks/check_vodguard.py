@@ -99,8 +99,8 @@ async def run(ctx):
         ctx.ok("vodguard: the three new settings are part of the retention settings", r["defaults_present"] is True)
         ctx.ok("vodguard: below the free-space floor a new recording is refused (no ffmpeg, no folder)",
                r["not_started"] and r["no_folder"], str(r)[:200])
-        ctx.ok("vodguard: the refusal and its reason are in the owner's activity log",
-               len(r["activity"]) >= 1 and all("was not started" in a["detail"] and "free" in a["detail"] for a in r["activity"]),
+        ctx.ok("vodguard: the refusal and its reason are in the owner's activity log, once however often the stream reconnects",
+               len(r["activity"]) == 1 and all("was not started" in a["detail"] and "free" in a["detail"] for a in r["activity"]),
                str(r["activity"])[:200])
         ctx.ok("vodguard: My VODs gets the refusal as recording_guard (kind, code, message)",
                bool(r["public"]) and r["public"]["kind"] == "refused" and r["public"]["code"] == "low_free_space"

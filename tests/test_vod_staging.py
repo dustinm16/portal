@@ -487,6 +487,7 @@ def test_start_refuses_when_free_space_low_and_logs_it():
     server = _server_module()
     with tmp() as t:
         stream = {"id": 9, "user_id": 7, "name": "My Show", "owner_username": "owner"}
+        server._vod_skip_logged.clear()  # one refusal row per stream and reason per hour, kept across tests
         logged = []
 
         class FakeDb:
@@ -1034,6 +1035,7 @@ def test_recording_marks_its_folder_busy_until_cleanup():
     server = _server_module()
     with tmp() as t:
         stream = {"id": 9, "user_id": 7, "name": "My Show", "owner_username": "owner"}
+        server._vod_skip_logged.clear()  # one refusal row per stream and reason per hour, kept across tests
 
         class Db:
             async def get_vod_storage(self, uid):
