@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Open Relay Portal - VOD Player</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=55">
+    <script src="/static/js/theme.js?v=3"></script>
+    <style>
+        .vp-wrap { max-width: 960px; margin: 0 auto; padding: 1rem; box-sizing: border-box; }
+        .vp-title { font-size: 1rem; margin: 0 0 0.25rem 0; word-break: break-all; }
+        .vp-sub { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem; word-break: break-all; }
+        .vp-stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+        .vp-stage video { display: block; width: 100%; max-height: 70vh; background: #000; }
+        .vp-status { padding: 1.25rem 1rem; text-align: center; font-size: 0.9rem; color: var(--text-primary); }
+        .vp-status .spinner { margin: 0 auto 0.75rem auto; }
+        .vp-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+        .vp-controls .btn, .vp-controls select { min-height: 2.5rem; }
+        .vp-controls select { padding: 0 0.5rem; border-radius: 6px; border: 1px solid var(--card-border); background: var(--card-bg); color: var(--text-primary); }
+        .vp-spacer { flex: 1; }
+        .vp-pos { font-size: 0.8rem; color: var(--text-muted); }
+        @media (max-width: 600px) {
+            .vp-wrap { padding: 0.5rem; }
+            .vp-controls .btn { flex: 1 1 40%; }
+            .vp-spacer { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+            </svg>
+            Open Relay Portal - VOD Player
+        </div>
+        <button class="navbar-toggle" aria-label="Toggle menu" aria-expanded="false">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
+            <a href="/about">About</a>
+            <a href="/guides">Guides</a>
+            <a href="/terminal/local" target="_blank" rel="noopener" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            </a>
+            <a href="/dashboard" class="navbar-user" id="user-info" title="User Profile">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span id="username-display"></span>
+                <span id="admin-badge" class="admin-badge" style="display: none;">Admin</span>
+            </a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="vp-wrap">
+        <h1 class="vp-title" id="vp-title">VOD</h1>
+        <div class="vp-sub" id="vp-sub"></div>
+        <div class="vp-stage">
+            <video id="vp-video" controls playsinline preload="metadata" style="display: none;"></video>
+            <div class="vp-status" id="vp-status" role="status" aria-live="polite">
+                <div class="spinner" id="vp-spinner"></div>
+                <div id="vp-message">Loading...</div>
+                <div class="vp-controls" id="vp-status-actions" style="justify-content: center; display: none;">
+                    <button class="btn btn-secondary btn-sm" id="vp-retry" type="button">Try again</button>
+                </div>
+            </div>
+        </div>
+        <div class="vp-controls">
+            <button class="btn btn-secondary" id="vp-prev" type="button" disabled>&laquo; Previous</button>
+            <button class="btn btn-secondary" id="vp-next" type="button" disabled>Next &raquo;</button>
+            <span class="vp-pos" id="vp-pos"></span>
+            <span class="vp-spacer"></span>
+            <label for="vp-speed" class="vp-pos">Speed</label>
+            <select id="vp-speed" aria-label="Playback speed">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+            </select>
+            <button class="btn btn-secondary" id="vp-pip" type="button" style="display: none;">Picture in picture</button>
+            <a class="btn btn-primary" id="vp-download" href="#">Download</a>
+            <a class="btn btn-secondary" href="/dashboard">My VODs</a>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=46"></script>
+    <script src="/static/js/push.js?v=4"></script>
+    <script src="/static/js/vod-player.js?v=1"></script>
+</body>
+</html>

@@ -2283,7 +2283,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">List VOD files</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Recursively lists MKV files in the user's remote storage directory. Files are organized by recording session: <code>StreamName/YYYY-MM-DD_HH-MM-SS/chunk_NNN.mkv</code>. Returns 404 if no storage is configured. The answer carries <code>recording_guard</code> (see <code>GET /api/vods/storage</code>), and so do the 502 answers when the storage cannot be reached.</p>
+                        <p>Recursively lists MKV files in the user's remote storage directory. Files are organized by recording session: <code>StreamName/YYYY-MM-DD_HH-MM-SS/chunk_NNN.mkv</code>. Returns 404 if no storage is configured. The answer carries <code>recording_guard</code> (see <code>GET /api/vods/storage</code>) and <code>playback</code> (<code>{enabled, message}</code>), and <code>recording_guard</code> is also on the 502 answers when the storage cannot be reached.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -2303,6 +2303,29 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
   "path": "/home/user/vods"
 }</pre>
                         </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/play/{path}.mp4</span>
+                        <span class="endpoint-desc">Play one of your own VOD chunks as MP4</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{path}</code> is the path <code>GET /api/vods</code> lists with <code>.mp4</code> appended (<code>StreamName/2026-01-01/chunk_000.mkv.mp4</code>). The portal fetches the chunk over the pinned SFTP connection, checks it with ffprobe, remuxes it without transcoding and keeps the MP4 in a size-capped cache. The answer is that MP4 (<code>video/mp4</code>, <code>Range</code> works, <code>Cache-Control: private, no-cache</code>). Needs a browser session or a full-scope credential (an all-scope <code>*</code> token or API key); stream keys and scoped keys get 403, as on every other <code>/api/vods</code> route. Playback is owner only: another member, and an administrator asking for another member's chunk, get 404, the same as for a chunk that does not exist.</p>
+                        <p><strong>202</strong> not prepared yet (<code>state</code>, <code>stage</code>, <code>status_url</code>, <code>Retry-After</code>): poll the status route, then ask again. <strong>404</strong> not your chunk or not a listed chunk path. <strong>409</strong> the newest chunk of a stream that is being recorded now. <strong>415</strong> download only (<code>reason</code>): anything but H.264 with AAC or MP3 audio or no audio, or too large for the cache. <strong>429</strong> too many chunks being prepared. <strong>502</strong> storage unreachable. <strong>503</strong> playback off (<code>vod_play_cache_mb</code> is 0, <code>code: playback_off</code>), no usable cache folder, or not enough free disk. <strong>500</strong> conversion failed (nothing is kept). A copy is tied to the chunk's size and modification time; a changed chunk is prepared again.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/play-status/{path}.mp4</span>
+                        <span class="endpoint-desc">Progress of preparing a chunk</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Same path form and authentication as the play route; never starts a job and never contacts the storage. Returns <code>{"state": "idle"}</code>, <code>{"state": "preparing", "stage": "queued|waiting|pulling|probing|remuxing"}</code>, <code>{"state": "ready"}</code>, <code>{"state": "unplayable", "reason", "message"}</code> (download only) or <code>{"state": "failed", "error"}</code>. <code>GET /api/vods</code> carries <code>playback: {enabled, message}</code> so a client knows whether to offer Play.</p>
                     </div>
                 </div>
 
@@ -6066,7 +6089,7 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns the current data retention settings. <code>vod_min_free_gb</code> (default <code>1</code>), <code>vod_max_backlog_gb</code> (default <code>2</code>) and <code>vod_orphan_max_age_days</code> (default <code>14</code>) belong to the VOD temp folder. The two gigabyte values accept fractions (<code>0.5</code>) and <code>0</code> switches that check off (at most 100000); below the free-space floor, or with more chunks waiting to be uploaded than the backlog limit (in one recording's folder, or in all of them), a new VOD recording is refused and a running one is stopped, never the live stream. <code>vod_orphan_max_age_days</code> (0 to 3650, <code>0</code> = never) removes a leftover recording folder that has no session record after that many days; chunks of an owner whose storage is configured are never removed, only uploaded. Writing these settings needs a superadmin like the others. <code>recording_max_total_mb</code> (default <code>2048</code>, <code>0</code> = no limit, at most 10000000) is the budget for the whole recordings folder: a new SSH or terminal session is not recorded (it carries on, and its <code>connected</code> frame says <code>recording: false</code>) while the folder holds that much, or while the disk of the folder has less than 1 GB or 5 percent free, whichever is smaller. Nothing older is deleted to make room, and sessions that start at the same time can overshoot it by up to 50 MB each. It is set with <code>PUT /api/admin/retention</code> (superadmin only).</p>
+                        <p>Returns the current data retention settings. <code>vod_min_free_gb</code> (default <code>1</code>), <code>vod_max_backlog_gb</code> (default <code>2</code>) and <code>vod_orphan_max_age_days</code> (default <code>14</code>) belong to the VOD temp folder. The two gigabyte values accept fractions (<code>0.5</code>) and <code>0</code> switches that check off (at most 100000); below the free-space floor, or with more chunks waiting to be uploaded than the backlog limit (in one recording's folder, or in all of them), a new VOD recording is refused and a running one is stopped, never the live stream. <code>vod_play_cache_mb</code> (default <code>512</code>, at most 1000000, <code>0</code> = browser playback off and the cache emptied) caps the folder of MP4 copies that <code>GET /api/vods/play/...</code> serves (least recently used go first; it never grows while less than <code>vod_min_free_gb</code> is free). <code>vod_orphan_max_age_days</code> (0 to 3650, <code>0</code> = never) removes a leftover recording folder that has no session record after that many days; chunks of an owner whose storage is configured are never removed, only uploaded. Writing these settings needs a superadmin like the others. <code>recording_max_total_mb</code> (default <code>2048</code>, <code>0</code> = no limit, at most 10000000) is the budget for the whole recordings folder: a new SSH or terminal session is not recorded (it carries on, and its <code>connected</code> frame says <code>recording: false</code>) while the folder holds that much, or while the disk of the folder has less than 1 GB or 5 percent free, whichever is smaller. Nothing older is deleted to make room, and sessions that start at the same time can overshoot it by up to 50 MB each. It is set with <code>PUT /api/admin/retention</code> (superadmin only).</p>
                         <h4>Response Example</h4>
                         <div class="code-block">
 <pre>{

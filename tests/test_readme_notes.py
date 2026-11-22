@@ -677,7 +677,7 @@ for name, needles in {
 check("1.21.0: the defaults stated are the ones in the code",
       (_vs21.DEFAULT_MIN_FREE_GB, _vs21.DEFAULT_MAX_BACKLOG_GB, _vs21.DEFAULT_ORPHAN_MAX_AGE_DAYS) == (1.0, 2.0, 14))
 check("1.21.0: the vods.js version stated is the one index.html loads",
-      "`vods.js` is now v7" in _sec21 and "/static/js/vods.js?v=7" in (ROOT / "static" / "index.html").read_text())
+      "`vods.js` is now v8" in _sec21 and "/static/js/vods.js?v=8" in (ROOT / "static" / "index.html").read_text())
 check("1.21.0: the new alert event is in the README event list, the API reference and the API page",
       "`vod.recording_stopped`" in text.split("### Upgrade notes for 1.21.0")[0]
       and "vod.recording_stopped" in (ROOT / "docs" / "API.md").read_text()
@@ -687,6 +687,34 @@ check("1.21.0 states: the live uploader never replaces a remote chunk",
 _srv21 = (ROOT / "server.py").read_text()
 check("1.21.0: the live uploader's final rename no longer replaces or deletes the remote file",
       "posix_rename" not in _srv21 and "sftp.remove(final_path)" not in _srv21)
+# --- 1.21.0: VOD playback in the browser ---------------------------------------------------------
+import vod_play as _vp21  # noqa: E402
+for name, needles in {
+        "playback who and what": ("**vod playback in the browser**", "owner only", "another member, and an administrator", "same 404",
+                                  "no sharing", "h.264 video", "415", "download only", "409", "-movflags +faststart"),
+        "playback jobs": ("202", "one job per chunk", "two jobs at a time", "three queued or running", "`nice` and `ionice`",
+                          "leaves nothing in the cache"),
+        "playback cache": ("`data/vod_play_cache`", "`vod_play_cache_mb`", "**default 512**", "`0` switches playback off", "0700",
+                           "`vod_min_free_gb`", "least recently used", "remote size and modification time", "reconciled",
+                           "excluded from update snapshots"),
+        "playback behaviour and rollback": ("no breaking changes", "no migration", "1.20.0 has no play routes"),
+        "playback rollback empties the cache": ("copies it into every snapshot", "rollback therefore empties the cache folder",
+                                                "set `vod_play_cache_mb` to `0` first"),
+        "playback not tested": ("no browser, phone, picture in picture", "real remote storage", "cloudflare"),
+}.items():
+    check(f"1.21.0 states: {name}", all(n in low21 for n in needles), str([n for n in needles if n not in low21]))
+check("1.21.0: the playback default stated is the one in the code and in the settings",
+      _vp21.DEFAULT_CACHE_MB == 512 and _vp21.cache_cap_bytes(None) == 512 * 1024 * 1024)
+check("1.21.0: the new files and versions stated are the ones the pages load",
+      "`vod-player.js` v1" in _sec21 and "/static/js/vod-player.js?v=1" in (ROOT / "static" / "vod-player.html").read_text())
+check("1.21.0: the playback routes and setting are in the API reference and the API page",
+      all(x in (ROOT / "docs" / "API.md").read_text() and x in (ROOT / "static" / "api-docs.html").read_text()
+          for x in ("/api/vods/play/{path}.mp4", "/api/vods/play-status/{path}.mp4", "vod_play_cache_mb")))
+check("the player page has no inline handlers and the new JS adds none",
+      "onclick" not in (ROOT / "static" / "vod-player.html").read_text().split("<nav")[0]
+      and "onclick" not in (ROOT / "static" / "vod-player.html").read_text().split("</nav>")[1]
+      and "onclick=" not in (ROOT / "static" / "js" / "vod-player.js").read_text()
+      and "vod-play-btn" in (ROOT / "static" / "js" / "vods.js").read_text())
 check("the 1.21.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec21))
 
 if failures:

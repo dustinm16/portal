@@ -2763,7 +2763,7 @@ Test SFTP connection with provided credentials.
 ---
 
 #### GET /api/vods
-List MKV files in user's remote storage. Recursively scans all subdirectories. The answer carries `recording_guard` (see `GET /api/vods/storage`) next to `files` and `path`, and the 502 answers (storage unreachable) carry it next to `error`, so My VODs can say why a recording was stopped even when the storage cannot be listed.
+List MKV files in user's remote storage. Recursively scans all subdirectories. The answer carries `recording_guard` (see `GET /api/vods/storage`) and `playback` (`{enabled, message}`, see `GET /api/vods/play/{path}.mp4`) next to `files` and `path`, and the 502 answers (storage unreachable) carry it next to `error`, so My VODs can say why a recording was stopped even when the storage cannot be listed.
 
 VOD files are organized in a directory structure created by the automatic recording pipeline, sourced from RTSPS:
 ```
@@ -2813,6 +2813,30 @@ Stream-download a VOD file from remote storage. Only `.mkv` files allowed. Suppo
 **Response:** Binary file stream with `Content-Disposition: attachment` header.
 
 **Security:** Path traversal (`..`, absolute paths) is rejected.
+
+---
+
+#### GET /api/vods/play/{path}.mp4
+Play one of your own VOD chunks in the browser. `{path}` is the path `GET /api/vods` lists (for example `StreamName/2026-01-01/chunk_000.mkv`) with `.mp4` appended, so the URL ends `chunk_000.mkv.mp4`. The portal fetches the chunk over the pinned SFTP connection, checks it with ffprobe, remuxes it without transcoding (`ffmpeg -c copy -movflags +faststart`) and keeps the MP4 in a size-capped cache; the answer is that MP4 (`video/mp4`, `Range` requests work, 200 or 206).
+
+**Authentication:** the same as the other `/api/vods` routes: a browser session or a full-scope credential (an all-scope `*` token or API key). Stream keys and scoped keys get 403; no narrower API key scope covers it, because none covers listing and downloading VODs either. Playback is **owner only**: the path is always resolved against the caller's own VOD storage, so another member, and an administrator asking for another member's chunk, get the same 404 as for a chunk that does not exist.
+
+**Answers:**
+- `200`/`206` the MP4 (`Cache-Control: private, no-cache`, never stored by a shared cache).
+- `202` not prepared yet: `{"state": "preparing", "stage", "status_url"}` with `Retry-After`. A job has been started (one per chunk, two at a time on the server, three per member); poll `status_url`, then request the chunk again. The request waits at most about two seconds for a job before it answers 202.
+- `404` no such chunk in your storage, or a path that is not a listed chunk (`..`, absolute, hidden names, empty segments, not `.mkv`).
+- `409` the newest chunk of a folder a stream is recording to right now (still being written or uploaded).
+- `415` download only: `{"error", "reason", "state": "unplayable"}` for anything but H.264 video (8 bit 4:2:0) with AAC or MP3 audio or no audio, and for a chunk too large for the cache (it needs about twice its size while it is prepared).
+- `429` too many of your chunks are being prepared (`Retry-After`). `502` the storage cannot be reached. `503` playback is off (`vod_play_cache_mb` is 0, `"code": "playback_off"`), the cache folder is not usable, or there is not enough free disk space (the cache never grows while less than `vod_min_free_gb` is free). `500` the chunk could not be converted (nothing is kept).
+
+A copy is tied to the chunk's remote size and modification time. They are read from the storage afresh by every request without a `Range` header or with a range from byte 0 (the start of a playback) and remembered for 15 seconds for the continuation ranges: a chunk that changed on the storage is prepared again. Copies are removed when the account or the storage is deleted or points elsewhere.
+
+---
+
+#### GET /api/vods/play-status/{path}.mp4
+Progress of the job for a chunk, same path form and authentication as the play route; it never starts a job and never contacts the storage. `{"state": "idle"}` (no job, nothing cached), `{"state": "preparing", "stage": "queued|waiting|pulling|probing|remuxing"}`, `{"state": "ready"}`, `{"state": "unplayable", "reason", "message"}` (download only; remembered for 10 minutes) or `{"state": "failed", "error"}` (shown for 30 seconds; the next play request tries again). 404 as above, 503 when playback is off.
+
+The `GET /api/vods` answer carries `playback: {"enabled": true|false, "message": null|"..."}` so a client knows whether to offer Play. The player page is `/vods/play?name=<listed path>` (sign-in required).
 
 ---
 
@@ -3820,7 +3844,7 @@ Feature switches (admin). `allow_user_connections` and `allow_user_streams` are 
 Data retention settings control automatic cleanup of old chat messages, DMs, notifications, activity logs, and service logs.
 
 #### GET /api/admin/retention
-Get data retention configuration settings. `vod_min_free_gb` (default `1`), `vod_max_backlog_gb` (default `2`) and `vod_orphan_max_age_days` (default `14`) belong to the VOD temp folder. The two gigabyte values accept fractions (`0.5`) and `0` switches that check off (at most 100000); below the free-space floor, or with more chunks waiting to be uploaded than the backlog limit (in one recording's folder, or in all of them), a new VOD recording is refused and a running one is stopped, never the live stream. `vod_orphan_max_age_days` (0 to 3650, `0` = never) removes a leftover recording folder that has no session record after that many days; chunks of an owner whose storage is configured are never removed, only uploaded. Writing these settings needs a superadmin like the others. `recording_max_total_mb` (default `2048`, `0` = no limit, at most 10000000) is the budget for the whole recordings folder: a new SSH or terminal session is not recorded (it carries on, and its `connected` frame says `recording: false`) while the folder holds that much, or while the disk of the folder has less than 1 GB or 5 percent free, whichever is smaller. Nothing older is deleted to make room, and sessions that start at the same time can overshoot it by up to 50 MB each. It is set with `PUT /api/admin/retention` (superadmin only).
+Get data retention configuration settings. `vod_min_free_gb` (default `1`), `vod_max_backlog_gb` (default `2`) and `vod_orphan_max_age_days` (default `14`) belong to the VOD temp folder. The two gigabyte values accept fractions (`0.5`) and `0` switches that check off (at most 100000); below the free-space floor, or with more chunks waiting to be uploaded than the backlog limit (in one recording's folder, or in all of them), a new VOD recording is refused and a running one is stopped, never the live stream. `vod_play_cache_mb` (default `512`, at most 1000000, `0` = browser playback off and the cache emptied) caps the folder of MP4 copies that `GET /api/vods/play/...` serves; the copies are removed least recently used first and the folder never grows while less than `vod_min_free_gb` is free. `vod_orphan_max_age_days` (0 to 3650, `0` = never) removes a leftover recording folder that has no session record after that many days; chunks of an owner whose storage is configured are never removed, only uploaded. Writing these settings needs a superadmin like the others. `recording_max_total_mb` (default `2048`, `0` = no limit, at most 10000000) is the budget for the whole recordings folder: a new SSH or terminal session is not recorded (it carries on, and its `connected` frame says `recording: false`) while the folder holds that much, or while the disk of the folder has less than 1 GB or 5 percent free, whichever is smaller. Nothing older is deleted to make room, and sessions that start at the same time can overshoot it by up to 50 MB each. It is set with `PUT /api/admin/retention` (superadmin only).
 
 **Auth**: Admin or higher
 
@@ -3839,6 +3863,7 @@ Get data retention configuration settings. `vod_min_free_gb` (default `1`), `vod
   "vod_min_free_gb": "1",
   "vod_max_backlog_gb": "2",
   "vod_orphan_max_age_days": "14",
+  "vod_play_cache_mb": "512",
   "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
@@ -3866,6 +3891,7 @@ Update data retention settings.
   "vod_min_free_gb": "1",
   "vod_max_backlog_gb": "2",
   "vod_orphan_max_age_days": "14",
+  "vod_play_cache_mb": "512",
   "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"

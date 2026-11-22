@@ -6907,6 +6907,11 @@
                         <span style="font-size:0.7rem;color:var(--text-muted);">Chunks not yet uploaded to the streamers' storage, per recording and in total; over it recordings are refused or stopped; 0 = off</span>
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Browser Playback Cache (MB)</label>
+                        <input type="number" id="ret-vod-play-cache" value="${c.vod_play_cache_mb}" min="0" step="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">Disk the portal may use for the MP4 copies a streamer watches in My VODs (least recently used go first; a chunk needs about twice its size while it is prepared). It never grows while less than the free space above is left. 0 = playback off, the copies are removed and chunks can only be downloaded</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Orphan Folder Age (days)</label>
                         <input type="number" id="ret-vod-orphan-age" value="${c.vod_orphan_max_age_days}" min="0" max="3650" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                         <span style="font-size:0.7rem;color:var(--text-muted);">A leftover recording folder without a session record is removed after this many days; 0 = never. Chunks of a streamer whose storage is configured are never removed, only delivered</span>
@@ -6950,6 +6955,7 @@
                 recording_max_total_mb: pInt('ret-recording-max', 2048),
                 vod_min_free_gb: pFloat('ret-vod-min-free', 1),
                 vod_max_backlog_gb: pFloat('ret-vod-backlog', 2),
+                vod_play_cache_mb: pInt('ret-vod-play-cache', 512),
                 vod_orphan_max_age_days: pInt('ret-vod-orphan-age', 14),
                 retention_security_events_days: pInt('ret-security-events', 180),
                 cleanup_interval_hours: pInt('ret-interval', 6),

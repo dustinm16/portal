@@ -101,6 +101,14 @@ class Config:
         os.getenv("VOD_TEMP_DIR", "") or os.path.join("data", "vod_tmp"),
     ))
 
+    # Cache of remuxed MP4 copies that the browser plays (My VODs, Play). Beside the staging folder,
+    # never under /tmp; a folder that is not safe to use is refused (see vod_play.refusal_reason) and
+    # playback is off until it is fixed. Its size cap is the setting vod_play_cache_mb.
+    VOD_PLAY_CACHE_DIR: str = os.path.abspath(os.path.join(
+        str(Path(__file__).parent),
+        os.getenv("VOD_PLAY_CACHE_DIR", "") or os.path.join("data", "vod_play_cache"),
+    ))
+
     # Run each local web-terminal shell in its own systemd scope, so tmux /
     # screen sessions started from it survive a portal restart.
     TERMINAL_OWN_SCOPE: bool = os.getenv("TERMINAL_OWN_SCOPE", "true").lower() == "true"

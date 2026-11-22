@@ -242,6 +242,7 @@ def write_env(stage: Path, port: int, cert: Path, key: Path, base_env: Path | No
         "DATABASE_PATH": str(stage / "portal.db"),
         "RECORDINGS_DIR": str(stage / "recordings"),
         "VOD_TEMP_DIR": str(stage / "data" / "vod_tmp"),
+        "VOD_PLAY_CACHE_DIR": str(stage / "data" / "vod_play_cache"),
         "PORTAL_STAGE_MODE": "1",
         # turn on the scanner-probe blocker so a check about it is not vacuous
         "PROBE_BLOCK_STRIKES": "3",

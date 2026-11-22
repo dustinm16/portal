@@ -9006,6 +9006,7 @@ class Database:
         "vod_min_free_gb": "1",
         "vod_max_backlog_gb": "2",
         "vod_orphan_max_age_days": "14",
+        "vod_play_cache_mb": "512",
         "retention_security_events_days": "180",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
@@ -9055,6 +9056,7 @@ class Database:
                         "retention_recordings_days": 3650,
                         "recording_max_total_mb": 10_000_000,
                         "vod_orphan_max_age_days": 3650,
+                        "vod_play_cache_mb": 1_000_000,
                         "retention_security_events_days": 3650,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }

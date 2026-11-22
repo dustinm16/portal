@@ -818,6 +818,97 @@ def test_rollback_to_an_older_snapshot_that_holds_uploads_does_not_restore_them(
         assert not (up / "chat" / "deleted_later.png").exists(), "an old snapshot brought a deleted upload back"
 
 
+def _populate_play_cache(folder: Path, marker: bool = True) -> None:
+    (folder / "work" / "job-00ff").mkdir(parents=True)
+    if marker:
+        (folder / ".portal_vod_play_cache").write_text("Created by the portal\n")
+    (folder / "index.json").write_text("{}")
+    (folder / ("a" * 32 + ".mp4")).write_bytes(b"x" * 2048)
+    (folder / "work" / "job-00ff" / "half.part").write_bytes(b"y" * 100)
+
+
+def _left_in(folder: Path) -> set:
+    return {p.name for p in folder.iterdir()}
+
+
+def test_rollback_empties_the_vod_play_cache_but_keeps_its_marker():
+    """1.20.0 does not skip data/vod_play_cache in its snapshots, so it must be empty after a rollback."""
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        cache = sb.root / "data" / "vod_play_cache"
+        _populate_play_cache(cache)
+        other = sb.root / "data" / "other"
+        other.mkdir()
+        (other / "keep.txt").write_text("live data")
+        meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+        assert not (Path(meta["path"]) / "data" / "vod_play_cache").exists(), "the snapshot copied the cache"
+        saved = Config.VOD_PLAY_CACHE_DIR
+        Config.VOD_PLAY_CACHE_DIR = str(cache)
+        try:
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_PLAY_CACHE_DIR = saved
+        assert _left_in(cache) == {".portal_vod_play_cache"}, _left_in(cache)
+        assert (other / "keep.txt").read_text() == "live data"
+
+
+def test_rollback_empties_a_marked_configured_play_cache_and_not_a_foreign_one():
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        outside = Path(sb.root).parent / "elsewhere"
+        marked, foreign = outside / "marked", outside / "foreign"
+        _populate_play_cache(marked)
+        _populate_play_cache(foreign, marker=False)
+        sentinel = outside / "sentinel.txt"
+        sentinel.write_text("not ours")
+        (marked / ("b" * 32 + ".mp4")).symlink_to(sentinel)
+        (marked / "work" / "job-11").symlink_to(outside)
+        meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+        saved = Config.VOD_PLAY_CACHE_DIR
+        try:
+            Config.VOD_PLAY_CACHE_DIR = str(marked)
+            _run_rollback_with_restart(sb, meta["id"])
+            assert _left_in(marked) == {".portal_vod_play_cache"}, _left_in(marked)
+            assert sentinel.read_text() == "not ours" and foreign.is_dir(), "a link was followed"
+            Config.VOD_PLAY_CACHE_DIR = str(foreign)
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_PLAY_CACHE_DIR = saved
+        assert "index.json" in _left_in(foreign), "a folder without the marker was emptied"
+
+
+def test_rollback_empties_only_cache_files_and_keeps_a_staging_folder_inside_the_cache():
+    """A configuration that puts staged, not yet uploaded chunks inside the cache folder must not lose them."""
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        cache = sb.root / "data" / "vod_play_cache"
+        _populate_play_cache(cache)
+        (cache / "work" / "job-0123abcd").mkdir()
+        (cache / "work" / "job-0123abcd" / "half.mp4").write_bytes(b"z" * 10)
+        (cache / "work" / "mine.txt").write_text("not a job folder")
+        session = cache / "staging" / "5_2026-11-22_1"
+        session.mkdir(parents=True)
+        (session / "chunk_000.mkv").write_bytes(b"w" * 4096)
+        (cache / "recordings").mkdir()
+        (cache / "recordings" / "a.cast").write_text("terminal history")
+        (cache / "notes.txt").write_text("foreign")
+        meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+        saved = Config.VOD_PLAY_CACHE_DIR
+        Config.VOD_PLAY_CACHE_DIR = str(cache)
+        try:
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_PLAY_CACHE_DIR = saved
+        left = _left_in(cache)
+        assert left == {".portal_vod_play_cache", "work", "staging", "recordings", "notes.txt"}, left
+        assert (session / "chunk_000.mkv").read_bytes() == b"w" * 4096, "a staged chunk was removed"
+        assert (cache / "recordings" / "a.cast").exists() and (cache / "notes.txt").exists()
+        assert _left_in(cache / "work") == {"mine.txt"}, "cache work folders must go, other names stay"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

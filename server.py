@@ -27,6 +27,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import stat as _stat
 import threading
 import signal
 import ssl
@@ -143,6 +144,7 @@ import backup_manager
 import ipguard
 import update_manager
 import vod_staging
+import vod_play
 import automod
 import chat_search
 import secevents
@@ -626,6 +628,7 @@ _rtmp_stream_paths: dict[int, str] = {}
 _stream_state_lock = asyncio.Lock()
 VOD_TEMP_DIR = Config.VOD_TEMP_DIR
 backup_manager.register_served_dir(VOD_TEMP_DIR, "the VOD temp directory")
+backup_manager.register_served_dir(Config.VOD_PLAY_CACHE_DIR, "the VOD playback cache")
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # Session folders that a recording is using or still finishing; recovery leaves them alone.
 _vod_busy_dirs: set = set()
@@ -12187,6 +12190,8 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
         config=json.dumps(config),
     )
 
+    _vod_play_purge(owner=token.user_id, ident_not=vod_play.storage_ident(
+        {"host": host, "port": port, "username": username, "remote_path": remote_path}))
     return web.json_response({"id": storage_id, "message": "Storage config saved"})
 
 
@@ -12197,6 +12202,7 @@ async def http_delete_vod_storage(request: web.Request) -> web.Response:
         return refusal
 
     deleted = await db.delete_vod_storage(token.user_id)
+    _vod_play_purge(owner=token.user_id)
     if not deleted:
         return web.json_response({"error": "No storage config found"}, status=404)
     return web.json_response({"message": "Storage config deleted"})
@@ -12496,7 +12502,8 @@ async def http_list_vods(request: web.Request) -> web.Response:
         else:
             files.sort(key=lambda f: f["modified"], reverse=reverse)
 
-        return web.json_response({"files": files, "path": remote_root, "recording_guard": guard})
+        return web.json_response({"files": files, "path": remote_root, "recording_guard": guard,
+                                  "playback": await _vod_play_public()})
     except asyncssh.SFTPError as e:
         logger.error(f"VOD list SFTP error for user {token.user_id}: {e}")
         return web.json_response({"error": "SFTP operation failed", "recording_guard": guard}, status=502)
@@ -12756,6 +12763,8 @@ async def http_delete_vod(request: web.Request) -> web.Response:
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
         await sftp.remove(remote_path)
+        if _vod_play_cache is not None:
+            _vod_play_cache.purge(owner=token.user_id, path=filename)
         return web.json_response({"message": f"Deleted {filename}"})
     except asyncssh.SFTPError as e:
         logger.error(f"VOD delete SFTP error for user {token.user_id}: {e}")
@@ -12765,6 +12774,540 @@ async def http_delete_vod(request: web.Request) -> web.Response:
         return web.json_response({"error": "Delete operation failed"}, status=502)
     finally:
         conn.close()
+
+
+# =============================================================================
+# VOD playback in the browser (remux of one MKV chunk into a cached MP4)
+# =============================================================================
+#
+# GET /api/vods/play/{listed path}.mp4 serves the owner's chunk as MP4 (Range works). When the
+# MP4 is not cached yet the route starts one job and answers 202; GET /api/vods/play-status/...
+# says how it is going. A job pulls the chunk over the pinned SFTP connection, probes it, remuxes it
+# with ffmpeg -c copy and puts the result in the byte-capped cache (vod_play.py). Playback is
+# owner-only: the path is always resolved against the caller's own storage, whoever the caller is.
+
+VOD_PLAY_SLOTS = 2                 # remux jobs running at the same time
+VOD_PLAY_MAX_PER_USER = 3          # queued plus running jobs of one member
+VOD_PLAY_MAX_JOBS = 16             # all members together
+VOD_PLAY_FAST_WAIT = 1.5           # seconds a request waits for its job before it answers 202
+VOD_PLAY_STAT_TTL = 15.0           # seconds a remote size and modification time is trusted
+VOD_PLAY_KEEP_SECONDS = 600        # a finished job (and a download-only verdict) is remembered this long
+VOD_PLAY_FAILED_KEEP = 30          # a failed job is shown to the status route this long, then retried
+VOD_PLAY_PULL_TIMEOUT = 900
+VOD_PLAY_PROBE_TIMEOUT = 60
+VOD_PLAY_REMUX_TIMEOUT = 300
+VOD_PLAY_RESERVE_WAIT = 600
+VOD_PLAY_PROBE_MAX_BYTES = 1024 * 1024
+
+_vod_play_cache: Optional["vod_play.PlayCache"] = None
+_vod_play_refused: Optional[str] = None      # why the cache folder is not usable (None: it is)
+_vod_play_jobs: dict = {}                     # (owner, path) -> job dict
+_vod_play_tasks: set = set()                  # strong references to the running job tasks
+_vod_play_stats: dict = {}                    # (owner, ident, path) -> (size, mtime, at)
+_vod_play_sem: Optional[asyncio.Semaphore] = None
+_vod_play_sem_loop = None
+_vod_play_locks: dict = {}                    # (owner, path) -> asyncio.Lock
+
+
+def _vod_play_semaphore() -> asyncio.Semaphore:
+    global _vod_play_sem, _vod_play_sem_loop
+    loop = asyncio.get_running_loop()
+    if _vod_play_sem is None or _vod_play_sem_loop is not loop:
+        _vod_play_sem, _vod_play_sem_loop = asyncio.Semaphore(VOD_PLAY_SLOTS), loop
+    return _vod_play_sem
+
+
+def _vod_play_setup(path: Optional[str] = None) -> Optional[str]:
+    """Create the cache folder and read its index. Returns None, or why the folder cannot be used
+    (then playback answers 503 and nothing in the folder is touched). Blocking: run in a thread."""
+    global _vod_play_cache, _vod_play_refused
+    folder = path or Config.VOD_PLAY_CACHE_DIR
+    try:
+        vod_play.prepare_dir(folder, _PROJECT_ROOT, (STATIC_DIR,),
+                             (VOD_TEMP_DIR, Config.VOD_TEMP_DIR_DEFAULT, Config.RECORDINGS_DIR))
+    except (OSError, ValueError) as e:
+        _vod_play_cache, _vod_play_refused = None, str(e)
+        logger.error(f"VOD playback cache folder {folder} is not usable: {e}. "
+                     f"Browser playback of VODs is off until this is fixed")
+        return _vod_play_refused
+    cache = vod_play.PlayCache(folder)
+    stats = cache.reconcile()
+    if stats["dropped"] or stats["strays"]:
+        logger.info(f"VOD playback cache: kept {stats['kept']}, dropped {stats['dropped']} "
+                    f"entries, removed {stats['strays']} stray file(s)")
+    _vod_play_cache, _vod_play_refused = cache, None
+    return None
+
+
+async def _vod_play_reconcile_owners() -> None:
+    """Drop entries of owners who no longer have VOD storage, or whose storage points elsewhere now."""
+    cache = _vod_play_cache
+    if cache is None:
+        return
+    for owner, idents in list(cache.owners().items()):
+        try:
+            storage = await db.get_vod_storage(owner)
+        except Exception as e:
+            logger.debug(f"VOD playback cache: storage of user {owner} unreadable: {e}")
+            continue
+        if not storage:
+            cache.purge(owner=owner)
+        else:
+            cache.purge(owner=owner, ident_not=vod_play.storage_ident(storage))
+
+
+def _vod_play_purge(owner: Optional[int] = None, ident_not: Optional[str] = None) -> None:
+    """Forget what the cache and the job table hold for an owner (account or storage removed)."""
+    for k in [k for k in _vod_play_jobs if owner is None or k[0] == owner]:
+        job = _vod_play_jobs.get(k)
+        if job and job.get("task") and not job["task"].done():
+            job["task"].cancel()
+        _vod_play_jobs.pop(k, None)
+    for k in [k for k in _vod_play_stats if owner is None or k[0] == owner]:
+        _vod_play_stats.pop(k, None)
+    if _vod_play_cache is not None:
+        _vod_play_cache.purge(owner=owner, ident_not=ident_not)
+
+
+async def _vod_play_cancel_all() -> None:
+    tasks = list(_vod_play_tasks)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _vod_play_cap() -> int:
+    try:
+        raw = await db.get_setting("vod_play_cache_mb")
+    except Exception as e:
+        logger.debug(f"vod_play_cache_mb unreadable, using the default: {e}")
+        raw = None
+    return vod_play.cache_cap_bytes(raw)
+
+
+def _vod_play_off_message(cap: int) -> Optional[str]:
+    if _vod_play_refused is not None or _vod_play_cache is None:
+        return "Browser playback is not available on this server right now. Download the chunk instead."
+    if cap <= 0:
+        return "Browser playback is switched off on this server. Download the chunk instead."
+    return None
+
+
+async def _vod_play_public() -> dict:
+    """What My VODs needs to know: whether to offer the Play button."""
+    message = _vod_play_off_message(await _vod_play_cap())
+    return {"enabled": message is None, "message": message}
+
+
+def _vod_play_reply(data: dict, status: int = 200, retry_after: Optional[int] = None) -> web.Response:
+    headers = {"Cache-Control": "private, no-store"}
+    if retry_after:
+        headers["Retry-After"] = str(retry_after)
+    return web.json_response(data, status=status, headers=headers)
+
+
+def _vod_play_file(path: str) -> web.FileResponse:
+    resp = web.FileResponse(path, headers={
+        "Cache-Control": "private, no-cache",       # never stored by a shared cache; the browser revalidates
+        "Content-Type": "video/mp4",
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+    })
+    return resp
+
+
+def _vod_play_prune_jobs() -> None:
+    now = monotonic()
+    for k, job in list(_vod_play_jobs.items()):
+        fin = job.get("finished")
+        if fin is None:
+            continue
+        keep = VOD_PLAY_FAILED_KEEP if job["state"] == "failed" else VOD_PLAY_KEEP_SECONDS
+        if now - fin > keep:
+            _vod_play_jobs.pop(k, None)
+    if len(_vod_play_jobs) > 500:
+        for k in sorted((k for k, j in _vod_play_jobs.items() if j.get("finished") is not None),
+                        key=lambda k: _vod_play_jobs[k]["finished"])[:100]:
+            _vod_play_jobs.pop(k, None)
+    for k, lock in list(_vod_play_locks.items()):
+        if not lock.locked() and not (k in _vod_play_jobs and _vod_play_jobs[k]["finished"] is None):
+            _vod_play_locks.pop(k, None)
+    for k, v in list(_vod_play_stats.items()):
+        if now - v[2] > 600:
+            _vod_play_stats.pop(k, None)
+
+
+class _VodPlayRemoteError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
+
+
+async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: str,
+                                fresh: bool = False) -> tuple:
+    """(size, mtime) of the owner's chunk, from the pinned SFTP connection (remembered for a few seconds
+    so that the Range requests of one playback do not each open a connection). Raises _VodPlayRemoteError:
+    404 when there is no such regular file, 502 when the storage cannot be reached."""
+    memo_key = (user_id, ident, path)
+    hit = _vod_play_stats.get(memo_key)
+    if hit and not fresh and monotonic() - hit[2] < VOD_PLAY_STAT_TTL:
+        return hit[0], hit[1]
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        raise _VodPlayRemoteError(502, error)
+    try:
+        remote = f"{storage['remote_path'].rstrip('/')}/{path}"
+        try:
+            attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
+        except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
+            _vod_play_stats.pop(memo_key, None)
+            raise _VodPlayRemoteError(404, "VOD not found")
+        perms = attrs.permissions
+        if perms is not None and not _stat.S_ISREG(perms):
+            _vod_play_stats.pop(memo_key, None)
+            raise _VodPlayRemoteError(404, "VOD not found")
+        size, mtime = int(attrs.size or 0), int(attrs.mtime or 0)
+        _vod_play_stats[memo_key] = (size, mtime, monotonic())
+        return size, mtime
+    finally:
+        conn.close()
+
+
+async def _vod_play_is_live_newest(user_id: int, storage: dict, path: str) -> bool:
+    """True when the chunk is the newest of a folder a recording is writing to right now."""
+    base = storage["remote_path"].rstrip("/")
+    dirpart = path.rpartition("/")[0]
+    remote_dir = f"{base}/{dirpart}" if dirpart else base
+    dirs = _vod_remote_dirs_in_use()
+    if "*" not in dirs and remote_dir not in {str(d).rstrip("/") for d in dirs}:
+        return False
+    mine = vod_play.chunk_number(path.rpartition("/")[2])
+    if mine is None:
+        return False
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        return True            # cannot tell: the safe answer is to leave it alone
+    try:
+        names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)
+    except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
+        return True
+    finally:
+        conn.close()
+    numbers = [n for n in (vod_play.chunk_number(x) for x in names) if n is not None]
+    return bool(numbers) and mine >= max(numbers)
+
+
+async def _vod_play_run_tool(argv: list, timeout: float, cwd: str, capture: bool):
+    """Run ffmpeg or ffprobe at low priority on a local file. Returns (returncode, stdout bytes).
+    On a timeout or a cancel the process is killed (it is ours) and reaped."""
+    process = await _media_exec(
+        argv, "idle", stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE, cwd=cwd)
+
+    async def read(stream, cap):
+        buf = bytearray()
+        while True:
+            block = await stream.read(65536)
+            if not block:
+                return bytes(buf)
+            if len(buf) < cap:
+                buf += block[:cap - len(buf)]
+
+    try:
+        readers = [read(process.stderr, 4096)]
+        if capture:
+            readers.append(read(process.stdout, VOD_PLAY_PROBE_MAX_BYTES))
+        results = await asyncio.wait_for(asyncio.gather(*readers), timeout)
+        await asyncio.wait_for(process.wait(), 10)
+        if not capture:
+            err = results[0].decode("utf-8", "replace").strip()
+            if err:
+                logger.info(f"VOD playback {argv[0]}: {err[:300]}")
+        return process.returncode, (results[1] if capture else b"")
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), 10)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                pass
+
+
+async def _vod_play_pull(user_id: int, storage: dict, path: str, dest: str, size: int, mtime: int) -> None:
+    """Copy the remote chunk to *dest* (0600, new file). Raises _VodPlayRemoteError."""
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        raise _VodPlayRemoteError(502, error)
+    fd = None
+    try:
+        remote = f"{storage['remote_path'].rstrip('/')}/{path}"
+        attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
+        if int(attrs.size or 0) != size or int(attrs.mtime or 0) != mtime:
+            raise _VodPlayRemoteError(409, "The chunk changed while it was being prepared; try again")
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        got = 0
+        async with sftp.open(remote, "rb") as src:
+            while True:
+                block = await src.read(1024 * 1024)
+                if not block:
+                    break
+                got += len(block)
+                if got > size:
+                    raise _VodPlayRemoteError(409, "The chunk changed while it was being prepared; try again")
+                await asyncio.to_thread(os.write, fd, block)
+        if got != size:
+            raise _VodPlayRemoteError(409, "The chunk changed while it was being prepared; try again")
+    except (asyncssh.SFTPError, OSError, asyncio.TimeoutError) as e:
+        logger.warning(f"VOD playback pull failed for user {user_id}: {type(e).__name__}")
+        raise _VodPlayRemoteError(502, "Could not read the chunk from the VOD storage")
+    finally:
+        if fd is not None:
+            os.close(fd)
+        conn.close()
+
+
+async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None:
+    """The job: reserve room, pull, probe, remux, store. Sets job state; leaves nothing behind on failure."""
+    cache = _vod_play_cache
+    owner, path, key = job["owner"], job["path"], job["key"]
+    lock = _vod_play_locks.setdefault((owner, path), asyncio.Lock())
+    reserve = vod_play.job_reserve(size)
+    reserved = False
+    work = None
+    try:
+        async with lock:                                   # one job per chunk, a newer version waits
+            async with _vod_play_semaphore():              # at most VOD_PLAY_SLOTS at the same time
+                cap = await _vod_play_cap()
+                message = _vod_play_off_message(cap)
+                if message:
+                    raise _VodPlayRemoteError(503, message)
+                if reserve > cap:
+                    job["state"], job["reason"] = "unplayable", (
+                        "it is too large for the playback cache of this server")
+                    return
+                job["state"] = "waiting"
+                if not await cache.reserve(reserve, cap, VOD_PLAY_RESERVE_WAIT):
+                    raise _VodPlayRemoteError(503, "The playback cache is busy; try again in a minute")
+                reserved = True
+                min_free = (await _vod_guard_limits())[0]
+                free = await asyncio.to_thread(vod_staging.free_bytes, cache.root)
+                if free - cache.reserved < min_free:           # every running job's reservation, this one included
+                    raise _VodPlayRemoteError(
+                        503, "Not enough free disk space on the server to prepare this chunk right now")
+                work = cache.new_work_dir()
+                src, out = os.path.join(work, "src.mkv"), os.path.join(work, "out.mp4")
+                job["state"] = "pulling"
+                await asyncio.wait_for(_vod_play_pull(owner, storage, path, src, size, mtime), VOD_PLAY_PULL_TIMEOUT)
+                job["state"] = "probing"
+                code, raw = await _vod_play_run_tool(vod_play.ffprobe_argv(src), VOD_PLAY_PROBE_TIMEOUT, work, True)
+                try:
+                    info = json.loads(raw.decode("utf-8", "replace")) if code == 0 else None
+                except ValueError:
+                    info = None
+                ok, why = vod_play.verdict(info) if info is not None else (False, "the file could not be read")
+                if not ok:
+                    job["state"], job["reason"] = "unplayable", why
+                    return
+                job["state"] = "remuxing"
+                limit = vod_play.output_limit(size)
+                code, _ = await _vod_play_run_tool(
+                    vod_play.remux_argv(src, out, limit), VOD_PLAY_REMUX_TIMEOUT, work, False)
+                os.unlink(src)
+                osize = os.lstat(out).st_size if os.path.lexists(out) else 0
+                if code != 0 or osize <= 0 or osize >= limit:
+                    raise _VodPlayRemoteError(500, "The chunk could not be converted")
+                if not vod_play.index_first(out):
+                    raise _VodPlayRemoteError(500, "The chunk could not be converted")
+                code, raw = await _vod_play_run_tool(
+                    vod_play.ffprobe_argv(out, "mov"), VOD_PLAY_PROBE_TIMEOUT, work, True)
+                try:
+                    check = json.loads(raw.decode("utf-8", "replace")) if code == 0 else None
+                except ValueError:
+                    check = None
+                if check is None or not vod_play.verdict(check)[0]:
+                    raise _VodPlayRemoteError(500, "The chunk could not be converted")
+                meta = {"owner": owner, "ident": job["ident"], "path": path, "rsize": size, "rmtime": mtime}
+                stored = cache.add(key, out, meta, reserve)
+                reserved = False                           # add() gave the reservation back either way
+                if not stored:
+                    raise _VodPlayRemoteError(500, "The chunk could not be stored")
+                cache.evict_to(await _vod_play_cap())
+                job["state"] = "ready"
+    except _VodPlayRemoteError as e:
+        job["state"], job["error"], job["status"] = "failed", e.message, e.status
+    except asyncio.CancelledError:
+        job["state"], job["error"] = "failed", "Preparation was cancelled"
+        raise
+    except asyncio.TimeoutError:
+        logger.warning(f"VOD playback job for user {owner} timed out")
+        job["state"], job["error"] = "failed", "Preparing the chunk took too long"
+    except Exception as e:
+        logger.error(f"VOD playback job for user {owner} failed: {type(e).__name__}: {e}")
+        job["state"], job["error"] = "failed", "The chunk could not be prepared"
+    finally:
+        if reserved:
+            cache.release(reserve)
+        if work:
+            vod_play._remove_path(work)
+        job["finished"] = monotonic()
+        job["done"].set()
+
+
+def _vod_play_job_view(job: Optional[dict]) -> dict:
+    if job is None:
+        return {"state": "idle"}
+    state = job["state"]
+    if state == "ready":
+        return {"state": "ready"}
+    if state == "unplayable":
+        return {"state": "unplayable", "reason": job.get("reason"),
+                "message": vod_play.download_only_message(job.get("reason") or "unsupported format")}
+    if state == "failed":
+        return {"state": "failed", "error": job.get("error") or "The chunk could not be prepared"}
+    return {"state": "preparing", "stage": state}
+
+
+async def _vod_play_prelude(request: web.Request, token):
+    """Shared start of the two play routes, after their own sign-in check. Returns
+    (token, storage, path, cap, None) or (None, None, None, 0, response)."""
+    path = vod_play.chunk_path_from_url(request.match_info.get("name", ""))
+    storage = await db.get_vod_storage(token.user_id)
+    if path is None or not storage:
+        return None, None, None, 0, _vod_play_reply({"error": "VOD not found"}, 404)
+    cap = await _vod_play_cap()
+    message = _vod_play_off_message(cap)
+    if message:
+        if cap <= 0 and _vod_play_cache is not None:
+            _vod_play_cache.purge()                       # switched off: give the disk back
+        return None, None, None, 0, _vod_play_reply({"error": message, "code": "playback_off"}, 503)
+    _vod_play_cache.evict_to(cap)                         # a lowered cap takes effect here
+    _vod_play_prune_jobs()
+    return token, storage, path, cap, None
+
+
+async def http_play_vod(request: web.Request) -> web.StreamResponse:
+    """GET /api/vods/play/{path}.mp4 - the owner's chunk as MP4 (200/206), or 202 while it is prepared,
+    404 (not yours or not there), 409 (newest chunk of a live recording), 415 (download only),
+    429 (too many jobs), 503 (playback off or no room), 502 (storage unreachable)."""
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        refusal.headers["Cache-Control"] = "private, no-store"
+        return refusal
+    token, storage, path, cap, refusal = await _vod_play_prelude(request, token)
+    if refusal is not None:
+        return refusal
+    user_id = token.user_id
+    ident = vod_play.storage_ident(storage)
+    cache = _vod_play_cache
+    # The start of a playback (no Range header, or a range from byte 0) reads the chunk's size and
+    # time afresh, so a chunk that changed on the storage is never served from an old copy; the
+    # continuation ranges of that playback use the answer remembered for a few seconds.
+    rng = request.headers.get("Range")
+    start_of_playback = not rng or re.match(r"^\s*bytes\s*=\s*0*-", rng) is not None
+    try:
+        size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident, fresh=start_of_playback)
+    except _VodPlayRemoteError as e:
+        return _vod_play_reply({"error": e.message}, e.status)
+    key = vod_play.entry_key(user_id, ident, path, size, mtime)
+
+    cached = cache.get(key)
+    if cached:
+        return _vod_play_file(cached)
+
+    job = _vod_play_jobs.get((user_id, path))
+    if job is not None and job["state"] in ("ready", "failed") and job["key"] != key:
+        job = None                                            # an answer about another version of the chunk
+    if job is not None and job["state"] == "ready":
+        job = None                                            # evicted since: prepare it again
+    if job is not None and job["state"] == "failed":
+        job = None                                            # try again
+    if job is not None and job["state"] == "unplayable":
+        if job["key"] == key:
+            return _vod_play_reply(
+                {"error": vod_play.download_only_message(job.get("reason") or "unsupported format"),
+                 "reason": job.get("reason"), "state": "unplayable"}, 415)
+        job = None
+
+    if job is None:
+        if await _vod_play_is_live_newest(user_id, storage, path):
+            return _vod_play_reply(
+                {"error": "This is the newest chunk of a stream that is live right now; "
+                          "it is still being recorded. Watch it when the stream has ended or the next chunk exists."},
+                409)
+        # no await from here to the registration: two requests for one chunk end up with one job
+        current = _vod_play_jobs.get((user_id, path))
+        if current is not None and current["finished"] is None:
+            job = current
+    if job is None:
+        active = [j for j in _vod_play_jobs.values() if j["finished"] is None]
+        if len([j for j in active if j["owner"] == user_id]) >= VOD_PLAY_MAX_PER_USER:
+            return _vod_play_reply({"error": "Too many chunks are being prepared; wait for one to finish"},
+                                   429, retry_after=10)
+        if len(active) >= VOD_PLAY_MAX_JOBS:
+            return _vod_play_reply({"error": "The server is busy preparing videos; try again shortly"},
+                                   503, retry_after=10)
+        job = {"owner": user_id, "path": path, "key": key, "ident": ident, "state": "queued",
+               "finished": None, "done": asyncio.Event(), "started": monotonic()}
+        _vod_play_jobs[(user_id, path)] = job
+        task = asyncio.create_task(_vod_play_job(job, storage, size, mtime))
+        job["task"] = task
+        _vod_play_tasks.add(task)
+        task.add_done_callback(_vod_play_tasks.discard)
+
+    try:
+        await asyncio.wait_for(asyncio.shield(job["done"].wait()), VOD_PLAY_FAST_WAIT)
+    except asyncio.TimeoutError:
+        pass
+    if job["state"] == "ready" and job["key"] == key:
+        cached = cache.get(key)
+        if cached:
+            return _vod_play_file(cached)
+    if job["state"] == "unplayable" and job["key"] == key:
+        return _vod_play_reply(
+            {"error": vod_play.download_only_message(job.get("reason") or "unsupported format"),
+             "reason": job.get("reason"), "state": "unplayable"}, 415)
+    if job["state"] == "failed":
+        return _vod_play_reply({"error": job.get("error") or "The chunk could not be prepared", "state": "failed"},
+                               job.get("status") or 500)
+    return _vod_play_reply(dict(_vod_play_job_view(job), status_url=_vod_play_status_url(path)), 202, retry_after=2)
+
+
+def _vod_play_status_url(path: str) -> str:
+    from urllib.parse import quote
+    return "/api/vods/play-status/" + quote(path, safe="/") + ".mp4"
+
+
+async def http_play_vod_status(request: web.Request) -> web.Response:
+    """GET /api/vods/play-status/{path}.mp4 - {state: idle|preparing|ready|unplayable|failed, ...}.
+    Never starts a job and never opens a connection to the storage."""
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        refusal.headers["Cache-Control"] = "private, no-store"
+        return refusal
+    token, storage, path, cap, refusal = await _vod_play_prelude(request, token)
+    if refusal is not None:
+        return refusal
+    job = _vod_play_jobs.get((token.user_id, path))
+    view = _vod_play_job_view(job)
+    if job is None:
+        ident = vod_play.storage_ident(storage)
+        if any(e["owner"] == token.user_id and e["path"] == path and e["ident"] == ident
+               for e in _vod_play_cache.entries.values()):
+            view = {"state": "ready"}
+    return _vod_play_reply(view)
+
+
+async def http_vod_player_page(request: web.Request) -> web.Response:
+    """Serve the VOD player page (signed-in members)."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+    return web.Response(text=load_static_file("vod-player.html"), content_type="text/html")
 
 
 # =============================================================================
@@ -25033,6 +25576,9 @@ async def http_set_retention_config(request: web.Request) -> web.Response:
     before = (await db.get_retention_config()).get("retention_security_events_days")
     await db.set_retention_config(data)
     config = await db.get_retention_config()
+    if _vod_play_cache is not None and "vod_play_cache_mb" in data:
+        cap = vod_play.cache_cap_bytes(config.get("vod_play_cache_mb"))
+        _vod_play_cache.purge() if cap <= 0 else _vod_play_cache.evict_to(cap)
     after = config.get("retention_security_events_days")
     if after != before:
         # A shorter (or switched-off) event log weakens the record, so the change is itself an event.
@@ -26605,6 +27151,7 @@ async def http_delete_user(request: web.Request) -> web.Response:
 
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
+    _vod_play_purge(owner=user_id)      # their cached playback copies go with the account
     # The user's streams went with the account
     _playback_cache_forget(everything=True)
     # A deleted account must not keep working through sockets it already had open.
@@ -27993,6 +28540,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/vods/storage/host-key/accept", http_accept_vod_host_key)
     app.router.add_get("/api/vods", http_list_vods)
     app.router.add_get("/api/vods/download/{filename:.*}", http_download_vod)
+    app.router.add_get("/api/vods/play/{name:.+}", http_play_vod)
+    app.router.add_get("/api/vods/play-status/{name:.+}", http_play_vod_status)
     app.router.add_post("/api/vods/download-archive", http_download_vod_archive)
     app.router.add_delete("/api/vods/{filename:.*}", http_delete_vod)
 
@@ -28105,6 +28654,7 @@ def create_app() -> web.Application:
     app.router.add_get("/about", http_about_page)
     app.router.add_get("/guides", http_guides_page)
     app.router.add_get("/files", http_files_page)
+    app.router.add_get("/vods/play", http_vod_player_page)
     app.router.add_get("/sysmon", http_sysmon_page)
     app.router.add_get("/chat", http_chat_page)
     app.router.add_get("/streams", http_streams_page)
@@ -28364,6 +28914,10 @@ class PortalServer:
         vod_leftovers = await asyncio.to_thread(_vod_prepare_staging)
         if vod_leftovers:
             self._start_vod_recovery()
+
+        # Browser playback cache of VOD chunks: folder setup, index check, strays removed
+        await asyncio.to_thread(_vod_play_setup)
+        await _vod_play_reconcile_owners()
 
         # Security event log: bind the database and start the aggregate flusher
         secevents.log.bind(db)
@@ -28850,6 +29404,9 @@ class PortalServer:
         await _cancel_stream_info_tasks()
         if _push_pusher is not None:
             await _push_pusher.shutdown()
+
+        # Playback jobs: their ffmpeg children are ours and end now, their work files are removed
+        await _vod_play_cancel_all()
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

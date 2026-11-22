@@ -426,7 +426,7 @@ def test_the_my_vods_page_shows_the_notice_and_the_admin_page_has_the_settings()
     box = index[index.index('id="vods-guard-notice"'):]
     box = box[:box.index("</div>")]
     assert "onclick" not in box and 'role="status"' in box
-    assert "/static/js/vods.js?v=7" in index
+    assert "/static/js/vods.js?v=8" in index
     for field in ("ret-vod-min-free", "ret-vod-backlog", "ret-vod-orphan-age"):
         assert f'id="{field}"' in admin, field
     for key in ("vod_min_free_gb: pFloat('ret-vod-min-free', 1)", "vod_max_backlog_gb: pFloat('ret-vod-backlog', 2)",

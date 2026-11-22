@@ -6,6 +6,43 @@
 let vodsLoaded = false;
 let vodFiles = [];        // raw file list from API
 let vodSelected = new Set(); // selected file paths
+let vodPlayback = { enabled: false, message: null }; // from the list answer: may chunks be played in the browser
+
+/** Text safe inside a double-quoted HTML attribute (escapeHtml leaves quotes alone). */
+function vodAttr(text) {
+    return String(text == null ? '' : text).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** Open the player page for one chunk (a new tab: the list stays where it is). */
+function openVodPlayer(name) {
+    window.open('/vods/play?name=' + encodeURIComponent(name), '_blank', 'noopener');
+}
+
+/** One delegated listener for the Play buttons (their rows are drawn again on every change). */
+function bindVodPlayButtons() {
+    const container = document.getElementById('vods-table-container');
+    if (!container || container.dataset.playBound === '1') return;
+    container.dataset.playBound = '1';
+    container.addEventListener('click', (event) => {
+        const btn = event.target.closest('.vod-play-btn');
+        if (!btn || !container.contains(btn)) return;
+        event.stopPropagation();
+        openVodPlayer(btn.dataset.name);
+    });
+}
+
+/** Say why Play is not offered (playback off on this server), or hide the note. */
+function showVodPlaybackNote() {
+    const note = document.getElementById('vods-play-note');
+    if (!note) return;
+    if (vodPlayback.enabled || !vodPlayback.message) {
+        note.style.display = 'none';
+        return;
+    }
+    note.textContent = vodPlayback.message;
+    note.style.display = 'block';
+}
 
 /**
  * Say where a recording was stopped or refused by the disk guard (the answer's recording_guard
@@ -64,6 +101,9 @@ async function loadVods() {
         const data = await response.json();
         showVodGuardNotice(data.recording_guard);
         vodFiles = data.files || [];
+        vodPlayback = data.playback || { enabled: false, message: null };
+        showVodPlaybackNote();
+        bindVodPlayButtons();
         vodSelected.clear();
         vodsLoaded = true;
         loading.style.display = 'none';
@@ -180,6 +220,9 @@ function renderVods(files) {
                 <span class="vod-file-size">${Portal.formatBytes(file.size)}</span>
                 <span class="vod-file-date">${formatVodDate(file.modified)}</span>
                 <div class="vod-file-actions">
+                    ${vodPlayback.enabled ? `<button class="btn btn-sm btn-secondary vod-play-btn" data-name="${vodAttr(file.name)}" title="Play in the browser" aria-label="Play ${vodAttr(basename)}">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z" /></svg>
+                    </button>` : ''}
                     <button class="btn btn-sm btn-primary" onclick="downloadVod('${encodedName}')" title="Download">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                     </button>

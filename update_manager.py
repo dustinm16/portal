@@ -22,6 +22,7 @@ from typing import Optional
 
 from config import Config
 import recording_paths
+import vod_play
 import vod_staging
 
 logger = logging.getLogger("portal.updates")
@@ -516,9 +517,77 @@ def _uploads_dirs() -> list:
     return [os.path.realpath(os.path.join(str(PORTAL_DIR), "static", "uploads"))]
 
 
+def _vod_play_cache_dirs() -> list:
+    """The browser playback cache of VOD chunks (up to the cap of vod_play_cache_mb): rebuilt on demand, so
+    a snapshot must not copy it and a rollback must not touch it."""
+    paths = [os.path.realpath(os.path.join(str(PORTAL_DIR), "data", "vod_play_cache"))]
+    try:
+        configured = os.path.realpath(Config.VOD_PLAY_CACHE_DIR)
+        if configured not in paths and os.path.exists(os.path.join(configured, ".portal_vod_play_cache")):
+            paths.append(configured)
+    except (OSError, ValueError):
+        pass
+    return paths
+
+
+def _empty_vod_play_cache_dirs(job: dict) -> None:
+    """Empty the playback cache folder(s) so that 1.20.0, which does not know the folder and copies it into
+    every snapshot it takes, finds it empty. Only what the cache itself writes is removed (the same names
+    that vod_play.PlayCache.reconcile treats as its own: <32 hex>.mp4, index.json, index.json.tmp and the
+    job-* folders in work/), and only from a folder that carries the portal's marker file. Anything else in
+    the folder (for example a staging session folder a configuration put there) is left and logged. Links
+    are removed, never followed. The marker stays so that 1.21.0 accepts the folder again."""
+    marker = vod_play.MARKER_NAME
+    for folder in _vod_play_cache_dirs():
+        try:
+            if not stat.S_ISDIR(os.lstat(folder).st_mode) or not stat.S_ISREG(os.lstat(os.path.join(folder, marker)).st_mode):
+                continue
+            removed = 0
+            left = []
+            for name in os.listdir(folder):
+                if name == marker:
+                    continue
+                path = os.path.join(folder, name)
+                if name == vod_play.WORK_NAME:
+                    st = os.lstat(path)
+                    if stat.S_ISDIR(st.st_mode):
+                        for sub in os.listdir(path):
+                            if re.match(r"^job-[0-9a-f]+$", sub):
+                                _remove_cache_path(os.path.join(path, sub))
+                                removed += 1
+                            else:
+                                left.append(f"{name}/{sub}")
+                        try:
+                            os.rmdir(path)      # only when it is empty now
+                        except OSError:
+                            pass
+                        continue
+                    left.append(name)
+                elif vod_play._ENTRY_RE.match(name) or name in (vod_play.INDEX_NAME, vod_play.INDEX_NAME + ".tmp"):
+                    _remove_cache_path(path)
+                    removed += 1
+                else:
+                    left.append(name)
+            if removed:
+                _log(job, f"Emptied the VOD playback cache {folder} (1.20.0 would copy it into every snapshot).")
+            if left:
+                _log(job, f"WARNING: Left {len(left)} item(s) in the VOD playback cache {folder} that are not "
+                          f"cache files ({', '.join(sorted(left)[:5])}); 1.20.0 may copy them into a snapshot.")
+        except OSError as e:
+            _log(job, f"WARNING: Could not empty the VOD playback cache {folder}: {e}")
+
+
+def _remove_cache_path(path: str) -> None:
+    """Remove one cache file or folder without following links."""
+    if stat.S_ISDIR(os.lstat(path).st_mode):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
 def _preserved_state_dirs() -> list:
     """Folders of live data that snapshots skip and rollbacks leave alone."""
-    return _vod_staging_dirs() + _recordings_dirs() + _uploads_dirs()
+    return _vod_staging_dirs() + _recordings_dirs() + _uploads_dirs() + _vod_play_cache_dirs()
 
 
 def _snapshot_size(snap_dir: Path) -> int:
@@ -1478,6 +1547,8 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
         _log(job, f"WARNING: pip install failed: {err.strip()}")
     else:
         _log(job, "Dependencies reinstalled.")
+
+    await asyncio.to_thread(_empty_vod_play_cache_dirs, job)
 
     await _record_history({
         "type": "rollback",

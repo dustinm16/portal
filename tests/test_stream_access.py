@@ -856,7 +856,8 @@ def test_vod_routes_refuse_a_stream_key():
                           ("http_delete_vod_storage", "DELETE"), ("http_test_vod_storage", "POST"),
                           ("http_accept_vod_host_key", "POST"), ("http_list_vods", "GET"),
                           ("http_download_vod", "GET"), ("http_download_vod_archive", "POST"),
-                          ("http_delete_vod", "DELETE")):
+                          ("http_delete_vod", "DELETE"), ("http_play_vod", "GET"),
+                          ("http_play_vod_status", "GET")):
             for hdrs in ({"X-Stream-Key": owner_key}, {"Authorization": "Stream-Key " + owner_key}):
                 req = make_mocked_request(method, "/api/vods/x", match_info={"filename": "x"}, headers=hdrs,
                                           transport=Transport())
@@ -870,7 +871,7 @@ def test_vod_routes_refuse_a_stream_key():
     # source guard: no /api/vods handler authenticates with the plain call
     src = (ROOT / "server.py").read_text()
     routes = re.findall(r'app\.router\.add_\w+\("(/api/vods[^"]*)", (\w+)', src)
-    assert len(routes) >= 9, routes
+    assert len(routes) >= 11, routes
     for _p, h in routes:
         start = src.index(f"async def {h}(")
         m = re.search(r"\n(?:async def|def) ", src[start + 10:])
