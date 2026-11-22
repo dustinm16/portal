@@ -74,7 +74,10 @@ the fictional names they were created with; the dots, their tooltips and everyth
 answered. The checks are switched off again after the picture. The upstream error page is the one a member
 gets for /search/ while the search service is not running (nothing is dialled). The block page is the one a client
 at the already blocked documentation address 198.51.100.77 gets; the reference is read from that page and typed into
-the administrator's Reference lookup. Unblock is never pressed.
+the administrator's Reference lookup. Unblock is never pressed. On the unmodified admin page that lookup
+answers "The lookup failed." (block-ref-admin.js reads window.Portal, which portal.js does not set because it
+declares Portal with const); the picture is taken after giving that one demo page the property, so it shows what the
+lookup returns when it works, not what the shipped field did.
 
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.

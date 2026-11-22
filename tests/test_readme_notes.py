@@ -1000,6 +1000,9 @@ check("1.22.0: the screenshots section shows the new pictures and each file exis
 check("1.22.0: What You Get names request IDs and connection health checks",
       "**Request IDs and friendly error pages.**" in text and "**Connection health checks.**" in text
       and "**Organising the dashboard.**" in text)
+check("1.22.0: the test that guards the reference IDs, the global-flag wording and the one-listener wording are in the notes",
+      "`tests/test_blockref.py` fails on a `429` built by hand" in _sec22
+      and "The global flag cannot lock anybody out" in _sec22 and "one closed loopback port" in text)
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:
