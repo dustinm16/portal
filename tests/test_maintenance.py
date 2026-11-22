@@ -167,12 +167,40 @@ async def main():
     soon = datetime.now(timezone.utc) + timedelta(hours=2)
     body = {"maintenance": True, "maintenance_until": iso(soon), "maintenance_message": "<b>swap</b> & <script>x</script>"}
     mine = await db.create_user_connection(env.uid["bob"], "mine", "ssh", "93.184.216.34", 22, "{}")
-    async with bob.put(f"{env.base}/api/connections/{mine}", json=body) as r:
-        check("a member cannot set maintenance on their own connection (403)", r.status == 403, str(r.status))
+    EDITABLE = ("name", "type", "host", "port", "config", "icon", "portal_access", "api_access") + maintenance.FIELDS
+
+    def sendable(row):
+        """What a form sends back after a GET: the editable fields of what it read, maintenance ones included."""
+        return {k: v for k, v in row.items() if k in EDITABLE}
+
+    async def stored_maint(conn_uuid):
+        row = await db.get_user_connection_by_uuid(conn_uuid, env.uid["bob"])
+        return row.get("maintenance"), row.get("maintenance_until"), row.get("maintenance_message")
+    async with bob.put(f"{env.base}/api/connections/{mine}", json=dict(body, name="mine1")) as r:
+        check("a member's maintenance fields are ignored, not an error (200, like the recording flag)", r.status == 200, str(r.status))
+    check("... and nothing was stored", await stored_maint(mine) in ((0, None, None), (None, None, None)), str(await stored_maint(mine)))
     async with bob.put(f"{env.base}/api/connections/{mine}", json={"name": "mine2"}) as r:
         check("(a plain edit by a member still works)", r.status == 200, str(r.status))
-    async with bob.put(f"{env.base}/api/connections/{mine}", json={"maintenance": "yes"}) as r:
-        check("a non-boolean flag is refused with 400 before anything else", r.status == 400, str(r.status))
+    for junk in ({"maintenance": "yes"}, {"maintenance_until": "0001-01-01T00:00:00+05:00"},
+                 {"maintenance": True, "maintenance_until": iso(datetime.now(timezone.utc) - timedelta(hours=1))}):
+        async with bob.put(f"{env.base}/api/connections/{mine}", json=dict(junk, name="mine3")) as r:
+            check(f"a member sending {sorted(junk)}: ignored, 200, nothing validated or stored",
+                  r.status == 200 and await stored_maint(mine) in ((0, None, None), (None, None, None)), str(r.status))
+    async with bob.get(f"{env.base}/api/connections/{mine}") as r:
+        read_back = await r.json()
+    async with bob.put(f"{env.base}/api/connections/{mine}", json=dict(sendable(read_back), name="mine4")) as r:
+        check("a member's read followed by a write of the same object works (200)", r.status == 200, f"{r.status} {await r.text()}")
+    async with bob.post(f"{env.base}/api/connections", json={"name": "fresh", "type": "ssh", "host": "93.184.216.34",
+                                                             "port": 22, "config": {}, **body}) as r:
+        created_j = await r.json()
+        check("a member's create with maintenance fields: created, fields ignored", r.status == 201, f"{r.status} {created_j}")
+    fresh = await db.get_user_connection_by_uuid(created_j.get("id"), env.uid["bob"]) if r.status == 201 else {}
+    check("... the new connection is not in maintenance", not fresh.get("maintenance") and not fresh.get("maintenance_until"), str(fresh))
+    async with adm.put(f"{env.base}/api/connections/{web_uuid}", json={"maintenance": "yes"}) as r:
+        check("an administrator's non-boolean flag is refused with 400", r.status == 400, str(r.status))
+    for extreme in ("0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"):
+        async with adm.put(f"{env.base}/api/connections/{web_uuid}", json={"maintenance": True, "maintenance_until": extreme}) as r:
+            check(f"an administrator's {extreme} is refused with 400, not 500", r.status == 400, str(r.status))
     async with adm.put(f"{env.base}/api/connections/{web_uuid}",
                        json={"maintenance": True, "maintenance_until": iso(datetime.now(timezone.utc) - timedelta(hours=1))}) as r:
         check("an end time in the past is refused", r.status == 400, str(r.status))
@@ -264,6 +292,18 @@ async def main():
         got = await r.json()
         check("(the API still shows the stored flag, and that it is no longer active)",
               got.get("maintenance") is True and got.get("maintenance_active") is False)
+    async with adm.get(f"{env.base}/api/connections/{web_uuid}") as r:
+        expired_row = await r.json()
+    async with adm.put(f"{env.base}/api/connections/{web_uuid}", json=dict(sendable(expired_row), name="web")) as r:
+        check("an administrator sending back an unchanged, expired end time (a read then a write) is accepted (200)",
+              r.status == 200, f"{r.status} {await r.text()}")
+    async with adm.get(f"{env.base}/api/connections/{web_uuid}") as r:
+        again = await r.json()
+    check("... and the stored end time is the one it was",
+          again.get("maintenance_until") == expired_row.get("maintenance_until") and again.get("maintenance") is True)
+    async with adm.put(f"{env.base}/api/connections/{web_uuid}",
+                       json={"maintenance": True, "maintenance_until": iso(datetime.now(timezone.utc) - timedelta(hours=2))}) as r:
+        check("a different end time in the past is still refused (400)", r.status == 400, str(r.status))
     # open-ended
     async with adm.put(f"{env.base}/api/connections/{web_uuid}", json={"maintenance": True, "maintenance_message": "back soon"}) as r:
         check("open-ended maintenance is set", r.status == 200)

@@ -87,11 +87,15 @@ def parse_until(value, now: Optional[datetime] = None) -> Optional[str]:
     return _stamp(dt)
 
 
-def parse_update(data: dict, now: Optional[datetime] = None) -> dict:
+def parse_update(data: dict, now: Optional[datetime] = None, existing: Optional[dict] = None) -> dict:
     """The column values for the maintenance fields present in a request body (a dict of
     maintenance, maintenance_until, maintenance_message), validated. Empty when the body has none
     of the fields. Turning maintenance off clears the end time and the message. Raises ValueError
-    with a message for the client."""
+    with a message for the client.
+
+    `existing` is the stored row of an edit. An end time that is the one already stored is accepted
+    as it is, also when it has passed (a form that reads a row and sends it back must not be told
+    "in the past" for a value it did not change)."""
     if not any(k in data for k in FIELDS):
         return {}
     flag = data.get("maintenance")
@@ -103,7 +107,12 @@ def parse_update(data: dict, now: Optional[datetime] = None) -> dict:
     if "maintenance" in data:
         out["maintenance"] = 1
     if "maintenance_until" in data:
-        out["maintenance_until"] = parse_until(data["maintenance_until"], now)
+        stored = (existing or {}).get("maintenance_until")
+        sent = parse_stored(data["maintenance_until"]) if isinstance(data["maintenance_until"], str) else None
+        if sent is not None and stored and sent == parse_stored(stored):
+            out["maintenance_until"] = stored
+        else:
+            out["maintenance_until"] = parse_until(data["maintenance_until"], now)
     elif flag:
         # Turning it on without an end time is open-ended: an old end time must not linger.
         out["maintenance_until"] = None

@@ -4060,7 +4060,7 @@ async def http_update_service(request: web.Request) -> web.Response:
             return web.json_response({"error": "Invalid systemd unit name"}, status=400)
         updates["systemd_unit"] = unit
 
-    maint_updates, err = _maintenance_fields_from(data)
+    maint_updates, err = _maintenance_fields_from(data, service)
     if err:
         return err
     updates.update(maint_updates)
@@ -5516,11 +5516,13 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         # Not an error, so a client that always sends the key keeps working: a member's value
         # is ignored and a new connection starts without the flag.
         config = {k: v for k, v in config.items() if k != "recording"}
+    if any(k in data for k in maintenance.FIELDS) and not await _is_recording_admin(token.user_id):
+        # Not an error (the same convention as "recording"): a member's maintenance fields are
+        # ignored, so a client that sends back what it read keeps working.
+        data = {k: v for k, v in data.items() if k not in maintenance.FIELDS}
     maint_updates, err = _maintenance_fields_from(data)
     if err:
         return err
-    if maint_updates and not await _is_recording_admin(token.user_id):
-        return web.json_response({"error": "Only an administrator can set maintenance"}, status=403)
     ssh_key_id = data.get("ssh_key_id")
     icon = data.get("icon")
     portal_access = 1 if data.get("portal_access", 1) else 0
@@ -5758,20 +5760,21 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
         # Not an error: a member's value is ignored, so the stored flag is kept as it is.
         data["config"] = {k: v for k, v in data["config"].items() if k != "recording"}
 
-    # Maintenance fields: validated here, administrators only (a member's request is refused)
-    maint_updates, err = _maintenance_fields_from(data)
-    if err:
-        return err
-    if maint_updates and not await _is_recording_admin(token.user_id):
-        return web.json_response({"error": "Only an administrator can set maintenance"}, status=403)
-    for _k in maintenance.FIELDS:
-        data.pop(_k, None)
-    data.update(maint_updates)
+    # Maintenance fields: taken out of the body here (the column writer would store them raw). An
+    # administrator's are validated once the stored row is read; a member's are ignored, not an
+    # error (the same convention as "recording"), so a read followed by a write keeps working.
+    maint_in = {k: data.pop(k) for k in maintenance.FIELDS if k in data}
+    if maint_in and not await _is_recording_admin(token.user_id):
+        maint_in = {}
 
     # Resolve UUID to internal connection
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
+    maint_updates, err = _maintenance_fields_from(maint_in, connection)
+    if err:
+        return err
+    data.update(maint_updates)
     int_id = connection["id"]
 
     # Merge incoming config with existing config to preserve fields not in the form
@@ -18991,11 +18994,12 @@ async def _maintenance_exempt(token) -> bool:
     return await _is_recording_admin(token.user_id)
 
 
-def _maintenance_fields_from(data: dict):
+def _maintenance_fields_from(data: dict, existing: Optional[dict] = None):
     """(updates, error answer) for the maintenance fields in a request body. Nothing is read
-    from `data` when it has none of them."""
+    from `data` when it has none of them. `existing` is the stored row of an edit: an end time
+    that is unchanged is accepted even when it has passed."""
     try:
-        return maintenance.parse_update(data), None
+        return maintenance.parse_update(data, existing=existing), None
     except ValueError as e:
         return None, web.json_response({"error": str(e)}, status=400)
 
