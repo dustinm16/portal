@@ -6899,21 +6899,25 @@
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Temp Folder: Minimum Free Space (GB)</label>
                         <input type="number" id="ret-vod-min-free" value="${c.vod_min_free_gb}" min="0" step="0.1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <div id="ret-vod-min-free-err" role="alert" style="color:#f87171;font-size:0.75rem;min-height:1.1em;"></div>
                         <span style="font-size:0.7rem;color:var(--text-muted);">Below this a new VOD recording is refused and a running one is stopped (the live stream is not); 0 = off. Browser playback of a VOD starts a job only while this plus 512 MB stays free, also when this is 0</span>
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Temp Folder: Maximum Waiting Chunks (GB)</label>
                         <input type="number" id="ret-vod-backlog" value="${c.vod_max_backlog_gb}" min="0" step="0.1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <div id="ret-vod-backlog-err" role="alert" style="color:#f87171;font-size:0.75rem;min-height:1.1em;"></div>
                         <span style="font-size:0.7rem;color:var(--text-muted);">Chunks not yet uploaded to a streamer's storage, per recording and per streamer in total (one streamer's backlog does not affect the others); over it that streamer's recordings are refused or stopped; 0 = off</span>
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Browser Playback Cache (MB)</label>
                         <input type="number" id="ret-vod-play-cache" value="${c.vod_play_cache_mb}" min="0" step="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <div id="ret-vod-play-cache-err" role="alert" style="color:#f87171;font-size:0.75rem;min-height:1.1em;"></div>
                         <span style="font-size:0.7rem;color:var(--text-muted);">Disk the portal may use for the MP4 copies a streamer watches in My VODs (least recently used go first). A chunk is download only when its copy alone (about 1.2 times its size) is larger than this. While a chunk is prepared it also needs about 2.2 times its size of working space, which this number does not include: a job starts only while the free space above stays left, one chunk per member at a time. 0 = playback off, the copies are removed and chunks can only be downloaded</span>
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Orphan Folder Age (days)</label>
                         <input type="number" id="ret-vod-orphan-age" value="${c.vod_orphan_max_age_days}" min="0" max="3650" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <div id="ret-vod-orphan-age-err" role="alert" style="color:#f87171;font-size:0.75rem;min-height:1.1em;"></div>
                         <span style="font-size:0.7rem;color:var(--text-muted);">A leftover recording folder that cannot be delivered (no session record, or its owner is gone or has no storage configured) is removed after this many days; 0 = never. Chunks of a streamer whose storage is configured are never removed, only delivered</span>
                     </div>
                     <div>
@@ -6940,9 +6944,35 @@
             `;
         }
 
+        // The VOD fields are checked before saving. kind 'int': a whole number (no decimals, so 0.5 never
+        // becomes 0); kind 'gb': any number, fractions allowed. Both: not negative, not empty. Returns
+        // {value} or {error}.
+        function readVodField(id, kind) {
+            const raw = document.getElementById(id).value.trim();
+            const n = Number(raw);
+            if (raw === '' || !isFinite(n)) return { error: 'Enter a number.' };
+            if (n < 0) return { error: 'Must not be negative.' };
+            if (kind === 'int' && !Number.isInteger(n)) return { error: 'Enter a whole number, no decimals.' };
+            return { value: n };
+        }
+
+        const RET_VOD_FIELDS = [
+            ['ret-vod-min-free', 'gb', 'vod_min_free_gb'],
+            ['ret-vod-backlog', 'gb', 'vod_max_backlog_gb'],
+            ['ret-vod-play-cache', 'int', 'vod_play_cache_mb'],
+            ['ret-vod-orphan-age', 'int', 'vod_orphan_max_age_days']
+        ];
+
         async function saveRetentionConfig() {
+            const vod = {};
+            let firstBad = null;
+            RET_VOD_FIELDS.forEach(([id, kind, key]) => {
+                const r = readVodField(id, kind);
+                document.getElementById(id + '-err').textContent = r.error || '';
+                if (r.error) { if (!firstBad) firstBad = id; } else { vod[key] = r.value; }
+            });
+            if (firstBad) { document.getElementById(firstBad).focus(); return; }
             const pInt = (id, def) => { const v = parseInt(document.getElementById(id).value, 10); return isNaN(v) ? def : v; };
-            const pFloat = (id, def) => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? def : v; };
             const data = {
                 retention_chat_days: pInt('ret-chat-days', 7),
                 retention_chat_max_days: pInt('ret-chat-max', 3650),
@@ -6953,10 +6983,7 @@
                 retention_device_metrics_days: pInt('ret-device-metrics', 14),
                 retention_recordings_days: pInt('ret-recordings', 30),
                 recording_max_total_mb: pInt('ret-recording-max', 2048),
-                vod_min_free_gb: pFloat('ret-vod-min-free', 1),
-                vod_max_backlog_gb: pFloat('ret-vod-backlog', 2),
-                vod_play_cache_mb: pInt('ret-vod-play-cache', 512),
-                vod_orphan_max_age_days: pInt('ret-vod-orphan-age', 14),
+                ...vod,
                 retention_security_events_days: pInt('ret-security-events', 180),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
@@ -6970,6 +6997,7 @@
                 if (res.ok) {
                     const result = await res.json();
                     retentionConfig = result.config;
+                    renderRetentionConfig();        // show what the server kept (it may have limited a value)
                     Portal.toast('Retention settings saved');
                 } else {
                     const err = await res.json();

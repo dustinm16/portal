@@ -598,8 +598,9 @@ def test_the_my_vods_page_shows_the_notice_and_the_admin_page_has_the_settings()
     assert "/static/js/vods.js?v=8" in index
     for field in ("ret-vod-min-free", "ret-vod-backlog", "ret-vod-orphan-age"):
         assert f'id="{field}"' in admin, field
-    for key in ("vod_min_free_gb: pFloat('ret-vod-min-free', 1)", "vod_max_backlog_gb: pFloat('ret-vod-backlog', 2)",
-                "vod_orphan_max_age_days: pInt('ret-vod-orphan-age', 14)"):
+    for key in ("['ret-vod-min-free', 'gb', 'vod_min_free_gb']", "['ret-vod-backlog', 'gb', 'vod_max_backlog_gb']",
+                "['ret-vod-play-cache', 'int', 'vod_play_cache_mb']",
+                "['ret-vod-orphan-age', 'int', 'vod_orphan_max_age_days']"):
         assert key in admin, key
 
 
