@@ -42,6 +42,10 @@ check("conn-health.js has no inline handler, no innerHTML and no eval",
 check("the dot's words are set as attributes", "setAttribute('title'" in JS and "setAttribute('aria-label'" in JS)
 check("the stylesheet has up, down, maintenance and unknown",
       all(c in CSS for c in (".conn-health-up", ".conn-health-down", ".conn-health-unknown", ".conn-health-maintenance")))
+check("the admin hint says what is true about a check, not that nothing is sent",
+      "Nothing is sent to the other side" not in ADMIN and "one TCP connect" in ADMIN and "one HEAD request" in ADMIN
+      and "405 or 501" in ADMIN and "no credentials or cookies" in ADMIN)
+check("the admin hint says what the new limits are", "at most one per connection every 10 minutes" in ADMIN and "none while the connection is in maintenance" in ADMIN)
 check("the admin page has the setting card and no inline handler for it",
       'id="connhealth-body"' in ADMIN and "data-connhealth-action" in ADMIN and "/api/admin/connection-health" in ADMIN
       and "onclick=\"saveConnHealth" not in ADMIN)
