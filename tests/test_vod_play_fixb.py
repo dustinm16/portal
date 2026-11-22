@@ -44,6 +44,9 @@ class FakeSftp:
             await asyncio.sleep(3600)
         raise self.exc
 
+    async def lstat(self, path):
+        return await self.stat(path)
+
 
 def fake_connect(sftp, dials=None):
     async def connect(uid):

@@ -551,15 +551,17 @@ def test_upload_goes_to_a_part_name_and_is_renamed_on_success():
     with tmp() as t:
         sftp = FakeSftp()
         rec, d, log = _upload(server, t, sftp)
-        assert sftp.put_names == [final + ".part"], sftp.put_names
-        assert sftp.renames == [("rename", final + ".part", final)], sftp.renames
+        import re
+        (part,) = sftp.put_names                    # a unique name per upload, so two uploaders never share one
+        assert re.fullmatch(r"/v/s/2026-01-01/\.live_chunk_000_[0-9a-f]{8}\.part", part), part
+        assert sftp.renames == [("rename", part, final)], sftp.renames
         assert list(sftp.files) == [final] and sftp.files[final] == "data-chunk_000.mkv"
         assert not (d / "chunk_000.mkv").exists() and str(d / "chunk_000.mkv") in rec["uploaded"]
     # the plain rename is used: unlike posix-rename it never replaces a remote file
     with tmp() as t:
         sftp = FakeSftp()
         _upload(server, t, sftp)
-        assert sftp.renames == [("rename", final + ".part", final)] and list(sftp.files) == [final]
+        assert sftp.renames == [("rename", sftp.put_names[0], final)] and list(sftp.files) == [final]
 
 
 def test_failed_upload_leaves_no_remote_partial_and_keeps_the_local_chunk():
@@ -605,7 +607,7 @@ def test_failed_upload_leaves_no_remote_partial_and_keeps_the_local_chunk():
             with mock.patch.object(server, "_connect_vod_sftp", connect):
                 task = asyncio.create_task(server._do_vod_chunk_upload(rec, final=True))
                 await asyncio.sleep(0.2)
-                assert final + ".part" in sftp.files, "the truncated partial should exist while the put hangs"
+                assert [n for n in sftp.files if n.endswith(".part")], "the truncated partial should exist while the put hangs"
                 task.cancel()
                 try:
                     await task

@@ -8308,22 +8308,32 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
         for local_path in pending:
             remote_path = f"{remote_dir}/{local_path.name}"
             try:
-                # Upload under a temporary name and rename on success, so an
-                # interrupted put never leaves a truncated chunk under the
-                # final name. 5-minute timeout per chunk upload (prevents
-                # hanging on dead connections).
-                part_path = remote_path + _VOD_PART_SUFFIX
+                # Upload under a temporary name that no other uploader can pick (two recordings can
+                # write into one remote folder) and rename on success, so an interrupted put never
+                # leaves a truncated chunk under the final name. 5-minute timeout per chunk upload
+                # (prevents hanging on dead connections).
+                local_size = local_path.stat().st_size
+                part_path = f"{remote_dir}/.live_{local_path.stem}_{os.urandom(4).hex()}{_VOD_PART_SUFFIX}"
                 try:
                     await asyncio.wait_for(sftp.put(str(local_path), part_path), timeout=300)
                     remote_path = await _vod_finish_remote_upload(sftp, part_path, remote_path)
                 except BaseException:
                     await _vod_remove_partial(sftp, part_path)
                     raise
+                # The local chunk goes only when the remote copy has the same size. A remote that
+                # acknowledged the write without keeping it must not cost the only complete copy.
+                attrs = await asyncio.wait_for(sftp.stat(remote_path), VOD_SFTP_META_TIMEOUT)
+                if int(attrs.size or 0) != local_size:
+                    logger.error(
+                        f"VOD chunk {local_path.name} arrived with {attrs.size} bytes instead of {local_size}; "
+                        f"the remote copy {remote_path} was removed and the local chunk is kept, will retry")
+                    await _vod_remove_partial(sftp, remote_path)   # created by this call: the rename never replaces
+                    continue
                 uploaded.add(str(local_path))
                 try:
                     await _vod_record_chunk_duration(user_id, sftp, remote_path, str(local_path))
                 finally:
-                    local_path.unlink()          # delivered: it goes even when this is cancelled by a shutdown
+                    local_path.unlink()          # delivered and size checked: it goes even when this is cancelled by a shutdown
                 logger.info(f"VOD chunk uploaded: {remote_path}")
             except asyncio.TimeoutError:
                 logger.error(f"VOD chunk upload timed out ({local_path.name}), will retry")
@@ -12680,6 +12690,10 @@ async def http_download_vod(request: web.Request) -> web.Response:
     response_started = False
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
+        try:
+            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
+        except _VodPlayRemoteError as e:
+            return web.json_response({"error": e.message}, status=e.status)
         attrs = await sftp.stat(remote_path)
 
         response = web.StreamResponse()
@@ -13155,6 +13169,23 @@ class _VodLink:
         self.conn = self.sftp = None
 
 
+async def _vod_remote_confine(sftp, root: str, remote: str) -> None:
+    """Refuse a remote path that is not a regular file inside the owner's VOD root once every link is
+    resolved (a link in the file name or in any folder on the way). Raises _VodPlayRemoteError(404) for
+    that; the other SFTP errors (an unreachable storage) pass through to the caller."""
+    try:
+        attrs = await asyncio.wait_for(sftp.lstat(remote), VOD_SFTP_META_TIMEOUT)
+        if attrs.permissions is not None and not _stat.S_ISREG(attrs.permissions):
+            raise _VodPlayRemoteError(404, "VOD not found")
+        real = await asyncio.wait_for(sftp.realpath(remote), VOD_SFTP_META_TIMEOUT)
+        real_root = await asyncio.wait_for(sftp.realpath(root.rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
+    except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
+        raise _VodPlayRemoteError(404, "VOD not found")
+    real, real_root = str(real).rstrip("/"), str(real_root).rstrip("/")
+    if real != real_root and not real.startswith(real_root + "/"):
+        raise _VodPlayRemoteError(404, "VOD not found")
+
+
 async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: str,
                                 fresh: bool = False, link: Optional[_VodLink] = None) -> tuple:
     """(size, mtime) of the owner's chunk, from the pinned SFTP connection (remembered for a few seconds
@@ -13170,7 +13201,11 @@ async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: s
         sftp = await link.client()
         remote = f"{storage['remote_path'].rstrip('/')}/{path}"
         try:
+            await _vod_remote_confine(sftp, storage["remote_path"], remote)
             attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
+        except _VodPlayRemoteError:
+            _vod_play_stats.pop(memo_key, None)
+            raise                                                # no regular file inside the owner's root
         except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
             _vod_play_stats.pop(memo_key, None)
             raise _VodPlayRemoteError(404, "VOD not found")      # the storage says there is no such file
@@ -13268,6 +13303,7 @@ async def _vod_play_pull(user_id: int, storage: dict, path: str, dest: str, size
     fd = None
     try:
         remote = f"{storage['remote_path'].rstrip('/')}/{path}"
+        await _vod_remote_confine(sftp, storage["remote_path"], remote)
         attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
         if int(attrs.size or 0) != size or int(attrs.mtime or 0) != mtime:
             raise _VodPlayRemoteError(409, "The chunk changed while it was being prepared; try again")
@@ -13702,6 +13738,7 @@ async def _vod_session_probe_head(owner: int, storage: dict, ident: str, path: s
             raise _VodPlayRemoteError(502, error)
         try:
             remote = f"{storage['remote_path'].rstrip('/')}/{path}"
+            await _vod_remote_confine(sftp, storage["remote_path"], remote)
             async with sftp.open(remote, "rb") as src:
                 data = await asyncio.wait_for(src.read(vod_play.HEAD_BYTES), VOD_SFTP_META_TIMEOUT * 2)
         except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):

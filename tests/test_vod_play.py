@@ -134,6 +134,7 @@ class Env:
         app.router.add_get("/api/vods/play/{name:.+}", server.http_play_vod)
         app.router.add_get("/api/vods/play-status/{name:.+}", server.http_play_vod_status)
         app.router.add_get("/api/vods/session/{name:.+}", server.http_play_session)
+        app.router.add_get("/api/vods/download/{filename:.*}", server.http_download_vod)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         return self
@@ -681,6 +682,33 @@ def test_the_setting_is_a_retention_setting_with_a_bound_and_the_routes_exist():
         m = re.search(r"\n(?:async def|def) ", src[start + 10:])
         body = src[start:start + 10 + m.start()]
         assert "_stream_user_auth(" in body and "authenticate_request(" not in body
+
+
+@with_env
+async def test_links_on_the_remote_do_not_lead_out_of_the_owners_root(env):
+    """A file link or a folder link inside the owner's root that points into another root is a 404 on
+    the play route, the session segment route and the download route; a plain file still plays."""
+    env.put("Other/2026-01-01/chunk_000.mkv", clip(), root="/w")
+    env.put(NAME, clip())                                   # the control: a real file of the owner
+    leaf = env.remote.path("/v/Show/2026-01-01/chunk_001.mkv")
+    os.symlink("../../../w/Other/2026-01-01/chunk_000.mkv", leaf)        # a file link out of the root
+    os.symlink("../w", env.remote.path("/v/escape"))                     # a folder link out of the root
+    inside = env.remote.path("/v/Show/2026-01-01/chunk_002.mkv")
+    os.symlink("chunk_000.mkv", inside)                                  # a link to a file of the same root
+    h = {"X-U": str(OWNER)}
+    for name in ("Show/2026-01-01/chunk_001.mkv", "escape/Other/2026-01-01/chunk_000.mkv",
+                 "Show/2026-01-01/chunk_002.mkv"):
+        r = await env.play(name)
+        assert r.status == 404, (name, r.status)
+        r = await env.client.get("/api/vods/session/" + name.replace(".mkv", ".ts"), headers=h)
+        assert r.status == 404, (name, "segment", r.status)
+        r = await env.client.get("/api/vods/download/" + name, headers=h)
+        assert r.status == 404, (name, "download", r.status)
+    assert env.ffmpegs() == 0, env.spawned
+    r = await env.play()
+    assert r.status == 200, await r.text()
+    r = await env.client.get("/api/vods/download/" + NAME, headers=h)
+    assert r.status == 200
 
 
 if __name__ == "__main__":

@@ -729,6 +729,84 @@ def test_the_live_uploader_never_replaces_a_remote_chunk_when_the_start_listing_
         assert not [n for n in files if n.endswith(".part")], (mode, files)
 
 
+def _live_rec(t, name, chunks, rdir):
+    sd = os.path.join(t, "stage", name)
+    os.makedirs(sd)
+    for fname, data in chunks.items():
+        Path(sd, fname).write_bytes(data)
+    return {"session_dir": sd, "remote_session_dir": rdir, "user_id": 7, "uploaded": set()}
+
+
+def test_two_live_uploaders_into_one_remote_folder_lose_and_mix_no_chunk():
+    """Two recordings whose names clean up to the same folder ("My Show" and "My Show!") upload into one
+    remote folder at the same time. Each chunk must arrive whole under its own number, and each local
+    chunk goes only then."""
+    a, b = b"A" * (3 * 1024 * 1024), b"B" * (2 * 1024 * 1024)
+
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodlive2_") as t:
+            async with Remote(t) as remote:
+                rdir = "/v/s/2026-01-01"
+                with Patched(t, remote, SweepDb(remote, {"vod_min_free_gb": "0", "vod_max_backlog_gb": "0"})):
+                    ra = _live_rec(t, "a", {"chunk_001.mkv": a}, rdir)
+                    rb = _live_rec(t, "b", {"chunk_001.mkv": b}, rdir)
+                    await asyncio.gather(server._do_vod_chunk_upload(ra, final=True),
+                                         server._do_vod_chunk_upload(rb, final=True))
+                names = remote.listing(rdir)
+                got = sorted(remote.read(f"{rdir}/{n}") for n in names)
+                return names, got, [os.listdir(ra["session_dir"]), os.listdir(rb["session_dir"])]
+
+    names, got, left = run(go())
+    assert got == sorted([a, b]), (names, [len(x) for x in got])
+    assert not [n for n in names if n.endswith(".part")], names
+    assert left == [[], []], left
+
+
+def test_a_chunk_the_remote_did_not_keep_in_full_stays_local_and_is_retried():
+    """A remote that acknowledges a write it did not keep (a full or faulty storage) must not cost the
+    only complete copy: the short remote file is removed, the local chunk stays, the next pass delivers."""
+    data = b"C" * 100000
+
+    class Short:
+        def __init__(self, inner, tmp):
+            self._inner, self._tmp = inner, tmp
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def put(self, local, remote, *a, **k):
+            half = os.path.join(self._tmp, "half")
+            Path(half).write_bytes(Path(local).read_bytes()[:len(data) // 2])
+            return await self._inner.put(half, remote, *a, **k)
+
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodlive3_") as t:
+            async with Remote(t) as remote:
+                rdir = "/v/s/2026-01-01"
+                real_connect = server._connect_vod_sftp
+
+                async def short_connect(uid):
+                    conn, sftp, err = await real_connect(uid)
+                    return conn, (Short(sftp, t) if sftp else sftp), err
+
+                db = SweepDb(remote, {"vod_min_free_gb": "0", "vod_max_backlog_gb": "0"})
+                with Patched(t, remote, db), Logs() as logs:
+                    rec = _live_rec(t, "a", {"chunk_000.mkv": data}, rdir)
+                    with mock.patch.object(server, "_connect_vod_sftp", short_connect):
+                        await server._do_vod_chunk_upload(rec, final=True)
+                    kept = os.path.exists(os.path.join(rec["session_dir"], "chunk_000.mkv"))
+                    after_short = remote.listing(rdir)
+                    rec["uploaded"].clear()
+                    await server._do_vod_chunk_upload(rec, final=True)   # a healthy remote: the retry delivers
+                return kept, after_short, remote.listing(rdir), remote.read(f"{rdir}/chunk_000.mkv"), logs.text(), \
+                    os.listdir(rec["session_dir"])
+
+    kept, after_short, final, body, log, left = run(go())
+    assert kept and after_short == [], (kept, after_short)
+    assert "instead of" in log
+    assert final == ["chunk_000.mkv"] and body == data and left == [], (final, left)
+
+
 class _Hanging:
     """Wraps an SFTP client; the n-th call of one method never answers (a remote that stops replying)."""
 

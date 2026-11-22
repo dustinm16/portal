@@ -2812,7 +2812,7 @@ Stream-download a VOD file from remote storage. Only `.mkv` files allowed. Suppo
 
 **Response:** Binary file stream with `Content-Disposition: attachment` header.
 
-**Security:** Path traversal (`..`, absolute paths) is rejected.
+**Security:** Path traversal (`..`, absolute paths) is rejected. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and not read.
 
 ---
 
@@ -2824,7 +2824,7 @@ Play one of your own VOD chunks in the browser. `{path}` is the path `GET /api/v
 **Answers:**
 - `200`/`206` the MP4 (`Cache-Control: private, no-cache`, never stored by a shared cache).
 - `202` not prepared yet: `{"state": "preparing", "stage", "status_url"}` with `Retry-After`. A job has been started (one per chunk, two at a time on the server, three per member); poll `status_url`, then request the chunk again. The request waits at most about two seconds for a job before it answers 202.
-- `404` no such chunk in your storage, or a path that is not a listed chunk (`..`, absolute, hidden names, empty segments, not `.mkv`).
+- `404` no such chunk in your storage, or a path that is not a listed chunk (`..`, absolute, hidden names, empty segments, not `.mkv`), or a file that is a symbolic link on the storage or lies behind a linked folder that leads outside your VOD root (the path is resolved on the storage; the segment route of a session does the same).
 - `409` the newest chunk of a folder a stream is recording to right now (still being written or uploaded).
 - `415` download only: `{"error", "reason", "state": "unplayable"}` for anything but H.264 video (8 bit 4:2:0) with AAC or MP3 audio or no audio, and for a chunk whose finished copy alone (about 1.2 times its size) is larger than `vod_play_cache_mb`. That refusal is not remembered: it is made again from the current setting on every request. The working space of a job (the pulled chunk and the MP4 being written) is not counted in the cap; it is bounded by `vod_min_free_gb` and by one job per member.
 - `429` too many of your chunks are being prepared (`Retry-After`). `502` the storage cannot be reached or did not answer the size lookup (`404` is only for a file the storage says does not exist); the text is fixed and names nothing of the storage. `503` the storage lookups did not finish within 20 seconds (`Retry-After`), playback is off (`vod_play_cache_mb` is 0, `"code": "playback_off"`), the cache folder is not usable, or there is not enough free disk space (the cache never grows while less than `vod_min_free_gb` is free), or the chunk changed on the storage and a newer version of it is being prepared while the request still saw the older one (`Retry-After`; the old job is stopped, a request waiting for it gets `409`). `500` the chunk could not be converted (nothing is kept).
