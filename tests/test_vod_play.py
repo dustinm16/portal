@@ -8,6 +8,7 @@ covered by tests/test_stream_access.py. Everything is written into temporary fol
 Run: venv/bin/python tests/test_vod_play.py
 """
 import asyncio
+import io
 import json
 import re
 import os
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -136,6 +138,7 @@ class Env:
         app.router.add_get("/api/vods/session/{name:.+}", server.http_play_session)
         app.router.add_get("/api/vods/download/{filename:.*}", server.http_download_vod)
         app.router.add_get("/api/vods", server.http_list_vods)
+        app.router.add_post("/api/vods/download-archive", server.http_download_vod_archive)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         return self
@@ -736,6 +739,25 @@ async def test_delete_and_listing_do_not_follow_links_out_of_the_owners_root(env
     assert os.path.islink(env.remote.path("/v/Show/2026-01-01/chunk_009.mkv"))   # the link itself is left alone too
     r = await delete(NAME)                                                         # a real chunk is still deleted
     assert r.status == 200 and not os.path.exists(env.remote.path("/v/" + NAME))
+
+
+@with_env
+async def test_the_zip_download_does_not_follow_links_out_of_the_owners_root(env):
+    """The zip route reads each file through the same confinement as the single download: a folder link and
+    a file link into another root add nothing from it to the archive, and a real chunk is still zipped."""
+    env.put("Other/2026-01-01/chunk_000.mkv", b"SECRET-OF-OTHER", root="/w")
+    env.put(NAME, clip())
+    os.symlink("../w", env.remote.path("/v/escape"))
+    os.symlink("../../../w/Other/2026-01-01/chunk_000.mkv", env.remote.path("/v/Show/2026-01-01/chunk_009.mkv"))
+    h = {"X-U": str(OWNER)}
+    for name in ("escape/Other/2026-01-01/chunk_000.mkv", "Show/2026-01-01/chunk_009.mkv"):
+        r = await env.client.post("/api/vods/download-archive", json={"files": [name, NAME]}, headers=h)
+        raw = await r.read()
+        assert r.status == 200
+        assert b"SECRET-OF-OTHER" not in raw, name
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        assert zf.namelist() == [NAME], (name, zf.namelist())
+        assert zf.read(NAME) == clip()
 
 
 if __name__ == "__main__":

@@ -12794,6 +12794,9 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
     for filepath in files:
         remote_path = f"{remote_root}/{filepath}"
         try:
+            # checked per file and before its header is written: a link that leaves the owner's root is
+            # skipped, and the first bytes of the response are not held back by checking every name first
+            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
             fname_bytes = filepath.encode("utf-8")
             local_header_offset = offset
 
@@ -12841,6 +12844,9 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
 
             entries.append((fname_bytes, crc, total_size, local_header_offset))
 
+        except _VodPlayRemoteError:
+            logger.warning(f"Skipping VOD file in archive {filepath}: not a file inside the VOD root")
+            continue
         except (asyncssh.SFTPError, OSError) as e:
             logger.warning(f"Skipping VOD file in archive {filepath}: {e}")
             continue

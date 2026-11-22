@@ -2883,7 +2883,7 @@ Download multiple VOD files as a single zip archive streamed from SFTP. The zip 
 
 **Response:** Binary zip stream with `Content-Disposition: attachment; filename="archive_name.zip"` header. Archive name is derived from the common directory prefix of the selected files.
 
-**Security:** Path traversal (`..`, absolute paths) is rejected.
+**Security:** Path traversal (`..`, absolute paths) is rejected. Each file is also checked against the owner's VOD root once every link on the remote is resolved; a name that is a link leading out of the root is left out of the archive, the same as a file that cannot be read.
 
 ---
 
