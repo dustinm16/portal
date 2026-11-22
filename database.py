@@ -9003,6 +9003,9 @@ class Database:
         "retention_device_metrics_days": "14",
         "retention_recordings_days": "30",
         "recording_max_total_mb": "2048",
+        "vod_min_free_gb": "1",
+        "vod_max_backlog_gb": "2",
+        "vod_orphan_max_age_days": "14",
         "retention_security_events_days": "180",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
@@ -9026,6 +9029,15 @@ class Database:
             # Validate numeric fields
             if key == "auto_vacuum":
                 value = "true" if value in ("true", True, "1") else "false"
+            elif key in ("vod_min_free_gb", "vod_max_backlog_gb"):
+                # gigabytes, fractions allowed (0.5), 0 switches the check off
+                try:
+                    gb = float(value)
+                except (ValueError, TypeError):
+                    continue
+                if gb != gb or gb < 0 or gb == float("inf"):
+                    continue
+                value = f"{min(gb, 100000):g}"
             else:
                 try:
                     int_val = int(value)
@@ -9042,6 +9054,7 @@ class Database:
                         "retention_device_metrics_days": 365,
                         "retention_recordings_days": 3650,
                         "recording_max_total_mb": 10_000_000,
+                        "vod_orphan_max_age_days": 3650,
                         "retention_security_events_days": 3650,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }

@@ -60,7 +60,7 @@ GROUPS = {
         "auth.login_failed_burst", "2fa.disabled", "apikey.created", "role.changed", "ip.blocked")),
     "operations": ("Operations", (
         "update.available", "service.health_changed", "cert.expiring", "cert.renewal_failed",
-        "gameserver.crashed", "backup.ok", "backup.failed", "alerts.suppressed")),
+        "gameserver.crashed", "backup.ok", "backup.failed", "vod.recording_stopped", "alerts.suppressed")),
     "moderation": ("Moderation", ("moderation.action", "automod.triggered")),
 }
 GROUP_OF = {name: group for group, (_label, names) in GROUPS.items() for name in names}
@@ -87,6 +87,7 @@ COOLDOWNS = {
     "gameserver.crashed": 600.0,
     "backup.ok": 3600.0,
     "backup.failed": 3600.0,
+    "vod.recording_stopped": 3600.0,   # backstop only: the recorder sends it once per recording and reason
     "moderation.action": 60.0,
     "automod.triggered": 60.0,
     "alerts.suppressed": 0.0,
@@ -96,6 +97,7 @@ SEVERITY = {
     "role.changed": "warning", "ip.blocked": "notice", "update.available": "notice",
     "service.health_changed": "warning", "cert.expiring": "warning", "cert.renewal_failed": "critical",
     "gameserver.crashed": "warning", "backup.ok": "info", "backup.failed": "warning",
+    "vod.recording_stopped": "warning",
     "moderation.action": "info", "automod.triggered": "info", "alerts.suppressed": "warning",
 }
 

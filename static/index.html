@@ -435,6 +435,11 @@
                 </div>
                 <p class="tab-description">Browse, download, and manage MKV recordings on your remote SFTP server.</p>
 
+                <div id="vods-guard-notice" role="status" style="display: none; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--warning, #f39c12); background: rgba(243, 156, 18, 0.12); color: var(--text-primary); font-size: 0.875rem;">
+                    <strong id="vods-guard-title"></strong>
+                    <span id="vods-guard-message"></span>
+                </div>
+
                 <div id="vods-no-storage" class="empty-state" style="display: none;">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -2120,7 +2125,7 @@
     </div>
 
     <script src="/static/js/streams.js?v=49"></script>
-    <script src="/static/js/vods.js?v=6"></script>
+    <script src="/static/js/vods.js?v=7"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

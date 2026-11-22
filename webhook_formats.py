@@ -36,7 +36,7 @@ FORMATS = ("generic", "ntfy", "gotify", "discord", "slack")
 ALERT_EVENTS = frozenset({
     "auth.login_failed_burst", "2fa.disabled", "apikey.created", "role.changed", "ip.blocked",
     "update.available", "service.health_changed", "cert.expiring", "cert.renewal_failed",
-    "gameserver.crashed", "backup.ok", "backup.failed", "moderation.action",
+    "gameserver.crashed", "backup.ok", "backup.failed", "vod.recording_stopped", "moderation.action",
     "automod.triggered", "alerts.suppressed",
 })
 ALERT_TITLES = {
@@ -52,6 +52,7 @@ ALERT_TITLES = {
     "gameserver.crashed": "Game server stopped unexpectedly",
     "backup.ok": "Backup finished",
     "backup.failed": "Backup failed",
+    "vod.recording_stopped": "VOD recording stopped or refused",
     "moderation.action": "Moderation action",
     "automod.triggered": "Auto-moderation rule triggered",
     "alerts.suppressed": "Alerts suppressed",

@@ -8,6 +8,24 @@ let vodFiles = [];        // raw file list from API
 let vodSelected = new Set(); // selected file paths
 
 /**
+ * Say where a recording was stopped or refused by the disk guard (the answer's recording_guard
+ * field, null when nothing happened). Text only; the server sends no paths.
+ */
+function showVodGuardNotice(guard) {
+    const box = document.getElementById('vods-guard-notice');
+    if (!box) return;
+    if (!guard || !guard.message) {
+        box.style.display = 'none';
+        return;
+    }
+    const title = document.getElementById('vods-guard-title');
+    const message = document.getElementById('vods-guard-message');
+    title.textContent = guard.kind === 'stopped' ? 'A recording was stopped. ' : 'A recording was not started. ';
+    message.textContent = guard.message + (guard.at ? ' (' + formatVodDate(Date.parse(guard.at) / 1000) + ')' : '');
+    box.style.display = 'block';
+}
+
+/**
  * Load VODs from remote SFTP storage
  */
 async function loadVods() {
@@ -20,6 +38,7 @@ async function loadVods() {
 
     if (!noStorage) return;
 
+    showVodGuardNotice(null);
     noStorage.style.display = 'none';
     loading.style.display = 'flex';
     container.style.display = 'none';
@@ -38,10 +57,12 @@ async function loadVods() {
 
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));
+            showVodGuardNotice(data.recording_guard);
             throw new Error(data.error || 'Failed to load VODs');
         }
 
         const data = await response.json();
+        showVodGuardNotice(data.recording_guard);
         vodFiles = data.files || [];
         vodSelected.clear();
         vodsLoaded = true;

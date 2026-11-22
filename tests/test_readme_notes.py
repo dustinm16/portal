@@ -651,6 +651,44 @@ try:
 except Exception as e_:  # the screenshot script needs aiohttp, which the project venv has
     check("the make_screenshots module loads for the picture checks", False, repr(e_))
 
+# --- 1.21.0 notes: VOD disk guard and boot sweep ----------------------------------------
+import vod_staging as _vs21  # noqa: E402
+m21 = re.search(r"### Upgrade notes for 1\.21\.0\n(.*?)(?=\n### Upgrade notes for 1\.20\.0)", text, re.S)
+check("README has an 'Upgrade notes for 1.21.0' section directly before the 1.20.0 one", m21 is not None)
+_sec21 = m21.group(1) if m21 else ""
+low21 = _sec21.lower()
+for name, needles in {
+        "the three settings and their defaults": ("`vod_min_free_gb` (default `1`)", "`vod_max_backlog_gb` (default `2`)",
+                                                  "`vod_orphan_max_age_days` (default `14`)", "`0` switches a check off"),
+        "the stop method and its limits": ("writes `q`", "exit with code 0", "ffprobe", "rtsps input", "sigint, then terminate, then kill",
+                                           "never interrupted, only the recording"),
+        "where the guard is seen": ("`recording_guard`", "activity log", "`vod.recording_stopped`", "once per recording and reason"),
+        "the sweep rules": ("one folder at a time", "4 gib per pass", "pinned sftp", "skips a folder that a recording is using",
+                            "cannot be niced", "pacing"),
+        "the numbering rule": ("one above the highest `chunk_nnn`", "`.part` files", "gaps are never filled", "same name",
+                               "never lost or replaced" if False else "never losing or replacing", "remote size is read and compared"),
+        "the removal rules": ("logged with folder name, size and reason", "removed at once", "never removed, only uploaded",
+                              "a database error removes nothing"),
+        "stage mode": ("`portal_stage_mode`", "only reports"),
+        "behaviour changes and rollback": ("`_recovered` names are gone", "1.20.0 ignores the new settings", "no migration"),
+        "what is not tested": ("**not tested.**", "no browser", "real remote storage", "cloudflare"),
+}.items():
+    check(f"1.21.0 states: {name}", all(n in low21 for n in needles), str([n for n in needles if n not in low21]))
+check("1.21.0: the defaults stated are the ones in the code",
+      (_vs21.DEFAULT_MIN_FREE_GB, _vs21.DEFAULT_MAX_BACKLOG_GB, _vs21.DEFAULT_ORPHAN_MAX_AGE_DAYS) == (1.0, 2.0, 14))
+check("1.21.0: the vods.js version stated is the one index.html loads",
+      "`vods.js` is now v7" in _sec21 and "/static/js/vods.js?v=7" in (ROOT / "static" / "index.html").read_text())
+check("1.21.0: the new alert event is in the README event list, the API reference and the API page",
+      "`vod.recording_stopped`" in text.split("### Upgrade notes for 1.21.0")[0]
+      and "vod.recording_stopped" in (ROOT / "docs" / "API.md").read_text()
+      and "vod.recording_stopped" in (ROOT / "static" / "api-docs.html").read_text())
+check("1.21.0 states: the live uploader never replaces a remote chunk",
+      all(n in low21 for n in ("the live uploader never replaces a remote chunk", "plain rename", "next free number")))
+_srv21 = (ROOT / "server.py").read_text()
+check("1.21.0: the live uploader's final rename no longer replaces or deletes the remote file",
+      "posix_rename" not in _srv21 and "sftp.remove(final_path)" not in _srv21)
+check("the 1.21.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec21))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

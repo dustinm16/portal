@@ -297,9 +297,17 @@ class FakeSftp:
         self.put_names = []
 
     async def stat(self, path):
-        if path in self.files or path in self.dirs:
-            return object()
+        if path in self.files:
+            import types
+            return types.SimpleNamespace(size=len(self.files[path]))
+        if path in self.dirs:
+            import types
+            return types.SimpleNamespace(size=0)
         raise self._exc("no such file")
+
+    async def listdir(self, path):
+        prefix = path.rstrip("/") + "/"
+        return [p[len(prefix):] for p in self.files if p.startswith(prefix) and "/" not in p[len(prefix):]]
 
     async def mkdir(self, path):
         self.dirs.add(path)
@@ -328,7 +336,8 @@ class FakeSftp:
         if self.rename_fails:
             raise OSError("rename failed")
         if new in self.files:
-            raise OSError("destination exists")
+            import asyncssh
+            raise asyncssh.SFTPFailure("destination exists")
         self.files[new] = self.files.pop(old)
         self.renames.append(("rename", old, new))
 
@@ -391,6 +400,13 @@ class LogCapture:
         return "\n".join(self.records)
 
 
+def limits(min_free, max_backlog=0, max_age_days=14):
+    """A stand-in for server._vod_guard_limits with fixed values."""
+    async def fixed():
+        return min_free, max_backlog, max_age_days
+    return fixed
+
+
 def age(path, days):
     """Backdate a session folder's chunks and record by *days*."""
     import time
@@ -419,8 +435,10 @@ def test_recovery_uploads_without_overwriting_and_cleans_up():
         vod_staging_dirs = vs.list_session_dirs(t)
         asyncio.run(go())
         assert sftp.files["/v/s/2026-01-01/chunk_005.mkv"] == "old", "existing remote chunk was overwritten"
-        assert sftp.files["/v/s/2026-01-01/chunk_005_recovered1.mkv"] == "data-chunk_005.mkv"
-        assert sftp.files["/v/s/2026-01-01/chunk_006.mkv"] == "data-chunk_006.mkv"
+        # every local chunk gets a new number above the highest remote one (005): 006 and 007
+        assert sftp.files["/v/s/2026-01-01/chunk_006.mkv"] == "data-chunk_005.mkv"
+        assert sftp.files["/v/s/2026-01-01/chunk_007.mkv"] == "data-chunk_006.mkv"
+        assert not any(".part" in n for n in sftp.files)
         assert not d1.exists(), "uploaded session folder should be removed"
         assert not d2.exists(), "empty session folder should be removed"
         assert (d3 / "chunk_000.mkv").exists(), "folder without a session record must be left alone"
@@ -485,7 +503,7 @@ def test_start_refuses_when_free_space_low_and_logs_it():
             with mock.patch.object(server, "VOD_TEMP_DIR", os.path.join(t, "stage")), \
                     mock.patch.object(server, "db", FakeDb()), \
                     mock.patch.object(server, "_get_mediamtx_config", mtx), \
-                    mock.patch.object(server, "VOD_MIN_FREE_BYTES", 1 << 62), \
+                    mock.patch.object(server, "_vod_guard_limits", limits(1 << 62)), \
                     mock.patch.object(server.asyncio, "create_subprocess_exec",
                                       side_effect=AssertionError("ffmpeg must not start")):
                 await server.start_vod_recording(stream, "live_x")
@@ -497,7 +515,7 @@ def test_start_refuses_when_free_space_low_and_logs_it():
         assert [n for n in os.listdir(stage) if n != vs.MARKER_NAME] == [], "no session folder may be created when refusing"
 
 
-def _upload(server, t, sftp, name="chunk_000.mkv", no_overwrite=False, timeout=None):
+def _upload(server, t, sftp, name="chunk_000.mkv", timeout=None):
     """Run the real chunk upload for one local chunk against *sftp*; return (recording, error)."""
     d = make_session(t, "1_a", chunks=(name,))
     rec = {"session_dir": str(d), "remote_session_dir": "/v/s/2026-01-01", "user_id": 7,
@@ -519,7 +537,7 @@ def _upload(server, t, sftp, name="chunk_000.mkv", no_overwrite=False, timeout=N
     async def go():
         with mock.patch.object(server, "_connect_vod_sftp", connect), \
                 mock.patch.object(server.asyncio, "wait_for", short_wait_for):
-            await server._do_vod_chunk_upload(rec, final=True, no_overwrite=no_overwrite)
+            await server._do_vod_chunk_upload(rec, final=True)
 
     with LogCapture() as cap:
         asyncio.run(go())
@@ -533,23 +551,14 @@ def test_upload_goes_to_a_part_name_and_is_renamed_on_success():
         sftp = FakeSftp()
         rec, d, log = _upload(server, t, sftp)
         assert sftp.put_names == [final + ".part"], sftp.put_names
-        assert sftp.renames == [("posix_rename", final + ".part", final)], sftp.renames
+        assert sftp.renames == [("rename", final + ".part", final)], sftp.renames
         assert list(sftp.files) == [final] and sftp.files[final] == "data-chunk_000.mkv"
         assert not (d / "chunk_000.mkv").exists() and str(d / "chunk_000.mkv") in rec["uploaded"]
-    # a server without the posix-rename extension falls back to the plain rename
+    # the plain rename is used: unlike posix-rename it never replaces a remote file
     with tmp() as t:
         sftp = FakeSftp()
-        sftp.posix_ok = False
         _upload(server, t, sftp)
         assert sftp.renames == [("rename", final + ".part", final)] and list(sftp.files) == [final]
-    # recovery uses the same function and the same rule, with its _recovered name
-    with tmp() as t:
-        sftp = FakeSftp(existing=[final])
-        _upload(server, t, sftp, no_overwrite=True)
-        rec_name = "/v/s/2026-01-01/chunk_000_recovered1.mkv"
-        assert sftp.put_names == [rec_name + ".part"], sftp.put_names
-        assert sftp.files[final] == "old" and sftp.files[rec_name] == "data-chunk_000.mkv"
-        assert not any(n.endswith(".part") for n in sftp.files)
 
 
 def test_failed_upload_leaves_no_remote_partial_and_keeps_the_local_chunk():
@@ -711,7 +720,7 @@ def test_default_folder_below_tmp_is_still_used_but_a_custom_sibling_is_refused(
                         mock.patch.object(server, "_PROJECT_ROOT", os.path.join(t, "project")), \
                         mock.patch.object(server, "db", Db()), \
                         mock.patch.object(server, "_get_mediamtx_config", mtx), \
-                        mock.patch.object(server, "VOD_MIN_FREE_BYTES", 1 << 62):  # stop right after the checks
+                        mock.patch.object(server, "_vod_guard_limits", limits(1 << 62)):  # stop right after the checks
                     await server.start_vod_recording(
                         {"id": 9, "user_id": 7, "name": "Show", "owner_username": "o"}, "live_x")
 
@@ -981,7 +990,7 @@ def test_recovery_passes_never_overlap_and_relist_each_time():
 
         asyncio.run(go())
         assert len(connects) == 3, connects  # 2 folders in pass one, 1 new folder in pass two
-        assert sorted(sftp.files) == ["/v/other/chunk_000.mkv", "/v/s/2026-01-01/chunk_000.mkv", "/v/third/chunk_000.mkv"]
+        assert sorted(sftp.files) == ["/v/other/chunk_000.mkv", "/v/s/2026-01-01/chunk_000.mkv", "/v/third/chunk_000.mkv"], sorted(sftp.files)
 
 
 def test_recovery_flag_is_released_after_an_error():
@@ -1061,7 +1070,7 @@ def test_recording_marks_its_folder_busy_until_cleanup():
                     mock.patch.object(server, "_get_mediamtx_config", mtx), \
                     mock.patch.object(server, "_connect_vod_sftp", no_sftp), \
                     mock.patch.object(server, "_vod_chunk_uploader", noop), \
-                    mock.patch.object(server, "VOD_MIN_FREE_BYTES", 1), \
+                    mock.patch.object(server, "_vod_guard_limits", limits(1)), \
                     mock.patch.object(server, "_PROJECT_ROOT", t), \
                     mock.patch.object(server.asyncio, "sleep", noop), \
                     mock.patch.object(server.asyncio, "create_subprocess_exec", executor):

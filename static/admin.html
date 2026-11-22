@@ -6897,6 +6897,21 @@
                         <span style="font-size:0.7rem;color:var(--text-muted);">Total for all recordings; 0 = no limit. New sessions are not recorded when it is used up or the disk is nearly full (nothing older is deleted)</span>
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Temp Folder: Minimum Free Space (GB)</label>
+                        <input type="number" id="ret-vod-min-free" value="${c.vod_min_free_gb}" min="0" step="0.1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">Below this a new VOD recording is refused and a running one is stopped (the live stream is not); 0 = off</span>
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Temp Folder: Maximum Waiting Chunks (GB)</label>
+                        <input type="number" id="ret-vod-backlog" value="${c.vod_max_backlog_gb}" min="0" step="0.1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">Chunks not yet uploaded to the streamers' storage, per recording and in total; over it recordings are refused or stopped; 0 = off</span>
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Orphan Folder Age (days)</label>
+                        <input type="number" id="ret-vod-orphan-age" value="${c.vod_orphan_max_age_days}" min="0" max="3650" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">A leftover recording folder without a session record is removed after this many days; 0 = never. Chunks of a streamer whose storage is configured are never removed, only delivered</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Security Event Retention (days)</label>
                         <input type="number" id="ret-security-events" value="${c.retention_security_events_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                         <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
@@ -6922,6 +6937,7 @@
 
         async function saveRetentionConfig() {
             const pInt = (id, def) => { const v = parseInt(document.getElementById(id).value, 10); return isNaN(v) ? def : v; };
+            const pFloat = (id, def) => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? def : v; };
             const data = {
                 retention_chat_days: pInt('ret-chat-days', 7),
                 retention_chat_max_days: pInt('ret-chat-max', 3650),
@@ -6932,6 +6948,9 @@
                 retention_device_metrics_days: pInt('ret-device-metrics', 14),
                 retention_recordings_days: pInt('ret-recordings', 30),
                 recording_max_total_mb: pInt('ret-recording-max', 2048),
+                vod_min_free_gb: pFloat('ret-vod-min-free', 1),
+                vod_max_backlog_gb: pFloat('ret-vod-backlog', 2),
+                vod_orphan_max_age_days: pInt('ret-vod-orphan-age', 14),
                 retention_security_events_days: pInt('ret-security-events', 180),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'

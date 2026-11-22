@@ -54,6 +54,11 @@ async def noop(*a, **k):
 
 def result(d):
     print("RESULT " + json.dumps(d))
+
+def _limits(min_free, max_backlog=0, max_age_days=14):
+    async def fixed():
+        return min_free, max_backlog, max_age_days
+    return fixed
 '''
 
 BEFORE = COMMON + (r'''
@@ -87,14 +92,14 @@ async def main():
             mock.patch.object(server, "_vod_chunk_uploader", noop), \
             mock.patch.object(server.asyncio, "create_subprocess_exec", spy_exec):
         # 1. not enough free space: refused, nothing created, reason logged
-        with mock.patch.object(server, "VOD_MIN_FREE_BYTES", 1 << 62):
+        with mock.patch.object(server, "_vod_guard_limits", _limits(1 << 62)):
             await server.start_vod_recording(stream, "live_smoke")
         out["low_space_started"] = bool(started) or 4242 in server.active_recordings
         out["low_space_dirs"] = sorted(n for n in os.listdir(server.VOD_TEMP_DIR) if n != vod_staging.MARKER_NAME)
         cur = await db.conn.execute("SELECT action, detail FROM activity_log WHERE user_id = ?", (uid,))
         out["activity"] = [dict(r) for r in await cur.fetchall()]
         # 2. enough space: a session folder with a private session record
-        with mock.patch.object(server, "VOD_MIN_FREE_BYTES", 1):
+        with mock.patch.object(server, "_vod_guard_limits", _limits(1)):
             await server.start_vod_recording(stream, "live_smoke")
         rec = server.active_recordings.get(4242)
         out["started"] = bool(rec) and len(started) == 1
@@ -120,17 +125,26 @@ class FakeSftp:
     def __init__(self, existing):
         import asyncssh
         self._exc = asyncssh.SFTPNoSuchFile
+        self._fail = asyncssh.SFTPFailure
         self.files = {p: "remote-original" for p in existing}
         self.dirs = set()
     async def stat(self, path):
-        if path in self.files or path in self.dirs:
-            return object()
+        import types
+        if path in self.files:
+            return types.SimpleNamespace(size=len(self.files[path]))
+        if path in self.dirs:
+            return types.SimpleNamespace(size=0)
         raise self._exc("no such file")
+    async def listdir(self, path):
+        prefix = path.rstrip("/") + "/"
+        return [p[len(prefix):] for p in self.files if p.startswith(prefix) and "/" not in p[len(prefix):]]
     async def mkdir(self, path):
         self.dirs.add(path)
     async def put(self, local, remote):
         self.files[remote] = Path(local).read_text()
-    async def posix_rename(self, old, new):
+    async def rename(self, old, new):
+        if new in self.files:
+            raise self._fail("destination exists")
         self.files[new] = self.files.pop(old)
     async def remove(self, path):
         del self.files[path]
@@ -147,8 +161,16 @@ async def main():
     async def fake_connect(uid):
         return mock.Mock(), sftp, None
 
+    from config import Config
+    out["stage_mode"] = bool(Config.STAGE_MODE)
     with mock.patch.object(server, "_connect_vod_sftp", fake_connect):
+        # a staged instance only reports: nothing is uploaded or removed (the storage is no loopback test server)
         await server.recover_vod_staging(leftovers)
+        out["stage_pass_remote"] = {k: v for k, v in sftp.files.items()}
+        out["stage_pass_chunk_kept"] = bool(chunk) and chunk[0].exists()
+        # the same pass as a real portal runs it; the fake store stands in for the remote
+        with mock.patch.object(Config, "STAGE_MODE", False):
+            await server.recover_vod_staging(leftovers)
     out["remote"] = {k: v for k, v in sftp.files.items()}
     out["leftover_dirs_after"] = sorted(n for n in os.listdir(server.VOD_TEMP_DIR) if n != vod_staging.MARKER_NAME)
     result(out)
@@ -429,6 +451,7 @@ def session(root, name, user_id=None, chunks=(("chunk_000.mkv", "aaaa"),), days=
     return d
 
 async def main():
+    from config import Config
     await db.connect()
     server.db = db
     a = (await create_user("vodtmp_stale_a", %(pw)r))["id"]
@@ -447,10 +470,10 @@ async def main():
     out = {}
     d_nosc_old = session(base, "1_nosc_old", None, (("chunk_000.mkv", "aaaa"), ("chunk_001.mkv", "bbbbbb")), days=15)
     d_nosc_new = session(base, "2_nosc_new", None, days=13)
-    d_user = session(base, "3_user_gone", gone_user, days=20)
-    d_stor = session(base, "4_storage_gone", a, days=20)
+    d_user = session(base, "3_user_gone", gone_user, days=0)
+    d_stor = session(base, "4_storage_gone", a, days=0)
     d_down = session(base, "5_sftp_down", b, days=30)
-    d_deleted = session(base, "8_deleted_account", deleted_user, days=20)
+    d_deleted = session(base, "8_deleted_account", deleted_user, days=0)
 
     connects = []
 
@@ -458,7 +481,8 @@ async def main():
         connects.append(uid)
         return None, None, "connection refused"
 
-    with mock.patch.object(db, "get_vod_storage", storage), \
+    # these folders and stores are fakes; the stage-mode gate of the sweep is checked in the restart step
+    with mock.patch.object(db, "get_vod_storage", storage), mock.patch.object(Config, "STAGE_MODE", False), \
             mock.patch.object(server, "_connect_vod_sftp", down), Cap() as cap:
         await server.recover_vod_staging(vod_staging.list_session_dirs(base))
     log = cap.text()
@@ -486,7 +510,7 @@ async def main():
         await gate.wait()
         return None, None, "connection refused"
 
-    with mock.patch.object(db, "get_vod_storage", storage), \
+    with mock.patch.object(db, "get_vod_storage", storage), mock.patch.object(Config, "STAGE_MODE", False), \
             mock.patch.object(server, "_connect_vod_sftp", blocked):
         first = asyncio.create_task(server.recover_vod_staging(vod_staging.list_session_dirs(base)))
         await entered.wait()
@@ -619,11 +643,15 @@ async def run(ctx):
         if a is not None:
             ctx.ok("vodtmp: after a restart the chunk is still on disk and found", a["chunk_survived"] is True, str(a["leftovers"]))
             remote = a["remote"]
-            uploaded = [v for k, v in remote.items() if "chunk_000" in k and v == MARK]
+            uploaded = [v for k, v in remote.items() if v == MARK]
             ctx.ok("vodtmp: the leftover chunk uploads after the restart", len(uploaded) == 1, str(sorted(remote))[:200])
             ctx.ok("vodtmp: an upload never overwrites a chunk already on the remote side",
                    sorted(v for v in remote.values() if v == "remote-original") == ["remote-original"] and
-                   any(k.endswith("chunk_000_recovered1.mkv") for k in remote), str(sorted(remote))[:200])
+                   any(k.endswith("chunk_001.mkv") and v == MARK for k, v in remote.items()), str(sorted(remote))[:200])
+            if a.get("stage_mode"):
+                ctx.ok("vodtmp: in stage mode the sweep only reports, it neither uploads nor removes",
+                       a["stage_pass_chunk_kept"] is True and "remote-original" in a["stage_pass_remote"].values()
+                       and MARK not in a["stage_pass_remote"].values(), str(a["stage_pass_remote"])[:200])
             ctx.ok("vodtmp: the session folder is removed once everything is uploaded", a["leftover_dirs_after"] == [], str(a["leftover_dirs_after"]))
 
     # Migration from the old /tmp location.
@@ -716,9 +744,9 @@ async def run(ctx):
     if v is not None:
         ctx.ok("vodtmp: chunks with no session record are kept at 13 days and removed at 15 days",
                v["nosc_new_kept"] and v["nosc_old_removed"], "")
-        ctx.ok("vodtmp: chunks whose owner or storage is gone are removed after 14 days",
+        ctx.ok("vodtmp: chunks whose owner or storage is gone are removed at once, however young",
                v["user_gone_removed"] and v["storage_gone_removed"], "")
-        ctx.ok("vodtmp: chunks of an account deleted through the portal are removed after 14 days",
+        ctx.ok("vodtmp: chunks of an account deleted through the portal are removed at once",
                v["deleted_account_removed"], "")
         ctx.ok("vodtmp: the removal log line names the number of chunks and bytes",
                "2 chunk(s), 10 bytes" in v["log"] and "1 chunk(s), 4 bytes" in v["log"], v["log"][-300:])

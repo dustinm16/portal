@@ -21,8 +21,14 @@ from typing import Optional
 
 logger = logging.getLogger("portal")
 
-# Refuse to start a new recording session below this much free space.
+# Refuse to start a new recording session below this much free space (the default of the
+# setting vod_min_free_gb; the server reads the setting, this value is only the fallback).
 MIN_FREE_BYTES = 1024 * 1024 * 1024
+# Defaults of the settings vod_min_free_gb, vod_max_backlog_gb (gigabytes, 0 = check off) and
+# vod_orphan_max_age_days (0 = never remove by age).
+DEFAULT_MIN_FREE_GB = 1.0
+DEFAULT_MAX_BACKLOG_GB = 2.0
+DEFAULT_ORPHAN_MAX_AGE_DAYS = 14
 
 # Where older releases kept the staging folder.
 LEGACY_DIR = "/tmp/portal_vods"
@@ -411,3 +417,127 @@ def migrate_legacy(new_dir: str, legacy_dir: str = LEGACY_DIR) -> dict:
     except OSError:
         pass
     return result
+
+
+# ---------------------------------------------------------------------------
+# Recorder output arguments (shared by the recorder and by the tests)
+# ---------------------------------------------------------------------------
+
+def segment_args(session_dir: str, start_number: int, segment_seconds: int) -> list:
+    """ffmpeg output arguments that cut the input into MKV chunks, without re-encoding.
+
+    The recorder puts its input arguments in front of these; a test puts a local file or a
+    generated source there instead, so both write chunks in exactly the same way.
+    """
+    return [
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", str(segment_seconds),
+        "-segment_format", "matroska",
+        "-segment_start_number", str(start_number),
+        "-reset_timestamps", "1",
+        os.path.join(session_dir, "chunk_%03d.mkv"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Disk guard: free space and backlog of the staging folder
+# ---------------------------------------------------------------------------
+
+def _chunk_size(path: str) -> int:
+    try:
+        return os.lstat(path).st_size
+    except OSError:
+        return 0
+
+
+def backlog_bytes(session_dir: str, live: bool = False) -> int:
+    """Bytes of chunks waiting in one session folder.
+
+    For the folder a recording is writing to (*live*), the newest chunk is the one ffmpeg is
+    still filling, so it is left out: only completed chunks that the uploader has not yet
+    delivered count as waiting. Every chunk of a finished (orphan) folder counts.
+    """
+    files = chunk_files(session_dir)
+    if live and files:
+        files = files[:-1]
+    return sum(_chunk_size(f) for f in files)
+
+
+def total_backlog_bytes(root: str, live_dirs=()) -> int:
+    live = {os.path.abspath(d) for d in live_dirs}
+    return sum(backlog_bytes(d, os.path.abspath(d) in live) for d in list_session_dirs(root))
+
+
+def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_dir: Optional[str] = None):
+    """Why a recording must not run (or start), as (code, text), or None when all is well.
+
+    *min_free* and *max_backlog* are bytes, 0 switches that check off. *live_dirs* are the
+    session folders of running recordings (their unfinished chunk is not backlog); *own_dir*
+    is the recording being checked (None for a recording that has not started).
+    """
+    try:
+        free = free_bytes(root)
+    except OSError:
+        free = None
+    if min_free and free is not None and free < min_free:
+        return ("low_free_space",
+                f"only {format_size(free)} free in the VOD staging folder (needs {format_size(min_free)})")
+    if max_backlog:
+        if own_dir:
+            own = backlog_bytes(own_dir, True)
+            if own > max_backlog:
+                return ("session_backlog",
+                        f"{format_size(own)} of this recording is waiting to be uploaded "
+                        f"(limit {format_size(max_backlog)})")
+        total = total_backlog_bytes(root, live_dirs)
+        if total > max_backlog:
+            return ("total_backlog",
+                    f"{format_size(total)} of recordings are waiting to be uploaded "
+                    f"(limit {format_size(max_backlog)})")
+    return None
+
+
+def gb_setting(raw, default: float) -> float:
+    """A gigabyte setting as a number (0 or more); anything unusable gives *default*."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value != value or value < 0 or value > 10_000_000:
+        return default
+    return value
+
+
+def int_setting(raw, default: int, maximum: int = 3650) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return default if value < 0 else min(value, maximum)
+
+
+# ---------------------------------------------------------------------------
+# Remote numbering for the sweep
+# ---------------------------------------------------------------------------
+
+_REMOTE_INDEX_RE = re.compile(r"^chunk_(\d+)")
+
+
+def highest_remote_index(names) -> int:
+    """Highest chunk number among the names of one remote folder, or -1.
+
+    Any name that starts with chunk_NNN counts: a finished chunk, a ".part" left by a crash and
+    a "_recovered" copy all hold their number. Gaps are never filled.
+    """
+    highest = -1
+    for name in names:
+        m = _REMOTE_INDEX_RE.match(str(name))
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return highest
+
+
+def is_loopback_host(host: str) -> bool:
+    host = (host or "").strip().lower().strip("[]")
+    return host in ("localhost", "::1") or host.startswith("127.")
