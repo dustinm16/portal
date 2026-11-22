@@ -707,7 +707,7 @@ for name, needles in {
 check("1.21.0: the playback default stated is the one in the code and in the settings",
       _vp21.DEFAULT_CACHE_MB == 512 and _vp21.cache_cap_bytes(None) == 512 * 1024 * 1024)
 check("1.21.0: the new files and versions stated are the ones the pages load",
-      "`vod-player.js` is now v2" in _sec21 and "/static/js/vod-player.js?v=2" in (ROOT / "static" / "vod-player.html").read_text())
+      "`vod-player.js` is now v3" in _sec21 and "/static/js/vod-player.js?v=3" in (ROOT / "static" / "vod-player.html").read_text())
 check("1.21.0: the playback routes and setting are in the API reference and the API page",
       all(x in (ROOT / "docs" / "API.md").read_text() and x in (ROOT / "static" / "api-docs.html").read_text()
           for x in ("/api/vods/play/{path}.mp4", "/api/vods/play-status/{path}.mp4", "vod_play_cache_mb")))

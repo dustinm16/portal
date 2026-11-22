@@ -21,6 +21,8 @@ class El {
   get textContent() { return this._text; }
   load() { this.loaded = (this.loaded || 0) + 1; }
   play() { return Promise.resolve(); }
+  pause() { this.paused = true; this.log && this.log.push('pause'); }
+  removeAttribute(n) { if (n === 'src') { this.src = ''; this.log && this.log.push('removeSrc'); } }
   canPlayType() { return this.native ? 'maybe' : ''; }
 }
 
@@ -44,14 +46,15 @@ function boot(opts) {
   FakeHls.Events = { ERROR: 'hlsError' };
   FakeHls.ErrorTypes = { NETWORK_ERROR: 'networkError', MEDIA_ERROR: 'mediaError' };
   const sandbox = {
-    console, URL, URLSearchParams, JSON, Math, Date, Promise, parseFloat, parseInt, encodeURIComponent,
+    console, URL, URLSearchParams, JSON, Math, Promise,
+    Date: class extends Date { static now() { return sandbox.__now; } }, parseFloat, parseInt, encodeURIComponent,
     document: {
       readyState: 'loading', pictureInPictureEnabled: false,
       getElementById: (id) => (els[id] = els[id] || new El(id)),
       addEventListener: (t, fn) => { if (t === 'DOMContentLoaded') sandbox.__init = fn; },
     },
-    location: { search: '?name=' + encodeURIComponent(NAME) + (opts.query || ''), pathname: '/vods/play',
-                href: 'https://portal.test/vods/play?name=' + encodeURIComponent(NAME) + (opts.query || '') },
+    location: { search: '?name=' + encodeURIComponent(opts.name || NAME) + (opts.query || ''), pathname: '/vods/play',
+                href: 'https://portal.test/vods/play?name=' + encodeURIComponent(opts.name || NAME) + (opts.query || '') },
     history: { replaceState: (a, b, url) => { sandbox.__lastUrl = url; } },
     localStorage: {
       get length() { return Object.keys(store).length; },
@@ -75,11 +78,13 @@ function boot(opts) {
     window: null,
     Hls: opts.noHls ? undefined : FakeHls,
   };
+  sandbox.__now = Date.now();
   sandbox.window = sandbox;
   sandbox.addEventListener = () => {};
   vm.createContext(sandbox);
   const nodeVideo = (els['vp-video'] = new El('vp-video'));
   nodeVideo.native = !!opts.native;
+  nodeVideo.log = [];
   vm.runInContext(SRC, sandbox);
   sandbox.__init();
   return { sandbox, els, store, fetches, toasts, hlsInstances, timers, video: nodeVideo,
@@ -128,7 +133,7 @@ function sessionResponder(first) {
   h.handlers.hlsError('hlsError', { fatal: true, type: 'networkError', response: { code: 415 } });
   await t.run();
   check('a 415 segment falls back to the single-chunk player', h.destroyed && t.fetches.includes(CHUNK_URL) && t.toasts.some((m) => /chunk by chunk/.test(m)), JSON.stringify(t.fetches));
-  check('the choice is remembered as chunk mode', t.store.vodmode === 'chunk' && /mode=chunk/.test(t.sandbox.__lastUrl || ''));
+  check('the page shows chunk mode for now but the saved choice is left as it was', t.store.vodmode === 'session' && /mode=chunk/.test(t.sandbox.__lastUrl || ''), t.store.vodmode);
 
   // 4. other fatal errors: a network error restarts loading a few times, then falls back
   t = boot({ query: '&mode=session', respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
@@ -179,6 +184,98 @@ function sessionResponder(first) {
   t = boot({ storage: { vodmode: 'session' }, query: '&mode=chunk', respond: (url) => ({ status: 206 }) });
   await t.run();
   check('the URL wins over the remembered mode', t.hlsInstances.length === 0 && t.fetches.includes(CHUNK_URL) && !t.fetches.includes(SESSION_URL));
+
+  // 8. (a) switching mode pauses and detaches the old source before the async load; the position goes to the mode that was attached
+  t = boot({ query: '&mode=session', respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
+  await t.run();
+  t.video.duration = 420; t.video.currentTime = 90; t.video.log.length = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const innerFetch = t.sandbox.Portal.fetch;
+  t.sandbox.Portal.fetch = async (u, o) => { await gate; return innerFetch(u, o); };    // the chunk answer is slow
+  t.els['vp-mode'].fire('click');
+  check('switching to the single chunk pauses the video and takes the old source off before anything is loaded',
+    t.video.paused && t.video.log.join() === 'pause,removeSrc' && t.hlsInstances[0].destroyed && t.video.src === '', t.video.log.join());
+  check('the position of the session is saved under the session key, not the chunk key',
+    JSON.parse(t.store['vodpos:session:' + FOLDER] || '{}').t === 90 && !('vodpos:' + NAME in t.store), JSON.stringify(t.store));
+  t.video.currentTime = 200; t.video.fire('pause'); t.video.fire('timeupdate');
+  check('while the new mode loads, the old time is not saved as a position of the new mode', !('vodpos:' + NAME in t.store) && JSON.parse(t.store['vodpos:session:' + FOLDER]).t === 90, JSON.stringify(t.store));
+  t.video.fire('error');
+  check('and an error event of the detached video is ignored', t.els['vp-message'].textContent === 'Loading...', t.els['vp-message'].textContent);
+  release();
+  await t.run();
+  t.video.currentTime = 33; t.video.fire('pause');
+  check('once the chunk is attached its position goes under the chunk key', JSON.parse(t.store['vodpos:' + NAME] || '{}').t === 33, JSON.stringify(t.store));
+  // the other way: a chunk playing, then the session
+  t.video.log.length = 0;
+  t.els['vp-mode'].fire('click');
+  check('switching to the session saves the chunk position under the chunk key and detaches the chunk',
+    t.video.log.join() === 'pause,removeSrc' && t.video.src === '', t.video.log.join());
+
+  // 9. (b) a one-off fallback leaves the saved mode alone
+  t = boot({ storage: { vodmode: 'session' }, respond: (url) => (url === SESSION_URL ? { status: 415, data: {} } : { status: 206 }) });
+  await t.run();
+  check('a fallback to chunks does not overwrite the saved mode (and plays the chunk)', t.store.vodmode === 'session' && t.fetches.includes(CHUNK_URL), t.store.vodmode);
+  t = boot({ storage: { vodmode: 'chunk' }, respond: (url) => (url === SESSION_URL ? { status: 200, text: PLAYLIST } : { status: 206 }) });
+  await t.run();
+  t.els['vp-mode'].fire('click');
+  await t.run();
+  check('the member switching by hand does save the mode', t.store.vodmode === 'session', t.store.vodmode);
+  t = boot({ storage: { vodmode: 'session' }, respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
+  await t.run();
+  for (let i = 0; i < 4; i++) t.hlsInstances[0].handlers.hlsError('hlsError', { fatal: true, type: 'mediaError', response: {} });
+  await t.run();
+  check('a fatal hls.js error falls back without changing the saved mode', t.fetches.includes(CHUNK_URL) && t.store.vodmode === 'session', t.store.vodmode);
+  t = boot({ storage: { vodmode: 'session' }, query: '&mode=session', respond: sessionResponder(() => ({ status: 409, data: {} })) });
+  await t.run();
+  check('a 409 (still recording) fallback keeps the saved session choice', t.fetches.includes(CHUNK_URL) && t.store.vodmode === 'session', t.store.vodmode);
+
+  // 10. (c) a status of idle keeps the original start time: after the limit the normal error and Try again
+  let idles = 0;      // a runaway loop (the old behaviour) is cut off after 300 answers
+  t = boot({ respond: (url, o) => (url === CHUNK_URL ? { status: 202, data: {} } : (++idles > 300 ? { status: 404, data: {} } : { status: 200, data: { state: 'idle' } })) });
+  for (let i = 0; i < 14; i++) { await tick(); t.sandbox.__now += 3 * 60 * 1000; while (t.timers.length) t.timers.shift()(); }
+  await tick();
+  const idleFetches = t.fetches.length;
+  check('an idle status no longer restarts the 20 minute clock: it ends with the normal error and Try again',
+    /taking too long/.test(t.els['vp-message'].textContent) && t.els['vp-status-actions'].style.display === 'flex', t.els['vp-message'].textContent);
+  await t.run();
+  check('and it stops asking after that', t.fetches.length === idleFetches, t.fetches.length + ' vs ' + idleFetches);
+  t.els['vp-retry'].fire('click');
+  await tick();
+  check('Try again starts a fresh attempt', t.fetches.length > idleFetches);
+
+  // 11. (d) a 401 goes to /login directly
+  for (const where of ['manifest', 'segment']) {
+    t = boot({ query: '&mode=session', respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
+    await t.run();
+    const hh = t.hlsInstances[0];
+    hh.handlers.hlsError('hlsError', { fatal: where === 'manifest', type: 'networkError', details: where === 'manifest' ? 'manifestLoadError' : 'fragLoadError', response: { code: 401 } });
+    await t.run();
+    check('a 401 on a ' + where + ' request of hls.js goes to /login with no retry, fallback or toast',
+      t.sandbox.location.href === '/login' && hh.restarts === 0 && t.toasts.length === 0 && !t.fetches.includes(CHUNK_URL), t.sandbox.location.href);
+  }
+  let probes = 0;
+  t = boot({ respond: (url, o) => { if (url === CHUNK_URL) { probes += 1; return probes === 1 ? { status: 206 } : { status: 401, data: {} }; } return { status: 200, data: {} }; } });
+  await t.run();
+  t.video.fire('error');
+  await t.run();
+  check('a 401 behind a single-chunk video error goes to /login, not to the generic message', t.sandbox.location.href === '/login' && !/could not play/.test(t.els['vp-message'].textContent), t.sandbox.location.href);
+  probes = 5;
+  t = boot({ respond: (url) => (url === CHUNK_URL ? { status: 206 } : { status: 200, data: {} }) });
+  await t.run();
+  t.video.fire('error');
+  await t.run();
+  check('any other video error still shows the message with Try again', /could not play/.test(t.els['vp-message'].textContent) && t.els['vp-status-actions'].style.display === 'flex' && /^https/.test(t.sandbox.location.href));
+
+  // 12. (e) a name with an empty, "." or ".." segment is refused before any request
+  for (const bad of ['Show/../chunk_001.mkv', 'Show/./chunk_001.mkv', '../x.mkv', 'Show//chunk_001.mkv', '/Show/x.mkv', 'Show/x.mkv/', '.', '..']) {
+    t = boot({ query: '', name: bad, respond: () => ({ status: 206 }) });
+    await t.run();
+    check('the name ' + JSON.stringify(bad) + ' shows not found and sends no request', /not found/.test(t.els['vp-message'].textContent) && t.fetches.length === 0, t.fetches.join());
+  }
+  t = boot({ name: 'Show/2026-02-01/chunk..001.mkv', respond: () => ({ status: 206 }) });
+  await t.run();
+  check('a dot inside a file name is fine', t.fetches.length > 0 && !/not found/.test(t.els['vp-message'].textContent));
 
   check('the player script has no inline handler and loads nothing from another host', !/onclick=/.test(SRC) && !/https?:\/\//.test(SRC.replace(/\/\*[\s\S]*?\*\//g, '')));
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));

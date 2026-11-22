@@ -55,6 +55,7 @@
     let index = -1;
     let pollTimer = null;
     let generation = 0;
+    let attached = null;     // 'chunk' or 'session' while the video element has that source, else null
 
     function enc(path) {
         return path.split('/').map(encodeURIComponent).join('/');
@@ -64,7 +65,8 @@
     function statusUrl() { return '/api/vods/play-status/' + enc(name) + '.mp4'; }
     function downloadUrl() { return '/api/vods/download/' + enc(name); }
     function sessionUrl() { return '/api/vods/session/' + enc(folder) + '/index.m3u8'; }
-    function posKey() { return mode === 'session' ? SESSION_POS_PREFIX + folder : POS_PREFIX + name; }
+    function posKey() { return attached === 'session' ? SESSION_POS_PREFIX + folder : POS_PREFIX + name; }
+    function goLogin() { location.href = '/login'; }
 
     function showStatus(text, opts) {
         opts = opts || {};
@@ -112,6 +114,7 @@
 
     let lastSaved = 0;
     function savePos(force) {
+        if (!attached) return;      // no source on the video: its time is not a position of anything
         const now = Date.now();
         if (!force && now - lastSaved < 5000) return;
         lastSaved = now;
@@ -124,6 +127,7 @@
     }
 
     function clearPos() {
+        if (!attached) return;
         try { localStorage.removeItem(posKey()); } catch (e) { /* ignore */ }
     }
 
@@ -141,9 +145,23 @@
         }
     }
 
+    // Saves the position of the attached source, pauses the video and takes the source off, so that nothing
+    // of the old mode plays or is saved while the other mode loads.
+    function detachSource() {
+        savePos(true);
+        destroyHls();
+        if (attached) {
+            try { video.pause(); } catch (e) { /* ignore */ }
+            video.removeAttribute('src');
+            video.load();
+        }
+        attached = null;
+    }
+
     function startVideo() {
         stopPolling();
         showVideo();
+        attached = 'chunk';
         video.src = playUrl();
         video.load();
         if (autoplay) {
@@ -179,7 +197,10 @@
                 showStatus(body.error || 'The chunk could not be prepared.', { retry: true });
                 return;
             }
-            if (body.state === 'idle') { loadChunk(); return; }       // the job is gone: ask again
+            if (body.state === 'idle') {                // the job is gone: ask again, within the same time limit
+                pollTimer = setTimeout(() => loadChunk(startedAt), delay);
+                return;
+            }
             const stage = { waiting: 'Waiting for room', pulling: 'Fetching the chunk from your storage',
                 remuxing: 'Converting', probing: 'Checking the file', queued: 'Waiting for its turn' }[body.stage];
             showStatus('Preparing the video' + (stage ? ' (' + stage + ')' : '') + '...', { busy: true });
@@ -190,9 +211,9 @@
         pollTimer = setTimeout(() => pollStatus(gen, startedAt, Math.min(delay * 1.3, POLL_MAX_MS)), delay);
     }
 
-    async function loadChunk() {
+    async function loadChunk(startedAt) {
         stopPolling();
-        destroyHls();
+        detachSource();
         const gen = generation;
         showStatus('Loading...', { busy: true });
         let resp;
@@ -212,7 +233,7 @@
         }
         const body = await resp.json().catch(() => ({}));
         if (resp.status === 202) {
-            pollStatus(gen, Date.now(), POLL_START_MS);
+            pollStatus(gen, startedAt || Date.now(), POLL_START_MS);
             return;
         }
         if (resp.status === 415) {
@@ -242,8 +263,8 @@
 
     function fallBackToChunks(why) {
         stopPolling();
-        destroyHls();
-        setMode('chunk', true);
+        detachSource();
+        setMode('chunk', false);        // this time only: the saved choice stays as the member made it
         Portal.toast(why + ' Playing chunk by chunk instead.', 'info');
         loadChunk();
     }
@@ -267,8 +288,10 @@
             hlsRecoveries = 0;
             hls = new window.Hls(HLS_CONFIG);
             hls.on(window.Hls.Events.ERROR, (evt, data) => {
-                if (!data || !data.fatal) return;
+                if (!data) return;
                 const code = data.response && data.response.code;
+                if (code === 401) { destroyHls(); goLogin(); return; }
+                if (!data.fatal) return;
                 if (code === 415) { fallBackToChunks('A chunk of this session cannot be played in the browser.'); return; }
                 if (code === 404) { destroyHls(); showStatus('This VOD was not found.'); return; }
                 if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && hlsRecoveries < 3) {
@@ -281,9 +304,11 @@
                     fallBackToChunks('The whole session could not be played.');
                 }
             });
+            attached = 'session';
             hls.loadSource(sessionUrl());
             hls.attachMedia(video);
         } else if (canNativeHls()) {
+            attached = 'session';
             video.src = sessionUrl();
             video.load();
         } else {
@@ -334,7 +359,7 @@
 
     function loadSession() {
         stopPolling();
-        destroyHls();
+        detachSource();
         const gen = generation;
         showStatus('Loading...', { busy: true });
         pollSession(gen, Date.now(), POLL_START_MS);
@@ -344,9 +369,9 @@
         if (mode === 'session') loadSession(); else loadChunk();
     }
 
-    function setMode(next, quiet) {
+    function setMode(next, remember) {
         mode = next === 'session' && folder ? 'session' : 'chunk';
-        try { localStorage.setItem(MODE_KEY, mode); } catch (e) { /* ignore */ }
+        if (remember) { try { localStorage.setItem(MODE_KEY, mode); } catch (e) { /* ignore */ } }
         const u = new URL(location.href);
         u.searchParams.set('mode', mode);
         try { history.replaceState(null, '', u.pathname + u.search); } catch (e) { /* ignore */ }
@@ -357,7 +382,6 @@
         if (mode === 'chunk' && index >= 0) {
             el('vp-pos').textContent = 'Chunk ' + (index + 1) + ' of ' + siblings.length;
         }
-        if (!quiet) { savePos(true); }
     }
 
     // ---- previous and next chunk -----------------------------------------------------------
@@ -392,6 +416,10 @@
     function init() {
         if (!name) {
             showStatus('No VOD was chosen. Open one from My VODs.');
+            return;
+        }
+        if (name.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) {
+            showStatus('This VOD was not found.');      // no request is made for a path like that
             return;
         }
         const base = name.split('/').pop();
@@ -435,9 +463,8 @@
             mode = wanted === 'session' ? 'session' : 'chunk';
             modeBtn.style.display = '';
             modeBtn.addEventListener('click', () => {
-                savePos(true);
                 setMode(mode === 'session' ? 'chunk' : 'session', true);
-                load();
+                load();             // the old source is saved and detached first thing in load
             });
             setMode(mode, true);
         }
@@ -453,11 +480,21 @@
             clearPos();
             if (mode === 'chunk' && index >= 0 && index < siblings.length - 1) go(siblings[index + 1], true);
         });
-        video.addEventListener('error', () => {
-            if (mode === 'session') {              // hls.js reports its own errors; a native player is handled here
+        video.addEventListener('error', async () => {
+            if (!attached) return;                 // an old source being taken off is not an error
+            if (attached === 'session') {          // hls.js reports its own errors; a native player is handled here
                 if (!hls) fallBackToChunks('The whole session could not be played.');
                 return;
             }
+            const gen = generation;
+            let status = 0;
+            try {                                  // the element does not say why: a one byte probe tells an expired sign-in
+                const resp = await Portal.fetch(playUrl(), { headers: { Range: 'bytes=0-0' } });
+                status = resp.status;
+                try { if (resp.body && resp.body.cancel) resp.body.cancel(); } catch (e) { /* ignore */ }
+            } catch (e) { /* unreachable: the generic message below */ }
+            if (gen !== generation) return;
+            if (status === 401) { goLogin(); return; }
             showStatus('The browser could not play this video. You can download the chunk instead.', { retry: true });
         });
         window.addEventListener('pagehide', () => savePos(true));
