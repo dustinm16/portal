@@ -50,6 +50,17 @@ def rules():
           maintenance.state({"maintenance": 0, "maintenance_until": iso(later)}, now) is None)
     check("rules: an unreadable stored end time ends the maintenance",
           maintenance.state({"maintenance": 1, "maintenance_until": "garbage"}, now) is None)
+    for extreme in ("0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"):
+        def _raises(f):
+            try:
+                f()
+                return False
+            except ValueError:
+                return True
+        check(f"rules: {extreme} is unreadable (None), refused as a ValueError, and ends a stored maintenance",
+              maintenance.parse_stored(extreme) is None and _raises(lambda: maintenance.parse_until(extreme, now))
+              and _raises(lambda: maintenance.parse_update({"maintenance": True, "maintenance_until": extreme}, now))
+              and maintenance.state({"maintenance": 1, "maintenance_until": extreme}, now) is None)
     check("rules: Retry-After is the time left, capped",
           maintenance.retry_after(now + timedelta(seconds=40), now) == 41
           and maintenance.retry_after(later, now) == maintenance.RETRY_AFTER_CAP

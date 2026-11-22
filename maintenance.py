@@ -48,7 +48,11 @@ def parse_stored(value) -> Optional[datetime]:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    try:
+        return dt.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        # 0001-01-01T00:00:00+05:00 and 9999-12-31T23:59:59-05:00 cannot be shown in UTC
+        return None
 
 
 def clean_message(value) -> Optional[str]:

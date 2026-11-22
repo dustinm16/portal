@@ -90,6 +90,8 @@ async def main():
         check("an administrator can read it (nothing set yet)", r.status == 200 and j["set"] is False and j["active"] is False)
     for bad, why in (({"active": "yes"}, "a non-boolean flag"), ({"active": True, "until": "tomorrow"}, "a bad end time"),
                      ({"active": True, "until": iso(datetime.now(timezone.utc) - timedelta(hours=1))}, "a past end time"),
+                     ({"active": True, "until": "0001-01-01T00:00:00+05:00"}, "an end time that overflows in UTC (early)"),
+                     ({"active": True, "until": "9999-12-31T23:59:59-05:00"}, "an end time that overflows in UTC (late)"),
                      ({"active": True, "message": "x" * 201}, "a message over the limit"),
                      ({"active": True, "mesage": "typo"}, "an unknown field")):
         async with adm.put(url, json=bad) as r:

@@ -43,7 +43,11 @@ def _parse_time(value, field: str, now: datetime) -> Optional[str]:
         raise ValueError(f"{field} must be a date and time such as 2026-11-23T20:00:00Z")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
+    try:
+        dt = dt.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        # 0001-01-01T00:00:00+05:00 and 9999-12-31T23:59:59-05:00 cannot be shown in UTC
+        raise ValueError(f"{field} must be a date and time such as 2026-11-23T20:00:00Z")
     if dt > now + timedelta(days=HORIZON_DAYS):
         raise ValueError(f"{field} is too far ahead")
     if dt < now - timedelta(days=HORIZON_DAYS):

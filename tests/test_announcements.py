@@ -45,6 +45,9 @@ def rules():
           bad({"body": "x", "starts_at": iso(now + timedelta(hours=2)), "ends_at": iso(now + timedelta(hours=1))})
           and bad({"body": "x", "ends_at": iso(now - timedelta(hours=1))})
           and not bad({"body": "x", "starts_at": iso(now + timedelta(hours=1)), "ends_at": iso(now + timedelta(hours=2))}))
+    for extreme in ("0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"):
+        check(f"rules: {extreme} is a ValueError (400), not an OverflowError (500)",
+              bad({"body": "x", "ends_at": extreme}) and bad({"body": "x", "starts_at": extreme}))
     old = {"ends_at": iso(now - timedelta(days=1)), "starts_at": None}
     check("rules: an ended announcement can be edited without touching its end",
           not bad({"body": "new text"}, existing=old) and not bad({"ends_at": old["ends_at"]}, existing=old))
@@ -93,7 +96,8 @@ async def main():
         check("an administrator creates one", r.status == 201 and created["status"] == "active"
               and created["body"] == body["body"] and created["show_before_signin"] is False, str(created))
     aid = created["id"]
-    for bad in ({"level": "info"}, {"level": "x", "body": "a"}, {"body": "x" * 1001}, {"body": "a", "ends_at": "yesterday"}):
+    for bad in ({"level": "info"}, {"level": "x", "body": "a"}, {"body": "x" * 1001}, {"body": "a", "ends_at": "yesterday"},
+                {"body": "a", "ends_at": "0001-01-01T00:00:00+05:00"}, {"body": "a", "starts_at": "9999-12-31T23:59:59-05:00"}):
         async with mod.post(admin_url, json=bad) as r:
             check(f"create with {sorted(bad)} is refused (400)", r.status == 400, str(r.status))
 
