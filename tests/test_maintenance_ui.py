@@ -95,6 +95,26 @@ console.log(JSON.stringify(out));
     check("one that has ended opens as off, with no end time (saving never sends a past time)",
           got.get("expired") == {"on": False, "until": "", "msg": ""}, str(got.get("expired")))
 
+# ---- the announcement form and the list of connections in maintenance, under Node --------------------------
+with tempfile.TemporaryDirectory() as d:
+    r = subprocess.run(["node", str(Path(__file__).resolve().parent / "maintenance_admin_harness.js"),
+                        str(STATIC / "js" / "maintenance-admin.js")], capture_output=True, text=True, timeout=30,
+                       cwd=d, env={"TZ": "UTC", "PATH": "/usr/bin:/bin"})
+got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+check("node ran the admin script", bool(got), r.stderr[-300:])
+check("editing an announcement without touching its times sends neither (an ended one stays editable)",
+      "ends_at" not in got.get("unchanged", {"ends_at": 1}) and "starts_at" not in got.get("unchanged", {"starts_at": 1})
+      and got.get("unchanged", {}).get("body") == "old news", str(got.get("unchanged")))
+check("... a changed end time is sent, as UTC",
+      got.get("changedEnd", {}).get("ends_at") == "2030-01-01T10:00:00Z" and "starts_at" not in got.get("changedEnd", {}), str(got.get("changedEnd")))
+check("a new announcement always sends both times", set(got.get("create", {})) >= {"starts_at", "ends_at"}
+      and got["create"]["ends_at"] == "2030-01-01T10:00:00Z", str(got.get("create")))
+check("the clear button posts to the connection's clear route, the id escaped",
+      got.get("clear", {}).get("method") == "POST"
+      and got["clear"]["url"] == "/api/admin/connections/abc%2Fdef/maintenance/clear", str(got.get("clear")))
+check("admin.html has the container for that list and the card says the scope",
+      'id="maintenance-conns"' in admin_html and "only one they own" in mad and "Any administrator can clear it here" in mad)
+
 if failures:
     print(f"\ntest_maintenance_ui: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

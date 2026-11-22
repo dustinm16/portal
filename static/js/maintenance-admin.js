@@ -127,6 +127,7 @@
         var ends = el('input', { type: 'datetime-local', style: FIELD });
         ends.value = current ? toLocalInput(current.ends_at) : '';
         box.appendChild(ends);
+        var startsShown = starts.value, endsShown = ends.value;
         var pre = el('input', { type: 'checkbox' });
         pre.checked = !!(current && current.show_before_signin);
         box.appendChild(el('label', { style: 'display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;' },
@@ -134,8 +135,12 @@
         var row = el('div', { style: 'margin-top:0.75rem;display:flex;gap:0.5rem;' });
         var save = el('button', { type: 'button', class: 'btn btn-primary', text: current ? 'Save' : 'Publish' });
         save.addEventListener('click', async function () {
-            var payload = { level: level.value, body: text.value, starts_at: fromLocalInput(starts.value),
-                            ends_at: fromLocalInput(ends.value), show_before_signin: pre.checked };
+            var payload = { level: level.value, body: text.value, show_before_signin: pre.checked };
+            // The times go in a minute-resolution input. An edit sends one only when the administrator
+            // changed it: the stored time has seconds (and an ended announcement's end is in the past),
+            // so sending the rounded value back would change it, or be refused as "in the past".
+            if (!current || starts.value !== startsShown) payload.starts_at = fromLocalInput(starts.value);
+            if (!current || ends.value !== endsShown) payload.ends_at = fromLocalInput(ends.value);
             try {
                 var r = current ? await call('/api/admin/announcements/' + current.id, 'PUT', payload)
                                 : await call('/api/admin/announcements', 'POST', payload);
@@ -214,11 +219,51 @@
         } catch (e) { body.textContent = 'Unavailable'; }
     }
 
+    // ---- connections in maintenance: the way out when nobody can clear them any more ---------------------------
+    function renderConnections(box, data) {
+        clear(box);
+        box.appendChild(el('strong', { text: 'Connections in maintenance' }));
+        box.appendChild(el('p', { style: MUTED + 'margin:0.25rem 0 0.5rem 0;', text:
+            'Only an administrator can put a connection in maintenance, and only one they own (a member\'s personal connections are the member\'s own). ' +
+            'Any administrator can clear it here on any connection, for example one whose owner is no longer an administrator. Each clearing is audited.' }));
+        var list = data.connections || [];
+        if (!list.length) { box.appendChild(el('p', { style: MUTED, text: 'No connection is in maintenance.' })); return; }
+        list.forEach(function (c) {
+            var item = el('div', { style: 'border-top:1px solid var(--card-border);padding:0.5rem 0;display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;' });
+            var info = el('div', { style: 'flex:1;min-width:12rem;overflow-wrap:anywhere;' });
+            info.appendChild(el('div', { style: 'font-weight:600;', text: c.name + ' (owner: ' + c.owner + (c.owner_is_admin ? '' : ', not an administrator now') + ')' }));
+            info.appendChild(el('div', { style: MUTED, text: (c.maintenance_active ? 'In maintenance until ' + shown(c.maintenance_until) : 'Flag set, end time has passed') +
+                (c.maintenance_message ? ' - ' + c.maintenance_message : '') }));
+            var b = el('button', { type: 'button', class: 'btn btn-sm', text: 'Clear maintenance' });
+            b.addEventListener('click', async function () {
+                try {
+                    var r = await call('/api/admin/connections/' + encodeURIComponent(c.id) + '/maintenance/clear', 'POST', {});
+                    if (!r.ok) { fail(r, 'Could not clear'); return; }
+                    Portal.toast('Maintenance cleared', 'success');
+                    loadConnections();
+                } catch (e) { Portal.toast('Could not clear', 'error'); }
+            });
+            item.appendChild(info);
+            item.appendChild(b);
+            box.appendChild(item);
+        });
+    }
+    async function loadConnections() {
+        var box = document.getElementById('maintenance-conns');
+        if (!box) return;
+        try {
+            var r = await call('/api/admin/connections/maintenance');
+            if (!r.ok) { box.textContent = 'Unavailable'; return; }
+            renderConnections(box, r.data);
+        } catch (e) { box.textContent = 'Unavailable'; }
+    }
+
     var api = { toLocalInput: toLocalInput, fromLocalInput: fromLocalInput, renderMaintenance: renderMaintenance,
-                renderAnnouncements: renderAnnouncements, loadMaintenance: loadMaintenance, loadAnnouncements: loadAnnouncements };
+                renderAnnouncements: renderAnnouncements, loadMaintenance: loadMaintenance, loadAnnouncements: loadAnnouncements,
+                renderConnections: renderConnections, loadConnections: loadConnections, form: form };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     if (typeof window !== 'undefined') {
         window.MaintenanceAdmin = api;
-        document.addEventListener('DOMContentLoaded', function () { loadMaintenance(); loadAnnouncements(); });
+        document.addEventListener('DOMContentLoaded', function () { loadMaintenance(); loadConnections(); loadAnnouncements(); });
     }
 })();

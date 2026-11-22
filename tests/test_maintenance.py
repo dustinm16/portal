@@ -12,6 +12,7 @@ Run: venv/bin/python tests/test_maintenance.py
 
 import asyncio
 import inspect
+import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -321,6 +322,44 @@ async def main():
         got = await r.json()
         check("turning it off cleared the end time and the message",
               got.get("maintenance") is False and got.get("maintenance_until") is None and got.get("maintenance_message") is None)
+
+    # ---- an administrator can clear maintenance on any connection (setting stays with the owner) ----------------
+    await db.conn.execute("UPDATE user_connections SET maintenance = 1, maintenance_until = NULL, "
+                          "maintenance_message = 'stuck since a demotion' WHERE uuid = ?", (mine,))
+    await db.conn.commit()
+    clear_url = f"{env.base}/api/admin/connections/{mine}/maintenance/clear"
+    list_url = f"{env.base}/api/admin/connections/maintenance"
+    async with bob.get(list_url) as r:
+        check("a member cannot list connections in maintenance (403)", r.status == 403, str(r.status))
+    async with bob.post(clear_url) as r:
+        check("the owner, a member now, cannot clear it through the admin route (403)", r.status == 403, str(r.status))
+    async with bob.put(f"{env.base}/api/connections/{mine}", json={"maintenance": False, "name": "mine5"}) as r:
+        pass
+    check("... nor by an edit (the fields are ignored): it is still set",
+          (await stored_maint(mine))[0] == 1, str(await stored_maint(mine)))
+    async with adm.get(list_url) as r:
+        lst = await r.json()
+    mine_rows = [c for c in lst.get("connections", []) if c["id"] == mine]
+    check("an administrator lists it with its owner and message, no host, port or config",
+          r.status == 200 and len(mine_rows) == 1 and mine_rows[0]["owner"] == "bob" and mine_rows[0]["maintenance_active"] is True
+          and mine_rows[0]["maintenance_message"] == "stuck since a demotion"
+          and not ({"host", "port", "config"} & set(mine_rows[0])) and "93.184.216.34" not in json.dumps(lst), str(lst))
+    async with env.sessions["carol"].post(clear_url) as r:
+        check("another member cannot clear it either (403)", r.status == 403)
+    async with adm.post(f"{env.base}/api/admin/connections/zzzz-no-such/maintenance/clear") as r:
+        check("an unknown connection id is 404", r.status == 404, str(r.status))
+    async with adm.post(clear_url) as r:
+        check("any administrator clears it on a connection they do not own (200)", r.status == 200, f"{r.status} {await r.text()}")
+    check("... the three fields are cleared", await stored_maint(mine) in ((0, None, None), (None, None, None)), str(await stored_maint(mine)))
+    rows = await db.get_audit_log(limit=20, action="connection.maintenance_clear")
+    check("... and it is audited with who, which connection, what it was and its owner",
+          len(rows) == 1 and rows[0]["target_name"] and "stuck since a demotion" in str(rows[0]["details"])
+          and "bob" in str(rows[0]["details"]), str(rows))
+    async with adm.post(clear_url) as r:
+        check("clearing again is harmless (200) and writes no second audit entry",
+              r.status == 200 and len(await db.get_audit_log(limit=20, action="connection.maintenance_clear")) == 1)
+    async with env.sessions["bob"].delete(f"{env.base}/api/connections/{mine}") as r:
+        pass
 
     # ---- a service ---------------------------------------------------------------------------------------------
     svc_id = await db.create_service("relay1", "/ws/relay1", plugin="ssh", host="93.184.216.34", port=22)

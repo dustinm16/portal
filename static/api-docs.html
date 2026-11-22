@@ -6731,6 +6731,30 @@ Headers:
                     </div>
                 </div>
 
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/connections/maintenance</span>
+                        <span class="endpoint-desc">Connections in maintenance, whoever owns them</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"connections": [{"id", "name", "type", "owner", "owner_is_admin", "maintenance", "maintenance_until", "maintenance_message", "maintenance_active"}]}</code> for every connection whose flag is set (at most 200). Never the host, the port or the configuration. <code>403</code> for a member.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/connections/{id}/maintenance/clear</span>
+                        <span class="endpoint-desc">Clear the maintenance of any connection</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Scope: setting maintenance on a single connection is limited to the connections the administrator owns (a member's personal connections are the member's own), but any administrator can clear it on any connection with this route, so an open-ended maintenance left by an administrator who was demoted never stays stuck. Answers <code>{"cleared": true, "id": "..."}</code>; <code>404</code> for an unknown id, <code>403</code> for a member. Clearing one that is not in maintenance is a no-op (<code>200</code>, nothing audited). Audited as <code>connection.maintenance_clear</code> with what it was and its owner.</p>
+                    </div>
+                </div>
+
                 <div class="endpoint">
                     <div class="endpoint-header" data-endpoint-toggle>
                         <span class="method method-get">GET</span>

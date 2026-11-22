@@ -4521,6 +4521,34 @@ class Database:
         )
         return [self._with_expiry(r) for r in await cursor.fetchall()]
 
+    async def list_connections_in_maintenance(self, limit: int = 200) -> list[dict]:
+        """Every connection whose maintenance flag is set, whoever owns it (the admin view: name, type,
+        owner and the maintenance fields; never the host, the port or the config)."""
+        cursor = await self.conn.execute(
+            """SELECT uc.uuid AS id, uc.name, uc.type, owner.username AS owner_username, owner.role AS owner_role,
+                      uc.maintenance, uc.maintenance_until, uc.maintenance_message
+               FROM user_connections uc JOIN users owner ON owner.id = uc.user_id
+               WHERE uc.maintenance = 1
+               ORDER BY owner.username, uc.name
+               LIMIT ?""", (int(limit),))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def clear_connection_maintenance(self, uuid: str) -> Optional[dict]:
+        """Clear the maintenance fields of the connection with this UUID, whoever owns it. Returns the
+        row as it was (name, owner and the three fields) or None when there is no such connection."""
+        cursor = await self.conn.execute(
+            """SELECT uc.uuid, uc.name, uc.user_id, owner.username AS owner_username,
+                      uc.maintenance, uc.maintenance_until, uc.maintenance_message
+               FROM user_connections uc JOIN users owner ON owner.id = uc.user_id WHERE uc.uuid = ?""", (uuid,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await self.conn.execute(
+            "UPDATE user_connections SET maintenance = 0, maintenance_until = NULL, maintenance_message = NULL, "
+            "updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (uuid,))
+        await self.conn.commit()
+        return dict(row)
+
     async def list_all_grants(self) -> dict:
         """Every live service grant and connection share on the portal (the admin view)."""
         live = grant_expiry.live_param()

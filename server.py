@@ -19004,6 +19004,48 @@ def _maintenance_fields_from(data: dict, existing: Optional[dict] = None):
         return None, web.json_response({"error": str(e)}, status=400)
 
 
+async def http_admin_connections_in_maintenance(request: web.Request) -> web.Response:
+    """GET /api/admin/connections/maintenance - the connections that have the maintenance flag set,
+    whoever owns them (administrator). Name, type, owner and the maintenance fields only: never the
+    host, the port or the configuration. At most 200."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    rows = await db.list_connections_in_maintenance(200)
+    out = []
+    for r in rows:
+        item = {"id": r["id"], "name": r["name"], "type": r["type"], "owner": r["owner_username"],
+                "owner_is_admin": r.get("owner_role") in ("admin", "superadmin")}
+        item.update(maintenance.public_fields(r))
+        out.append(item)
+    return web.json_response({"connections": out}, headers={"Cache-Control": "no-store"})
+
+
+async def http_admin_clear_connection_maintenance(request: web.Request) -> web.Response:
+    """POST /api/admin/connections/{id}/maintenance/clear - clear the maintenance of any connection
+    (administrator; audited). Setting it stays with the owner (an administrator, on their own
+    connections); this is the way out for a connection whose owner was demoted or is gone from the
+    admin pages. Clearing one that is not in maintenance is a no-op answer (200)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    conn_uuid = request.match_info.get("id", "")
+    if not conn_uuid or len(conn_uuid) > 64:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    before = await db.clear_connection_maintenance(conn_uuid)
+    if not before:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    _audit_before = {k: before.get(k) for k in maintenance.FIELDS}
+    if _audit_before.get("maintenance") or _audit_before.get("maintenance_until") or _audit_before.get("maintenance_message"):
+        user = await db.get_user_by_id(token.user_id)
+        await audit_log("connection.maintenance_clear", token.user_id, (user or {}).get("username", "unknown"),
+                        target_name=_log_text(before.get("name"), 80), target_type="connection",
+                        details={"was": {k: v or None for k, v in _audit_before.items()},
+                                 "now": {k: None for k in maintenance.FIELDS},
+                                 "owner": before.get("owner_username")})
+    return web.json_response({"cleared": True, "id": conn_uuid})
+
+
 async def _audit_maintenance(action: str, token, name, before: Optional[dict], updates: dict) -> None:
     """Audit entry for a change of a service's or connection's maintenance (who, which, was, now).
     Written only when something changed."""
@@ -30373,6 +30415,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/admin/announcements/{id}", http_admin_announcements_delete)
     app.router.add_get("/api/admin/maintenance", http_get_maintenance)
     app.router.add_put("/api/admin/maintenance", http_put_maintenance)
+    app.router.add_get("/api/admin/connections/maintenance", http_admin_connections_in_maintenance)
+    app.router.add_post("/api/admin/connections/{id}/maintenance/clear", http_admin_clear_connection_maintenance)
     app.router.add_get("/api/admin/proxy-limit", http_get_proxy_limit)
     app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)

@@ -876,9 +876,9 @@ check("1.22.0: the close code, the CLI actor name and the setting stated are the
       and "(command line: server.py maintenance-off)" in (ROOT / "maintenance_cli.py").read_text()
       and _maint.GLOBAL_KEY == "maintenance_global" and "maintenance-off" in _srv_text)
 check("1.22.0: the static file versions stated are the ones the pages load",
-      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v1", "version 47", "`admin.js` 40", "`user-connections.js` 59"))
+      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v2", "version 47", "`admin.js` 40", "`user-connections.js` 59"))
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "js" / "portal.js").read_text()
-      and "/static/js/maintenance-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
+      and "/static/js/maintenance-admin.js?v=2" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "login.html").read_text())
 _api22 = (ROOT / "docs" / "API.md").read_text()
 _html22 = (ROOT / "static" / "api-docs.html").read_text()
