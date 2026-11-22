@@ -94,7 +94,8 @@ async def main():
     try:
         with mock.patch.object(server, "_media_exec", spy), mock.patch.object(server, "resolve_checked_host", resolve), \
                 mock.patch.object(server, "_stream_user_auth", auth), mock.patch.object(server, "VOD_PLAY_FAST_WAIT", 30.0), \
-                mock.patch.object(server, "VOD_PLAY_STAT_TTL", 0.0):
+                mock.patch.object(server, "VOD_PLAY_STAT_TTL", 0.0), \
+                mock.patch.object(server, "VOD_PLAY_FREE_MARGIN_BYTES", 0):     # the floor is 0 here so it runs on any disk
             assert server._vod_play_setup(cache_dir) is None
             # the server's own application: its middleware (security headers, ...) is in the way of the answers
             client = TestClient(TestServer(server.create_app()))

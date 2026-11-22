@@ -509,7 +509,7 @@ async def test_free_space_check_counts_what_other_running_jobs_have_reserved(env
     a, b = clip("aac", 0), clip("aac", 1)
     env.put(NAME, a)
     env.put(NAME, b, root="/w")
-    floor = 1024 ** 3
+    floor = 1024 ** 3 + server.VOD_PLAY_FREE_MARGIN_BYTES                                   # the floor and the margin
     room = floor + max(vod_play.job_reserve(len(a)), vod_play.job_reserve(len(b))) + 10   # room for one job only
     real_pull = server._vod_play_pull
 
@@ -525,6 +525,28 @@ async def test_free_space_check_counts_what_other_running_jobs_have_reserved(env
             states.append((await env.wait_state({"ready", "failed"}, NAME, user=u))["state"])
     assert sorted(states) == ["failed", "ready"], states
     assert len(env.cache.entries) == 1 and env.cache.reserved == 0
+
+
+def test_the_playback_margin_is_512_mb():
+    assert server.VOD_PLAY_FREE_MARGIN_BYTES == 512 * 1024 ** 2
+
+
+@with_env(settings={"vod_min_free_gb": "0"})
+async def test_a_playback_job_leaves_the_floor_plus_a_margin_free_so_the_recording_guard_does_not_trip(env):
+    """With the floor at 0 (or at any value) a job that would leave the disk exactly at the floor is refused:
+    the next recorded chunk would otherwise make the guard stop a live recording."""
+    data = clip()
+    env.put(NAME, data)
+    need = vod_play.job_reserve(len(data))
+    with mock.patch.object(vod_staging, "free_bytes", lambda path: need + 10):          # exactly at the floor afterwards
+        assert (await env.play()).status in (202, 503)
+        body = await env.wait_state({"ready", "failed"})
+    assert body["state"] == "failed" and "free disk space" in body["error"], body
+    assert env.spawned == [] and env.cache.entries == {} and env.cache.reserved == 0
+    server._vod_play_jobs.clear()
+    with mock.patch.object(vod_staging, "free_bytes", lambda path: need + server.VOD_PLAY_FREE_MARGIN_BYTES + 10):
+        assert (await env.play()).status in (200, 202)
+        assert (await env.wait_state({"ready", "failed"}))["state"] == "ready"
 
 
 @with_env

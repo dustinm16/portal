@@ -13061,6 +13061,7 @@ VOD_PLAY_PROBE_TIMEOUT = 60
 VOD_PLAY_REMUX_TIMEOUT = 300
 VOD_PLAY_RESERVE_WAIT = 600
 VOD_PLAY_PROBE_MAX_BYTES = 1024 * 1024
+VOD_PLAY_FREE_MARGIN_BYTES = 512 * 1024 ** 2   # free space a playback job leaves above vod_min_free_gb (also when that is 0), so a job cannot leave the disk at the recording guard's floor
 VOD_SESSION_SEG_WAIT = 55.0        # a segment request waits this long for its job, then answers 503 (proxy limit: 100 s)
 VOD_SESSION_PLAYLIST_DEADLINE = 20.0   # the playlist request (connect, folder listing) answers within this many seconds
 VOD_SESSION_WAIT_GRACE = 0.25      # the wait for a job ends this long before the request's deadline, to answer in time
@@ -13497,7 +13498,9 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
                 reserved = True
                 min_free = (await _vod_guard_limits())[0]
                 free = await asyncio.to_thread(vod_staging.free_bytes, cache.root)
-                if free - cache.reserved < min_free:           # every running job's reservation, this one included
+                # every running job's reservation, this one included; the floor plus a margin, so that the
+                # next recorded chunk does not make the recording guard stop a live recording
+                if free - cache.reserved < min_free + VOD_PLAY_FREE_MARGIN_BYTES:
                     raise _VodPlayRemoteError(
                         503, "Not enough free disk space on the server to prepare this chunk right now")
                 work = cache.new_work_dir()
