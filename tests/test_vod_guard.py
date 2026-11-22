@@ -80,6 +80,7 @@ class Env:
         alerts.bind(fire=self.fire, notify=self.notify)
         server._vod_guard_state.clear()
         server._vod_skip_logged.clear()
+        server._vod_extra_sweep_at = None
         self.patches = [
             mock.patch.object(server, "VOD_TEMP_DIR", self.stage),
             mock.patch.object(server, "_PROJECT_ROOT", os.path.join(self.t, "project")),
@@ -345,6 +346,62 @@ def test_a_reconnecting_encoder_gets_at_most_one_refusal_row_per_stream_and_reas
         assert len(rows9) == 1, rows9
         assert len(rows_both) == 2 and len(rows_later) == 3, (len(rows_both), len(rows_later))
         assert state is not None and state["kind"] == "refused", "the My VODs notice follows every refusal"
+
+
+def test_a_guard_stop_or_refusal_schedules_one_extra_sweep_pass_per_ten_minutes_never_concurrent():
+    async def go():
+        calls = []
+
+        async def spy(session_dirs=None):
+            calls.append(asyncio.get_event_loop().time())
+
+        out = {}
+        with mock.patch.object(server, "recover_vod_staging", spy), \
+                mock.patch.object(server, "_vod_staging_usable", True), \
+                mock.patch.object(server, "VOD_SWEEP_EXTRA_DELAY", 0.05), \
+                mock.patch.object(server, "VOD_SWEEP_EXTRA_WAIT", 0.02), \
+                mock.patch.object(server, "db", FakeDb()):
+            server._vod_extra_sweep_at = None
+            server._vod_extra_sweep_task = None
+            verdict = ("total_backlog", "x waiting")
+            # six refusals of a reconnecting encoder: one pass
+            for _ in range(6):
+                await server._vod_guard_note("refused", 7, 9, "S", verdict)
+            await asyncio.sleep(0.3)
+            out["after_burst"] = len(calls)
+            # inside the ten minutes: nothing more, also for a guard stop
+            await server._vod_guard_note("stopped", 7, 10, "S", verdict, {"session_dir": "/x/10_a", "alerted": set()})
+            await asyncio.sleep(0.2)
+            out["inside_gap"] = len(calls)
+            # after the gap: one more
+            server._vod_extra_sweep_at -= server.VOD_SWEEP_EXTRA_GAP + 1
+            await server._vod_guard_note("refused", 7, 9, "S", verdict)
+            await asyncio.sleep(0.3)
+            out["after_gap"] = len(calls)
+            # a pass that is running blocks a request, and a scheduled pass waits for it to end
+            server._vod_extra_sweep_at -= server.VOD_SWEEP_EXTRA_GAP + 1
+            server._vod_recovery_running = True
+            try:
+                out["asked_while_running"] = server._vod_request_sweep()
+                server._vod_extra_sweep_at = None
+            finally:
+                server._vod_recovery_running = False
+            assert server._vod_request_sweep() is True
+            server._vod_recovery_running = True        # a pass starts during the delay
+            await asyncio.sleep(0.3)
+            out["waited"] = len(calls)
+            server._vod_recovery_running = False
+            await asyncio.sleep(0.3)
+            out["ran_after"] = len(calls)
+            server._vod_extra_sweep_at = None
+        return out
+
+    out = asyncio.run(go())
+    assert out["after_burst"] == 1, out
+    assert out["inside_gap"] == 1, out
+    assert out["after_gap"] == 2, out
+    assert out["asked_while_running"] is False, out
+    assert out["waited"] == 2 and out["ran_after"] == 3, out
 
 
 def test_limits_come_from_the_settings_with_the_owner_defaults():

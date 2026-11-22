@@ -7893,6 +7893,7 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
         "at": datetime.now(timezone.utc).isoformat(),
     }
     log_it = True
+    _vod_request_sweep()  # the chunks this leaves behind should not wait for the next clean-up round
     if recording is not None:
         flags = recording.setdefault("alerted", set())
         if code in flags:
@@ -7915,6 +7916,55 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
         # a stream may be private: the ntfy, Gotify, Discord and Slack formats never get its name
         third_party={"summary": summary, "details": {"Reason": code, "Action": kind}},
     )
+
+
+VOD_SWEEP_EXTRA_DELAY = 30.0    # seconds between a guard stop or refusal and the extra sweep pass
+VOD_SWEEP_EXTRA_GAP = 600.0     # at most one extra pass per this many seconds
+VOD_SWEEP_EXTRA_WAIT = 5.0      # poll interval while another pass is still running
+_vod_extra_sweep_at: Optional[float] = None   # monotonic time the last extra pass was scheduled
+_vod_extra_sweep_task: Optional[asyncio.Task] = None
+
+
+def _vod_request_sweep() -> bool:
+    """Schedule one sweep pass shortly after a guard stop or a refused start, so a backlog that the
+    guard stopped on clears as soon as the remote is back instead of at the next clean-up round.
+
+    At most one such extra pass per VOD_SWEEP_EXTRA_GAP seconds; none while one is already scheduled
+    or a pass is running (the running pass is the sweep). Returns True when a pass was scheduled.
+    """
+    global _vod_extra_sweep_at, _vod_extra_sweep_task
+    if not _vod_staging_usable or _vod_recovery_running:
+        return False
+    task = _vod_extra_sweep_task
+    if task is not None and not task.done():
+        return False
+    now = monotonic()
+    if _vod_extra_sweep_at is not None and now - _vod_extra_sweep_at < VOD_SWEEP_EXTRA_GAP:
+        return False
+    try:
+        _vod_extra_sweep_task = asyncio.get_running_loop().create_task(_vod_extra_sweep())
+    except RuntimeError:
+        return False
+    _vod_extra_sweep_at = now
+    return True
+
+
+async def _vod_extra_sweep() -> None:
+    """The extra pass: wait a little (the stopped recording closes its last chunk and uploads what it
+    can), never overlap a running pass, then run the ordinary sweep."""
+    try:
+        await asyncio.sleep(VOD_SWEEP_EXTRA_DELAY)
+        for _ in range(int(600 / max(VOD_SWEEP_EXTRA_WAIT, 0.001))):
+            if not _vod_recovery_running:
+                break
+            await asyncio.sleep(VOD_SWEEP_EXTRA_WAIT)
+        else:
+            return
+        await recover_vod_staging()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"VOD extra sweep pass failed: {e}")
 
 
 def _vod_skip_log_due(stream_id, code: str) -> bool:
@@ -29227,7 +29277,17 @@ class PortalServer:
         self._vod_recovery_task = asyncio.create_task(recover_vod_staging())
 
     async def _cancel_vod_recovery(self) -> None:
-        """Cancel a running recovery pass and wait for it to end."""
+        """Cancel a running recovery pass (and a scheduled extra pass) and wait for it to end."""
+        global _vod_extra_sweep_task
+        extra, _vod_extra_sweep_task = _vod_extra_sweep_task, None
+        if extra is not None and not extra.done():
+            extra.cancel()
+            try:
+                await extra
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"VOD extra sweep task ended with {e}")
         task = self._vod_recovery_task
         self._vod_recovery_task = None
         if task is not None and not task.done():

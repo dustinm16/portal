@@ -817,6 +817,35 @@ def test_a_failing_folder_does_not_end_the_pass_and_the_flag_is_cleared():
     assert seen == ["1_a", "2_b"] and flag is False and not d2_exists, (seen, flag, d2_exists)
 
 
+def test_a_refused_start_is_followed_by_an_extra_sweep_pass_that_clears_the_backlog_once_the_remote_is_back():
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodsweep_") as t:
+            async with Remote(t) as remote:
+                d = session(t, "1_2026-01-01_5", {"chunk_000.mkv": b"x" * 20000})
+                db = SweepDb(remote, {"vod_min_free_gb": "0", "vod_max_backlog_gb": "0.00001"})  # about 10 KB
+
+                async def mtx():
+                    return {"x": 1}
+
+                with Patched(t, remote, db), mock.patch.object(server, "_get_mediamtx_config", mtx), \
+                        mock.patch.object(server, "_PROJECT_ROOT", os.path.join(t, "project")), \
+                        mock.patch.object(server, "VOD_SWEEP_EXTRA_DELAY", 0.1):
+                    server._vod_extra_sweep_at = None
+                    server._vod_guard_state.clear()
+                    server._vod_skip_logged.clear()
+                    await server.start_vod_recording({"id": 9, "user_id": 7, "name": "S"}, "live_x")
+                    refused = server._vod_guard_public(7)
+                    ok = await wait_until(lambda: not d.exists(), 15)
+                    task = server._vod_extra_sweep_task
+                    if task is not None:
+                        await task
+                    return refused, ok, remote.listing(REMOTE), 9 in server.active_recordings
+
+    refused, ok, listing, started = run(go())
+    assert refused and refused["code"] == "total_backlog" and not started, refused
+    assert ok and len(listing) == 1 and listing[0].startswith("chunk_"), (ok, listing)
+
+
 def test_the_sweep_runs_as_the_existing_start_and_clean_up_task_and_names_its_rules():
     src = (ROOT / "server.py").read_text()
     assert "self._start_vod_recovery()" in src and src.count("self._start_vod_recovery()") >= 2
