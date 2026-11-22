@@ -565,7 +565,8 @@ const Portal = {
                         this._items.push({
                             type: 'connection', name: c.name,
                             detail: `${c.host || ''}${c.port ? ':' + c.port : ''} (${c.type})`,
-                            id: c.id, icon: 'connection'
+                            id: c.id, icon: 'connection',
+                            openMode: this._openModeOf(c)
                         });
                     });
                 }
@@ -630,6 +631,17 @@ const Portal = {
             }
         },
 
+        /** The open mode the member saved for a connection (the list API's `prefs.open_mode`), the same
+         *  one the dashboard card uses; 'embedded' falls back to the default for a type the dashboard
+         *  does not offer it for (when the dashboard script is on the page to say which). */
+        _openModeOf(c) {
+            const mode = c && c.prefs && c.prefs.open_mode;
+            if (mode !== 'same' && mode !== 'new' && mode !== 'embedded') return 'default';
+            const org = typeof ConnOrganiser !== 'undefined' ? ConnOrganiser : null;
+            if (mode === 'embedded' && org && org.core && !org.core.canEmbed(c)) return 'default';
+            return mode;
+        },
+
         _select(item) {
             this.hide();
             switch (item.type) {
@@ -637,7 +649,7 @@ const Portal = {
                     window.location.href = item.url;
                     break;
                 case 'connection':
-                    if (typeof connectTo === 'function') connectTo(item.id);
+                    if (typeof connectTo === 'function') connectTo(item.id, item.openMode || 'default');
                     else window.location.href = '/';
                     break;
                 case 'stream':

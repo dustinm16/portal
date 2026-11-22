@@ -60,9 +60,9 @@ check("portal.js gives each desktop notification its own tag and opens the chann
       and "tag: notification.type ||" not in PORTAL)
 for page in sorted(STATIC.glob("*.html")):
     if "/static/js/portal.js" in page.read_text():
-        if "portal.js?v=47" not in page.read_text():
-            check("portal.js v47 in " + page.name, False)
-check("portal.js is v47 everywhere it is loaded", not [f for f in failed if f.startswith("portal.js v47")])
+        if "portal.js?v=48" not in page.read_text():
+            check("portal.js v48 in " + page.name, False)
+check("portal.js is v48 everywhere it is loaded", not [f for f in failed if f.startswith("portal.js v48")])
 
 if shutil.which("node"):
     proc = subprocess.run(["node", str(ROOT / "tests" / "chat_notify_harness.js"), str(STATIC / "chat.html"),
