@@ -59,6 +59,20 @@ All responses are JSON with consistent structure:
 }
 ```
 
+### Request ID
+
+Every response, including errors and redirects, carries an `X-Request-ID` header: 8 random characters (letters and digits) the portal makes for that request. A request ID a client sends (`X-Request-ID` or any similar header) is never used, echoed or logged. WebSocket handshakes carry no such header. Every log line written while a request is handled carries the same ID (`[req=abcd2345]` after the logger name in the text log, a `request_id` field in the JSON log), so an administrator can find the log line for an error by the ID a member read out.
+
+### Upstream errors (502, 503, 504)
+
+When the portal cannot reach a service it proxies (the HTTP proxy under `/proxy/{connection}/...`, the search service under `/search/`, the stream proxies under `/api/stream/...`) it answers `502` (cannot reach), `503` (not available) or `504` (did not answer in time) with `Retry-After`. A browser request gets a small page with the service name, the request ID and a retry countdown; a request under `/api`, an `X-Requested-With: XMLHttpRequest` request, or one whose `Accept` asks for JSON (and not for HTML) gets JSON:
+
+```json
+{"error": "Cannot reach My App", "request_id": "abcd2345", "retry_after": 15}
+```
+
+`error` keeps the text older clients already know where there was one (for example `Stream unavailable`). The answer never names the upstream host, address or port or the exception text; those are in the server log, once, under the same request ID.
+
 ---
 
 ## Endpoints
@@ -1096,6 +1110,7 @@ Prefer `Authorization: Api-Key` over `X-API-Key` here: the `Authorization` heade
 | `200` | Results returned |
 | `401` | Missing or invalid credentials (wrong, revoked or expired key, or a key sent as `Bearer`) |
 | `503` | Credentials accepted, but the `searxng` service is disabled or not running |
+| `502` | The search service did not answer (page or, for `format=json` / an `Accept` for JSON, `{"error", "request_id", "retry_after"}`) |
 
 JSON output requires `formats: [html, json]` in the generated `settings.yml` (the default for Portal-managed SearXNG).
 

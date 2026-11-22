@@ -456,6 +456,10 @@
 }</pre>
                 </div>
 
+                <h3>Request IDs and upstream errors</h3>
+                <p>Every response carries an <code>X-Request-ID</code> header (8 random characters made by the portal; a request ID sent by the client is never used or logged, and WebSocket handshakes carry none). The same ID is on every server log line written for that request.</p>
+                <p>When a proxied service cannot be reached the portal answers <code>502</code>, <code>503</code> or <code>504</code> with <code>Retry-After</code>. A request under <code>/api</code>, an XHR, or one that asks for JSON gets <code>{"error": "...", "request_id": "abcd2345", "retry_after": 15}</code>; a browser gets a page with the service name, the ID and a retry countdown. The upstream's host, address and port are never shown.</p>
+
                 <!-- Authentication -->
                 <h2 id="authentication">Authentication</h2>
                 <p>Open Relay Portal supports the following authentication methods:</p>

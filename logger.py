@@ -10,10 +10,12 @@ Features:
 All traffic uses HTTPS on port 443. Logging excludes sensitive data.
 """
 
+import contextvars
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -83,6 +85,89 @@ LOG_SETTINGS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Request IDs
+#
+# Every request gets a short random ID (server.request_id_middleware). The ID
+# is made here, from the secrets module; nothing a client sends is ever used
+# for it. While a request is handled the ID sits in a ContextVar and
+# RequestIdFilter copies it onto each log record, so a line written by any code
+# the request reaches carries it. A line written outside a request has no ID
+# and is formatted exactly as before.
+# ---------------------------------------------------------------------------
+
+REQUEST_ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o/1/l/i, easy to read out
+REQUEST_ID_LENGTH = 8
+class _RequestIdHolder:
+    """The ID of one request. The ContextVar holds this object, not the bare string, so a background
+    task or thread started by the request (it copies the context, and with it this object) stops
+    tagging its lines once the request has ended: reset_request_id clears the holder."""
+    __slots__ = ("id",)
+
+    def __init__(self, request_id):
+        self.id = request_id
+
+
+_request_id_var = contextvars.ContextVar("portal_request_id", default=None)
+
+
+def new_request_id() -> str:
+    """A fresh 8 character request ID."""
+    return "".join(secrets.choice(REQUEST_ID_ALPHABET) for _ in range(REQUEST_ID_LENGTH))
+
+
+def set_request_id(request_id: Optional[str]):
+    """Make request_id the current one; returns the handle for reset_request_id."""
+    holder = _RequestIdHolder(request_id)
+    return _request_id_var.set(holder), holder
+
+
+def reset_request_id(handle) -> None:
+    """End the request: its ID is cleared everywhere it was copied to, and the context is restored."""
+    token, holder = handle
+    holder.id = None
+    _request_id_var.reset(token)
+
+
+def current_request_id() -> Optional[str]:
+    """The ID of the request being handled in this context, or None."""
+    holder = _request_id_var.get()
+    return holder.id if holder is not None else None
+
+
+class RequestIdFilter(logging.Filter):
+    """Put the current request ID on the record as record.request_id (only inside a request).
+
+    The record is shared by every handler, so the filter only sets an attribute:
+    it never edits the message (that would repeat the ID once per handler).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        rid = current_request_id()
+        if rid and not hasattr(record, "request_id"):
+            record.request_id = rid
+        return True
+
+
+class RequestIdFormatter(logging.Formatter):
+    """The text log format; a line from inside a request reads
+    ``<time> [LEVEL] <logger>: [req=abcd2345] <message>``, any other line is unchanged."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        rid = getattr(record, "request_id", None)
+        if not rid:
+            return super().formatMessage(record)
+        saved = record.message
+        record.message = f"[req={rid}] {saved}"
+        try:
+            return super().formatMessage(record)
+        finally:
+            record.message = saved
+
+
+_CLIENT_ID_HEADER = re.compile(r"((?:x-request-id|x-correlation-id|request-id)\s*:).*", re.IGNORECASE | re.DOTALL)
+
+
 class BadRequestNoiseFilter(logging.Filter):
     """Collapse aiohttp's "Error handling request" tracebacks for unparseable
     HTTP into a single INFO line."""
@@ -93,7 +178,10 @@ class BadRequestNoiseFilter(logging.Filter):
             "BadHttpMessage", "BadHttpMethod", "BadStatusLine", "InvalidHeader",
             "LineTooLong", "InvalidURLError", "ContentLengthError", "TransferEncodingError",
         ):
-            reason = " ".join(str(getattr(exc, "message", exc)).split())[:120]
+            reason = " ".join(str(getattr(exc, "message", exc)).split())
+            # The excerpt of the bad bytes is attacker text. A request ID header a client
+            # sent is never logged: from the header name on, the rest of the excerpt goes.
+            reason = _CLIENT_ID_HEADER.sub(r"\1 [omitted]", reason)[:120]
             record.msg = f"{record.getMessage()}: malformed request ({reason})"
             record.args = None
             record.exc_info = None
@@ -202,12 +290,13 @@ def setup_logging(
     # NOT to records propagated from child loggers (e.g. "portal", "aiohttp.access").
     # Adding the filter to each handler ensures ALL records are sanitized.
     sensitive_filter = SensitiveDataFilter()
+    request_id_filter = RequestIdFilter()
 
     # Create formatter based on settings
     if LOG_SETTINGS.get("structured", False):
         formatter = StructuredFormatter()
     else:
-        formatter = logging.Formatter(
+        formatter = RequestIdFormatter(
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
@@ -217,6 +306,7 @@ def setup_logging(
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         console_handler.setLevel(getattr(logging, LOG_SETTINGS["level"]))
+        console_handler.addFilter(request_id_filter)
         console_handler.addFilter(sensitive_filter)
         root_logger.addHandler(console_handler)
 
@@ -230,6 +320,7 @@ def setup_logging(
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(getattr(logging, LOG_SETTINGS["level"]))
+        file_handler.addFilter(request_id_filter)
         file_handler.addFilter(sensitive_filter)
         root_logger.addHandler(file_handler)
 

@@ -818,6 +818,31 @@ check("1.21.0: no text says that cache 0 empties the folder (the small index, le
 check("1.21.0: the player notes say a fallback leaves the remembered mode alone and a 401 goes to sign-in",
       "for that visit only" in low21 and "sign-in page" in low21 and "empty, `.` or `..` segment" in low21)
 
+# --- 1.22.0: request IDs and the upstream error page -------------------------------------------------
+m22 = re.search(r"### Upgrade notes for 1\.22\.0\n(.*?)(?=\n### Upgrade notes for 1\.21\.0)", text, re.S)
+_sec22 = m22.group(1) if m22 else ""
+low22 = _sec22.lower()
+check("1.22.0 notes sit directly before the 1.21.0 notes", bool(m22))
+for name, needles in {
+        "request id": ("`x-request-id`", "8 character", "`secrets`", "never read, echoed or logged", "websocket handshake gets none"),
+        "log format": ("[req=abcd2345]", "outside a request is unchanged", "`request_id` field", "access line"),
+        "error page": ("`_upstream_error_page`", "502, 503 and 504", "`/search/`", "never shows the upstream host", "once",
+                       "json with `request_id`"),
+        "behaviour, breaking, not tested": ("behaviour changes", "breaking changes", "no migration", "not tested", "cloudflare", "fakes only"),
+}.items():
+    check(f"1.22.0 states: {name}", all(n in low22 for n in needles), str([n for n in needles if n not in low22]))
+_srv22 = (ROOT / "server.py").read_text()
+_log22 = (ROOT / "logger.py").read_text()
+check("1.22.0: the log prefix and ID length stated are the ones in the code",
+      "[req={rid}]" in _log22 and "REQUEST_ID_LENGTH = 8" in _log22)
+check("1.22.0: the script and version stated are the ones the page loads",
+      "`upstream-error.js` v1" in _sec22 and "/static/js/upstream-error.js?v=1" in _srv22
+      and (ROOT / "static" / "js" / "upstream-error.js").is_file())
+check("1.22.0: the request ID and the upstream errors are in the API reference and the API page",
+      "X-Request-ID" in (ROOT / "docs" / "API.md").read_text() and "request_id" in (ROOT / "docs" / "API.md").read_text()
+      and "X-Request-ID" in (ROOT / "static" / "api-docs.html").read_text())
+check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

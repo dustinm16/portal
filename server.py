@@ -88,6 +88,10 @@ from plugins.base import ServiceTarget
 
 # Configure logging with rotation
 from logger import (
+    new_request_id,
+    set_request_id,
+    reset_request_id,
+    current_request_id,
     setup_logging,
     get_log_settings,
     update_log_settings,
@@ -11305,10 +11309,11 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                     headers=_playback_headers(stream)
                 )
     except asyncio.TimeoutError:
-        return web.json_response({"error": "Stream timeout"}, status=504)
+        return _upstream_error_page(request, "Stream", 504, 5, reason="HLS proxy: timeout",
+                                    json_error="Stream timeout")
     except Exception as e:
-        logger.error(f"HLS proxy error: {e}")
-        return web.json_response({"error": "Stream unavailable"}, status=502)
+        return _upstream_error_page(request, "Stream", 502, 5, reason=f"HLS proxy: {type(e).__name__}: {e}",
+                                    json_error="Stream unavailable")
 
 
 # Cache for stream thumbnails (key -> (timestamp, image_bytes))
@@ -11624,10 +11629,11 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                         content_type=resp.content_type
                     )
     except asyncio.TimeoutError:
-        return web.json_response({"error": "Connection timeout"}, status=504)
+        return _upstream_error_page(request, "Stream", 504, 5, reason="WHEP proxy: timeout",
+                                    json_error="Connection timeout")
     except Exception as e:
-        logger.error(f"WHEP proxy error: {e}")
-        return web.json_response({"error": "WebRTC unavailable"}, status=502)
+        return _upstream_error_page(request, "Stream", 502, 5, reason=f"WHEP proxy: {type(e).__name__}: {e}",
+                                    json_error="WebRTC unavailable")
 
 
 async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
@@ -11700,10 +11706,11 @@ async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
                         content_type=resp.content_type
                     )
     except asyncio.TimeoutError:
-        return web.json_response({"error": "Connection timeout"}, status=504)
+        return _upstream_error_page(request, "Stream", 504, 5, reason="WHIP proxy: timeout",
+                                    json_error="Connection timeout")
     except Exception as e:
-        logger.error(f"WHIP proxy error: {e}")
-        return web.json_response({"error": "WebRTC unavailable"}, status=502)
+        return _upstream_error_page(request, "Stream", 502, 5, reason=f"WHIP proxy: {type(e).__name__}: {e}",
+                                    json_error="WebRTC unavailable")
 
 
 async def http_stream_webrtc_session(request: web.Request) -> web.Response:
@@ -11763,8 +11770,9 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
                     else _playback_headers(stream)
                 )
     except Exception as e:
-        logger.error(f"WebRTC session proxy error: {e}")
-        return web.json_response({"error": "Session error"}, status=502)
+        return _upstream_error_page(request, "Stream", 502, 5,
+                                    reason=f"WebRTC session proxy: {type(e).__name__}: {e}",
+                                    json_error="Session error")
 
 
 async def http_stream_info(request: web.Request) -> web.Response:
@@ -18480,6 +18488,132 @@ _PROXY_TIMEOUT_MAX = 300
 _PROXY_CONNECT_TIMEOUT = 10
 
 
+# aiohttp answers bytes its parser refuses (a bare line feed in a header, say) with a 400 whose body
+# quotes the offending bytes back to the sender. The excerpt is attacker text, and a request ID header
+# the client sent must not appear in any response, so that body is fixed text. This wraps
+# RequestHandler.handle_error (pinned aiohttp==3.14.5; re-verify the signature before bumping aiohttp).
+from aiohttp import web_protocol as _web_protocol
+
+_aiohttp_handle_error = _web_protocol.RequestHandler.handle_error
+
+
+def _handle_error_fixed_400(self, request, status=500, exc=None, message=None):
+    if status == 400:
+        message = "Bad Request"
+    return _aiohttp_handle_error(self, request, status, exc, message)
+
+
+_web_protocol.RequestHandler.handle_error = _handle_error_fixed_400
+
+
+# ---------------------------------------------------------------------------
+# Request IDs and the page for an unreachable upstream
+#
+# request_id_middleware (the outermost middleware) gives every request an 8
+# character ID from the secrets module and nothing the client sends is used for
+# it: an inbound X-Request-ID is neither read, logged nor echoed. The ID is on
+# request["request_id"], in a ContextVar (logger.RequestIdFilter puts it on
+# every log line written while the request is handled) and, through the
+# on_response_prepare hook, in the X-Request-ID header of every response that is
+# not a WebSocket (error pages, redirects, streamed proxy responses included).
+# ---------------------------------------------------------------------------
+
+@web.middleware
+async def request_id_middleware(request: web.Request, handler):
+    rid = new_request_id()
+    request["request_id"] = rid
+    token = set_request_id(rid)
+    try:
+        return await handler(request)
+    finally:
+        reset_request_id(token)
+
+
+async def _stamp_request_id(request: web.Request, response: web.StreamResponse) -> None:
+    """on_response_prepare: runs before the headers go out, also for responses a handler streams
+    itself. Assigned, never setdefault, so a header an upstream sent under the same name is replaced.
+    A WebSocket handshake is left alone."""
+    rid = request.get("request_id")
+    if rid and not isinstance(response, web.WebSocketResponse):
+        response.headers["X-Request-ID"] = rid
+
+
+def register_request_ids(app: web.Application) -> None:
+    """The response half of the request ID (the middleware is in create_app's list)."""
+    app.on_response_prepare.append(_stamp_request_id)
+
+
+_UPSTREAM_ERROR_TITLES = {
+    502: ("Cannot reach {name}", "{name} did not answer. It may be down or restarting."),
+    503: ("{name} is not available", "{name} is not available right now."),
+    504: ("{name} timed out", "{name} did not answer in time."),
+}
+
+
+def _log_text(value, limit: int = 300) -> str:
+    """One line of text for a log line: control characters and line breaks become spaces."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value))
+    return " ".join(text.split())[:limit]
+
+
+def _wants_json_error(request: web.Request) -> bool:
+    """An API-style request: a path under /api, an XHR, or an Accept that asks for JSON and not for a page."""
+    if request.path.startswith("/api/") or request.path == "/api":
+        return True
+    if request.headers.get("X-Requested-With", "").lower() == "xmlhttprequest":
+        return True
+    accept = request.headers.get("Accept", "").lower()
+    return "application/json" in accept and "text/html" not in accept
+
+
+def _upstream_error_page(request: web.Request, service_name, status: int, retry_after: int = 15, *,
+                         reason: str = "", json_error: Optional[str] = None,
+                         detail: Optional[str] = None, force_json: bool = False) -> web.Response:
+    """The answer for an upstream that cannot be reached (502), is not available (503) or is
+    too slow (504): a small page with the escaped service name, the request ID and a retry
+    countdown that reloads (static/js/upstream-error.js, no inline script), or, for an
+    API-style request, JSON with the same request_id. Never the upstream host, address, port or
+    the exception text: that goes to the log only, once, with the request ID.
+
+    `reason` is the real reason for the log line; `json_error` the message an older JSON client
+    already knows; `detail` a fixed sentence from the caller (never from the upstream)."""
+    rid = request.get("request_id") or current_request_id() or ""
+    name = _log_text(service_name, 80) if service_name else ""
+    name = name or "the service"
+    try:
+        retry = max(1, min(300, int(retry_after)))
+    except (TypeError, ValueError):
+        retry = 15
+    logger.error(f"Upstream error {status} for service '{name}': {_log_text(reason) or 'unreachable'}",
+                 extra={"request_id": rid} if rid else None)
+    headers = {"Retry-After": str(retry), "Cache-Control": "no-store"}
+    title, sentence = _UPSTREAM_ERROR_TITLES.get(status, _UPSTREAM_ERROR_TITLES[502])
+    if force_json or _wants_json_error(request):
+        return web.json_response(
+            {"error": json_error or title.format(name=name), "request_id": rid, "retry_after": retry},
+            status=status, headers=headers)
+    esc = _html.escape
+    auto = "1" if request.method in ("GET", "HEAD") else "0"
+    page = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc(title.format(name=name))}</title>"
+        "<style>body{background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;margin:0;padding:2rem}"
+        "main{max-width:36rem}h1{font-size:1.4rem}code{background:#0f0f1e;padding:.1rem .4rem;"
+        "border-radius:4px;letter-spacing:.05em}a,button{color:#4fc3f7}"
+        "button{background:none;border:1px solid #4fc3f7;border-radius:4px;padding:.3rem .8rem;"
+        "cursor:pointer;margin-right:1rem}.meta{opacity:.8}</style></head><body>"
+        f'<main id="upstream-error" data-retry="{retry}" data-auto="{auto}">'
+        f"<h1>{esc(title.format(name=name))}</h1>"
+        f"<p>{esc(detail or sentence.format(name=name))}</p>"
+        f'<p class="meta">Request ID: <code id="upstream-error-id">{esc(rid or "-")}</code></p>'
+        '<p class="meta" id="upstream-error-countdown"></p>'
+        '<p><button type="button" id="upstream-error-retry">Try again now</button>'
+        '<a href="/dashboard" id="upstream-error-home">Back to Dashboard</a></p></main>'
+        '<script src="/static/js/upstream-error.js?v=1"></script></body></html>')
+    return web.Response(status=status, text=page, content_type="text/html", headers=headers)
+
+
 def _proxy_timeout_seconds(value) -> int:
     """The per-connection `timeout` setting, forced into 5-300 seconds.
 
@@ -19555,31 +19689,15 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             return _proxy_revoked_response(call, stream_resp, conn_uuid)
         if stream_started:
             return _proxy_cut_download(call, stream_resp, conn_uuid, "idle timeout")
-        logger.error(f"Proxy connection {conn_uuid} timed out")
-        return web.Response(
-            status=504,
-            content_type="text/html",
-            text="<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
-                 "<h2>Upstream service timed out</h2>"
-                 "<p>The upstream service did not answer in time.</p>"
-                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-                 "</body></html>"
-        )
+        return _upstream_error_page(request, connection.get("name"), 504, 15,
+                                    reason=f"connection {conn_uuid}: the upstream did not answer in time")
     except aiohttp.ClientError as e:
         if call.aborted:
             return _proxy_revoked_response(call, stream_resp, conn_uuid)
         if stream_started:
             return _proxy_cut_download(call, stream_resp, conn_uuid, f"{type(e).__name__}: {e}")
-        logger.error(f"Proxy connection {conn_uuid} error: {e}")
-        return web.Response(
-            status=502,
-            content_type="text/html",
-            text="<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
-                 "<h2>Cannot reach upstream service</h2>"
-                 "<p>The upstream service is unreachable. Check that it is running and accessible.</p>"
-                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-                 "</body></html>"
-        )
+        return _upstream_error_page(request, connection.get("name"), 502, 15,
+                                    reason=f"connection {conn_uuid}: {type(e).__name__}: {e}")
 
 
 def _proxy_cut_download(call: _ProxyHttpCall, stream_resp, conn_uuid: str, why: str):
@@ -19605,6 +19723,8 @@ _SEARXNG_REQUEST_HOP_HEADERS = frozenset({
     "host", "content-length", "transfer-encoding", "connection", "keep-alive",
     "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade",
     "accept-encoding", "authorization",
+    # A client's own request ID is never passed on (the portal makes its own).
+    "x-request-id", "x-correlation-id", "request-id",
 })
 _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
     "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
@@ -19655,18 +19775,12 @@ async def http_search_status(request: web.Request) -> web.Response:
 
 
 def _searxng_unavailable_response(request: web.Request) -> web.Response:
-    if "application/json" in request.headers.get("Accept", "") or \
-            request.query.get("format") == "json":
-        return web.json_response({"error": "Search is not enabled on this portal"}, status=503)
-    return web.Response(
-        status=503, content_type="text/html",
-        text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
-             "font-family:sans-serif;padding:2rem'>"
-             "<h2>Search is not enabled</h2>"
-             "<p>This portal does not currently have the SearXNG search service running. "
-             "An admin can enable it from the Services panel.</p>"
-             "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-             "</body></html>")
+    return _upstream_error_page(
+        request, "Search", 503, 30, reason="SearXNG is not enabled or not running",
+        json_error="Search is not enabled on this portal",
+        detail="The search service is not running on this portal. "
+               "An administrator can turn it on in the Services panel.",
+        force_json=request.query.get("format") == "json")
 
 
 async def http_searxng_proxy(request: web.Request) -> web.Response:
@@ -19761,15 +19875,9 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
 
                 return web.Response(status=resp.status, headers=resp_headers, body=out)
     except aiohttp.ClientError as e:
-        logger.error(f"SearXNG proxy error: {e}")
-        return web.Response(
-            status=502, content_type="text/html",
-            text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
-                 "font-family:sans-serif;padding:2rem'>"
-                 "<h2>Cannot reach SearXNG</h2>"
-                 "<p>The search backend is unreachable. Check that the service is running.</p>"
-                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-                 "</body></html>")
+        return _upstream_error_page(request, "Search", 502, 15,
+                                    reason=f"SearXNG proxy: {type(e).__name__}: {e}",
+                                    force_json=request.query.get("format") == "json")
 
 
 async def http_admin_page(request: web.Request) -> web.Response:
@@ -29100,9 +29208,10 @@ def create_app() -> web.Application:
     # manager's, itself env-configurable) plus a little multipart framing
     # headroom; individual endpoints still enforce their own tighter caps.
     app = web.Application(
-        middlewares=[security_headers_middleware, proxy_limit_middleware],
+        middlewares=[request_id_middleware, security_headers_middleware, proxy_limit_middleware],
         client_max_size=Config.FILE_MANAGER_MAX_UPLOAD + 1024 * 1024,
     )
+    register_request_ids(app)
 
     # Public emote serving (must be registered before the authenticated upload catch-all)
     app.router.add_get("/static/uploads/emotes/{filename}", http_serve_emote)
