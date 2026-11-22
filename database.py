@@ -1366,6 +1366,16 @@ MIGRATIONS = [
         FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_conn_prefs_conn ON connection_user_prefs(connection_id)",
+    # Connection health checks: one row per change of a connection's status (up, down, unknown),
+    # never one per probe. A new table only: nothing existing is rewritten, 1.21.0 never reads it.
+    """CREATE TABLE IF NOT EXISTS connection_health_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        since TEXT NOT NULL,
+        FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_conn_health_conn ON connection_health_log(connection_id, id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2767,6 +2777,76 @@ class Database:
                                 AND cs.grantee_user_id = connection_user_prefs.user_id
                                 AND {grant_expiry.live_sql('cs')})""",
             (grant_expiry.live_param(),))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Connection health checks (connection_health.py)
+    # ------------------------------------------------------------------
+    async def list_health_candidates(self, since_iso: str, limit: int) -> list[dict]:
+        """Connections worth probing: pinned, or opened since `since_iso`, by somebody who
+        still has access (the owner, or a grantee whose share has not ended). Pinned follows
+        the dashboard rule: the member's own filing when it names a pin, else the owner's
+        older is_pinned. Each connection once, config decoded (the caller keeps only the
+        target out of it)."""
+        cursor = await self.conn.execute(
+            f"""WITH acc(user_id, connection_id, is_owner) AS (
+                    SELECT user_id, id, 1 FROM user_connections
+                    UNION ALL
+                    SELECT cs.grantee_user_id, cs.connection_id, 0 FROM connection_shares cs
+                    WHERE {grant_expiry.live_sql('cs')})
+                SELECT uc.*, owner.username AS owner_username
+                FROM user_connections uc
+                JOIN users owner ON owner.id = uc.user_id
+                WHERE uc.id IN (
+                    SELECT acc.connection_id FROM acc
+                    LEFT JOIN connection_user_prefs p
+                           ON p.user_id = acc.user_id AND p.connection_id = acc.connection_id
+                    LEFT JOIN user_connections o ON o.id = acc.connection_id
+                    WHERE COALESCE(p.pinned, CASE WHEN acc.is_owner = 1 THEN o.is_pinned ELSE 0 END, 0) = 1
+                       OR p.last_opened_at >= ?)
+                ORDER BY uc.id LIMIT ?""",
+            (grant_expiry.live_param(), since_iso, int(limit)))
+        return self._decode_conn_rows(await cursor.fetchall())
+
+    async def list_accessible_connection_refs(self, user_id: int) -> list[tuple[int, str]]:
+        """(internal id, uuid) of every connection the user owns or holds a live share of.
+        No config is read or decrypted."""
+        cursor = await self.conn.execute(
+            f"""SELECT id, uuid FROM user_connections WHERE user_id = ?
+                UNION
+                SELECT uc.id, uc.uuid FROM connection_shares cs
+                JOIN user_connections uc ON uc.id = cs.connection_id
+                WHERE cs.grantee_user_id = ? AND {grant_expiry.live_sql('cs')}""",
+            (user_id, user_id, grant_expiry.live_param()))
+        return [(r["id"], r["uuid"]) for r in await cursor.fetchall()]
+
+    async def add_health_transition(self, connection_id: int, status: str, since: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO connection_health_log (connection_id, status, since) VALUES (?, ?, ?)",
+            (connection_id, status, since))
+        await self.conn.commit()
+
+    async def load_health_state(self) -> dict:
+        """{connection id: (status, since, last_known)} from the stored transitions: the latest
+        row of each connection, and the latest up or down row (last_known) for it."""
+        cursor = await self.conn.execute(
+            """SELECT l.connection_id, l.status, l.since,
+                      (SELECT k.status FROM connection_health_log k
+                       WHERE k.connection_id = l.connection_id AND k.status IN ('up', 'down')
+                       ORDER BY k.id DESC LIMIT 1) AS known
+               FROM connection_health_log l
+               WHERE l.id = (SELECT MAX(id) FROM connection_health_log m
+                             WHERE m.connection_id = l.connection_id)""")
+        return {r["connection_id"]: (r["status"], r["since"], r["known"]) for r in await cursor.fetchall()}
+
+    async def prune_health_log(self, keep_days: int) -> int:
+        """Delete transitions older than keep_days, never the latest row of a connection."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor = await self.conn.execute(
+            """DELETE FROM connection_health_log WHERE since < ?
+               AND id NOT IN (SELECT MAX(id) FROM connection_health_log GROUP BY connection_id)""",
+            (cutoff,))
         await self.conn.commit()
         return cursor.rowcount
 

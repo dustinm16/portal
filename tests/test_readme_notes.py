@@ -923,7 +923,7 @@ for _n in ("connection_user_prefs", "connections only", "not an administrator", 
            "exactly the answer of a connection that does not exist", "at most 40 characters", "at most 10 tags",
            "at most once a minute per member and connection", "`use_count`", "when a share is revoked",
            "when a share expires", "the 60 second sweeper", "`/` focuses it", "recently used", "breaking changes.** none",
-           "`conn-organise.js` 1", "`dashboard.js` 60", "`user-connections.js` 58", "`portal.css` 56",
+           "`conn-organise.js` 2", "`dashboard.js` 60", "`user-connections.js` 58", "`portal.css` 56",
            "**not tested.**", "no browser", "fake dom"):
     check(f"1.22.0 states: {_n}", _n in _low122, _n)
 check("1.22.0: docs/API.md and api-docs.html document the prefs route and the prefs field",
@@ -931,7 +931,35 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 1), ("dashboard.js", 60), ("user-connections.js", 58), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 2), ("dashboard.js", 60), ("user-connections.js", 58), ("portal.css", 56))))
+
+# --- 1.22.0: connection health checks ---------------------------------------------------------------
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("JWT_SECRET", "x" * 64)
+import connection_health as _ch  # noqa: E402
+
+_low122h = _low122
+for _n in ("connection health checks", "off by default", "`put /api/admin/connection-health`", "60 to 900 seconds",
+           "at most 100 probes per round", "5 at once", "6 seconds each", "never two probes of one target at once",
+           "redirects are **not** followed", "no cookie, header or stored secret", "no user-supplied check url",
+           "`resolve_checked_host`", "shows **unknown**, not down", "down after 3 failures in a row",
+           "up after 2 successes in a row", "`connection_health_log`", "14 days", "`service.health_changed`",
+           "no name and no host", "`get /api/connections/status`", "registered before `/api/connections/{id}`",
+           "the same shape for owner and grantee", "only while the tab is visible", "`stage_health_target_ports`",
+           "`conn-health.js` 1", "`conn-health.css` 1", "tests/test_connection_health_migration.py", "rollback."):
+    check(f"1.22.0 health states: {_n}", _n in _low122h, _n)
+check("1.22.0 health: the numbers stated are the ones in the code",
+      (_ch.PROBE_ROUND_CAP, _ch.PROBE_PARALLEL, _ch.PROBE_TIMEOUT, _ch.DOWN_AFTER, _ch.UP_AFTER, _ch.LOG_KEEP_DAYS, _ch.RECENT_DAYS,
+       _ch.INTERVAL_MIN, _ch.INTERVAL_MAX, _ch.INTERVAL_DEFAULT) == (100, 5, 6.0, 3, 2, 14, 7, 60, 900, 60))
+check("1.22.0 health: the setting is off by default in the code", _ch.clamp_interval(None) == 60)
+check("1.22.0 health: the dashboard page loads the versions the notes name",
+      all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
+          for f, v in (("conn-health.js", 1), ("conn-health.css", 1), ("conn-organise.js", 2))))
+check("1.22.0 health: docs/API.md and api-docs.html document both routes",
+      all("/api/connections/status" in t_ and "/api/admin/connection-health" in t_ for t_ in (
+          (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
+check("1.22.0 health: the status route is registered before the {id} route",
+      (ROOT / "server.py").read_text().index('"/api/connections/status"') < (ROOT / "server.py").read_text().index('"/api/connections/{id}", http_get_user_connection'))
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:

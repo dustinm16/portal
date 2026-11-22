@@ -1881,6 +1881,19 @@
                         </div>
                     </div>
 
+                    <!-- Connection health checks Card (1.22.0) -->
+                    <div class="admin-card" id="connhealth-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                            </svg>
+                            Connection health checks
+                        </h3>
+                        <div id="connhealth-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
                     <!-- Logged-out limit Card -->
                     <div class="admin-card" id="proxylimit-card">
                         <h3>
@@ -6681,6 +6694,67 @@
         document.addEventListener('click', function(e) {
             const vc = e.target.closest('[data-voicecap-action]');
             if (vc && vc.getAttribute('data-voicecap-action') === 'save') saveVoiceCap();
+        });
+
+        // Connection health checks (1.22.0): its own loader, started on page load.
+        let connHealthState = null;
+
+        async function loadConnHealth() {
+            const el = document.getElementById('connhealth-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/connection-health');
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>'; return; }
+                connHealthState = await res.json();
+                renderConnHealth();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        function renderConnHealth() {
+            const el = document.getElementById('connhealth-body');
+            const d = connHealthState;
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    Shows a status dot (up, down or unknown) on each dashboard card. It is off by default and only a superadmin can change it.
+                    While it is on, the portal checks only connections that are pinned or were opened in the last 7 days by somebody who
+                    still has access: a TCP connect for SSH, desktop and tunnel connections, a HEAD request for web connections, always through
+                    the same address rules as a real connection (a name that resolves to a private or local address is never contacted and shows unknown).
+                    Nothing is sent to the other side, redirects are not followed, and members who were given a connection see the dot and the
+                    response time, never a host or an error. An alert is raised when a connection goes down and when it is back.
+                </p>
+                <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" id="ch-enabled" ${d.enabled ? 'checked' : ''}> Check connections</label>
+                <label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-top:0.5rem;">Seconds between rounds (${parseInt(d.min)} to ${parseInt(d.max)}, default ${parseInt(d.default)})</label>
+                <input type="number" id="ch-interval" value="${parseInt(d.interval) || 60}" min="${parseInt(d.min)}" max="${parseInt(d.max)}" style="${NB_FIELD_STYLE}">
+                <div style="margin:0.5rem 0;"><button class="btn btn-primary" data-connhealth-action="save">Save</button></div>`;
+        }
+
+        async function saveConnHealth() {
+            const body = {
+                enabled: document.getElementById('ch-enabled').checked,
+                interval: parseInt(document.getElementById('ch-interval').value, 10)
+            };
+            try {
+                const res = await Portal.fetch('/api/admin/connection-health', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { Portal.toast(data.error || 'Failed to save', 'error'); return; }
+                connHealthState = data;
+                Portal.toast('Saved', 'success');
+                renderConnHealth();
+            } catch (e) {
+                Portal.toast('Failed to save the setting', 'error');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadConnHealth);
+        document.addEventListener('click', function(e) {
+            const ch = e.target.closest('[data-connhealth-action]');
+            if (ch && ch.getAttribute('data-connhealth-action') === 'save') saveConnHealth();
         });
 
         let proxyLimitState = null;

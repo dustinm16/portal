@@ -137,6 +137,7 @@ import hostkeys
 import session_recording
 import sshpass_rules
 import dash_prefs
+import connection_health
 import grant_expiry
 import maintenance
 import blockref
@@ -19580,8 +19581,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         return web.Response(status=403, text="Host not allowed")
     if not config.get("target_url"):
         # Use HTTPS for types that default to 443 or are explicitly HTTPS
-        https_types = {"https", "portainer", "truenas", "pfsense", "nextcloud", "cockpit"}
-        scheme = "https" if (conn_type in https_types or port == 443) else "http"
+        # (the connection health probe uses the same rule: connection_health.proxy_scheme)
+        scheme = connection_health.proxy_scheme(conn_type, port)
         # Omit default ports (80 for HTTP, 443 for HTTPS) from URL
         default_scheme_port = 443 if scheme == "https" else 80
         if int(port) == default_scheme_port:
@@ -28892,6 +28893,88 @@ async def http_put_voice_settings(request: web.Request) -> web.Response:
     return web.json_response(view)
 
 
+# ---------------------------------------------------------------------------
+# Connection health checks (connection_health.py): status dots on the dashboard
+# ---------------------------------------------------------------------------
+_health_monitor = connection_health.Monitor(db, CONNECTION_TYPES, stage_mode=bool(Config.STAGE_MODE),
+                                            emit=lambda *a, **k: alerts.emit(*a, **k))
+
+
+async def http_connection_status(request: web.Request) -> web.Response:
+    """GET /api/connections/status - {connection id: {status, latency_ms, since}} for the connections
+    the caller owns or holds a live share of; {} while the feature is off. Owner and grantee get
+    the same shape; never an error text, a host, an address or a port."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        view = await _health_monitor.statuses_for(token.user_id)
+    except Exception as e:
+        logger.error(f"Connection status failed: {type(e).__name__}")
+        return web.json_response({"error": "Failed to read the status"}, status=500)
+    return web.json_response(view, headers={"Cache-Control": "no-store"})
+
+
+async def _connection_health_view() -> dict:
+    raw = await db.get_setting(connection_health.SETTING_ENABLED)
+    return {
+        "enabled": str(raw).strip() == "1",
+        "interval": connection_health.clamp_interval(await db.get_setting(connection_health.SETTING_INTERVAL)),
+        "min": connection_health.INTERVAL_MIN, "max": connection_health.INTERVAL_MAX,
+        "default": connection_health.INTERVAL_DEFAULT,
+    }
+
+
+async def http_get_connection_health(request: web.Request) -> web.Response:
+    """GET /api/admin/connection-health - the health check setting (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(await _connection_health_view())
+
+
+async def http_put_connection_health(request: web.Request) -> web.Response:
+    """PUT /api/admin/connection-health - enabled (default off) and interval (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict) or not data:
+        return web.json_response({"error": "Body must be an object with enabled or interval"}, status=400)
+    unknown = sorted(str(k) for k in data if k not in ("enabled", "interval"))
+    if unknown:
+        return web.json_response({"error": f"Unknown setting: {unknown[0][:40]}"}, status=400)
+    new = {}
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return web.json_response({"error": "enabled must be true or false"}, status=400)
+        new[connection_health.SETTING_ENABLED] = "1" if data["enabled"] else "0"
+    if "interval" in data:
+        v = data["interval"]
+        lo, hi = connection_health.INTERVAL_MIN, connection_health.INTERVAL_MAX
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            return web.json_response({"error": f"interval must be a whole number of seconds from {lo} to {hi}"}, status=400)
+        new[connection_health.SETTING_INTERVAL] = str(v)
+    before = await _connection_health_view()
+    try:
+        await db.set_settings(new)
+    except Exception as e:
+        logger.warning(f"Could not save the connection health setting: {type(e).__name__}")
+        return web.json_response({"error": "Could not save the setting"}, status=500)
+    view = await _connection_health_view()
+    changed = {k: view[k] for k in ("enabled", "interval") if view[k] != before[k]}
+    if changed:
+        details = {"was": {k: before[k] for k in changed}, "now": changed}
+        await audit_log("connection_health.update", user["id"], user.get("username", "unknown"), details=json.dumps(details))
+        logger.info(f"Connection health settings changed by user {user['id']}: {changed}")
+    view["saved"] = True
+    return web.json_response(view)
+
+
+
 def _proxy_limit_view(request: web.Request) -> dict:
     my_ip = get_client_ip(request)
     return {
@@ -30086,6 +30169,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/connections/types", http_get_connection_types)
     app.router.add_post("/api/connections", http_create_user_connection)
     app.router.add_get("/api/connections", http_list_user_connections)
+    # before /api/connections/{id}, or "status" would be read as a connection id
+    app.router.add_get("/api/connections/status", http_connection_status)
     app.router.add_get("/api/connections/{id}", http_get_user_connection)
     app.router.add_put("/api/connections/{id}", http_update_user_connection)
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
@@ -30237,6 +30322,8 @@ def create_app() -> web.Application:
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
     app.router.add_get("/api/admin/login-ban", http_get_login_ban)
     app.router.add_put("/api/admin/login-ban", http_put_login_ban)
+    app.router.add_get("/api/admin/connection-health", http_get_connection_health)
+    app.router.add_put("/api/admin/connection-health", http_put_connection_health)
     app.router.add_get("/api/admin/voice", http_get_voice_settings)
     app.router.add_put("/api/admin/voice", http_put_voice_settings)
     app.router.add_get("/api/announcements", http_list_announcements)
@@ -30624,6 +30711,10 @@ class PortalServer:
         # Expired connection shares and service grants: deleted, audited, their sockets closed
         # (runs in staged mode too; it only reads and writes the database and closes sockets)
         asyncio.create_task(self._grant_expiry_task())
+
+        # Connection health checks: one task, a no-op while the setting is off (the default); in
+        # staged mode it probes only the loopback test targets the harness names (connection_health.py)
+        _health_monitor.start()
 
         # Start relay health monitor (restarts orphaned relays every 45 seconds)
         if not Config.STAGE_MODE:
@@ -31072,6 +31163,7 @@ class PortalServer:
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
+        await _health_monitor.stop()
         if _push_pusher is not None:
             await _push_pusher.shutdown()
 

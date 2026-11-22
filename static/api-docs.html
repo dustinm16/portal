@@ -1240,6 +1240,25 @@
                 </div>
 
                 <div class="endpoint">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections/status</span>
+                        <span class="endpoint-desc">Health of your connections</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Health of the connections you can reach (1.22.0), one entry for each connection you own or hold a live share of, keyed by connection id; <code>{}</code> while the feature is off (the default; a superadmin switches it on with <code>PUT /api/admin/connection-health</code>). The same shape for the owner and for a member the connection is shared with, and never an error text, a host, an address or a port. Registered before <code>/api/connections/{id}</code>; the answer is <code>no-store</code>.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"&lt;connection id&gt;"</span>: {<span class="string">"status"</span>: <span class="string">"up"</span>, <span class="string">"latency_ms"</span>: 12, <span class="string">"since"</span>: <span class="string">"2030-01-01T10:00:00Z"</span>}
+}</pre>
+                        </div>
+                        <p><code>status</code> is <code>up</code>, <code>down</code> or <code>unknown</code>. <code>latency_ms</code> is the last answer time while up. <code>since</code> is when the current up or down began (UTC). An entry that is not checked (not pinned and not opened in the last 7 days, a type with no check, a name the host policy refuses) or not checked lately is <code>unknown</code> with both fields <code>null</code>.</p>
+                        <p>One background task makes a round every 60 to 900 seconds and checks only connections that are pinned or were opened in the last 7 days by somebody who still has access: a TCP connect for SSH, desktop and tunnel types, a <code>HEAD</code> of <code>/</code> (<code>GET</code> after 405 or 501) for HTTP types, never following a redirect and sending no cookie or credential, through the same host policy as a real connection (a name that resolves to a loopback, private, link-local or shared address is never contacted and is <code>unknown</code>). A status below 500 counts as up. At most 100 checks per round, 5 at once, 6 seconds each. Down after 3 failed checks in a row, up after 2 good ones. <code>service.health_changed</code> fires on a change between up and down; third-party formats get no name and no host.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-put">PUT</span>
                         <span class="endpoint-path">/api/connections/{id}/prefs</span>
@@ -6441,6 +6460,31 @@ Headers:
                     <div class="endpoint-body">
                         <p>Body: <code>{"voice_room_cap": 6}</code>, a whole number from 2 to 25 (anything else, a boolean, an unknown key or a non-object body is <code>400</code> and nothing changes). Response (200): the same object as GET plus <code>"saved": true</code>. A lower cap does not remove anyone already in a room.</p>
                         <p>Auth: superadmin. Audited as <code>voice.room_cap</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/connection-health</span>
+                        <span class="endpoint-desc">Connection health check setting</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"enabled": false, "interval": 60, "min": 60, "max": 900, "default": 60}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/connection-health</span>
+                        <span class="endpoint-desc">Switch the connection health checks on or off</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>enabled</code> (boolean) and/or <code>interval</code> (whole seconds, 60 to 900); anything else is <code>400</code> and nothing changes. Response (200): the same object as GET plus <code>"saved": true</code>. Read at the start of every round, so switching it off stops all checks within one interval.</p>
+                        <p>Auth: superadmin. Audited as <code>connection_health.update</code>.</p>
                     </div>
                 </div>
 

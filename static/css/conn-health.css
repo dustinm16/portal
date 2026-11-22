@@ -1,0 +1,15 @@
+/* Status dot of a dashboard card (connection health checks). Colour is never the only signal:
+   the title and the accessible label say up, down since a time, or unknown. */
+.conn-health-dot {
+    display: inline-block;
+    width: 0.6rem;
+    height: 0.6rem;
+    margin-left: 0.4rem;
+    border-radius: 50%;
+    vertical-align: middle;
+    background: var(--text-muted, #8a8f98);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.conn-health-up { background: var(--accent-green, #2ecc71); }
+.conn-health-down { background: var(--accent-red, #e74c3c); }
+.conn-health-unknown { background: var(--text-muted, #8a8f98); opacity: 0.6; }

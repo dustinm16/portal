@@ -241,6 +241,10 @@
         var badge = el('span', 'conn-type-badge', type.toUpperCase());
         badge.className += ' conn-type-' + type.replace(/[^A-Za-z0-9_-]/g, '');
         h4.appendChild(badge);
+        if (root.ConnHealth) {  // status dot (connection health checks); none while the feature is off
+            var hdot = root.ConnHealth.dot(conn.id);
+            if (hdot) h4.appendChild(hdot);
+        }
         var host = el('span', 'connection-host', (conn.host || '') + (conn.port ? ':' + conn.port : ''));
         info.appendChild(h4);
         info.appendChild(host);
