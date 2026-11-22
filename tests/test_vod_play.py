@@ -8,10 +8,12 @@ covered by tests/test_stream_access.py. Everything is written into temporary fol
 Run: venv/bin/python tests/test_vod_play.py
 """
 import asyncio
+import atexit
 import io
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,6 +44,7 @@ from test_vod_guard_stop import children_of_this_process  # noqa: E402
 from test_vod_sweep import PW, Remote  # noqa: E402
 
 CLIPS = tempfile.mkdtemp(prefix="vodplay_clips_")
+atexit.register(shutil.rmtree, CLIPS, ignore_errors=True)    # the generated clips never outlive the run
 OWNER, OTHER, ADMIN = 1, 2, 3
 SESSION = "Show/2026-01-01"
 NAME = f"{SESSION}/chunk_000.mkv"
@@ -460,9 +463,32 @@ async def test_a_job_that_runs_too_long_is_killed_and_leaves_nothing(env):
 @with_env
 async def test_an_output_far_larger_than_the_input_is_refused(env):
     env.put(NAME, clip())
-    with mock.patch.object(vod_play, "OUTPUT_SLACK", 0), mock.patch.object(vod_play, "output_limit", lambda s: 1000):
-        r = await env.play()
-        assert r.status == 500
+    import logging
+    lines = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            lines.append(self.format(record))
+
+    handler = H(level=logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(name)s %(message)s %(exc_text)s"))
+    watched = [logging.getLogger("portal"), logging.getLogger("aiohttp.server")]
+    for log in watched:
+        log.addHandler(handler)
+    try:
+        # output_limit is called as (size), (size, kind, duration) and (size, kind): the stand-in takes any call
+        with mock.patch.object(vod_play, "OUTPUT_SLACK", 0), \
+                mock.patch.object(vod_play, "output_limit", lambda *a, **k: 1000):
+            r = await env.play()
+            body = await r.json()
+    finally:
+        for log in watched:
+            log.removeHandler(handler)
+    # the refusal itself: the remux made more than the limit allows, so the job failed and says so; the
+    # request did not die in a traceback (that would be an "Internal Server Error" without a state)
+    assert r.status == 500 and body == {"error": "The chunk could not be converted", "state": "failed"}, (r.status, body)
+    assert not [l for l in lines if "Traceback" in l or "TypeError" in l or "Error handling request" in l], lines
+    assert env.spawned.count("ffmpeg") == 1, "the refusal must come from the real remux, not from an earlier error"
     assert env.cache.entries == {} and env.cache.reserved == 0
 
 
@@ -1029,7 +1055,5 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
                 print(f"FAIL {name}: {e!r}")
-    import shutil
-    shutil.rmtree(CLIPS, ignore_errors=True)
     print("FAILED" if fails else "all passed")
     sys.exit(1 if fails else 0)
