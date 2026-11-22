@@ -741,6 +741,13 @@ check("1.21.0: the session routes are in the API reference and the API page",
 check("the new API page entries use data-toggle-endpoint, not an inline handler",
       len(re.findall(r'<div class="endpoint-header" data-toggle-endpoint>\s*<span class="method method-get">GET</span>\s*'
                      r'<span class="endpoint-path">/api/vods/session/', (ROOT / "static" / "api-docs.html").read_text())) == 2)
+# --- 1.21.0 pictures -------------------------------------------------------------------------------
+_pics21 = ("my-vods", "my-vods-notice", "vod-player", "admin-vod-settings")
+check("make_screenshots takes the 1.21.0 pictures", all(f'@shot("{n}")' in _mk for n in _pics21))
+check("the README Screenshots section shows each 1.21.0 picture and the file exists",
+      all(f"docs/screenshots/{n}.png" in text.split("## Streaming")[0] and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in _pics21))
+check("the 1.21.0 picture script answers the VOD routes itself, drops the hls.js request and checks each page for this machine's data",
+      "route_vods" in _mk and "cdn.jsdelivr.net" in _mk and all(f'assert_clean(s, page, "{n}")' in _mk for n in _pics21))
 check("the 1.21.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec21))
 # --- 1.21.0 notes: one coherent section ----------------------------------------------------------
 _lead21 = re.findall(r"^- \*\*(.*?)\*\*", _sec21, re.M)

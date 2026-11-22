@@ -49,6 +49,17 @@ of ICE servers (so nothing is dialled outside the machine) and the real getStats
 pictures is checked for the host name, user name and home directory of this machine and for the temporary
 directory of the staged instance before it is written.
 
+Pictures of 1.21.0 (my-vods, my-vods-notice, vod-player, admin-vod-settings) need no extra setup. The staged
+instance cannot dial a storage on loopback (its outbound host policy stays on), so the browser session of the
+picture answers the VOD routes itself (Playwright route handlers, like the health call below) with made-up
+data: a list of chunks of a made-up stream on a made-up storage, the notice text the disk guard writes for a
+stopped recording, and a short synthetic test pattern (ffmpeg testsrc2, H.264 with AAC, index first) for the
+player. The pages, scripts and styles are the portal's own. The player picture waits until the browser
+really decodes a frame and says so when it cannot (a Chromium without H.264 then shows the page without a
+frame; nothing is painted in). hls.js is not loaded (the request to its host is dropped, so nothing leaves the
+machine). The admin picture is the four VOD fields of the Data Retention card, read from
+the staged instance's own settings.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -1467,6 +1478,148 @@ def _voice_moderation(s):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+# -- 1.21.0: My VODs, the player and the VOD settings ------------------------------------------------
+
+VOD_STREAM = "Evening Build Stream"
+_NOW = time.time()
+VOD_DAYS = [time.strftime("%Y-%m-%d", time.gmtime(_NOW - 86400 * n)) for n in (2, 1)]   # the two latest days, in UTC
+VOD_DAY = VOD_DAYS[0]
+_EVENING = lambda days: (int(_NOW // 86400) - days) * 86400 + 20 * 3600     # 20:00 UTC of that day
+VOD_CHUNKS = [  # name, size in bytes, modified (UTC seconds)
+    (f"{VOD_STREAM}/{VOD_DAYS[0]}/chunk_000.mkv", 41_873_920, _EVENING(2)),
+    (f"{VOD_STREAM}/{VOD_DAYS[0]}/chunk_001.mkv", 43_190_784, _EVENING(2) + 300),
+    (f"{VOD_STREAM}/{VOD_DAYS[0]}/chunk_002.mkv", 40_411_136, _EVENING(2) + 600),
+    (f"{VOD_STREAM}/{VOD_DAYS[0]}/chunk_003.mkv", 22_020_096, _EVENING(2) + 900),
+    (f"{VOD_STREAM}/{VOD_DAYS[1]}/chunk_000.mkv", 44_040_192, _EVENING(1)),
+    (f"{VOD_STREAM}/{VOD_DAYS[1]}/chunk_001.mkv", 42_991_616, _EVENING(1) + 300),
+]
+# the text the disk guard stores for a recording it stopped (server.py builds it from vod_staging.guard_verdict)
+VOD_GUARD = {"kind": "stopped", "code": "low_free_space", "stream_name": VOD_STREAM,
+             "at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(_NOW - 1500)),
+             "message": f"The VOD recording of '{VOD_STREAM}' was stopped: only 640 MB free in the VOD staging folder (needs 1.0 GB)"}
+
+
+def vod_list_body(guard=None) -> str:
+    return json.dumps({"files": [{"name": n, "size": z, "modified": m} for n, z, m in VOD_CHUNKS],
+                       "path": "/srv/vods", "recording_guard": guard,
+                       "playback": {"enabled": True, "message": None}})
+
+
+def make_test_clip(path: Path) -> None:
+    """A 24 second synthetic test pattern (H.264 8 bit 4:2:0 with AAC, index first) written into the stage."""
+    import subprocess
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=960x540:rate=25:duration=24",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=24", "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "30", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart", str(path)],
+                   check=True, timeout=120)
+
+
+def route_vods(ctx, guard=None, clip: bytes | None = None) -> None:
+    """Answer the VOD routes of one browser context with made-up data (the staged server has no storage)."""
+    import re as _re
+    ctx.route(_re.compile(r"^https://[^/]+/api/vods(\?.*)?$"), lambda r: r.fulfill(
+        status=200, content_type="application/json", body=vod_list_body(guard)))
+    ctx.route("**/cdn.jsdelivr.net/**", lambda r: r.abort())      # hls.js: nothing leaves the machine
+
+    def play(route):
+        if clip is None:
+            route.fulfill(status=404, content_type="application/json", body="{}")
+            return
+        rng = route.request.headers.get("range", "")
+        m = _re.match(r"bytes=(\d+)-(\d*)$", rng)
+        size = len(clip)
+        if not m:
+            route.fulfill(status=200, headers={"Content-Type": "video/mp4", "Accept-Ranges": "bytes"}, body=clip)
+            return
+        a = int(m.group(1))
+        b = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+        route.fulfill(status=206, body=clip[a:b + 1], headers={
+            "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Content-Range": f"bytes {a}-{b}/{size}"})
+    ctx.route("**/api/vods/play/**", play)
+
+
+def save_my_vods(s, page, name: str) -> None:
+    """The My VODs tab with the tab bar above it (the stats and the activity card of the dashboard are cropped away)."""
+    from io import BytesIO
+    from PIL import Image
+    top = page.locator("#tab-btn-services").locator("xpath=..").bounding_box()["y"] - 12
+    body = page.locator("#tab-my-vods").bounding_box()
+    height = min(body["y"] + body["height"] + 16, 1320) - top
+    raw = page.screenshot(clip={"x": 240, "y": top, "width": 1040, "height": height})
+    s.write(name, Image.open(BytesIO(raw)).convert("RGB"))
+
+
+def my_vods_page(s, guard=None):
+    ctx = s.context("alex", viewport={"width": 1280, "height": 1320})
+    route_vods(ctx, guard)
+    page = s.open(ctx, "/", ".service-card, .stat-card")
+    page.evaluate("switchTab('my-vods')")
+    page.wait_for_selector(".vod-play-btn", state="attached", timeout=15000)
+    # the buttons of a row show while the pointer is over it (the portal's own style): point at one chunk
+    page.hover(".vod-file-row >> nth=1")
+    page.wait_for_selector(".vod-file-row:hover .vod-play-btn", state="visible", timeout=5000)
+    page.wait_for_timeout(500)
+    return page
+
+
+@shot("my-vods")
+def _my_vods(s):
+    page = my_vods_page(s)
+    assert_clean(s, page, "my-vods")
+    save_my_vods(s, page, "my-vods")
+
+
+@shot("my-vods-notice")
+def _my_vods_notice(s):
+    page = my_vods_page(s, VOD_GUARD)
+    page.wait_for_selector("#vods-guard-notice", state="visible", timeout=10000)
+    assert_clean(s, page, "my-vods-notice")
+    save_my_vods(s, page, "my-vods-notice")
+
+
+@shot("vod-player")
+def _vod_player(s):
+    from urllib.parse import quote
+    clip_path = s.stage.dir / "demo_clip.mp4"
+    make_test_clip(clip_path)
+    ctx = s.context("alex", viewport={"width": 1280, "height": 860})
+    route_vods(ctx, None, clip_path.read_bytes())
+    name = f"{VOD_STREAM}/{VOD_DAY}/chunk_001.mkv"
+    page = s.open(ctx, "/vods/play?name=" + quote(name), "#vp-video", settle=500)
+    ready = True
+    try:
+        page.wait_for_function("() => { const v = document.getElementById('vp-video'); "
+                               "return v.style.display !== 'none' && v.readyState >= 2 && v.videoWidth > 0; }", timeout=25000)
+        # stop on a frame, the way a paused player looks
+        page.evaluate("async () => { const v = document.getElementById('vp-video'); v.pause(); v.currentTime = 9.0;"
+                      " await new Promise(r => v.addEventListener('seeked', r, {once: true})); }")
+        page.wait_for_timeout(600)
+    except Exception:
+        ready = False
+        print("NOTE vod-player: the browser did not decode a frame (no H.264?); the page is shown without one", file=sys.stderr)
+    page.wait_for_function("() => document.getElementById('vp-pos').textContent.length > 0", timeout=10000)
+    assert_clean(s, page, "vod-player")
+    s.save("vod-player", page)
+    s.vod_player_frame = ready
+
+
+@shot("admin-vod-settings")
+def _admin_vod_settings(s):
+    page = admin_page(s, "settings", "#ret-vod-min-free")
+    # only the four VOD fields of the Data Retention card: the other fields of the grid are hidden for the picture
+    page.evaluate("""() => {
+        const keep = ['ret-vod-min-free', 'ret-vod-backlog', 'ret-vod-play-cache', 'ret-vod-orphan-age']
+            .map((id) => document.getElementById(id).parentElement);
+        const grid = keep[0].parentElement;
+        Array.from(grid.children).forEach((c) => { if (!keep.includes(c)) c.style.display = 'none'; });
+        const sibs = Array.from(document.getElementById('retention-config').children);
+        sibs.forEach((c) => { if (c !== grid && !c.contains(grid)) c.style.display = 'none'; });
+    }""")
+    page.wait_for_timeout(300)
+    assert_clean(s, page, "admin-vod-settings")
+    s.save("admin-vod-settings", page.locator("#retention-config").locator("xpath=ancestor::div[contains(@class,'admin-card')][1]"))
+
 
 class _Terminated(BaseException):
     pass
