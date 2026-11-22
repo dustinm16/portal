@@ -533,7 +533,7 @@ def _vod_play_cache_dirs() -> list:
 def _empty_vod_play_cache_dirs(job: dict) -> None:
     """Empty the playback cache folder(s) so that 1.20.0, which does not know the folder and copies it into
     every snapshot it takes, finds it empty. Only what the cache itself writes is removed (the same names
-    that vod_play.PlayCache.reconcile treats as its own: <32 hex>.mp4, index.json, index.json.tmp and the
+    that vod_play.PlayCache.reconcile treats as its own: <32 hex>.mp4 and .ts, index.json, durations.json (and their .tmp) and the
     job-* folders in work/), and only from a folder that carries the portal's marker file. Anything else in
     the folder (for example a staging session folder a configuration put there) is left and logged. Links
     are removed, never followed. The marker stays so that 1.21.0 accepts the folder again."""
@@ -563,7 +563,9 @@ def _empty_vod_play_cache_dirs(job: dict) -> None:
                             pass
                         continue
                     left.append(name)
-                elif vod_play._ENTRY_RE.match(name) or name in (vod_play.INDEX_NAME, vod_play.INDEX_NAME + ".tmp"):
+                elif vod_play._ENTRY_RE.match(name) or name in (
+                        vod_play.INDEX_NAME, vod_play.INDEX_NAME + ".tmp",
+                        vod_play.DURATIONS_NAME, vod_play.DURATIONS_NAME + ".tmp"):
                     _remove_cache_path(path)
                     removed += 1
                 else:

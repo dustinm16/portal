@@ -127,17 +127,20 @@ class Env:
             p.start()
         server._vod_play_jobs.clear()
         server._vod_play_stats.clear()
+        server._vod_session_probes.clear()
         assert server._vod_play_setup(self.cache_dir) is None
         self.cache = server._vod_play_cache
         app = web.Application()
         app.router.add_get("/api/vods/play/{name:.+}", server.http_play_vod)
         app.router.add_get("/api/vods/play-status/{name:.+}", server.http_play_vod_status)
+        app.router.add_get("/api/vods/session/{name:.+}", server.http_play_session)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         return self
 
     async def __aexit__(self, *a):
         await server._vod_play_cancel_all()
+        server._vod_session_probes.clear()
         await self.client.close()
         for p in reversed(self.patches):
             p.stop()

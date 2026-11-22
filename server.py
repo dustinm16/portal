@@ -8237,7 +8237,10 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
                     await _vod_remove_partial(sftp, part_path)
                     raise
                 uploaded.add(str(local_path))
-                local_path.unlink()
+                try:
+                    await _vod_record_chunk_duration(user_id, sftp, remote_path, str(local_path))
+                finally:
+                    local_path.unlink()          # delivered: it goes even when this is cancelled by a shutdown
                 logger.info(f"VOD chunk uploaded: {remote_path}")
             except asyncio.TimeoutError:
                 logger.error(f"VOD chunk upload timed out ({local_path.name}), will retry")
@@ -8248,6 +8251,40 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
 
 
 _VOD_PART_SUFFIX = ".part"
+
+
+async def _vod_record_chunk_duration(user_id: int, sftp, remote_path: str, local_path: str) -> None:
+    """Remember the length of a chunk that was just delivered, measured on the local file with ffprobe
+    while it is still here, together with the remote size and time of the delivered file. A session
+    playlist then needs nothing from the storage to be written. Best effort: it never fails the upload."""
+    cache = _vod_play_cache
+    if cache is None:
+        return
+    try:
+        storage = await db.get_vod_storage(user_id)
+        if not storage:
+            return
+        base = str(storage["remote_path"]).rstrip("/")
+        if not remote_path.startswith(base + "/"):
+            return
+        rel = remote_path[len(base) + 1:]
+        if not vod_play.SESSION_CHUNK_RE.match(rel.rpartition("/")[2]) or "/" not in rel:
+            return
+        code, raw = await asyncio.wait_for(
+            _vod_play_run_tool(vod_play.ffprobe_argv(local_path), VOD_PLAY_PROBE_TIMEOUT,
+                               os.path.dirname(local_path) or ".", True), VOD_PLAY_PROBE_TIMEOUT + 15)
+        info = json.loads(raw.decode("utf-8", "replace")) if code == 0 and raw else None
+        seconds = vod_play.format_duration(info)
+        if seconds is None:
+            return
+        ok, why = vod_play.verdict(info)
+        attrs = await asyncio.wait_for(sftp.stat(remote_path), VOD_SFTP_META_TIMEOUT)
+        cache.set_duration(user_id, vod_play.storage_ident(storage), rel, int(attrs.size or 0),
+                           int(attrs.mtime or 0), seconds, ok, why)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug(f"VOD chunk duration not recorded for {os.path.basename(local_path)}: {type(e).__name__}: {e}")
 
 
 async def _vod_finish_remote_upload(sftp, part_path: str, final_path: str) -> str:
@@ -8549,7 +8586,7 @@ async def _vod_sweep_deliver(session_dir: str, meta: dict, chunks: list, budget:
                 continue
             if size == 0:
                 continue
-            top = await _vod_sweep_put(sftp, remote_dir, local, size, top)
+            top = await _vod_sweep_put(sftp, remote_dir, local, size, top, meta.get("user_id"))
             if top is None:
                 break  # this folder failed; keep it for the next pass
             budget["left"] -= size
@@ -8558,7 +8595,8 @@ async def _vod_sweep_deliver(session_dir: str, meta: dict, chunks: list, budget:
         conn.close()
 
 
-async def _vod_sweep_put(sftp, remote_dir: str, local: str, size: int, top: int) -> Optional[int]:
+async def _vod_sweep_put(sftp, remote_dir: str, local: str, size: int, top: int,
+                         user_id: Optional[int] = None) -> Optional[int]:
     """Deliver one chunk; return the remote number it took (the new top), or None on failure.
 
     Removes the local file only after the remote file exists under its new name with the same size.
@@ -8602,7 +8640,11 @@ async def _vod_sweep_put(sftp, remote_dir: str, local: str, size: int, top: int)
                     f"the remote copy was removed and the local chunk is kept")
                 await _vod_remove_partial(sftp, final)
                 return None
-            os.unlink(local)
+            try:
+                if user_id is not None:
+                    await _vod_record_chunk_duration(user_id, sftp, final, local)
+            finally:
+                os.unlink(local)                 # delivered and size checked: it goes even when cancelled
             logger.info(f"VOD sweep: delivered {os.path.basename(local)} as {final} ({size} bytes, size checked)")
             return index
         except asyncio.TimeoutError:
@@ -12798,6 +12840,9 @@ VOD_PLAY_PROBE_TIMEOUT = 60
 VOD_PLAY_REMUX_TIMEOUT = 300
 VOD_PLAY_RESERVE_WAIT = 600
 VOD_PLAY_PROBE_MAX_BYTES = 1024 * 1024
+VOD_SESSION_SEG_WAIT = 55.0        # a segment request waits this long for its job, then answers 503 (proxy limit: 100 s)
+VOD_SESSION_PROBE_MAX = 4          # session duration probes running at the same time, all members together
+VOD_SESSION_PROBE_FAILED_KEEP = 30
 
 _vod_play_cache: Optional["vod_play.PlayCache"] = None
 _vod_play_refused: Optional[str] = None      # why the cache folder is not usable (None: it is)
@@ -12806,7 +12851,8 @@ _vod_play_tasks: set = set()                  # strong references to the running
 _vod_play_stats: dict = {}                    # (owner, ident, path) -> (size, mtime, at)
 _vod_play_sem: Optional[asyncio.Semaphore] = None
 _vod_play_sem_loop = None
-_vod_play_locks: dict = {}                    # (owner, path) -> asyncio.Lock
+_vod_play_locks: dict = {}                    # job key -> asyncio.Lock
+_vod_session_probes: dict = {}                # (owner, folder) -> probe dict (duration measuring of a session)
 
 
 def _vod_play_semaphore() -> asyncio.Semaphore:
@@ -12863,6 +12909,10 @@ def _vod_play_purge(owner: Optional[int] = None, ident_not: Optional[str] = None
         if job and job.get("task") and not job["task"].done():
             job["task"].cancel()
         _vod_play_jobs.pop(k, None)
+    for k in [k for k in _vod_session_probes if owner is None or k[0] == owner]:
+        probe = _vod_session_probes.pop(k, None)
+        if probe and probe.get("task") and not probe["task"].done():
+            probe["task"].cancel()
     for k in [k for k in _vod_play_stats if owner is None or k[0] == owner]:
         _vod_play_stats.pop(k, None)
     if _vod_play_cache is not None:
@@ -13071,12 +13121,18 @@ async def _vod_play_pull(user_id: int, storage: dict, path: str, dest: str, size
         conn.close()
 
 
+def _vod_play_job_key(owner: int, path: str, kind: str = "mp4") -> tuple:
+    return (owner, path) if kind == "mp4" else (owner, path, kind)
+
+
 async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None:
-    """The job: reserve room, pull, probe, remux, store. Sets job state; leaves nothing behind on failure."""
+    """The job: reserve room, pull, probe, remux, store. Sets job state; leaves nothing behind on failure.
+    job["kind"] is "mp4" (one chunk for the single-chunk player) or "ts" (one HLS segment of a session)."""
     cache = _vod_play_cache
     owner, path, key = job["owner"], job["path"], job["key"]
-    lock = _vod_play_locks.setdefault((owner, path), asyncio.Lock())
-    reserve = vod_play.job_reserve(size)
+    kind = job.get("kind", "mp4")
+    lock = _vod_play_locks.setdefault(_vod_play_job_key(owner, path, kind), asyncio.Lock())
+    reserve = vod_play.job_reserve(size, kind, job.get("duration"))
     reserved = False
     work = None
     try:
@@ -13091,7 +13147,11 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
                         "it is too large for the playback cache of this server")
                     return
                 job["state"] = "waiting"
-                if not await cache.reserve(reserve, cap, VOD_PLAY_RESERVE_WAIT):
+                if job.get("prefetch"):
+                    # ahead of the play position: only with room to spare, never at the cost of a copy in use
+                    if not cache.try_reserve_free(reserve, cap):
+                        raise _VodPlayRemoteError(503, "No room to prepare it ahead")
+                elif not await cache.reserve(reserve, cap, VOD_PLAY_RESERVE_WAIT):
                     raise _VodPlayRemoteError(503, "The playback cache is busy; try again in a minute")
                 reserved = True
                 min_free = (await _vod_guard_limits())[0]
@@ -13114,28 +13174,37 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
                     job["state"], job["reason"] = "unplayable", why
                     return
                 job["state"] = "remuxing"
-                limit = vod_play.output_limit(size)
+                limit = (vod_play.output_limit(size) if kind == "mp4"
+                         else vod_play.output_limit(size, kind, job.get("duration")))
                 code, _ = await _vod_play_run_tool(
-                    vod_play.remux_argv(src, out, limit), VOD_PLAY_REMUX_TIMEOUT, work, False)
+                    vod_play.remux_argv(src, out, limit, kind), VOD_PLAY_REMUX_TIMEOUT, work, False)
                 os.unlink(src)
                 osize = os.lstat(out).st_size if os.path.lexists(out) else 0
                 if code != 0 or osize <= 0 or osize >= limit:
                     raise _VodPlayRemoteError(500, "The chunk could not be converted")
-                if not vod_play.index_first(out):
+                if kind == "mp4" and not vod_play.index_first(out):
                     raise _VodPlayRemoteError(500, "The chunk could not be converted")
                 code, raw = await _vod_play_run_tool(
-                    vod_play.ffprobe_argv(out, "mov"), VOD_PLAY_PROBE_TIMEOUT, work, True)
+                    vod_play.ffprobe_argv(out, "mov" if kind == "mp4" else "mpegts"),
+                    VOD_PLAY_PROBE_TIMEOUT, work, True)
                 try:
                     check = json.loads(raw.decode("utf-8", "replace")) if code == 0 else None
                 except ValueError:
                     check = None
                 if check is None or not vod_play.verdict(check)[0]:
                     raise _VodPlayRemoteError(500, "The chunk could not be converted")
-                meta = {"owner": owner, "ident": job["ident"], "path": path, "rsize": size, "rmtime": mtime}
+                seconds = vod_play.format_duration(check)
+                if kind == "ts" and seconds is None:
+                    raise _VodPlayRemoteError(500, "The chunk could not be converted")
+                meta = {"owner": owner, "ident": job["ident"], "path": path, "rsize": size, "rmtime": mtime,
+                        "kind": kind}
                 stored = cache.add(key, out, meta, reserve)
                 reserved = False                           # add() gave the reservation back either way
                 if not stored:
                     raise _VodPlayRemoteError(500, "The chunk could not be stored")
+                if kind == "ts":
+                    # the length of what a player gets is the one the playlist should say
+                    cache.set_duration(owner, job["ident"], path, size, mtime, seconds)
                 cache.evict_to(await _vod_play_cap())
                 job["state"] = "ready"
     except _VodPlayRemoteError as e:
@@ -13172,10 +13241,14 @@ def _vod_play_job_view(job: Optional[dict]) -> dict:
     return {"state": "preparing", "stage": state}
 
 
-async def _vod_play_prelude(request: web.Request, token):
-    """Shared start of the two play routes, after their own sign-in check. Returns
-    (token, storage, path, cap, None) or (None, None, None, 0, response)."""
-    path = vod_play.chunk_path_from_url(request.match_info.get("name", ""))
+async def _vod_play_prelude(request: web.Request, token, session: bool = False):
+    """Shared start of the play routes, after their own sign-in check. Returns
+    (token, storage, path, cap, None) or (None, None, None, 0, response). With *session* the "path" is the
+    (folder, kind, stem) of a session URL instead of a chunk path."""
+    if session:
+        path = vod_play.session_from_url(request.match_info.get("name", ""))
+    else:
+        path = vod_play.chunk_path_from_url(request.match_info.get("name", ""))
     storage = await db.get_vod_storage(token.user_id)
     if path is None or not storage:
         return None, None, None, 0, _vod_play_reply({"error": "VOD not found"}, 404)
@@ -13215,11 +13288,50 @@ async def http_play_vod(request: web.Request) -> web.StreamResponse:
         return _vod_play_reply({"error": e.message}, e.status)
     key = vod_play.entry_key(user_id, ident, path, size, mtime)
 
+    outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "mp4", VOD_PLAY_FAST_WAIT)
+    if outcome == "file":
+        return _vod_play_file(payload)
+    if outcome == "live":
+        return _vod_play_reply(
+            {"error": "This is the newest chunk of a stream that is live right now; "
+                      "it is still being recorded. Watch it when the stream has ended or the next chunk exists."},
+            409)
+    if outcome == "limit":
+        return _vod_play_reply({"error": payload[1]}, payload[0], retry_after=10)
+    job = payload
+    if outcome == "unplayable":
+        return _vod_play_reply(
+            {"error": vod_play.download_only_message(job.get("reason") or "unsupported format"),
+             "reason": job.get("reason"), "state": "unplayable"}, 415)
+    if outcome == "failed":
+        return _vod_play_reply({"error": job.get("error") or "The chunk could not be prepared", "state": "failed"},
+                               job.get("status") or 500)
+    return _vod_play_reply(dict(_vod_play_job_view(job), status_url=_vod_play_status_url(path)), 202, retry_after=2)
+
+
+async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, size: int, mtime: int,
+                           kind: str, wait: float, duration: Optional[float] = None,
+                           prefetch: bool = False) -> tuple:
+    """The one place that turns a chunk into a cached output of *kind* ("mp4": the single-chunk player,
+    "ts": a segment of a session) or starts, joins and waits for the job that makes it. Both play
+    routes use it, so the gate, the cache, the job table, the locks and the slot limit are the same.
+
+    Returns (outcome, payload):
+      "file"        the cached file's path
+      "unplayable"  the job (download only)
+      "failed"      the job
+      "preparing"   the job, still running after *wait* seconds
+      "live"        None: the newest chunk of a folder a recording is writing to right now
+      "limit"       (status, message): too many jobs
+    """
+    cache = _vod_play_cache
+    key = vod_play.entry_key(user_id, ident, path, size, mtime, kind)
+    jobkey = _vod_play_job_key(user_id, path, kind)
     cached = cache.get(key)
     if cached:
-        return _vod_play_file(cached)
+        return "file", cached
 
-    job = _vod_play_jobs.get((user_id, path))
+    job = _vod_play_jobs.get(jobkey)
     if job is not None and job["state"] in ("ready", "failed") and job["key"] != key:
         job = None                                            # an answer about another version of the chunk
     if job is not None and job["state"] == "ready":
@@ -13228,53 +13340,46 @@ async def http_play_vod(request: web.Request) -> web.StreamResponse:
         job = None                                            # try again
     if job is not None and job["state"] == "unplayable":
         if job["key"] == key:
-            return _vod_play_reply(
-                {"error": vod_play.download_only_message(job.get("reason") or "unsupported format"),
-                 "reason": job.get("reason"), "state": "unplayable"}, 415)
+            return "unplayable", job
         job = None
 
     if job is None:
         if await _vod_play_is_live_newest(user_id, storage, path):
-            return _vod_play_reply(
-                {"error": "This is the newest chunk of a stream that is live right now; "
-                          "it is still being recorded. Watch it when the stream has ended or the next chunk exists."},
-                409)
+            return "live", None
         # no await from here to the registration: two requests for one chunk end up with one job
-        current = _vod_play_jobs.get((user_id, path))
+        current = _vod_play_jobs.get(jobkey)
         if current is not None and current["finished"] is None:
             job = current
     if job is None:
         active = [j for j in _vod_play_jobs.values() if j["finished"] is None]
         if len([j for j in active if j["owner"] == user_id]) >= VOD_PLAY_MAX_PER_USER:
-            return _vod_play_reply({"error": "Too many chunks are being prepared; wait for one to finish"},
-                                   429, retry_after=10)
+            return "limit", (429, "Too many chunks are being prepared; wait for one to finish")
         if len(active) >= VOD_PLAY_MAX_JOBS:
-            return _vod_play_reply({"error": "The server is busy preparing videos; try again shortly"},
-                                   503, retry_after=10)
-        job = {"owner": user_id, "path": path, "key": key, "ident": ident, "state": "queued",
-               "finished": None, "done": asyncio.Event(), "started": monotonic()}
-        _vod_play_jobs[(user_id, path)] = job
+            return "limit", (503, "The server is busy preparing videos; try again shortly")
+        job = {"owner": user_id, "path": path, "key": key, "ident": ident, "state": "queued", "kind": kind,
+               "finished": None, "done": asyncio.Event(), "started": monotonic(),
+               "duration": duration, "prefetch": prefetch}
+        _vod_play_jobs[jobkey] = job
         task = asyncio.create_task(_vod_play_job(job, storage, size, mtime))
         job["task"] = task
         _vod_play_tasks.add(task)
         task.add_done_callback(_vod_play_tasks.discard)
+    if wait <= 0:
+        return "preparing", job
 
     try:
-        await asyncio.wait_for(asyncio.shield(job["done"].wait()), VOD_PLAY_FAST_WAIT)
+        await asyncio.wait_for(asyncio.shield(job["done"].wait()), wait)
     except asyncio.TimeoutError:
         pass
     if job["state"] == "ready" and job["key"] == key:
         cached = cache.get(key)
         if cached:
-            return _vod_play_file(cached)
+            return "file", cached
     if job["state"] == "unplayable" and job["key"] == key:
-        return _vod_play_reply(
-            {"error": vod_play.download_only_message(job.get("reason") or "unsupported format"),
-             "reason": job.get("reason"), "state": "unplayable"}, 415)
+        return "unplayable", job
     if job["state"] == "failed":
-        return _vod_play_reply({"error": job.get("error") or "The chunk could not be prepared", "state": "failed"},
-                               job.get("status") or 500)
-    return _vod_play_reply(dict(_vod_play_job_view(job), status_url=_vod_play_status_url(path)), 202, retry_after=2)
+        return "failed", job
+    return "preparing", job
 
 
 def _vod_play_status_url(path: str) -> str:
@@ -13297,9 +13402,296 @@ async def http_play_vod_status(request: web.Request) -> web.Response:
     if job is None:
         ident = vod_play.storage_ident(storage)
         if any(e["owner"] == token.user_id and e["path"] == path and e["ident"] == ident
-               for e in _vod_play_cache.entries.values()):
+               and e.get("kind", "mp4") == "mp4" for e in _vod_play_cache.entries.values()):
             view = {"state": "ready"}
     return _vod_play_reply(view)
+
+
+# -----------------------------------------------------------------------------
+# Whole-session playback: GET /api/vods/session/{folder}/index.m3u8 and .../chunk_NNN.ts
+# -----------------------------------------------------------------------------
+#
+# The chunks of one session folder as one HLS timeline. The playlist is written from the measured
+# duration of every chunk (vod_play.PlayCache.durations): the recorder stores one at upload time, and for
+# an older session a probe reads only the first 256 KB of each chunk (the matroska header carries the
+# length), or converts the chunk when its header has none. The playlist request never pulls a chunk: it
+# lists the folder over one SFTP connection and answers 202 {state: preparing} until all durations are
+# known. A segment is one chunk remuxed to MPEG-TS by the same job machinery as the single-chunk MP4
+# (_vod_play_obtain); a request waits for its job at most VOD_SESSION_SEG_WAIT seconds (under the proxy's
+# 100 s) and then answers 503 with Retry-After, which hls.js retries. The next segment is prepared ahead
+# when it fits in the cache without evicting anything. Same owner-only rule as the single-chunk routes.
+
+def _vod_play_ts_file(path: str) -> web.FileResponse:
+    return web.FileResponse(path, headers={
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "video/mp2t",
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+def _vod_session_remote_dir(storage: dict, folder: str) -> str:
+    return f"{storage['remote_path'].rstrip('/')}/{folder}"
+
+
+def _vod_session_is_live(storage: dict, folder: str) -> bool:
+    """True when a recording is writing to this session folder right now."""
+    remote_dir = _vod_session_remote_dir(storage, folder)
+    dirs = _vod_remote_dirs_in_use()
+    return "*" in dirs or remote_dir in {str(d).rstrip("/") for d in dirs}
+
+
+async def _vod_session_listing(user_id: int, storage: dict, folder: str) -> list:
+    """[(number, filename, size, mtime)] of the regular chunk files in the folder, in chunk order, from one
+    SFTP connection and one directory read. Raises _VodPlayRemoteError (404 no such folder, 502)."""
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        raise _VodPlayRemoteError(502, error)
+    try:
+        try:
+            names = await asyncio.wait_for(sftp.readdir(_vod_session_remote_dir(storage, folder)),
+                                           VOD_SFTP_META_TIMEOUT * 2)
+        except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
+            raise _VodPlayRemoteError(404, "VOD not found")
+    finally:
+        conn.close()
+    listing = []
+    for entry in names:
+        perms = entry.attrs.permissions
+        if perms is not None and not _stat.S_ISREG(perms):
+            continue
+        listing.append((entry.filename if isinstance(entry.filename, str) else entry.filename.decode("utf-8", "replace"),
+                        int(entry.attrs.size or 0), int(entry.attrs.mtime or 0)))
+    return vod_play.session_chunks(listing)
+
+
+async def _vod_session_probe_head(owner: int, storage: dict, ident: str, path: str, size: int, mtime: int) -> bool:
+    """Learn a chunk's length (and whether it can be played) from its first bytes only. True when the
+    duration is now remembered; False when the header has none (the chunk then needs a full conversion).
+    Raises _VodPlayRemoteError."""
+    cache = _vod_play_cache
+    cap = await _vod_play_cap()
+    if not await cache.reserve(vod_play.HEAD_BYTES, cap, 60):
+        raise _VodPlayRemoteError(503, "The playback cache is busy; try again in a minute")
+    work = None
+    try:
+        work = cache.new_work_dir()
+        head = os.path.join(work, "head.mkv")
+        conn, sftp, error = await _connect_vod_sftp(owner)
+        if error:
+            raise _VodPlayRemoteError(502, error)
+        try:
+            remote = f"{storage['remote_path'].rstrip('/')}/{path}"
+            async with sftp.open(remote, "rb") as src:
+                data = await asyncio.wait_for(src.read(vod_play.HEAD_BYTES), VOD_SFTP_META_TIMEOUT * 2)
+        except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
+            raise _VodPlayRemoteError(502, "Could not read the chunk from the VOD storage")
+        finally:
+            conn.close()
+        fd = os.open(head, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        async with _vod_play_semaphore():
+            code, raw = await _vod_play_run_tool(vod_play.head_probe_argv(head), VOD_PLAY_PROBE_TIMEOUT, work, True)
+        try:
+            info = json.loads(raw.decode("utf-8", "replace")) if raw else None
+        except ValueError:
+            info = None
+        if not isinstance(info, dict):
+            return False
+        ok, why = vod_play.verdict(info)
+        seconds = vod_play.format_duration(info)
+        if not ok:
+            cache.set_duration(owner, ident, path, size, mtime, seconds or 1.0, False, why, save=False)
+            return True
+        if seconds is None:
+            return False
+        cache.set_duration(owner, ident, path, size, mtime, seconds, True, "", save=False)
+        return True
+    finally:
+        cache.release(vod_play.HEAD_BYTES)
+        if work:
+            vod_play._remove_path(work)
+
+
+async def _vod_session_probe_job(probe: dict, storage: dict, todo: list) -> None:
+    """Measure the chunks that have no remembered duration, one after the other."""
+    cache = _vod_play_cache
+    owner, ident = probe["owner"], probe["ident"]
+    try:
+        for path, size, mtime in todo:
+            if not await _vod_session_probe_head(owner, storage, ident, path, size, mtime):
+                # no duration in the header: convert it (the job measures the segment and remembers it)
+                outcome, payload = await _vod_play_obtain(
+                    owner, storage, ident, path, size, mtime, "ts",
+                    VOD_PLAY_RESERVE_WAIT + VOD_PLAY_PULL_TIMEOUT)
+                if outcome == "unplayable":
+                    cache.set_duration(owner, ident, path, size, mtime, 1.0, False,
+                                       payload.get("reason") or "unsupported format", save=False)
+                elif outcome != "file":
+                    raise _VodPlayRemoteError(
+                        503, "A chunk could not be measured yet; try again in a minute")
+            probe["done"] += 1
+        probe["state"] = "ready"
+    except _VodPlayRemoteError as e:
+        probe["state"], probe["error"], probe["status"] = "failed", e.message, e.status
+    except asyncio.CancelledError:
+        probe["state"], probe["error"] = "failed", "Measuring was cancelled"
+        raise
+    except Exception as e:
+        logger.error(f"VOD session probe for user {owner} failed: {type(e).__name__}: {e}")
+        probe["state"], probe["error"] = "failed", "The session could not be measured"
+    finally:
+        if cache is not None:
+            cache.save_durations()
+        probe["finished"] = monotonic()
+
+
+def _vod_session_prune_probes() -> None:
+    now = monotonic()
+    for k, p in list(_vod_session_probes.items()):
+        fin = p.get("finished")
+        if fin is not None and now - fin > (VOD_SESSION_PROBE_FAILED_KEEP if p["state"] == "failed" else 5):
+            _vod_session_probes.pop(k, None)
+
+
+async def _vod_session_playlist(user_id: int, storage: dict, folder: str) -> web.Response:
+    cache = _vod_play_cache
+    ident = vod_play.storage_ident(storage)
+    try:
+        chunks = await _vod_session_listing(user_id, storage, folder)
+    except _VodPlayRemoteError as e:
+        return _vod_play_reply({"error": e.message}, e.status)
+    live = _vod_session_is_live(storage, folder)
+    if live and chunks:
+        chunks = chunks[:-1]                          # the newest one is still being written
+    if not chunks:
+        if live:
+            return _vod_play_reply({"error": "This session is being recorded and has no finished chunk yet",
+                                    "state": "live"}, 409)
+        return _vod_play_reply({"error": "VOD not found"}, 404)
+    if len(chunks) > vod_play.MAX_SESSION_CHUNKS:
+        return _vod_play_reply({"error": "This session has too many chunks for one timeline; play the chunks one by one"},
+                               413)
+    known = {}
+    missing = []
+    for number, name, size, mtime in chunks:
+        path = f"{folder}/{name}"
+        d = cache.get_duration(user_id, ident, path, size, mtime)
+        if d:
+            known[path] = d
+        else:
+            missing.append((path, size, mtime))
+    for path, d in known.items():
+        if not d["playable"]:
+            return _vod_play_reply(
+                {"error": vod_play.download_only_message(d.get("reason") or "unsupported format"),
+                 "reason": d.get("reason"), "state": "unplayable"}, 415)
+    if missing:
+        _vod_session_prune_probes()
+        probe = _vod_session_probes.get((user_id, folder))
+        if probe is not None and probe["state"] == "failed":
+            return _vod_play_reply({"error": probe.get("error") or "The session could not be measured",
+                                    "state": "failed"}, probe.get("status") or 500)
+        if probe is None or probe["state"] == "ready":
+            if len([p for p in _vod_session_probes.values() if p["finished"] is None]) >= VOD_SESSION_PROBE_MAX:
+                return _vod_play_reply({"error": "The server is busy measuring sessions; try again shortly"},
+                                       503, retry_after=10)
+            probe = {"owner": user_id, "folder": folder, "ident": ident, "state": "running", "total": len(missing),
+                     "done": 0, "finished": None}
+            _vod_session_probes[(user_id, folder)] = probe
+            task = asyncio.create_task(_vod_session_probe_job(probe, storage, missing))
+            probe["task"] = task
+            _vod_play_tasks.add(task)
+            task.add_done_callback(_vod_play_tasks.discard)
+        return _vod_play_reply({"state": "preparing", "stage": "measuring", "done": probe["done"],
+                                "total": probe["total"], "chunks": len(chunks)}, 202, retry_after=2)
+    items = [(name[:-4] + ".ts", known[f"{folder}/{name}"]["duration"]) for _n, name, _s, _m in chunks]
+    text = vod_play.playlist_text(items, finished=not live)
+    return web.Response(text=text, headers={
+        "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff"})
+
+
+def _vod_session_prefetch(user_id: int, storage: dict, ident: str, folder: str, stem: str) -> None:
+    """After serving a segment: prepare the next chunk of the session, when its length is known and it fits
+    in the cache without evicting anything (a failure is of no interest here)."""
+    cache = _vod_play_cache
+    number = int(stem.split("_")[1])
+    later = [d for d in cache.session_durations(user_id, ident, folder)
+             if d["playable"] and (vod_play.chunk_number(d["path"].rpartition("/")[2]) or -1) > number]
+    if not later:
+        return
+    later.sort(key=lambda d: vod_play.chunk_number(d["path"].rpartition("/")[2]))
+    nxt = later[0]
+    if cache.get(vod_play.entry_key(user_id, ident, nxt["path"], nxt["rsize"], nxt["rmtime"], "ts")):
+        return
+
+    async def go():
+        try:
+            await _vod_play_obtain(user_id, storage, ident, nxt["path"], nxt["rsize"], nxt["rmtime"], "ts", 0,
+                                   duration=nxt["duration"], prefetch=True)
+        except Exception as e:                        # best effort
+            logger.debug(f"VOD session prefetch: {type(e).__name__}: {e}")
+    task = asyncio.create_task(go())
+    _vod_play_tasks.add(task)
+    task.add_done_callback(_vod_play_tasks.discard)
+
+
+async def _vod_session_segment(user_id: int, storage: dict, folder: str, stem: str,
+                               started: Optional[float] = None) -> web.Response:
+    """*started* is when the request came in: the whole answer (stat, live check, waiting for the job)
+    is held to VOD_SESSION_SEG_WAIT seconds, so a slow storage cannot push it past the proxy's limit."""
+    cache = _vod_play_cache
+    started = monotonic() if started is None else started
+    ident = vod_play.storage_ident(storage)
+    path = f"{folder}/{stem}.mkv"
+    try:
+        size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident)
+    except _VodPlayRemoteError as e:
+        return _vod_play_reply({"error": e.message}, e.status)
+    if _vod_session_is_live(storage, folder) and await _vod_play_is_live_newest(user_id, storage, path):
+        # left out of the playlist, so left out here too, even when an earlier copy is cached
+        return _vod_play_reply({"error": "This chunk is still being recorded", "state": "live"}, 409)
+    d = cache.get_duration(user_id, ident, path, size, mtime)
+    left = max(0.1, VOD_SESSION_SEG_WAIT - (monotonic() - started))
+    outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "ts",
+                                              left, duration=d["duration"] if d else None)
+    if outcome == "file":
+        _vod_session_prefetch(user_id, storage, ident, folder, stem)
+        return _vod_play_ts_file(payload)
+    if outcome == "live":
+        return _vod_play_reply({"error": "This chunk is still being recorded", "state": "live"}, 409)
+    if outcome == "limit":
+        # 503, not 429: hls.js retries a 5xx segment but treats a 4xx as fatal
+        return _vod_play_reply({"error": payload[1], "state": "busy"}, 503, retry_after=5)
+    if outcome == "unplayable":
+        return _vod_play_reply(
+            {"error": vod_play.download_only_message(payload.get("reason") or "unsupported format"),
+             "reason": payload.get("reason"), "state": "unplayable"}, 415)
+    if outcome == "failed":
+        return _vod_play_reply({"error": payload.get("error") or "The chunk could not be prepared", "state": "failed"},
+                               payload.get("status") or 500, retry_after=5 if payload.get("status") in (503, 502) else None)
+    # still being prepared after the wait: not 202 (a player would try to demux the body); 503 is retried
+    return _vod_play_reply(dict(_vod_play_job_view(payload)), 503, retry_after=2)
+
+
+async def http_play_session(request: web.Request) -> web.StreamResponse:
+    """GET /api/vods/session/{folder}/index.m3u8 - the session's HLS playlist (200), or 202 while the
+    chunk lengths are measured; GET /api/vods/session/{folder}/chunk_NNN.ts - one chunk as MPEG-TS.
+    404 (not yours or not there), 409 (live), 413 (too many chunks), 415 (download only), 429, 502, 503."""
+    started = monotonic()
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        refusal.headers["Cache-Control"] = "private, no-store"
+        return refusal
+    token, storage, parsed, cap, refusal = await _vod_play_prelude(request, token, session=True)
+    if refusal is not None:
+        return refusal
+    folder, kind, stem = parsed
+    if kind == "playlist":
+        return await _vod_session_playlist(token.user_id, storage, folder)
+    return await _vod_session_segment(token.user_id, storage, folder, stem, started)
 
 
 async def http_vod_player_page(request: web.Request) -> web.Response:
@@ -28542,6 +28934,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/vods/download/{filename:.*}", http_download_vod)
     app.router.add_get("/api/vods/play/{name:.+}", http_play_vod)
     app.router.add_get("/api/vods/play-status/{name:.+}", http_play_vod_status)
+    app.router.add_get("/api/vods/session/{name:.+}", http_play_session)
     app.router.add_post("/api/vods/download-archive", http_download_vod_archive)
     app.router.add_delete("/api/vods/{filename:.*}", http_delete_vod)
 

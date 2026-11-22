@@ -706,7 +706,7 @@ for name, needles in {
 check("1.21.0: the playback default stated is the one in the code and in the settings",
       _vp21.DEFAULT_CACHE_MB == 512 and _vp21.cache_cap_bytes(None) == 512 * 1024 * 1024)
 check("1.21.0: the new files and versions stated are the ones the pages load",
-      "`vod-player.js` v1" in _sec21 and "/static/js/vod-player.js?v=1" in (ROOT / "static" / "vod-player.html").read_text())
+      "`vod-player.js` is now v2" in _sec21 and "/static/js/vod-player.js?v=2" in (ROOT / "static" / "vod-player.html").read_text())
 check("1.21.0: the playback routes and setting are in the API reference and the API page",
       all(x in (ROOT / "docs" / "API.md").read_text() and x in (ROOT / "static" / "api-docs.html").read_text()
           for x in ("/api/vods/play/{path}.mp4", "/api/vods/play-status/{path}.mp4", "vod_play_cache_mb")))
@@ -715,6 +715,32 @@ check("the player page has no inline handlers and the new JS adds none",
       and "onclick" not in (ROOT / "static" / "vod-player.html").read_text().split("</nav>")[1]
       and "onclick=" not in (ROOT / "static" / "js" / "vod-player.js").read_text()
       and "vod-play-btn" in (ROOT / "static" / "js" / "vods.js").read_text())
+# --- 1.21.0: whole-session VOD playback ----------------------------------------------------------
+for name, needles in {
+        "session what and routes": ("**vod whole-session playback**", "`get /api/vods/session/{folder}/index.m3u8`",
+                                    "`get /api/vods/session/{folder}/chunk_nnn.ts`", "`ext-x-discontinuity`", "`ext-x-endlist`",
+                                    "no credential in any url", "not a valid hls segment", "owner only", "404",
+                                    "no ffmpeg or ffprobe is started", "ordered numerically"),
+        "session durations": ("`durations.json`", "first 256 kb", "never guessed from a file size", "`202`", "500 chunks",
+                              "measure each chunk with ffprobe", "at most four sessions"),
+        "session proxy limit": ("at most 55 seconds", "`503` with `retry-after: 2`", "never answers 202", "fits in the cache without evicting"),
+        "session cache": ("the sum of both kinds", "`vod_play_cache_mb`", "3-hour session of 36 chunks"),
+        "session live": ("the newest chunk is left out", "`ext-x-playlist-type:event`", "not offered as a finished vod"),
+        "session client": ("**play whole session**", "hls.js file the live page already loads", "no new host", "safari", "falls back to chunk-by-chunk",
+                           "`vodpos:session:<folder>`"),
+        "session behaviour": ("no breaking changes", "no migration", "no new setting"),
+        "session not tested": ("no browser, phone, safari, real hls.js playback", "real remote storage", "cloudflare", "fake hls.js"),
+}.items():
+    check(f"1.21.0 states: {name}", all(n in low21 for n in needles), str([n for n in needles if n not in low21]))
+check("1.21.0: the session limits stated are the ones in the code",
+      _vp21.MAX_SESSION_CHUNKS == 500 and _vp21.HEAD_BYTES == 256 * 1024 and _vp21.MAX_DURATIONS == 20000
+      and "VOD_SESSION_SEG_WAIT = 55.0" in _srv21 and "VOD_SESSION_PROBE_MAX = 4" in _srv21)
+check("1.21.0: the session routes are in the API reference and the API page",
+      all(x in (ROOT / "docs" / "API.md").read_text() and x in (ROOT / "static" / "api-docs.html").read_text()
+          for x in ("/api/vods/session/{folder}/index.m3u8", "/api/vods/session/{folder}/chunk_NNN.ts")))
+check("the new API page entries use data-toggle-endpoint, not an inline handler",
+      len(re.findall(r'<div class="endpoint-header" data-toggle-endpoint>\s*<span class="method method-get">GET</span>\s*'
+                     r'<span class="endpoint-path">/api/vods/session/', (ROOT / "static" / "api-docs.html").read_text())) == 2)
 check("the 1.21.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec21))
 
 if failures:

@@ -2330,6 +2330,29 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 </div>
 
                 <div class="endpoint">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/session/{folder}/index.m3u8</span>
+                        <span class="endpoint-desc">A whole session as one HLS playlist</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>The chunks of <code>{folder}</code> (for example <code>StreamName/2026-01-01</code>) in chunk order as an HLS VOD playlist: one <code>#EXTINF</code> per chunk with the <em>measured</em> length of that chunk, <code>#EXT-X-DISCONTINUITY</code> between chunks, <code>#EXT-X-ENDLIST</code>, relative segment names (<code>chunk_000.ts</code>), no credential in any URL. Authentication and owner rule are those of the single-chunk play route: another member, and an administrator asking for another member's session, get 404.</p>
+                        <p>Lengths come from the recorder (measured at delivery) or, for older sessions, from a bounded probe of the first 256 KB of each chunk; the request never pulls a chunk. <strong>202</strong> <code>{state: "preparing", stage: "measuring", done, total}</code> with <code>Retry-After</code> until every length is known, then <strong>200</strong>. <strong>404</strong> not your folder. <strong>409</strong> <code>{state: "live"}</code>: recording now and no finished chunk yet; while a recording writes to the folder the newest chunk is left out and the playlist is an EVENT playlist without ENDLIST, not a finished VOD. <strong>413</strong> more than 500 chunks. <strong>415</strong> a chunk is download only. <strong>502</strong> storage unreachable. <strong>503</strong> playback off or busy.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-toggle-endpoint>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/session/{folder}/chunk_NNN.ts</span>
+                        <span class="endpoint-desc">One chunk of a session as MPEG-TS</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>The chunk remuxed to MPEG-TS (<code>video/mp2t</code>), made on demand by the same job, cache and cap as the single-chunk MP4. The request waits at most 55 seconds for its job, then answers <strong>503</strong> with <code>Retry-After: 2</code> (never 202) and the player asks again; the next chunk is prepared ahead when it fits without evicting anything. Also <strong>404</strong>, <strong>409</strong> (the newest chunk of a folder being recorded, even when an earlier copy is cached), <strong>415</strong> (download only), <strong>502</strong>, <strong>500</strong>; too many chunks being prepared is also <strong>503</strong> (<code>state: busy</code>, <code>Retry-After</code>), because hls.js retries a 5xx segment but not a 4xx. The 55 seconds count from the arrival of the request.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/vods/download/{filename}</span>

@@ -230,10 +230,10 @@ async def run(ctx):
                            (g.status == 503 or body.get("state") == "idle"), f"{g.status} {body}")
                 async with s.get(ctx.base_url + "/vods/play?name=S%2Fx.mkv", allow_redirects=False) as g:
                     page = await g.text()
-                    ctx.ok("vodplay: the player page loads vod-player.js v1 and has no inline handler",
-                           g.status == 200 and "/static/js/vod-player.js?v=1" in page
+                    ctx.ok("vodplay: the player page loads vod-player.js v2 and has no inline handler",
+                           g.status == 200 and "/static/js/vod-player.js?v=2" in page
                            and not re.search(r"onclick=", page.split("</nav>")[-1]), str(g.status))
-                async with s.get(ctx.base_url + "/static/js/vod-player.js?v=1") as g:
+                async with s.get(ctx.base_url + "/static/js/vod-player.js?v=2") as g:
                     ctx.ok("vodplay: the player script is served", g.status == 200)
             async with ctx.http() as anon:
                 async with anon.get(ctx.base_url + "/vods/play?name=x", allow_redirects=False) as g:

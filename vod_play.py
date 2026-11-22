@@ -16,6 +16,12 @@ Design (the server module wires these to the routes, the SFTP storage and ffmpeg
   recently used entries first; a chunk that can never fit is refused.
 * An index file (index.json) records the entries; at start the folder is reconciled with it and
   anything the index does not know (an interrupted job, a half written file) is removed.
+* A second kind of entry, "ts", is one chunk remuxed to MPEG-TS for whole-session playback (a whole-file
+  MP4 is not a valid HLS segment). It shares the folder, the cap, the LRU and the jobs with the MP4
+  entries; only its name (<key>.ts) and its output size limit differ.
+* Measured durations of chunks are kept next to the entries in durations.json, so a session playlist
+  can be written without pulling every chunk. They are tiny, survive eviction of the files and are
+  dropped with the owner's storage or the chunk.
 * ffmpeg and ffprobe are given the file by local path only, the demuxer is forced to matroska
   (so no concat, playlist or other demuxer that names further files can be chosen by the file's
   content) and the protocol whitelist is "file".
@@ -40,8 +46,11 @@ MAX_CACHE_MB = 1_000_000
 
 MARKER_NAME = ".portal_vod_play_cache"
 INDEX_NAME = "index.json"
+DURATIONS_NAME = "durations.json"
 WORK_NAME = "work"
-_ENTRY_RE = re.compile(r"^[0-9a-f]{32}\.mp4$")
+KINDS = ("mp4", "ts")
+_ENTRY_RE = re.compile(r"^[0-9a-f]{32}\.(mp4|ts)$")
+MAX_DURATIONS = 20000              # remembered chunk durations, oldest forgotten first
 _CHUNK_RE = re.compile(r"^chunk_(\d+)\.mkv$", re.IGNORECASE)
 
 MAX_PATH_CHARS = 1024
@@ -103,6 +112,77 @@ def chunk_number(filename: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+SESSION_CHUNK_RE = re.compile(r"^chunk_(\d+)\.mkv$")        # the recorder's names, exactly
+_SEGMENT_RE = re.compile(r"^(chunk_\d+)\.ts$")
+MAX_SESSION_CHUNKS = 500                                     # about 41 hours of 5 minute chunks
+HEAD_BYTES = 256 * 1024                                      # read to learn a chunk's length
+
+
+def session_from_url(name: str) -> Optional[tuple]:
+    """(folder, kind, stem) from the part of a session URL after /api/vods/session/, or None.
+    kind "playlist" for <folder>/index.m3u8 (stem None), kind "segment" for <folder>/chunk_NNN.ts (stem
+    "chunk_NNN"). The folder follows the rules of chunk_path_from_url and is never empty (chunks that sit
+    in the storage root are not a session)."""
+    if not isinstance(name, str) or not name or len(name) > MAX_PATH_CHARS:
+        return None
+    if name.startswith("/") or "\\" in name or re.search(r"[\x00-\x1f\x7f]", name):
+        return None
+    parts = name.split("/")
+    if len(parts) < 2 or len(parts) > MAX_SEGMENTS:
+        return None
+    for part in parts:
+        if not part or part.startswith("."):
+            return None
+    folder, last = "/".join(parts[:-1]), parts[-1]
+    if last == "index.m3u8":
+        return folder, "playlist", None
+    m = _SEGMENT_RE.match(last)
+    if m:
+        return folder, "segment", m.group(1)
+    return None
+
+
+def session_chunks(listing: list) -> list:
+    """[(number, filename, size, mtime)] of the recorder's chunks in a folder listing of
+    (filename, size, mtime), sorted by number (numerically, so chunk_1000 follows chunk_999)."""
+    out = []
+    for name, size, mtime in listing:
+        m = SESSION_CHUNK_RE.match(name)
+        if m:
+            out.append((int(m.group(1)), name, int(size or 0), int(mtime or 0)))
+    out.sort(key=lambda c: (c[0], c[1]))
+    return out
+
+
+def playlist_text(items: list, finished: bool) -> str:
+    """The HLS playlist of a session: items is [(segment name, seconds)]. A finished session is a VOD
+    (type VOD, ENDLIST); an unfinished one is EVENT without ENDLIST. A discontinuity sits between chunks
+    (each starts its own timestamps), the durations are the measured ones."""
+    import math
+    target = max([1] + [int(math.ceil(d)) for _n, d in items])
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{target}", "#EXT-X-MEDIA-SEQUENCE:0",
+             "#EXT-X-PLAYLIST-TYPE:" + ("VOD" if finished else "EVENT")]
+    for i, (seg, seconds) in enumerate(items):
+        if i:
+            lines.append("#EXT-X-DISCONTINUITY")
+        lines.append(f"#EXTINF:{seconds:.3f},")
+        lines.append(seg)
+    if finished:
+        lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n"
+
+
+def format_duration(info) -> Optional[float]:
+    """format.duration of ffprobe's JSON as seconds, or None when it is missing or not sane."""
+    try:
+        value = float(info["format"]["duration"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    if value != value or value <= 0 or value > 86400 * 2:
+        return None
+    return value
+
+
 def storage_ident(storage: dict) -> str:
     """Names the storage a chunk came from (host, port, user, folder) without keeping those in the index."""
     raw = "|".join(str(storage.get(k) or "") for k in ("host", "username")) + \
@@ -110,8 +190,13 @@ def storage_ident(storage: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
-def entry_key(owner: int, ident: str, path: str, size: int, mtime: int) -> str:
-    raw = json.dumps([int(owner), ident, path, int(size), int(mtime)], ensure_ascii=True)
+def entry_key(owner: int, ident: str, path: str, size: int, mtime: int, kind: str = "mp4") -> str:
+    """Key of a cache entry (kind "mp4" or "ts") or, with kind "dur", of a remembered duration.
+    The "mp4" key is the one 1.20.x-era entries already have, so it does not change."""
+    items = [int(owner), ident, path, int(size), int(mtime)]
+    if kind != "mp4":
+        items.append(kind)
+    raw = json.dumps(items, ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -124,24 +209,48 @@ def ffprobe_argv(path: str, fmt: str = "matroska") -> list:
             "-show_format", "-show_streams", "-of", "json", "file:" + path]
 
 
-def remux_argv(src: str, out: str, size_limit: int) -> list:
-    """ffmpeg arguments: first video and first audio stream copied, nothing else carried over."""
+def remux_argv(src: str, out: str, size_limit: int, kind: str = "mp4") -> list:
+    """ffmpeg arguments: first video and first audio stream copied, nothing else carried over.
+    kind "mp4": fast-start MP4 for one chunk; kind "ts": MPEG-TS, an HLS segment."""
+    tail = ["-movflags", "+faststart", "-fs", str(int(size_limit)), "-f", "mp4"] if kind == "mp4" else \
+           ["-fs", str(int(size_limit)), "-f", "mpegts"]
     return ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-n",
             "-protocol_whitelist", "file", "-f", "matroska", "-i", "file:" + src,
             "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
             "-map_metadata", "-1", "-map_chapters", "-1",
-            "-c", "copy", "-movflags", "+faststart", "-fs", str(int(size_limit)),
-            "-f", "mp4", "file:" + out]
+            "-c", "copy"] + tail + ["file:" + out]
 
 
-def output_limit(source_size: int) -> int:
-    """The most an MP4 made from a source of this size may take (a copy is about the same size)."""
-    return int(source_size) + int(source_size) // 5 + OUTPUT_SLACK
+# MPEG-TS costs about 8 percent over the matroska source plus a fixed amount per second (a small audio
+# frame fills a whole 188 byte packet), so a quiet low bitrate chunk grows more than a busy one.
+TS_PERCENT = 110
+TS_BYTES_PER_SECOND = 16 * 1024
+TS_ASSUMED_SECONDS = 600           # when the chunk's length is not known yet
 
 
-def job_reserve(source_size: int) -> int:
+def output_limit(source_size: int, kind: str = "mp4", duration: Optional[float] = None) -> int:
+    """The most an output made from a source of this size may take. MP4: a copy is about the same size.
+    TS: the percentage plus a per-second term, so it holds for a 225 MB chunk as well as a 45 KB one."""
+    size = int(source_size)
+    if kind == "ts":
+        seconds = duration if isinstance(duration, (int, float)) and 0 < duration < 86400 else TS_ASSUMED_SECONDS
+        return size * TS_PERCENT // 100 + int(seconds * TS_BYTES_PER_SECOND) + OUTPUT_SLACK
+    return size + size // 5 + OUTPUT_SLACK
+
+
+def job_reserve(source_size: int, kind: str = "mp4", duration: Optional[float] = None) -> int:
     """What a job needs on disk at its peak: the pulled source and the output being written."""
-    return int(source_size) + output_limit(source_size)
+    limit = output_limit(source_size) if kind == "mp4" else output_limit(source_size, kind, duration)
+    return int(source_size) + limit
+
+
+def head_probe_argv(path: str) -> list:
+    """ffprobe on the first bytes of a chunk: the matroska header carries the duration the recorder wrote
+    when it closed the file. Without that header duration ffprobe prints none, and the chunk is measured
+    from a full conversion instead (a duration is never guessed from the size of a cut file)."""
+    return ["ffprobe", "-v", "error", "-protocol_whitelist", "file", "-f", "matroska",
+            "-show_entries", "format=duration:stream=codec_type,codec_name,pix_fmt",
+            "-of", "json", "file:" + path]
 
 
 def download_only_message(why: str) -> str:
@@ -302,7 +411,8 @@ class PlayCache:
 
     def __init__(self, root: str):
         self.root = os.path.abspath(root)
-        self.entries: dict = {}       # key -> {file, size, owner, path, ident, rsize, rmtime, used}
+        self.entries: dict = {}       # key -> {file, size, owner, path, ident, rsize, rmtime, used, kind}
+        self.durations: dict = {}     # key -> {owner, ident, path, rsize, rmtime, duration, playable, reason, at}
         self.reserved = 0             # bytes jobs have reserved for their source and output
         self._cond: Optional[asyncio.Condition] = None
 
@@ -364,8 +474,9 @@ class PlayCache:
         keep: dict = {}
         for key, e in loaded.items():
             try:
-                ok = (isinstance(key, str) and _ENTRY_RE.match(key + ".mp4") and isinstance(e, dict)
-                      and e.get("file") == key + ".mp4"
+                kind = e.get("kind", "mp4") if isinstance(e, dict) else None
+                ok = (isinstance(key, str) and kind in KINDS and _ENTRY_RE.match(key + "." + str(kind))
+                      and isinstance(e, dict) and e.get("file") == key + "." + kind
                       and all(isinstance(e.get(k), int) for k in ("size", "owner", "rsize", "rmtime"))
                       and isinstance(e.get("path"), str) and isinstance(e.get("ident"), str))
                 if ok:
@@ -384,7 +495,7 @@ class PlayCache:
         except OSError:
             names = []
         for name in names:
-            if name in (MARKER_NAME, INDEX_NAME) or name in known:
+            if name in (MARKER_NAME, INDEX_NAME, DURATIONS_NAME) or name in known:
                 continue
             full = os.path.join(self.root, name)
             if name == WORK_NAME:
@@ -395,7 +506,7 @@ class PlayCache:
                 for sub in inner:
                     _remove_path(os.path.join(full, sub))
                     stats["strays"] += 1
-            elif _ENTRY_RE.match(name) or name == INDEX_NAME + ".tmp":
+            elif _ENTRY_RE.match(name) or name in (INDEX_NAME + ".tmp", DURATIONS_NAME + ".tmp"):
                 _remove_path(full)
                 stats["strays"] += 1
             else:
@@ -408,7 +519,71 @@ class PlayCache:
         self.entries = keep
         stats["kept"] = len(keep)
         self._save()
+        self._load_durations()
         return stats
+
+    # -- remembered chunk durations -------------------------------------------
+
+    def _load_durations(self) -> None:
+        loaded: dict = {}
+        try:
+            fd = os.open(os.path.join(self.root, DURATIONS_NAME), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            raw = data.get("durations") if isinstance(data, dict) else None
+            loaded = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            loaded = {}
+        keep: dict = {}
+        for key, d in loaded.items():
+            if (isinstance(key, str) and isinstance(d, dict) and len(key) == 32
+                    and all(isinstance(d.get(k), int) for k in ("owner", "rsize", "rmtime"))
+                    and isinstance(d.get("path"), str) and isinstance(d.get("ident"), str)
+                    and isinstance(d.get("duration"), (int, float)) and 0 < d["duration"] < 86400 * 2
+                    and isinstance(d.get("playable"), bool)):
+                d["at"] = float(d.get("at") or 0)
+                keep[key] = d
+        self.durations = keep
+
+    def save_durations(self) -> None:
+        if len(self.durations) > MAX_DURATIONS:
+            for key in sorted(self.durations, key=lambda k: self.durations[k]["at"])[:len(self.durations) - MAX_DURATIONS]:
+                self.durations.pop(key, None)
+        tmp = os.path.join(self.root, DURATIONS_NAME + ".tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"version": 1, "durations": self.durations}, fh)
+            os.replace(tmp, os.path.join(self.root, DURATIONS_NAME))
+        except OSError as e:
+            logger.warning(f"VOD play cache: could not write the durations: {e}")
+
+    def get_duration(self, owner: int, ident: str, path: str, size: int, mtime: int) -> Optional[dict]:
+        """The remembered {duration, playable, reason} of this exact version of a chunk, or None."""
+        d = self.durations.get(entry_key(owner, ident, path, size, mtime, "dur"))
+        return d if d and d["path"] == path and d["owner"] == owner and d["ident"] == ident else None
+
+    def set_duration(self, owner: int, ident: str, path: str, size: int, mtime: int, duration: float,
+                     playable: bool = True, reason: str = "", save: bool = True) -> None:
+        key = entry_key(owner, ident, path, size, mtime, "dur")
+        self.durations[key] = {"owner": int(owner), "ident": ident, "path": path, "rsize": int(size),
+                               "rmtime": int(mtime), "duration": float(duration), "playable": bool(playable),
+                               "reason": str(reason)[:80], "at": time.time()}
+        # an older version of the same chunk is of no use any more
+        for k in [k for k, d in self.durations.items()
+                  if k != key and d["owner"] == owner and d["ident"] == ident and d["path"] == path]:
+            self.durations.pop(k, None)
+        if save:
+            self.save_durations()
+
+    def session_durations(self, owner: int, ident: str, folder: str) -> list:
+        """Remembered durations of the chunks directly in *folder*, as dicts, in chunk order."""
+        prefix = folder.rstrip("/") + "/"
+        out = [d for d in self.durations.values()
+               if d["owner"] == owner and d["ident"] == ident and d["path"].startswith(prefix)
+               and "/" not in d["path"][len(prefix):]]
+        out.sort(key=lambda d: d["path"])
+        return out
 
     # -- entries -------------------------------------------------------------
 
@@ -456,7 +631,8 @@ class PlayCache:
             st = os.lstat(tmp_path)
             if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
                 return False
-            dest = os.path.join(self.root, key + ".mp4")
+            kind = meta.get("kind", "mp4")
+            dest = os.path.join(self.root, key + "." + kind)
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, dest)
         except OSError as e:
@@ -466,7 +642,7 @@ class PlayCache:
             self.release(reserved)
         old = self.entries.pop(key, None)
         entry = dict(meta)
-        entry.update({"file": key + ".mp4", "size": st.st_size, "used": time.time()})
+        entry.update({"file": key + "." + kind, "kind": kind, "size": st.st_size, "used": time.time()})
         self.entries[key] = entry
         del old
         self._save()
@@ -487,6 +663,13 @@ class PlayCache:
                 continue
             self._drop(key)
             n += 1
+        gone = [k for k, d in self.durations.items()
+                if (owner is None or d["owner"] == owner) and (path is None or d["path"] == path)
+                and (ident_not is None or d["ident"] != ident_not)]
+        for k in gone:
+            self.durations.pop(k, None)
+        if gone:
+            self.save_durations()
         if n:
             self._save()
             self._notify()
@@ -495,7 +678,7 @@ class PlayCache:
     def owners(self) -> dict:
         """owner -> set of storage idents present in the cache."""
         out: dict = {}
-        for e in self.entries.values():
+        for e in list(self.entries.values()) + list(self.durations.values()):
             out.setdefault(e["owner"], set()).add(e["ident"])
         return out
 
@@ -522,6 +705,14 @@ class PlayCache:
     def release(self, n: int) -> None:
         self.reserved = max(0, self.reserved - int(n))
         self._notify()
+
+    def try_reserve_free(self, n: int, cap: int) -> bool:
+        """Reserve *n* bytes only when they fit without evicting anything (a prefetch never pushes out a
+        copy somebody may be playing right now)."""
+        if self.committed() + n > cap:
+            return False
+        self.reserved += n
+        return True
 
     def try_reserve(self, n: int, cap: int) -> bool:
         """Reserve *n* bytes, evicting least recently used entries to make room. False when it does not fit now."""

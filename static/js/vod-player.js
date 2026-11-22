@@ -2,7 +2,10 @@
  * Open Relay Portal - VOD player
  * Plays one chunk of the member's own VODs in the browser (the portal remuxes it to MP4 first),
  * with previous / next chunk, speed, picture in picture and a resume position per chunk.
- * Opened from My VODs as /vods/play?name=<path as My VODs lists it>.
+ * "Whole session" mode plays all chunks of the folder as one timeline (an HLS playlist the portal writes,
+ * through the hls.js copy the live page loads, natively on Safari), with seeking across the session and a
+ * resume position per session; a chunk that is not playable, or no HLS support, falls back to chunk by chunk.
+ * Opened from My VODs as /vods/play?name=<path as My VODs lists it>[&mode=session].
  */
 (function () {
     'use strict';
@@ -13,6 +16,24 @@
     const POLL_START_MS = 1500;
     const POLL_MAX_MS = 4000;
     const POLL_LIMIT_MS = 20 * 60 * 1000;
+    const MODE_KEY = 'vodmode';
+    const SESSION_POS_PREFIX = POS_PREFIX + 'session:';
+    // hls.js: the portal holds a segment request for up to 55 seconds while it prepares the chunk and
+    // then answers 503 with Retry-After; keep waiting for that long and retry the 503 many times.
+    const HLS_CONFIG = {
+        fragLoadPolicy: { default: {
+            maxTimeToFirstByteMs: 75000,
+            maxLoadTimeMs: 300000,
+            timeoutRetry: { maxNumRetry: 6, retryDelayMs: 0, maxRetryDelayMs: 0 },
+            errorRetry: { maxNumRetry: 40, retryDelayMs: 2000, maxRetryDelayMs: 5000, backoff: 'linear' },
+        } },
+        manifestLoadPolicy: { default: {
+            maxTimeToFirstByteMs: 20000,
+            maxLoadTimeMs: 40000,
+            timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+            errorRetry: { maxNumRetry: 3, retryDelayMs: 2000, maxRetryDelayMs: 5000, backoff: 'linear' },
+        } },
+    };
 
     const params = new URLSearchParams(location.search);
     const name = params.get('name') || '';
@@ -26,6 +47,10 @@
     const actions = el('vp-status-actions');
     const retryBtn = el('vp-retry');
 
+    const folder = name.indexOf('/') >= 0 ? name.slice(0, name.lastIndexOf('/')) : '';
+    let mode = 'chunk';
+    let hls = null;
+    let hlsRecoveries = 0;
     let siblings = [];
     let index = -1;
     let pollTimer = null;
@@ -38,6 +63,8 @@
     function playUrl() { return '/api/vods/play/' + enc(name) + '.mp4'; }
     function statusUrl() { return '/api/vods/play-status/' + enc(name) + '.mp4'; }
     function downloadUrl() { return '/api/vods/download/' + enc(name); }
+    function sessionUrl() { return '/api/vods/session/' + enc(folder) + '/index.m3u8'; }
+    function posKey() { return mode === 'session' ? SESSION_POS_PREFIX + folder : POS_PREFIX + name; }
 
     function showStatus(text, opts) {
         opts = opts || {};
@@ -57,7 +84,7 @@
 
     function readPos() {
         try {
-            const raw = localStorage.getItem(POS_PREFIX + name);
+            const raw = localStorage.getItem(posKey());
             if (!raw) return 0;
             const data = JSON.parse(raw);
             return data && typeof data.t === 'number' ? data.t : 0;
@@ -90,14 +117,14 @@
         lastSaved = now;
         try {
             if (video.currentTime > 5 && !video.ended) {
-                localStorage.setItem(POS_PREFIX + name, JSON.stringify({ t: Math.floor(video.currentTime), at: now }));
+                localStorage.setItem(posKey(), JSON.stringify({ t: Math.floor(video.currentTime), at: now }));
                 prunePositions();
             }
         } catch (e) { /* storage full or blocked: resume is a convenience only */ }
     }
 
     function clearPos() {
-        try { localStorage.removeItem(POS_PREFIX + name); } catch (e) { /* ignore */ }
+        try { localStorage.removeItem(posKey()); } catch (e) { /* ignore */ }
     }
 
     // ---- loading ---------------------------------------------------------------------------
@@ -105,6 +132,13 @@
     function stopPolling() {
         generation += 1;
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    }
+
+    function destroyHls() {
+        if (hls) {
+            try { hls.destroy(); } catch (e) { /* already gone */ }
+            hls = null;
+        }
     }
 
     function startVideo() {
@@ -145,7 +179,7 @@
                 showStatus(body.error || 'The chunk could not be prepared.', { retry: true });
                 return;
             }
-            if (body.state === 'idle') { load(); return; }       // the job is gone: ask again
+            if (body.state === 'idle') { loadChunk(); return; }       // the job is gone: ask again
             const stage = { waiting: 'Waiting for room', pulling: 'Fetching the chunk from your storage',
                 remuxing: 'Converting', probing: 'Checking the file', queued: 'Waiting for its turn' }[body.stage];
             showStatus('Preparing the video' + (stage ? ' (' + stage + ')' : '') + '...', { busy: true });
@@ -156,8 +190,9 @@
         pollTimer = setTimeout(() => pollStatus(gen, startedAt, Math.min(delay * 1.3, POLL_MAX_MS)), delay);
     }
 
-    async function load() {
+    async function loadChunk() {
         stopPolling();
+        destroyHls();
         const gen = generation;
         showStatus('Loading...', { busy: true });
         let resp;
@@ -195,6 +230,136 @@
         showStatus(body.error || 'The video cannot be played right now. You can download the chunk instead.', { retry: true });
     }
 
+    // ---- whole session ---------------------------------------------------------------------
+
+    function canHls() {
+        return !!(window.Hls && window.Hls.isSupported && window.Hls.isSupported());
+    }
+
+    function canNativeHls() {
+        return !!video.canPlayType && video.canPlayType('application/vnd.apple.mpegurl') !== '';
+    }
+
+    function fallBackToChunks(why) {
+        stopPolling();
+        destroyHls();
+        setMode('chunk', true);
+        Portal.toast(why + ' Playing chunk by chunk instead.', 'info');
+        loadChunk();
+    }
+
+    function describePlaylist(text) {
+        let n = 0;
+        let total = 0;
+        text.split('\n').forEach((line) => {
+            const m = /^#EXTINF:([0-9.]+)/.exec(line);
+            if (m) { n += 1; total += parseFloat(m[1]); }
+        });
+        const mins = Math.round(total / 60);
+        return 'Whole session: ' + n + (n === 1 ? ' chunk, ' : ' chunks, ') + mins + ' min';
+    }
+
+    function startSession(playlistText) {
+        stopPolling();
+        showVideo();
+        el('vp-pos').textContent = describePlaylist(playlistText || '');
+        if (canHls()) {
+            hlsRecoveries = 0;
+            hls = new window.Hls(HLS_CONFIG);
+            hls.on(window.Hls.Events.ERROR, (evt, data) => {
+                if (!data || !data.fatal) return;
+                const code = data.response && data.response.code;
+                if (code === 415) { fallBackToChunks('A chunk of this session cannot be played in the browser.'); return; }
+                if (code === 404) { destroyHls(); showStatus('This VOD was not found.'); return; }
+                if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && hlsRecoveries < 3) {
+                    hlsRecoveries += 1;
+                    hls.startLoad();
+                } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && hlsRecoveries < 3) {
+                    hlsRecoveries += 1;
+                    hls.recoverMediaError();
+                } else {
+                    fallBackToChunks('The whole session could not be played.');
+                }
+            });
+            hls.loadSource(sessionUrl());
+            hls.attachMedia(video);
+        } else if (canNativeHls()) {
+            video.src = sessionUrl();
+            video.load();
+        } else {
+            fallBackToChunks('This browser cannot play a whole session.');
+            return;
+        }
+        if (autoplay) {
+            const p = video.play();
+            if (p && p.catch) p.catch(() => { /* the browser wants a tap first */ });
+        }
+    }
+
+    async function pollSession(gen, startedAt, delay) {
+        if (gen !== generation) return;
+        if (Date.now() - startedAt > POLL_LIMIT_MS) {
+            showStatus('Measuring the session is taking too long.', { retry: true });
+            return;
+        }
+        let resp;
+        try {
+            resp = await Portal.fetch(sessionUrl());
+        } catch (e) {
+            if (gen !== generation) return;
+            showStatus('Lost contact with the server; trying again...', { busy: true });
+            pollTimer = setTimeout(() => pollSession(gen, startedAt, Math.min(delay * 1.3, POLL_MAX_MS)), delay);
+            return;
+        }
+        if (gen !== generation) return;
+        if (resp.status === 200) {
+            const text = await resp.text().catch(() => '');
+            if (gen === generation) startSession(text);
+            return;
+        }
+        const body = await resp.json().catch(() => ({}));
+        if (gen !== generation) return;
+        if (resp.status === 202) {
+            const done = typeof body.done === 'number' && body.total ? ' (' + body.done + ' of ' + body.total + ')' : '';
+            showStatus('Measuring the session' + done + '...', { busy: true });
+            pollTimer = setTimeout(() => pollSession(gen, startedAt, Math.min(delay * 1.3, POLL_MAX_MS)), delay);
+            return;
+        }
+        if (resp.status === 415) { fallBackToChunks('A chunk of this session cannot be played in the browser.'); return; }
+        if (resp.status === 409) { fallBackToChunks('This session is still being recorded.'); return; }
+        if (resp.status === 413) { fallBackToChunks('This session is too long for one timeline.'); return; }
+        if (resp.status === 404) { showStatus('This VOD was not found.'); return; }
+        showStatus(body.error || 'The session cannot be played right now.', { retry: true });
+    }
+
+    function loadSession() {
+        stopPolling();
+        destroyHls();
+        const gen = generation;
+        showStatus('Loading...', { busy: true });
+        pollSession(gen, Date.now(), POLL_START_MS);
+    }
+
+    function load() {
+        if (mode === 'session') loadSession(); else loadChunk();
+    }
+
+    function setMode(next, quiet) {
+        mode = next === 'session' && folder ? 'session' : 'chunk';
+        try { localStorage.setItem(MODE_KEY, mode); } catch (e) { /* ignore */ }
+        const u = new URL(location.href);
+        u.searchParams.set('mode', mode);
+        try { history.replaceState(null, '', u.pathname + u.search); } catch (e) { /* ignore */ }
+        const btn = el('vp-mode');
+        btn.textContent = mode === 'session' ? 'Play this chunk only' : 'Play whole session';
+        el('vp-prev').style.display = mode === 'session' ? 'none' : '';
+        el('vp-next').style.display = mode === 'session' ? 'none' : '';
+        if (mode === 'chunk' && index >= 0) {
+            el('vp-pos').textContent = 'Chunk ' + (index + 1) + ' of ' + siblings.length;
+        }
+        if (!quiet) { savePos(true); }
+    }
+
     // ---- previous and next chunk -----------------------------------------------------------
 
     function go(target, auto) {
@@ -204,7 +369,7 @@
     }
 
     async function loadSiblings() {
-        const dir = name.indexOf('/') >= 0 ? name.slice(0, name.lastIndexOf('/')) : '';
+        const dir = folder;
         try {
             const resp = await Portal.fetch('/api/vods');
             if (!resp.ok) return;
@@ -218,7 +383,7 @@
         if (index >= 0) {
             el('vp-prev').disabled = index === 0;
             el('vp-next').disabled = index === siblings.length - 1;
-            el('vp-pos').textContent = 'Chunk ' + (index + 1) + ' of ' + siblings.length;
+            if (mode === 'chunk') el('vp-pos').textContent = 'Chunk ' + (index + 1) + ' of ' + siblings.length;
         }
     }
 
@@ -263,6 +428,20 @@
         el('vp-next').addEventListener('click', () => go(siblings[index + 1], false));
         retryBtn.addEventListener('click', () => load());
 
+        const modeBtn = el('vp-mode');
+        if (folder) {
+            let wanted = params.get('mode');
+            if (!wanted) { try { wanted = localStorage.getItem(MODE_KEY); } catch (e) { wanted = null; } }
+            mode = wanted === 'session' ? 'session' : 'chunk';
+            modeBtn.style.display = '';
+            modeBtn.addEventListener('click', () => {
+                savePos(true);
+                setMode(mode === 'session' ? 'chunk' : 'session', true);
+                load();
+            });
+            setMode(mode, true);
+        }
+
         video.addEventListener('loadedmetadata', () => {
             video.playbackRate = parseFloat(speedSel.value) || 1;
             const t = readPos();
@@ -272,9 +451,13 @@
         video.addEventListener('pause', () => savePos(true));
         video.addEventListener('ended', () => {
             clearPos();
-            if (index >= 0 && index < siblings.length - 1) go(siblings[index + 1], true);
+            if (mode === 'chunk' && index >= 0 && index < siblings.length - 1) go(siblings[index + 1], true);
         });
         video.addEventListener('error', () => {
+            if (mode === 'session') {              // hls.js reports its own errors; a native player is handled here
+                if (!hls) fallBackToChunks('The whole session could not be played.');
+                return;
+            }
             showStatus('The browser could not play this video. You can download the chunk instead.', { retry: true });
         });
         window.addEventListener('pagehide', () => savePos(true));

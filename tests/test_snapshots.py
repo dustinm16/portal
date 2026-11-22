@@ -824,6 +824,9 @@ def _populate_play_cache(folder: Path, marker: bool = True) -> None:
         (folder / ".portal_vod_play_cache").write_text("Created by the portal\n")
     (folder / "index.json").write_text("{}")
     (folder / ("a" * 32 + ".mp4")).write_bytes(b"x" * 2048)
+    (folder / ("b" * 32 + ".ts")).write_bytes(b"x" * 2048)
+    (folder / "durations.json").write_text("{}")
+    (folder / "durations.json.tmp").write_text("{}")
     (folder / "work" / "job-00ff" / "half.part").write_bytes(b"y" * 100)
 
 

@@ -2840,6 +2840,30 @@ The `GET /api/vods` answer carries `playback: {"enabled": true|false, "message":
 
 ---
 
+#### GET /api/vods/session/{folder}/index.m3u8
+The whole session as one HLS timeline: every chunk of `{folder}` (the folder part of the paths `GET /api/vods` lists, for example `StreamName/2026-01-01`) in chunk order. The answer is an `application/vnd.apple.mpegurl` playlist (`Cache-Control: private, no-store`): `#EXT-X-PLAYLIST-TYPE:VOD`, one `#EXTINF` per chunk with the length **measured** for that chunk (never a flat 300 seconds), `#EXT-X-DISCONTINUITY` between chunks (each chunk starts its own timestamps), `#EXT-X-ENDLIST`, and relative segment names (`chunk_000.ts`). No credential is in any URL; the player sends the same session or credential as for every `/api/vods` route.
+
+**Authentication and owner rule:** exactly those of `GET /api/vods/play/{path}.mp4` (a browser session or a full-scope credential; stream keys and scoped keys get 403). Owner only: the folder is always resolved against the caller's own storage, so another member, and an administrator asking for another member's session, get the same 404 as for a folder that does not exist. Only the recorder's `chunk_NNN.mkv` names (lower case) are chunks of a session; they are ordered by number (`chunk_999` before `chunk_1000`).
+
+**How the lengths are known.** The recorder measures every chunk with ffprobe when it delivers it (the live uploader and the boot sweep) and the portal remembers the length with the chunk's remote size and modification time (file `durations.json` in the playback cache folder). For older sessions a bounded probe reads only the first 256 KB of each chunk, where the matroska header keeps the length the recorder wrote; a chunk whose header has none is converted once instead. The playlist request itself never pulls a chunk: it lists the folder over one SFTP connection, so it answers quickly, and while lengths are missing it answers `202`.
+
+**Answers:**
+- `200` the playlist.
+- `202` `{"state": "preparing", "stage": "measuring", "done", "total", "chunks"}` with `Retry-After`: poll this URL until it answers 200.
+- `404` not your folder, no chunk in it, or a path that is not a session folder (`..`, hidden names, backslash, empty segments, no folder).
+- `409` `{"state": "live"}`: the folder is being recorded now and has no finished chunk yet. While a recording writes to the folder the newest chunk is left out and the playlist is `#EXT-X-PLAYLIST-TYPE:EVENT` without `#EXT-X-ENDLIST`: it is not offered as a finished VOD.
+- `413` more than 500 chunks (play them one by one). `415` a chunk of the session is download only (H.264 8 bit 4:2:0 with AAC or MP3 or no audio is playable): `{"error", "reason", "state": "unplayable"}`; the playable chunks still play through `/api/vods/play/`.
+- `502` storage unreachable. `503` playback off (`vod_play_cache_mb` is 0, `"code": "playback_off"`), no usable cache folder, or the server is busy measuring sessions (`Retry-After`). `500` a chunk could not be measured.
+
+---
+
+#### GET /api/vods/session/{folder}/chunk_NNN.ts
+One chunk of the session as MPEG-TS (`video/mp2t`, `Cache-Control: private, no-cache`); the name is the chunk's file name with `.ts` for `.mkv`. A whole-file MP4 is not a valid HLS segment, so this is a second conversion of the same chunk (`ffmpeg -c copy -f mpegts`, the same pinned SFTP pull, ffprobe check, job table, per-chunk lock, two-slot limit and size-capped cache as the MP4 of the single-chunk route; both kinds count against `vod_play_cache_mb` together). Authentication and owner rule as above.
+
+A segment that is not cached starts a job and the request waits for it **at most 55 seconds** (under the proxy's 100 seconds); if it is not ready then it answers `503` with `Retry-After: 2` and `{"state": "preparing", "stage"}` and the player asks again. It never answers 202, because a player would try to decode that body as video. While a segment is served the next chunk is prepared ahead, but only when it fits in the cache without evicting anything. Other answers: `404`, `409` (the newest chunk of a folder being recorded now, even when an earlier copy is cached), `415` (download only), `502`, `500`, and `503` for everything that is worth asking again: not ready in time, playback off, no room, and too many chunks being prepared (`"state": "busy"`, `Retry-After`; 503 and not 429 because hls.js retries a 5xx segment but treats a 4xx as fatal). The 55 seconds count from the arrival of the request, including the storage lookups.
+
+---
+
 #### POST /api/vods/download-archive
 Download multiple VOD files as a single zip archive streamed from SFTP. The zip is constructed on-the-fly with proper central directory entries — no server-side buffering of the full archive.
 
