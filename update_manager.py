@@ -519,7 +519,8 @@ def _uploads_dirs() -> list:
 
 def _vod_play_cache_dirs() -> list:
     """The browser playback cache of VOD chunks (up to the cap of vod_play_cache_mb): rebuilt on demand, so
-    a snapshot must not copy it and a rollback must not touch it."""
+    a snapshot must not copy it, and a rollback empties it (_empty_vod_play_cache_dirs) because 1.20.0 does
+    not know the folder and would copy it into every snapshot it takes."""
     paths = [os.path.realpath(os.path.join(str(PORTAL_DIR), "data", "vod_play_cache"))]
     try:
         configured = os.path.realpath(Config.VOD_PLAY_CACHE_DIR)

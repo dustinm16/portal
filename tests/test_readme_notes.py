@@ -700,7 +700,7 @@ for name, needles in {
         "playback behaviour and rollback": ("no breaking changes", "no migration", "1.20.0 has no play routes"),
         "playback rollback empties the cache": ("copies it into every snapshot", "rollback therefore empties the cache folder",
                                                 "set `vod_play_cache_mb` to `0` first"),
-        "playback not tested": ("no browser, phone, picture in picture", "real remote storage", "cloudflare"),
+        "playback not tested": ("real remote storage", "cloudflare"),
 }.items():
     check(f"1.21.0 states: {name}", all(n in low21 for n in needles), str([n for n in needles if n not in low21]))
 check("1.21.0: the playback default stated is the one in the code and in the settings",
@@ -729,7 +729,7 @@ for name, needles in {
         "session client": ("**play whole session**", "hls.js file the live page already loads", "no new host", "safari", "falls back to chunk-by-chunk",
                            "`vodpos:session:<folder>`"),
         "session behaviour": ("no breaking changes", "no migration", "no new setting"),
-        "session not tested": ("no browser, phone, safari, real hls.js playback", "real remote storage", "cloudflare", "fake hls.js"),
+        "session not tested": ("no browser, phone, picture in picture, safari, real hls.js playback", "real remote storage", "cloudflare", "fake hls.js"),
 }.items():
     check(f"1.21.0 states: {name}", all(n in low21 for n in needles), str([n for n in needles if n not in low21]))
 check("1.21.0: the session limits stated are the ones in the code",
@@ -742,6 +742,32 @@ check("the new API page entries use data-toggle-endpoint, not an inline handler"
       len(re.findall(r'<div class="endpoint-header" data-toggle-endpoint>\s*<span class="method method-get">GET</span>\s*'
                      r'<span class="endpoint-path">/api/vods/session/', (ROOT / "static" / "api-docs.html").read_text())) == 2)
 check("the 1.21.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec21))
+# --- 1.21.0 notes: one coherent section ----------------------------------------------------------
+_lead21 = re.findall(r"^- \*\*(.*?)\*\*", _sec21, re.M)
+for _name in ("Breaking changes.", "Database and settings.", "Static files.", "Rollback.", "Not tested."):
+    check(f"1.21.0: exactly one '{_name}' bullet", _lead21.count(_name) == 1, str(_lead21.count(_name)))
+check("1.21.0: no stray Breaking, Not tested, Rollback, Static files, Settings or Behaviour changes bullet of one feature",
+      not [x for x in _lead21 if re.match(r"(?i)breaking|not tested|rollback|static files|database|settings\.|behaviour changes", x)
+           and x not in ("Breaking changes.", "Database and settings.", "Static files.", "Rollback.", "Not tested.")], str(_lead21))
+check("1.21.0: the feature groups are headed and the administrators' summary comes first",
+      all(h in _sec21 for h in ("**For administrators, in short**", "**Recording protection and the boot sweep**",
+                                "**VOD playback in the browser**", "**VOD whole-session playback**"))
+      and _sec21.index("**For administrators, in short**") < _sec21.index("**Recording protection and the boot sweep**"))
+check("1.21.0: the old contradiction is gone (the cache is emptied by a rollback, not left alone)",
+      "left alone by rollbacks" not in low21 and "left alone by rollback" not in low21 and "rollback therefore empties the cache folder" in low21)
+_um = (ROOT / "update_manager.py").read_text()
+check("update_manager's docstring says a rollback empties the playback cache, not that it must not touch it",
+      "a rollback must not touch it" not in _um and "a rollback empties it" in _um)
+check("1.21.0: the rollback bullet names every file the cleanup removes (.mp4, .ts, index.json, durations.json, job-*)",
+      all(n in _sec21 for n in ("<32 hex>.mp4", "<32 hex>.ts", "`index.json`", "`durations.json`", "`job-*`")))
+check("1.21.0: the administrators' summary says plainly who plays, the limits, the numbering and the codecs",
+      all(n in low21 for n in ("only the owner can play a vod; administrators cannot", "counted per streamer",
+                               "remote chunk numbers can differ from local ones", "never replaces another",
+                               "there is no bitrate limit", "download only")))
+_static21 = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec21, re.M)), "")
+_pl = (ROOT / "static" / "vod-player.html").read_text()
+check("1.21.0: the Static files bullet states the versions vod-player.html really loads",
+      all(f"`{f}` v{v}" in _static21 for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl)), _static21[:200])
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
