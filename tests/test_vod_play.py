@@ -135,6 +135,7 @@ class Env:
         app.router.add_get("/api/vods/play-status/{name:.+}", server.http_play_vod_status)
         app.router.add_get("/api/vods/session/{name:.+}", server.http_play_session)
         app.router.add_get("/api/vods/download/{filename:.*}", server.http_download_vod)
+        app.router.add_get("/api/vods", server.http_list_vods)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         return self
@@ -709,6 +710,32 @@ async def test_links_on_the_remote_do_not_lead_out_of_the_owners_root(env):
     assert r.status == 200, await r.text()
     r = await env.client.get("/api/vods/download/" + NAME, headers=h)
     assert r.status == 200
+
+
+@with_env
+async def test_delete_and_listing_do_not_follow_links_out_of_the_owners_root(env):
+    """A delete through a folder link or a file link removes nothing outside the owner's root, and My VODs
+    does not list what lies behind a link."""
+    env.put("Other/2026-01-01/chunk_000.mkv", clip(), root="/w")
+    env.put(NAME, clip())
+    os.symlink("../w", env.remote.path("/v/escape"))
+    os.symlink("../../../w/Other/2026-01-01/chunk_000.mkv", env.remote.path("/v/Show/2026-01-01/chunk_009.mkv"))
+    h = {"X-U": str(OWNER)}
+    r = await env.client.get("/api/vods", headers=h)
+    names = [f["name"] for f in (await r.json())["files"]]
+    assert names == [NAME], names
+    victim = env.remote.path("/w/Other/2026-01-01/chunk_000.mkv")
+
+    async def delete(name):
+        return await server.http_delete_vod(make_mocked_request(
+            "DELETE", "/api/vods/x", headers=h, match_info={"filename": name}))
+    for name in ("escape/Other/2026-01-01/chunk_000.mkv", "Show/2026-01-01/chunk_009.mkv"):
+        r = await delete(name)
+        assert r.status == 404, (name, r.status)
+        assert os.path.exists(victim), name
+    assert os.path.islink(env.remote.path("/v/Show/2026-01-01/chunk_009.mkv"))   # the link itself is left alone too
+    r = await delete(NAME)                                                         # a real chunk is still deleted
+    assert r.status == 200 and not os.path.exists(env.remote.path("/v/" + NAME))
 
 
 if __name__ == "__main__":

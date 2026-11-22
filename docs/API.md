@@ -2765,6 +2765,8 @@ Test SFTP connection with provided credentials.
 #### GET /api/vods
 List MKV files in user's remote storage. Recursively scans all subdirectories. The answer carries `recording_guard` (see `GET /api/vods/storage`) and `playback` (`{enabled, message}`, see `GET /api/vods/play/{path}.mp4`) next to `files` and `path`, and the 502 answers (storage unreachable) carry it next to `error`, so My VODs can say why a recording was stopped even when the storage cannot be listed.
 
+Entries that are symbolic links on the storage are not listed and are not followed.
+
 VOD files are organized in a directory structure created by the automatic recording pipeline, sourced from RTSPS:
 ```
 {remote_path}/
@@ -2850,7 +2852,7 @@ The whole session as one HLS timeline: every chunk of `{folder}` (the folder par
 **Answers:**
 - `200` the playlist.
 - `202` `{"state": "preparing", "stage": "measuring", "done", "total", "chunks"}` with `Retry-After`: poll this URL until it answers 200.
-- `404` not your folder, no chunk in it, or a path that is not a session folder (`..`, hidden names, backslash, empty segments, no folder).
+- `404` not your folder (a folder that is a link leading outside your VOD root is refused before it is read, so nothing is counted or measured), no chunk in it, or a path that is not a session folder (`..`, hidden names, backslash, empty segments, no folder).
 - `409` `{"state": "live"}`: the folder is being recorded now and has no finished chunk yet. While a recording writes to the folder the newest chunk is left out and the playlist is `#EXT-X-PLAYLIST-TYPE:EVENT` without `#EXT-X-ENDLIST`: it is not offered as a finished VOD. On a reload of that playlist a chunk that has no measured length yet is not waited for: the playlist (`200`, `application/vnd.apple.mpegurl`) lists the chunks up to the first one without a length, none is skipped (an EVENT playlist only grows at its end), and the length is measured in the background; `202` is answered only when no chunk of the folder is measured yet.
 - `413` more than 500 chunks (play them one by one). `415` a chunk of the session is download only (H.264 8 bit 4:2:0 with AAC or MP3 or no audio is playable): `{"error", "reason", "state": "unplayable"}`; the playable chunks still play through `/api/vods/play/`.
 - `502` storage unreachable. `503` playback off (`vod_play_cache_mb` is 0, `"code": "playback_off"`), no usable cache folder, or the server is busy measuring sessions (`Retry-After`). `500` a chunk could not be measured.
@@ -2886,7 +2888,7 @@ Download multiple VOD files as a single zip archive streamed from SFTP. The zip 
 ---
 
 #### DELETE /api/vods/{filename}
-Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths. A copy of the chunk that is being prepared for browser playback is cancelled and every cached copy of it (MP4, segments, remembered lengths) is removed.
+Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths. A copy of the chunk that is being prepared for browser playback is cancelled and every cached copy of it (MP4, segments, remembered lengths) is removed. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and nothing is removed (the link itself is left alone).
 
 **Response:**
 ```json

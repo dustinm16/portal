@@ -900,6 +900,37 @@ def test_the_session_route_uses_the_same_gate_and_is_registered():
     assert src.count("async def _vod_play_pull(") == 1
 
 
+@with_env
+async def test_a_linked_session_folder_is_404_with_no_count_and_starts_nothing(env):
+    """The folder is checked before it is read: a link to a folder of another root gives 404 at the first
+    answer (never a 202 that counts what lies there), and no tool is started."""
+    put_session(env, durations=[2.0, 2.0, 2.0], folder="Other/2026-01-01", root="/w")
+    os.makedirs(env.remote.path("/v/Show"), exist_ok=True)
+    os.symlink("../../w/Other/2026-01-01", env.remote.path("/v/Show/2026-03-01"))
+    r = await env.client.get("/api/vods/session/Show/2026-03-01/index.m3u8", headers={"X-U": str(OWNER)})
+    assert r.status == 404, (r.status, await r.text())
+    body = await r.json()
+    assert "total" not in body and "chunks" not in body and "state" not in body, body
+    assert env.ffmpegs() == 0, env.spawned
+
+
+@with_env
+async def test_the_head_probe_refuses_a_linked_chunk_by_itself(env):
+    """The probe's own confinement, tested directly so the folder check cannot hide its removal."""
+    env.put("Other/2026-01-01/chunk_000.mkv", clip(2.0), root="/w")
+    os.makedirs(env.remote.path("/v/Show"), exist_ok=True)
+    os.symlink("../../w/Other", env.remote.path("/v/Show/other"))
+    storage = {"remote_path": "/v", "host": "h", "port": 22, "username": "u"}
+    try:
+        await server._vod_session_probe_head(OWNER, storage, vod_play.storage_ident(storage),
+                                             "Show/other/2026-01-01/chunk_000.mkv", 1, 1)
+    except server._VodPlayRemoteError as e:
+        assert e.status == 404, e.status
+    else:
+        raise AssertionError("the probe read a chunk outside the root")
+    assert env.ffmpegs() == 0, env.spawned
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

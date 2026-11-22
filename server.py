@@ -12625,8 +12625,10 @@ async def http_list_vods(request: web.Request) -> web.Response:
                 full_path = f"{dir_path}/{name}"
                 rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
                 try:
-                    attrs = await sftp.stat(full_path)
+                    attrs = await sftp.lstat(full_path)      # a link is never followed: it may lead out of the root
                 except (asyncssh.SFTPError, OSError):
+                    continue
+                if attrs.permissions is not None and _stat.S_ISLNK(attrs.permissions):
                     continue
                 if attrs.permissions is not None and (attrs.permissions & 0o40000):
                     # Directory — recurse
@@ -12916,6 +12918,10 @@ async def http_delete_vod(request: web.Request) -> web.Response:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
         # a copy of this chunk that is being prepared is dropped first, so nothing new is added while the
         # remove is on its way, and again after it (a job that finished meanwhile left an entry)
+        try:
+            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
+        except _VodPlayRemoteError as e:
+            return web.json_response({"error": e.message}, status=e.status)
         cancelled = _vod_play_purge(owner=token.user_id, path=filename)
         await sftp.remove(remote_path)
         cancelled += _vod_play_purge(owner=token.user_id, path=filename)
@@ -13178,6 +13184,19 @@ async def _vod_remote_confine(sftp, root: str, remote: str) -> None:
         if attrs.permissions is not None and not _stat.S_ISREG(attrs.permissions):
             raise _VodPlayRemoteError(404, "VOD not found")
         real = await asyncio.wait_for(sftp.realpath(remote), VOD_SFTP_META_TIMEOUT)
+        real_root = await asyncio.wait_for(sftp.realpath(root.rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
+    except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
+        raise _VodPlayRemoteError(404, "VOD not found")
+    real, real_root = str(real).rstrip("/"), str(real_root).rstrip("/")
+    if real != real_root and not real.startswith(real_root + "/"):
+        raise _VodPlayRemoteError(404, "VOD not found")
+
+
+async def _vod_remote_confine_dir(sftp, root: str, remote_dir: str) -> None:
+    """Refuse a remote folder that is not inside the owner's VOD root once every link is resolved (a folder
+    link on the way included), before anything in it is read. Raises _VodPlayRemoteError(404) for that."""
+    try:
+        real = await asyncio.wait_for(sftp.realpath(remote_dir), VOD_SFTP_META_TIMEOUT)
         real_root = await asyncio.wait_for(sftp.realpath(root.rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
     except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
         raise _VodPlayRemoteError(404, "VOD not found")
@@ -13705,8 +13724,11 @@ async def _vod_session_listing(user_id: int, storage: dict, folder: str) -> list
         raise _VodPlayRemoteError(502, error)
     try:
         try:
-            names = await asyncio.wait_for(sftp.readdir(_vod_session_remote_dir(storage, folder)),
-                                           VOD_SFTP_META_TIMEOUT * 2)
+            remote_dir = _vod_session_remote_dir(storage, folder)
+            await _vod_remote_confine_dir(sftp, storage["remote_path"], remote_dir)
+            names = await asyncio.wait_for(sftp.readdir(remote_dir), VOD_SFTP_META_TIMEOUT * 2)
+        except _VodPlayRemoteError:
+            raise
         except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
             raise _VodPlayRemoteError(404, "VOD not found")
     finally:

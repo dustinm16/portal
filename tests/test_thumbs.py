@@ -509,9 +509,11 @@ def test_both_stream_pages_use_the_shared_retry_and_no_inline_handler_body():
 def test_all_four_ffmpeg_sites_use_the_helper_and_mediamtx_does_not():
     src = Path(server.__file__).read_text()
     assert src.count("asyncio.create_subprocess_exec(") == 1, "only _media_exec may spawn directly"
-    assert src.count("await _media_exec(") == 3 + 1   # recording, relay start, relay restart, thumbnail
+    # recording, relay start, relay restart, thumbnail, and the VOD playback tool runner (_vod_play_run_tool)
+    assert src.count("await _media_exec(") == 3 + 1 + 1
     assert 'cmd, "best_effort"' in src
     assert src.count('cmd, "idle"') == 2
+    assert src.count('argv, "idle"') == 1, "the VOD playback tool site runs in the idle class"
     for p in (Path(server.__file__).parent / "services").glob("*.py"):
         assert "_media_exec" not in p.read_text(), p
 
