@@ -30068,9 +30068,6 @@ class PortalServer:
 
         # Playback jobs: their ffmpeg children are ours and end now, their work files are removed
         await _vod_play_cancel_all()
-        if _vod_play_cache is not None:
-            # remembered chunk lengths are written a moment after they change: write what is still pending
-            await asyncio.to_thread(_vod_play_cache.flush_durations)
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):
@@ -30083,6 +30080,12 @@ class PortalServer:
 
         # Stop any active VOD recordings and upload to SFTP
         await stop_all_recordings()
+
+        # Remembered chunk lengths are written a moment after they change; the recorders above have just
+        # delivered their last chunks (and stored their lengths), so what is pending is written last
+        if _vod_play_cache is not None:
+            await asyncio.to_thread(_vod_play_cache.flush_durations)
+            _vod_play_cache.cancel_flush()
 
         # Stop metrics recorder
         await stop_metrics_recorder()

@@ -301,8 +301,10 @@ def test_a_rollback_cleanup_freezes_the_lengths_so_a_late_write_cannot_bring_the
 def test_the_server_flushes_the_lengths_at_shutdown():
     src = (ROOT / "server.py").read_text()
     stop = src[src.index("    async def stop(self) -> None:\n        \"\"\"Stop the server gracefully."):]
-    stop = stop[:stop.index("await stop_all_recordings()")]
-    assert stop.index("_vod_play_cancel_all()") < stop.index("flush_durations")
+    stop = stop[:stop.index("await stop_device_metrics_recorder()")]
+    # the recorders upload their last chunks (and store their lengths) in stop_all_recordings: flush after it
+    assert stop.index("await stop_all_recordings()") < stop.index("flush_durations") < stop.index("cancel_flush()")
+    assert stop.index("_vod_play_cancel_all()") < stop.index("await stop_all_recordings()")
 
 
 def test_a_ts_entry_survives_reconcile_and_an_unknown_kind_is_dropped():
