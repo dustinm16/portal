@@ -376,6 +376,7 @@ def test_stage_mode_only_reports_unless_the_target_is_loopback():
             async with Remote(t) as remote:
                 d = session(t, "1_a", {"chunk_000.mkv": b"a" * 10})
                 gone = session(t, "2_gone", {"chunk_000.mkv": b"g" * 10}, user=8)
+                _age(str(gone), 20)
                 db = SweepDb(remote, host=host)
 
                 async def user(uid):
@@ -412,16 +413,36 @@ def test_removal_rules_and_every_removal_is_logged_with_name_size_and_reason():
             async with Remote(t) as remote:
                 d = setup(t)
                 settings = dbkw.pop("settings", None)
-                with Patched(t, remote, SweepDb(remote, settings, **dbkw)), Logs() as logs:
+                db = SweepDb(remote, settings, **dbkw)
+                go.db = db
+                with Patched(t, remote, db), Logs() as logs:
                     await server.recover_vod_staging()
                 return d.exists(), logs.text()
 
-    # owner without storage: removed at once, with name, size and reason in the log
-    exists, log = run(go(lambda t: session(t, "1_nostorage", {"chunk_000.mkv": b"x" * 123}), missing_storage=True))
+    def aged(days, name, size=1):
+        def make(t):
+            d = session(t, name, {"chunk_000.mkv": b"x" * size})
+            _age(str(d), days)
+            return d
+        return make
+
+    # owner without storage: kept for the grace period like a folder without a record, then removed
+    # with name, size and reason in the log and one activity row for the owner
+    exists, log = run(go(aged(5, "1_nostorage", 123), missing_storage=True))
+    assert exists and go.db.activity == [], "a young folder of an owner without storage must be kept"
+    assert "kept" in log and "no VOD storage" in log, log
+    exists, log = run(go(aged(20, "1_nostorage", 123), missing_storage=True))
     assert not exists and "1_nostorage" in log and "123 bytes" in log and "no VOD storage" in log, log
-    # owner gone
-    exists, log = run(go(lambda t: session(t, "1_nouser", {"chunk_000.mkv": b"x"}), missing_user=True))
-    assert not exists and "no longer exists" in log, log
+    rows = [a for a in go.db.activity if a[1] == "vod_discarded"]
+    assert len(rows) == 1 and rows[0][0] == 7 and "123 bytes" in rows[0][2] and "1_nostorage" in rows[0][2], rows
+    assert "/" not in rows[0][2], "the activity row must not carry a path"
+    exists, log = run(go(aged(400, "1_nostorage"), missing_storage=True, settings={"vod_orphan_max_age_days": "0"}))
+    assert exists, "0 switches the age rule off for an owner without storage too"
+    # owner gone: the same grace period, and no activity row (there is nobody to show it to)
+    exists, log = run(go(aged(5, "1_nouser"), missing_user=True))
+    assert exists, "a young folder of a removed owner must be kept"
+    exists, log = run(go(aged(20, "1_nouser"), missing_user=True))
+    assert not exists and "no longer exists" in log and go.db.activity == [], log
     # no session record: kept while young, removed when older than the setting (default 14 days)
     def norecord(days):
         def make(t):

@@ -8497,6 +8497,22 @@ async def _vod_has_destination(user_id: int) -> Optional[str]:
     return None
 
 
+async def _vod_note_removed_folder(meta: dict, folder: str, size: int, why: str, max_age: int) -> None:
+    """One activity-log row for the owner of a leftover folder that the sweep removed (the owner still
+    exists then): the folder's own name, its size and the reason, never a path."""
+    try:
+        owner = await db.get_user_by_id(meta["user_id"])
+        if not owner:
+            return
+        shown = _clean_log_name(meta.get("stream_name") or "")
+        await db.log_activity(
+            meta["user_id"], get_display_name(owner), "vod_discarded",
+            f"Undelivered VOD recording '{shown}' ({folder}) was removed from the server: "
+            f"{size} bytes, {why}, older than {max_age} days")
+    except Exception as e:
+        logger.debug(f"Could not log the removal of a VOD folder: {e}")
+
+
 # --- Boot sweep (also run again from the clean-up loop) --------------------------------------
 #
 # Chunks that an earlier run left in the staging folder are delivered to their owner's storage.
@@ -8505,8 +8521,10 @@ async def _vod_has_destination(user_id: int) -> Optional[str]:
 #      recording writes to, is skipped (the pass comes back to it later).
 #   2. No session record: it cannot be delivered; removed only when it is older than
 #      vod_orphan_max_age_days (0 = never).
-#   3. The owner no longer exists or has no VOD storage: removed at once (nothing can be
-#      delivered, and the owner removed the destination).
+#   3. The owner no longer exists or has no VOD storage: nothing can be delivered. The folder is
+#      kept for the same grace period as one without a record and removed only when it is older
+#      than vod_orphan_max_age_days (0 = never); the owner of a removed folder (when the owner
+#      still exists) gets one activity-log row with its size and the reason.
 #   4. Otherwise the chunks are uploaded and NEVER removed for age: a folder whose storage is
 #      configured stays until it is delivered, however old it is (the disk guard keeps a long
 #      outage from filling the disk by refusing new recordings).
@@ -8540,8 +8558,11 @@ def _vod_sweep_dry_run(storage: Optional[dict]) -> bool:
     return not (storage and vod_staging.is_loopback_host(storage.get("host") or ""))
 
 
-def _vod_remove_orphan(session_dir: str, reason: str, dry_run: bool = False) -> bool:
-    """Remove an undeliverable session folder and log folder name, size and reason."""
+def _vod_remove_orphan(session_dir: str, reason: str, dry_run: bool = False) -> Optional[tuple]:
+    """Remove an undeliverable session folder and log folder name, size and reason.
+
+    Returns (chunks, bytes) removed, or None when nothing was removed (dry run).
+    """
     name = os.path.basename(session_dir)
     files = vod_staging.chunk_files(session_dir)
     size = sum(vod_staging._chunk_size(f) for f in files)
@@ -8549,10 +8570,10 @@ def _vod_remove_orphan(session_dir: str, reason: str, dry_run: bool = False) -> 
         logger.warning(
             f"VOD sweep (stage mode, nothing changed): would remove {name}: {len(files)} chunk(s), "
             f"{size} bytes; reason: {reason}")
-        return False
+        return None
     count, size = vod_staging.remove_stale_session(session_dir)
     logger.warning(f"VOD sweep: removed {name}: {count} chunk(s), {size} bytes; reason: {reason}")
-    return True
+    return count, size
 
 
 def _vod_remote_dirs_in_use() -> set:
@@ -8639,7 +8660,16 @@ async def _vod_recover_one(session_dir: str, budget: Optional[dict] = None) -> N
         return
     gone = await _vod_has_destination(meta["user_id"])
     if gone:
-        _vod_remove_orphan(session_dir, gone, dry_run=bool(Config.STAGE_MODE))
+        # no undelivered recording is deleted without the grace period of a folder without a record
+        if not (max_age and vod_staging.is_stale(session_dir, max_age=max_age * 86400)):
+            logger.warning(
+                f"VOD sweep: {name} cannot be delivered ({gone}); it is kept until it is older than "
+                f"vod_orphan_max_age_days (0 = never)")
+            return
+        removed = _vod_remove_orphan(
+            session_dir, f"{gone} and it is older than {max_age} days", dry_run=bool(Config.STAGE_MODE))
+        if removed:
+            await _vod_note_removed_folder(meta, name, removed[1], gone, max_age)
         return
     if _vod_remote_dir_in_use(meta["remote_session_dir"]):
         logger.debug(f"VOD sweep: {name} waits, a recording is writing to the same remote folder")

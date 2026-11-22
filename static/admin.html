@@ -6914,7 +6914,7 @@
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Orphan Folder Age (days)</label>
                         <input type="number" id="ret-vod-orphan-age" value="${c.vod_orphan_max_age_days}" min="0" max="3650" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
-                        <span style="font-size:0.7rem;color:var(--text-muted);">A leftover recording folder without a session record is removed after this many days; 0 = never. Chunks of a streamer whose storage is configured are never removed, only delivered</span>
+                        <span style="font-size:0.7rem;color:var(--text-muted);">A leftover recording folder that cannot be delivered (no session record, or its owner is gone or has no storage configured) is removed after this many days; 0 = never. Chunks of a streamer whose storage is configured are never removed, only delivered</span>
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Security Event Retention (days)</label>

@@ -474,6 +474,10 @@ async def main():
     d_stor = session(base, "4_storage_gone", a, days=0)
     d_down = session(base, "5_sftp_down", b, days=30)
     d_deleted = session(base, "8_deleted_account", deleted_user, days=0)
+    # the same three, past the grace period: only these are removed
+    d_user_old = session(base, "9_user_gone_old", gone_user, days=15)
+    d_stor_old = session(base, "10_storage_gone_old", a, days=15)
+    d_deleted_old = session(base, "11_deleted_account_old", deleted_user, days=15)
 
     connects = []
 
@@ -482,16 +486,26 @@ async def main():
         return None, None, "connection refused"
 
     # these folders and stores are fakes; the stage-mode gate of the sweep is checked in the restart step
+    async def limits():
+        return 0, 0, 14   # the grace period of the default, whatever a copied database holds
+
     with mock.patch.object(db, "get_vod_storage", storage), mock.patch.object(Config, "STAGE_MODE", False), \
+            mock.patch.object(server, "_vod_guard_limits", limits), \
             mock.patch.object(server, "_connect_vod_sftp", down), Cap() as cap:
         await server.recover_vod_staging(vod_staging.list_session_dirs(base))
     log = cap.text()
     out["log"] = log
     out["nosc_old_removed"] = not d_nosc_old.exists()
     out["nosc_new_kept"] = (d_nosc_new / "chunk_000.mkv").exists()
-    out["user_gone_removed"] = not d_user.exists()
-    out["storage_gone_removed"] = not d_stor.exists()
-    out["deleted_account_removed"] = not d_deleted.exists()
+    out["user_gone_kept"] = d_user.exists() and d_stor.exists() and d_deleted.exists()
+    out["user_gone_removed"] = not d_user_old.exists()
+    out["storage_gone_removed"] = not d_stor_old.exists()
+    out["deleted_account_removed"] = not d_deleted_old.exists()
+    # the owner who still exists is told once; a removed account has nobody to tell
+    cur = await db.conn.execute("SELECT action, detail FROM activity_log WHERE user_id = ?", (a,))
+    out["discarded_rows"] = [dict(r) for r in await cur.fetchall() if r["action"] == "vod_discarded"]
+    cur = await db.conn.execute("SELECT action FROM activity_log WHERE user_id = ?", (deleted_user,))
+    out["deleted_owner_rows"] = len([r for r in await cur.fetchall() if r["action"] == "vod_discarded"])
     out["sftp_down_kept"] = (d_down / "chunk_000.mkv").exists() and vod_staging.read_sidecar(str(d_down)) is not None
     out["connects"] = connects
 
@@ -744,10 +758,15 @@ async def run(ctx):
     if v is not None:
         ctx.ok("vodtmp: chunks with no session record are kept at 13 days and removed at 15 days",
                v["nosc_new_kept"] and v["nosc_old_removed"], "")
-        ctx.ok("vodtmp: chunks whose owner or storage is gone are removed at once, however young",
+        ctx.ok("vodtmp: chunks whose owner or storage is gone are kept while younger than 14 days",
+               v["user_gone_kept"], "")
+        ctx.ok("vodtmp: chunks whose owner or storage is gone are removed after 14 days",
                v["user_gone_removed"] and v["storage_gone_removed"], "")
-        ctx.ok("vodtmp: chunks of an account deleted through the portal are removed at once",
+        ctx.ok("vodtmp: chunks of an account deleted through the portal are removed after 14 days",
                v["deleted_account_removed"], "")
+        ctx.ok("vodtmp: an owner who still exists gets one activity row for the removed folder, a deleted account none",
+               len(v["discarded_rows"]) == 1 and "4 bytes" in v["discarded_rows"][0]["detail"]
+               and v["deleted_owner_rows"] == 0, str(v["discarded_rows"]))
         ctx.ok("vodtmp: the removal log line names the number of chunks and bytes",
                "2 chunk(s), 10 bytes" in v["log"] and "1 chunk(s), 4 bytes" in v["log"], v["log"][-300:])
         ctx.ok("vodtmp: chunks of an owner whose storage exists but is unreachable are never removed",
