@@ -13075,6 +13075,9 @@ def _vod_play_prune_jobs() -> None:
             _vod_play_stats.pop(k, None)
 
 
+_VOD_PLAY_STORAGE_DOWN = "The VOD storage could not be reached right now; try again in a minute"
+
+
 class _VodPlayRemoteError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -13085,7 +13088,7 @@ async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: s
                                 fresh: bool = False) -> tuple:
     """(size, mtime) of the owner's chunk, from the pinned SFTP connection (remembered for a few seconds
     so that the Range requests of one playback do not each open a connection). Raises _VodPlayRemoteError:
-    404 when there is no such regular file, 502 when the storage cannot be reached."""
+    404 only when the storage says there is no such regular file, 502 when it cannot be reached or does not answer."""
     memo_key = (user_id, ident, path)
     hit = _vod_play_stats.get(memo_key)
     if hit and not fresh and monotonic() - hit[2] < VOD_PLAY_STAT_TTL:
@@ -13097,9 +13100,14 @@ async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: s
         remote = f"{storage['remote_path'].rstrip('/')}/{path}"
         try:
             attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
-        except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
+        except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
             _vod_play_stats.pop(memo_key, None)
-            raise _VodPlayRemoteError(404, "VOD not found")
+            raise _VodPlayRemoteError(404, "VOD not found")      # the storage says there is no such file
+        except (asyncssh.Error, OSError, asyncio.TimeoutError) as e:
+            # a timeout, a lost connection or a refusal says nothing about the file: not "not found"
+            _vod_play_stats.pop(memo_key, None)
+            logger.warning(f"VOD playback stat failed for user {user_id}: {type(e).__name__}")
+            raise _VodPlayRemoteError(502, _VOD_PLAY_STORAGE_DOWN)
         perms = attrs.permissions
         if perms is not None and not _stat.S_ISREG(perms):
             _vod_play_stats.pop(memo_key, None)
