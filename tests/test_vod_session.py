@@ -190,6 +190,121 @@ def test_durations_are_kept_beside_the_index_purged_with_their_chunk_and_owner_a
         assert again.try_reserve_free(10, 100) and not again.try_reserve_free(11, 100) and "k" in again.entries
 
 
+def fresh_cache(t):
+    root = os.path.join(t, "cache")
+    vod_play.prepare_dir(root)
+    cache = vod_play.PlayCache(root)
+    cache.reconcile()
+    return root, cache
+
+
+def test_lengths_are_found_by_key_and_folder_without_scanning_the_whole_map():
+    class NoScan(dict):
+        def _no(self, *a, **k):
+            raise AssertionError("the whole durations map was scanned")
+        items = values = keys = __iter__ = _no
+
+    with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
+        root, cache = fresh_cache(t)
+        cache.durations = NoScan()
+        for i in range(300):
+            cache.set_duration(1, "id", f"S/d/chunk_{i:03d}.mkv", 10 + i, 20, 2.0, save=False)
+        cache.set_duration(1, "id", "S/d/chunk_005.mkv", 99, 21, 3.0, save=False)        # a new version of one chunk
+        assert cache.get_duration(1, "id", "S/d/chunk_005.mkv", 15, 20) is None
+        assert cache.get_duration(1, "id", "S/d/chunk_005.mkv", 99, 21)["duration"] == 3.0
+        got = cache.session_durations(1, "id", "S/d")
+        assert len(got) == 300 and got[0]["path"] == "S/d/chunk_000.mkv" and cache.session_durations(2, "id", "S/d") == []
+        assert len(cache.durations) == 300
+
+
+def test_the_cap_forgets_the_oldest_lengths_first_and_the_folder_view_follows():
+    with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
+        root, cache = fresh_cache(t)
+        with mock.patch.object(vod_play, "MAX_DURATIONS", 5):
+            for i in range(8):
+                cache.set_duration(1, "id", f"S/d/chunk_{i:03d}.mkv", 10, 20 + i, 2.0, save=False)
+            cache.set_duration(1, "id", "S/d/chunk_003.mkv", 10, 23, 2.5, save=False)    # refreshed: now the newest
+            cache.set_duration(1, "id", "S/d/chunk_008.mkv", 10, 28, 2.0, save=False)
+        names = [d["path"] for d in cache.session_durations(1, "id", "S/d")]
+        assert len(cache.durations) == 5 and names == [f"S/d/chunk_{i:03d}.mkv" for i in (3, 5, 6, 7, 8)], names
+
+
+def test_lengths_are_written_in_a_thread_after_a_pause_and_flushed_on_demand():
+    run(_written_in_a_thread())
+
+
+async def _written_in_a_thread():
+    import threading
+    with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
+        root, cache = fresh_cache(t)
+        target = os.path.join(root, vod_play.DURATIONS_NAME)
+        writers = []
+        real = vod_play.PlayCache._write_durations
+
+        def spy(self, *a, **k):
+            writers.append(threading.current_thread() is threading.main_thread())
+            return real(self, *a, **k)
+
+        with mock.patch.object(vod_play, "DURATIONS_FLUSH_DELAY", 0.2), mock.patch.object(vod_play.PlayCache, "_write_durations", spy):
+            for i in range(50):
+                cache.set_duration(1, "id", f"S/d/chunk_{i:03d}.mkv", 10, 20, 2.0)
+            assert not os.path.exists(target) and writers == [], "nothing is written on the event loop, per chunk"
+            await asyncio.sleep(0.8)
+            assert writers == [False], "one write, from a worker thread"
+            assert len(json.loads(Path(target).read_text())["durations"]) == 50
+            cache.set_duration(1, "id", "S/d/chunk_099.mkv", 10, 20, 2.0)
+            cache.flush_durations()                                      # shutdown: written now, whatever the pause
+            assert len(json.loads(Path(target).read_text())["durations"]) == 51
+            n = len(writers)
+            await asyncio.sleep(0.6)
+            assert len(writers) == n, "nothing is left to write after a flush"
+            cache.flush_durations()
+            assert len(writers) == n
+
+
+def test_a_failed_write_leaves_the_old_file_and_no_temporary_file_and_a_later_write_succeeds():
+    with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
+        root, cache = fresh_cache(t)
+        target = os.path.join(root, vod_play.DURATIONS_NAME)
+        cache.set_duration(1, "id", "S/d/chunk_000.mkv", 10, 20, 2.0)             # no loop: written at once
+        before = Path(target).read_text()
+        with mock.patch.object(vod_play.os, "replace", side_effect=OSError("disk full")):
+            cache.set_duration(1, "id", "S/d/chunk_001.mkv", 10, 20, 2.0)
+        assert Path(target).read_text() == before
+        assert not os.path.exists(target + ".tmp") and sorted(os.listdir(root)).count("durations.json.tmp") == 0
+        with mock.patch.object(vod_play.os, "fsync", side_effect=RuntimeError("bad")):
+            cache.set_duration(1, "id", "S/d/chunk_002.mkv", 10, 20, 2.0)
+        assert not os.path.exists(target + ".tmp") and Path(target).read_text() == before
+        cache.flush_durations()
+        assert len(json.loads(Path(target).read_text())["durations"]) == 3
+
+
+def test_a_rollback_cleanup_freezes_the_lengths_so_a_late_write_cannot_bring_the_file_back():
+    with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
+        root, cache = fresh_cache(t)
+        target = os.path.join(root, vod_play.DURATIONS_NAME)
+        try:
+            vod_play.freeze_durations_writes()
+            cache.set_duration(1, "id", "S/d/chunk_000.mkv", 10, 20, 2.0)
+            cache.flush_durations()
+            assert not os.path.exists(target) and not os.path.exists(target + ".tmp")
+        finally:
+            vod_play.unfreeze_durations_writes()
+        cache.flush_durations()
+        assert os.path.exists(target)
+    src = (ROOT / "update_manager.py").read_text()
+    body = src[src.index("def _empty_vod_play_cache_dirs("):src.index("def _remove_cache_path(")]
+    assert "vod_play.freeze_durations_writes()" in body
+    assert body.index("freeze_durations_writes()") < body.index("for folder in _vod_play_cache_dirs()")
+
+
+def test_the_server_flushes_the_lengths_at_shutdown():
+    src = (ROOT / "server.py").read_text()
+    stop = src[src.index("    async def stop(self) -> None:\n        \"\"\"Stop the server gracefully."):]
+    stop = stop[:stop.index("await stop_all_recordings()")]
+    assert stop.index("_vod_play_cancel_all()") < stop.index("flush_durations")
+
+
 def test_a_ts_entry_survives_reconcile_and_an_unknown_kind_is_dropped():
     with tempfile.TemporaryDirectory(prefix="vodsession_cache_") as t:
         root = os.path.join(t, "cache")

@@ -30068,6 +30068,9 @@ class PortalServer:
 
         # Playback jobs: their ffmpeg children are ours and end now, their work files are removed
         await _vod_play_cancel_all()
+        if _vod_play_cache is not None:
+            # remembered chunk lengths are written a moment after they change: write what is still pending
+            await asyncio.to_thread(_vod_play_cache.flush_durations)
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

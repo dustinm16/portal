@@ -35,6 +35,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 from typing import Optional
 
@@ -50,6 +51,7 @@ DURATIONS_NAME = "durations.json"
 WORK_NAME = "work"
 KINDS = ("mp4", "ts")
 _ENTRY_RE = re.compile(r"^[0-9a-f]{32}\.(mp4|ts)$")
+DURATIONS_FLUSH_DELAY = 2.0          # seconds the durations file waits for more changes before it is written
 MAX_DURATIONS = 20000              # remembered chunk durations, oldest forgotten first
 _CHUNK_RE = re.compile(r"^chunk_(\d+)\.mkv$", re.IGNORECASE)
 
@@ -435,6 +437,24 @@ def _remove_path(path: str) -> int:
     return freed
 
 
+_WRITE_LOCK = threading.Lock()      # one write of durations.json at a time, from any thread
+_durations_frozen = False
+
+
+def freeze_durations_writes() -> None:
+    """No durations.json is written from now on (a rollback has emptied the folder and the portal is about to
+    restart: a late write must not bring the file back). Waits for a write that is in progress."""
+    global _durations_frozen
+    with _WRITE_LOCK:
+        _durations_frozen = True
+
+
+def unfreeze_durations_writes() -> None:
+    global _durations_frozen
+    with _WRITE_LOCK:
+        _durations_frozen = False
+
+
 class PlayCache:
     """Byte-capped LRU cache of remuxed chunks. All calls run on the event loop thread."""
 
@@ -444,6 +464,13 @@ class PlayCache:
         self.durations: dict = {}     # key -> {owner, ident, path, rsize, rmtime, duration, playable, reason, at}
         self.reserved = 0             # bytes jobs have reserved for their source and output
         self._cond: Optional[asyncio.Condition] = None
+        # entries of durations are never changed after they are stored, only replaced, so a shallow copy
+        # of the map is a consistent snapshot for the writer thread
+        self._dur_by_path: dict = {}  # (owner, ident, path) -> key
+        self._dur_by_folder: dict = {}  # (owner, ident, folder) -> {key}
+        self._dur_gen = 0             # counts changes; _dur_written is the last one that reached the disk
+        self._dur_written = 0
+        self._dur_task: Optional[asyncio.Task] = None
 
     # -- bookkeeping ---------------------------------------------------------
 
@@ -573,20 +600,99 @@ class PlayCache:
                 else:
                     d.pop("provisional", None)
                 keep[key] = d
-        self.durations = keep
+        self.durations, self._dur_by_path, self._dur_by_folder = {}, {}, {}
+        for key, d in sorted(keep.items(), key=lambda kv: kv[1]["at"]):     # oldest first: the cap forgets from the front
+            self._dur_put(key, d)
+        self._dur_trim()
+
+    # -- the index over durations (found by key, by chunk and by folder, never by a scan) ------------
+
+    @staticmethod
+    def _dur_ids(d: dict) -> tuple:
+        return (d["owner"], d["ident"], d["path"]), (d["owner"], d["ident"], d["path"].rpartition("/")[0])
+
+    def _dur_put(self, key: str, d: dict) -> None:
+        self._dur_pop(key)                                  # a refreshed entry becomes the newest
+        self.durations[key] = d
+        by_path, by_folder = self._dur_ids(d)
+        self._dur_by_path[by_path] = key
+        self._dur_by_folder.setdefault(by_folder, set()).add(key)
+
+    def _dur_trim(self) -> None:
+        while len(self.durations) > MAX_DURATIONS:
+            self._dur_pop(next(iter(self.durations)))       # the oldest
+
+    def _dur_pop(self, key: str) -> None:
+        d = self.durations.pop(key, None)
+        if d is None:
+            return
+        by_path, by_folder = self._dur_ids(d)
+        if self._dur_by_path.get(by_path) == key:
+            self._dur_by_path.pop(by_path, None)
+        keys = self._dur_by_folder.get(by_folder)
+        if keys is not None:
+            keys.discard(key)
+            if not keys:
+                self._dur_by_folder.pop(by_folder, None)
+
+    # -- writing durations.json: later, in a thread, atomically ------------------------------------------
 
     def save_durations(self) -> None:
-        if len(self.durations) > MAX_DURATIONS:
-            for key in sorted(self.durations, key=lambda k: self.durations[k]["at"])[:len(self.durations) - MAX_DURATIONS]:
-                self.durations.pop(key, None)
-        tmp = os.path.join(self.root, DURATIONS_NAME + ".tmp")
+        """The durations changed: write them soon. Inside the event loop the write waits DURATIONS_FLUSH_DELAY
+        for more changes and then runs in a worker thread, so a chunk delivered every few seconds costs the
+        loop nothing; without a running loop (tests, tools) it is written at once."""
+        self._dur_gen += 1
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"version": 1, "durations": self.durations}, fh)
-            os.replace(tmp, os.path.join(self.root, DURATIONS_NAME))
-        except OSError as e:
-            logger.warning(f"VOD play cache: could not write the durations: {e}")
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_durations(self._dur_gen, dict(self.durations))
+            return
+        if self._dur_task is None or self._dur_task.done():
+            self._dur_task = loop.create_task(self._flush_later())
+
+    async def _flush_later(self) -> None:
+        await asyncio.sleep(DURATIONS_FLUSH_DELAY)
+        while self._dur_written < self._dur_gen:
+            gen, snapshot = self._dur_gen, dict(self.durations)
+            if not await asyncio.to_thread(self._write_durations, gen, snapshot):
+                break                                       # the next change tries again
+
+    def flush_durations(self) -> None:
+        """Write the durations now if a change has not reached the disk yet (shutdown). Blocking."""
+        if self._dur_written < self._dur_gen:
+            self._write_durations(self._dur_gen, dict(self.durations))
+
+    def cancel_flush(self) -> None:
+        if self._dur_task is not None and not self._dur_task.done():
+            self._dur_task.cancel()
+
+    def _write_durations(self, gen: int, snapshot: dict) -> bool:
+        """Write *snapshot* (change number *gen*) as durations.json: a new file next to it, then a rename, so
+        a reader or a crash sees the old file or the new one. The temporary file never stays."""
+        final = os.path.join(self.root, DURATIONS_NAME)
+        tmp = final + ".tmp"
+        with _WRITE_LOCK:
+            if _durations_frozen:
+                return False
+            if gen <= self._dur_written:
+                return True                                 # a newer snapshot was written meanwhile
+            try:
+                data = json.dumps({"version": 1, "durations": snapshot}).encode("utf-8")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, final)
+            except Exception as e:
+                logger.warning(f"VOD play cache: could not write the durations: {e}")
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return False
+            self._dur_written = gen
+            return True
 
     def get_duration(self, owner: int, ident: str, path: str, size: int, mtime: int) -> Optional[dict]:
         """The remembered {duration, playable, reason} of this exact version of a chunk, or None."""
@@ -599,15 +705,16 @@ class PlayCache:
         """Remember the length (and verdict) of this version of a chunk. *provisional*: the verdict comes
         from the first bytes only and the check of the whole file has not confirmed it yet."""
         key = entry_key(owner, ident, path, size, mtime, "dur")
-        self.durations[key] = {"owner": int(owner), "ident": ident, "path": path, "rsize": int(size),
-                               "rmtime": int(mtime), "duration": float(duration), "playable": bool(playable),
-                               "reason": str(reason)[:80], "at": time.time()}
+        old = self._dur_by_path.get((int(owner), ident, path))
+        if old is not None and old != key:
+            self._dur_pop(old)                              # an older version of the same chunk is of no use any more
+        entry = {"owner": int(owner), "ident": ident, "path": path, "rsize": int(size),
+                 "rmtime": int(mtime), "duration": float(duration), "playable": bool(playable),
+                 "reason": str(reason)[:80], "at": time.time()}
         if provisional:
-            self.durations[key]["provisional"] = True
-        # an older version of the same chunk is of no use any more
-        for k in [k for k, d in self.durations.items()
-                  if k != key and d["owner"] == owner and d["ident"] == ident and d["path"] == path]:
-            self.durations.pop(k, None)
+            entry["provisional"] = True
+        self._dur_put(key, entry)
+        self._dur_trim()
         if save:
             self.save_durations()
 
@@ -620,10 +727,8 @@ class PlayCache:
 
     def session_durations(self, owner: int, ident: str, folder: str) -> list:
         """Remembered durations of the chunks directly in *folder*, as dicts, in chunk order."""
-        prefix = folder.rstrip("/") + "/"
-        out = [d for d in self.durations.values()
-               if d["owner"] == owner and d["ident"] == ident and d["path"].startswith(prefix)
-               and "/" not in d["path"][len(prefix):]]
+        keys = self._dur_by_folder.get((int(owner), ident, folder.rstrip("/")), ())
+        out = [self.durations[k] for k in list(keys) if k in self.durations]
         out.sort(key=lambda d: d["path"])
         return out
 
@@ -711,7 +816,7 @@ class PlayCache:
                 if (owner is None or d["owner"] == owner) and (path is None or d["path"] == path)
                 and (ident_not is None or d["ident"] != ident_not)]
         for k in gone:
-            self.durations.pop(k, None)
+            self._dur_pop(k)
         if gone:
             self.save_durations()
         if n:

@@ -538,6 +538,9 @@ def _empty_vod_play_cache_dirs(job: dict) -> None:
     the folder (for example a staging session folder a configuration put there) is left and logged. Links
     are removed, never followed. The marker stays so that 1.21.0 accepts the folder again."""
     marker = vod_play.MARKER_NAME
+    # the portal writes durations.json a moment after a change, and again at its shutdown: from here on it must
+    # not, or the file would be back (1.20.0 copies it into every snapshot) when the restart comes
+    vod_play.freeze_durations_writes()
     for folder in _vod_play_cache_dirs():
         try:
             if not stat.S_ISDIR(os.lstat(folder).st_mode) or not stat.S_ISREG(os.lstat(os.path.join(folder, marker)).st_mode):

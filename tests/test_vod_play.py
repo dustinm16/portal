@@ -140,6 +140,7 @@ class Env:
 
     async def __aexit__(self, *a):
         await server._vod_play_cancel_all()
+        self.cache.cancel_flush()
         server._vod_session_probes.clear()
         await self.client.close()
         for p in reversed(self.patches):
