@@ -542,6 +542,44 @@ async def test_the_newest_chunk_of_a_live_session_is_left_out_and_the_playlist_i
 
 
 @with_env
+async def test_a_live_playlist_reload_keeps_the_measured_chunks_and_never_answers_202_after_the_first_200(env):
+    put_session(env, durations=[2.0, 3.0, 2.0])
+    server.active_recordings[7] = {"remote_session_dir": f"/v/{FOLDER}", "user_id": OWNER}
+    first = await playlist(env)
+    assert first.status == 200 and [n for n, _d in parse(await first.text())[1]] == ["chunk_000.ts", "chunk_001.ts"]
+    # the recorder delivers chunk_003 (chunk_002 is finished now) and chunk_002 has no length yet
+    env.put(f"{FOLDER}/chunk_003.mkv", clip(2.0, 3))
+    reload = await env.client.get(f"/api/vods/session/{FOLDER}/index.m3u8", headers={"X-U": str(OWNER)})
+    assert reload.status == 200, await reload.text()
+    assert reload.headers["Content-Type"].startswith("application/vnd.apple.mpegurl")
+    lines, items, _ = parse(await reload.text())
+    assert [n for n, _d in items] == ["chunk_000.ts", "chunk_001.ts"], "the chunk without a length is left out, not guessed"
+    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in lines and "#EXT-X-ENDLIST" not in lines
+    # a later reload has it (the probe ran in the background), appended after the others
+    got = None
+    for _ in range(100):
+        r = await env.client.get(f"/api/vods/session/{FOLDER}/index.m3u8", headers={"X-U": str(OWNER)})
+        assert r.status == 200 and r.headers["Content-Type"].startswith("application/vnd.apple.mpegurl")
+        names = [n for n, _d in parse(await r.text())[1]]
+        assert names == ["chunk_000.ts", "chunk_001.ts", "chunk_002.ts"][:len(names)]
+        if len(names) == 3:
+            got = names
+            break
+        await asyncio.sleep(0.2)
+    assert got
+    # a length that went missing in the middle never lets a later chunk jump ahead of it
+    for k in [k for k, d in env.cache.durations.items() if d["path"].endswith("chunk_001.mkv")]:
+        env.cache.durations.pop(k)
+    with mock.patch.object(server, "VOD_SESSION_PROBE_MAX", 0):
+        r = await env.client.get(f"/api/vods/session/{FOLDER}/index.m3u8", headers={"X-U": str(OWNER)})
+    assert r.status == 200 and [n for n, _d in parse(await r.text())[1]] == ["chunk_000.ts"]
+    # nothing measured at all (the first request): still 202 with the measuring state, as before
+    env.cache.durations.clear()
+    r = await env.client.get(f"/api/vods/session/{FOLDER}/index.m3u8", headers={"X-U": str(OWNER)})
+    assert r.status == 202 and (await r.json())["state"] == "preparing"
+
+
+@with_env
 async def test_the_recorder_stores_a_duration_at_upload_time_so_no_probe_is_needed(env):
     local = os.path.join(env.t, "chunk_000.mkv")
     Path(local).write_bytes(clip(3.0, 0))

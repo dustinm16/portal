@@ -13790,25 +13790,36 @@ async def _vod_session_playlist(user_id: int, storage: dict, folder: str) -> web
             return _vod_play_reply(
                 {"error": vod_play.download_only_message(d.get("reason") or "unsupported format"),
                  "reason": d.get("reason"), "state": "unplayable"}, 415)
+    # A live (EVENT) playlist is reloaded by the player: a chunk delivered a moment ago has no length yet, and
+    # an answer that is not a playlist would break the reload. Serve the chunks up to the first one without a
+    # length (an EVENT playlist only ever grows at its end, so none is skipped), measure the rest meanwhile.
+    prefix = None
+    if missing and live:
+        paths = [f"{folder}/{c[1]}" for c in chunks]
+        prefix = chunks[:paths.index(missing[0][0])] or None
     if missing:
         _vod_session_prune_probes()
         probe = _vod_session_probes.get((user_id, folder))
-        if probe is not None and probe["state"] == "failed":
+        if probe is not None and probe["state"] == "failed" and prefix is None:
             return _vod_play_reply({"error": probe.get("error") or "The session could not be measured",
                                     "state": "failed"}, probe.get("status") or 500)
         if probe is None or probe["state"] == "ready":
             if len([p for p in _vod_session_probes.values() if p["finished"] is None]) >= VOD_SESSION_PROBE_MAX:
-                return _vod_play_reply({"error": "The server is busy measuring sessions; try again shortly"},
-                                       503, retry_after=10)
-            probe = {"owner": user_id, "folder": folder, "ident": ident, "state": "running", "total": len(missing),
-                     "done": 0, "finished": None}
-            _vod_session_probes[(user_id, folder)] = probe
-            task = asyncio.create_task(_vod_session_probe_job(probe, storage, missing))
-            probe["task"] = task
-            _vod_play_tasks.add(task)
-            task.add_done_callback(_vod_play_tasks.discard)
-        return _vod_play_reply({"state": "preparing", "stage": "measuring", "done": probe["done"],
-                                "total": probe["total"], "chunks": len(chunks)}, 202, retry_after=2)
+                if prefix is None:
+                    return _vod_play_reply({"error": "The server is busy measuring sessions; try again shortly"},
+                                           503, retry_after=10)
+            else:
+                probe = {"owner": user_id, "folder": folder, "ident": ident, "state": "running",
+                         "total": len(missing), "done": 0, "finished": None}
+                _vod_session_probes[(user_id, folder)] = probe
+                task = asyncio.create_task(_vod_session_probe_job(probe, storage, missing))
+                probe["task"] = task
+                _vod_play_tasks.add(task)
+                task.add_done_callback(_vod_play_tasks.discard)
+        if prefix is None:
+            return _vod_play_reply({"state": "preparing", "stage": "measuring", "done": probe["done"],
+                                    "total": probe["total"], "chunks": len(chunks)}, 202, retry_after=2)
+        chunks = prefix
     items = [(name[:-4] + ".ts", known[f"{folder}/{name}"]["duration"]) for _n, name, _s, _m in chunks]
     text = vod_play.playlist_text(items, finished=not live)
     return web.Response(text=text, headers={
