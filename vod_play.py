@@ -282,6 +282,32 @@ def verdict(info: dict) -> tuple:
     return True, ""
 
 
+def head_verdict(info) -> tuple:
+    """("ok" | "no" | "unsure", why) from ffprobe's JSON of the first HEAD_BYTES of a chunk only.
+    "no" only when the header names a codec or picture format that cannot be played. When the read ends
+    inside the first keyframe ffprobe has no picture format (and may have no stream at all), which says
+    nothing about the chunk: "unsure", and only the check of the whole file decides."""
+    streams = info.get("streams") if isinstance(info, dict) else None
+    if not isinstance(streams, list):
+        return "unsure", "the header could not be read"
+    video = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"]
+    audio = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"]
+    if not video:
+        return "unsure", "no video track in the header"
+    v = video[0]
+    vname, pix = v.get("codec_name"), v.get("pix_fmt")
+    if vname and vname != "h264":
+        return "no", f"video codec {str(vname)[:20]}"
+    if pix and pix not in ("yuv420p", "yuvj420p"):
+        return "no", f"picture format {str(pix)[:20]}"
+    aname = audio[0].get("codec_name") if audio else None
+    if audio and aname and aname not in ("aac", "mp3"):
+        return "no", f"audio codec {str(aname)[:20]}"
+    if not vname or not pix or (audio and not aname):
+        return "unsure", "the header does not say"
+    return "ok", ""
+
+
 def top_level_boxes(path: str, limit: int = 64) -> list:
     """Types of the top-level boxes of an MP4 file, in file order."""
     boxes = []
@@ -542,6 +568,10 @@ class PlayCache:
                     and isinstance(d.get("duration"), (int, float)) and 0 < d["duration"] < 86400 * 2
                     and isinstance(d.get("playable"), bool)):
                 d["at"] = float(d.get("at") or 0)
+                if d.get("provisional"):
+                    d["provisional"] = True
+                else:
+                    d.pop("provisional", None)
                 keep[key] = d
         self.durations = keep
 
@@ -564,17 +594,29 @@ class PlayCache:
         return d if d and d["path"] == path and d["owner"] == owner and d["ident"] == ident else None
 
     def set_duration(self, owner: int, ident: str, path: str, size: int, mtime: int, duration: float,
-                     playable: bool = True, reason: str = "", save: bool = True) -> None:
+                     playable: bool = True, reason: str = "", save: bool = True,
+                     provisional: bool = False) -> None:
+        """Remember the length (and verdict) of this version of a chunk. *provisional*: the verdict comes
+        from the first bytes only and the check of the whole file has not confirmed it yet."""
         key = entry_key(owner, ident, path, size, mtime, "dur")
         self.durations[key] = {"owner": int(owner), "ident": ident, "path": path, "rsize": int(size),
                                "rmtime": int(mtime), "duration": float(duration), "playable": bool(playable),
                                "reason": str(reason)[:80], "at": time.time()}
+        if provisional:
+            self.durations[key]["provisional"] = True
         # an older version of the same chunk is of no use any more
         for k in [k for k, d in self.durations.items()
                   if k != key and d["owner"] == owner and d["ident"] == ident and d["path"] == path]:
             self.durations.pop(k, None)
         if save:
             self.save_durations()
+
+    def confirm_unplayable(self, owner: int, ident: str, path: str, size: int, mtime: int, reason: str) -> None:
+        """The whole file was checked and refused: a provisional length of it becomes a final download-only
+        verdict (an entry that is not provisional is left as it is)."""
+        d = self.get_duration(owner, ident, path, size, mtime)
+        if d and d.get("provisional") and d["playable"]:
+            self.set_duration(owner, ident, path, size, mtime, d["duration"], False, reason)
 
     def session_durations(self, owner: int, ident: str, folder: str) -> list:
         """Remembered durations of the chunks directly in *folder*, as dicts, in chunk order."""

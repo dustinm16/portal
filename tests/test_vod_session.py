@@ -422,6 +422,86 @@ async def test_a_header_without_duration_is_measured_by_converting_that_chunk_on
     assert pulls == [f"{FOLDER}/chunk_001.mkv"]
 
 
+def big_keyframe_clip(pix_fmt="yuv420p", seed=0):
+    """About 1.5 MB, one keyframe (a noisy 640x480 picture) larger than the 256 KB the header probe reads."""
+    path = os.path.join(CLIPS, f"big_{pix_fmt}_{seed}.mkv")
+    if not os.path.exists(path):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x480:rate=5:duration=1",
+                        "-f", "lavfi", "-i", f"sine=frequency={500 + seed}:duration=1", "-vf", "noise=alls=100:allf=t",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", pix_fmt, "-qp", "24", "-g", "50",
+                        "-c:a", "aac", "-b:a", "32k", path], check=True, timeout=60)
+    data = Path(path).read_bytes()
+    assert len(data) > 2 * vod_play.HEAD_BYTES
+    return data
+
+
+def head_info(data):
+    """What ffprobe says about the first HEAD_BYTES of a chunk (the portal's own argv)."""
+    with tempfile.TemporaryDirectory(prefix="vodsession_head_") as t:
+        head = os.path.join(t, "head.mkv")
+        Path(head).write_bytes(data[:vod_play.HEAD_BYTES])
+        r = subprocess.run(vod_play.head_probe_argv(head), capture_output=True, text=True, timeout=30)
+        return json.loads(r.stdout)
+
+
+@with_env
+async def test_a_head_that_ends_inside_the_first_keyframe_is_inconclusive_and_never_stored_as_download_only(env):
+    big = big_keyframe_clip()
+    info = head_info(big)
+    assert "pix_fmt" not in info["streams"][0], "the test clip must hide the picture format from the header read"
+    assert vod_play.format_duration(info) is not None
+    env.put(f"{FOLDER}/chunk_000.mkv", clip(2.0, 0))
+    env.put(f"{FOLDER}/chunk_001.mkv", big)
+    pulls = []
+    real_pull = server._vod_play_pull
+
+    async def spy_pull(*a, **k):
+        pulls.append(a[2])
+        return await real_pull(*a, **k)
+
+    with mock.patch.object(server, "_vod_play_pull", spy_pull):
+        r = await playlist(env)
+        assert r.status == 200, await r.text()
+        assert pulls == [], "the header gave a length: nothing is converted just to write the playlist"
+        (d,) = [d for d in env.cache.durations.values() if d["path"].endswith("chunk_001.mkv")]
+        assert d["playable"] is True and d["provisional"] is True
+        s = await segment(env, "chunk_001.ts")
+        assert s.status == 200 and (await s.read())[:1] == b"G"
+    (d,) = [d for d in env.cache.durations.values() if d["path"].endswith("chunk_001.mkv")]
+    assert d["playable"] is True and not d.get("provisional"), "the full check made it final"
+    assert (await playlist(env)).status == 200
+
+
+@with_env
+async def test_a_provisional_length_turns_final_download_only_when_the_full_check_refuses_the_chunk(env):
+    odd = big_keyframe_clip("yuv444p", 1)
+    assert "pix_fmt" not in head_info(odd)["streams"][0]
+    env.put(f"{FOLDER}/chunk_000.mkv", clip(2.0, 0))
+    env.put(f"{FOLDER}/chunk_001.mkv", odd)
+    r = await playlist(env)
+    assert r.status == 200, "the header alone cannot say 4:4:4: the playlist is offered"
+    s = await segment(env, "chunk_001.ts")
+    assert s.status == 415 and "picture format" in (await s.json())["reason"]
+    (d,) = [d for d in env.cache.durations.values() if d["path"].endswith("chunk_001.mkv")]
+    assert d["playable"] is False and not d.get("provisional")
+    r = await playlist(env)
+    assert r.status == 415, "after the full check the verdict is final"
+
+
+def test_a_header_verdict_is_final_only_for_a_codec_that_is_named_and_wrong():
+    v = vod_play.head_verdict
+    v264 = {"codec_type": "video", "codec_name": "h264"}
+    assert v({"streams": [dict(v264, pix_fmt="yuv420p"), {"codec_type": "audio", "codec_name": "aac"}]})[0] == "ok"
+    assert v({"streams": [v264]})[0] == "unsure"                                   # no picture format: cut inside the keyframe
+    assert v({"streams": []})[0] == "unsure" and v({})[0] == "unsure" and v(None)[0] == "unsure"
+    assert v({"streams": [{"codec_type": "audio", "codec_name": "aac"}]})[0] == "unsure"
+    assert v({"streams": [{"codec_type": "video"}]})[0] == "unsure"
+    assert v({"streams": [{"codec_type": "video", "codec_name": "vp9"}]}) == ("no", "video codec vp9")
+    assert v({"streams": [dict(v264, pix_fmt="yuv444p")]})[0] == "no"
+    assert v({"streams": [v264, {"codec_type": "audio", "codec_name": "opus"}]}) == ("no", "audio codec opus")
+    assert v({"streams": [v264, {"codec_type": "audio"}]})[0] == "unsure"
+
+
 @with_env
 async def test_a_chunk_the_browser_cannot_play_makes_the_session_download_only(env):
     env.put(f"{FOLDER}/chunk_000.mkv", clip(2.0, 0))

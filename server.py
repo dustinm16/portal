@@ -13343,6 +13343,10 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
                 ok, why = vod_play.verdict(info) if info is not None else (False, "the file could not be read")
                 if not ok:
                     job["state"], job["reason"] = "unplayable", why
+                    if kind == "ts" and not job.get("cancelled") and _vod_play_jobs.get(
+                            _vod_play_job_key(owner, path, kind)) is job:
+                        # the whole file decides: a length that came from the header alone is final now
+                        cache.confirm_unplayable(owner, job["ident"], path, size, mtime, why)
                     return
                 job["state"] = "remuxing"
                 limit = (vod_play.output_limit(size) if kind == "mp4"
@@ -13691,14 +13695,18 @@ async def _vod_session_probe_head(owner: int, storage: dict, ident: str, path: s
             info = None
         if not isinstance(info, dict):
             return False
-        ok, why = vod_play.verdict(info)
+        state, why = vod_play.head_verdict(info)
         seconds = vod_play.format_duration(info)
-        if not ok:
+        if state == "no":
+            # the header names a codec or picture format that cannot be played: that is final
             cache.set_duration(owner, ident, path, size, mtime, seconds or 1.0, False, why, save=False)
             return True
         if seconds is None:
             return False
-        cache.set_duration(owner, ident, path, size, mtime, seconds, True, "", save=False)
+        # "unsure" (a read that ends inside the first keyframe has no picture format): the length is
+        # kept, the verdict is provisional, and the check of the whole file at segment time decides
+        cache.set_duration(owner, ident, path, size, mtime, seconds, True, "", save=False,
+                           provisional=(state == "unsure"))
         return True
     finally:
         cache.release(vod_play.HEAD_BYTES)
