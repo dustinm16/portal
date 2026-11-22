@@ -2704,7 +2704,7 @@ Get current user's VOD storage configuration.
 }
 ```
 
-Note: Passwords and private keys are never returned (only `has_password`/`has_key` flags). `recording_guard` is `null`, or says that the VOD disk guard stopped or refused a recording of this user: `{kind: "stopped" | "refused", code: "low_free_space" | "session_backlog" | "total_backlog", message, stream_name, at}` (no paths). It is held in memory, so a restart clears it, and it is dropped when a recording of the user starts normally.
+Note: Passwords and private keys are never returned (only `has_password`/`has_key` flags). `recording_guard` is `null`, or says that the VOD disk guard stopped or refused a recording of this user: `{kind: "stopped" | "refused", code: "low_free_space" | "session_backlog" | "total_backlog", message, stream_name, at}` (no paths). It is held in memory, so a restart clears it. The portal keeps one notice per stream and shows the user's most recent one (the shape is the same whatever the number of streams); a notice goes when a recording of that same stream starts normally, so another stream of the user starting does not clear it.
 
 ---
 

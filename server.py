@@ -7827,10 +7827,12 @@ async def _vod_graceful_stop(process) -> str:
         return "kill"
 
 
-# What the disk guard did to recordings, per owner, for My VODs: user_id -> {kind, code, message,
-# stream_name, at}. In memory only (the activity log keeps the history); it is dropped when a
-# recording of that owner starts normally.
+# What the disk guard did to recordings, per stream, for My VODs: stream_id -> {user_id, seq, kind, code,
+# message, stream_name, at}. In memory only (the activity log keeps the history); an entry is dropped when
+# a recording of that same stream starts normally, so a second stream of the owner starting does not clear
+# the notice about the first. My VODs shows the owner's most recent entry (_vod_guard_public).
 _vod_guard_state: dict = {}
+_vod_guard_seq = 0
 
 
 async def _vod_guard_limits() -> tuple:
@@ -7878,7 +7880,10 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
     shown = _clean_log_name(stream_name)
     verb = "was stopped" if kind == "stopped" else "was not started"
     message = f"The VOD recording of '{shown}' {verb}: {text}"
-    _vod_guard_state[user_id] = {
+    global _vod_guard_seq
+    _vod_guard_seq += 1
+    _vod_guard_state[stream_id if stream_id is not None else f"user{user_id}"] = {
+        "user_id": user_id, "seq": _vod_guard_seq,
         "kind": kind, "code": code, "message": message, "stream_name": shown,
         "at": datetime.now(timezone.utc).isoformat(),
     }
@@ -7908,10 +7913,11 @@ def _clean_log_name(name) -> str:
 
 
 def _vod_guard_public(user_id: int) -> Optional[dict]:
-    """What My VODs may show an owner about the guard (no paths)."""
-    state = _vod_guard_state.get(user_id)
-    if not state:
+    """What My VODs may show an owner about the guard (no paths): the owner's most recent active notice."""
+    mine = [st for st in list(_vod_guard_state.values()) if st.get("user_id") == user_id]
+    if not mine:
         return None
+    state = max(mine, key=lambda st: st["seq"])
     return {k: state[k] for k in ("kind", "code", "message", "stream_name", "at")}
 
 
@@ -8065,7 +8071,7 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         async with _stream_state_lock:
             active_recordings[stream_id] = recording
         registered = True
-        _vod_guard_state.pop(user_id, None)
+        _vod_guard_state.pop(stream_id, None)
         logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
     finally:
         if not registered:

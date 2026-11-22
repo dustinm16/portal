@@ -2204,7 +2204,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
   "recording_guard": null
 }</pre>
                         </div>
-                        <p><code>recording_guard</code> is <code>null</code>, or says that the VOD disk guard stopped or refused a recording of this user: <code>{kind: "stopped" | "refused", code: "low_free_space" | "session_backlog" | "total_backlog", message, stream_name, at}</code> (no paths). It is held in memory, so a restart clears it, and it is dropped when a recording of the user starts normally.</p>
+                        <p><code>recording_guard</code> is <code>null</code>, or says that the VOD disk guard stopped or refused a recording of this user: <code>{kind: "stopped" | "refused", code: "low_free_space" | "session_backlog" | "total_backlog", message, stream_name, at}</code> (no paths). It is held in memory, so a restart clears it. The portal keeps one notice per stream and shows the user's most recent one (the shape is the same whatever the number of streams); a notice goes when a recording of that same stream starts normally, so another stream of the user starting does not clear it.</p>
                     </div>
                 </div>
 

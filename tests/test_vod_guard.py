@@ -145,8 +145,8 @@ def test_backlog_limit_stops_the_recording_cleanly_with_one_alert():
         chunks = check_chunks(session_dir, 2)
         assert vs.read_sidecar(session_dir) is not None
         assert sent == ["vod.recording_stopped"], sent   # one alert, however many ticks
-        assert state[7]["kind"] == "stopped" and state[7]["code"] in ("session_backlog", "total_backlog"), state
-        assert "waiting to be uploaded" in state[7]["message"]
+        assert state[9]["kind"] == "stopped" and state[9]["code"] in ("session_backlog", "total_backlog"), state
+        assert "waiting to be uploaded" in state[9]["message"]
         assert [a for a in activity if a[1] == "vod_stopped"], activity
         assert os.path.basename(chunks[-1]).startswith("chunk_")
     assert children_of_this_process() == []
@@ -162,7 +162,7 @@ def test_a_recording_running_normally_is_left_alone_and_low_free_space_stops_it_
                 rec = server.active_recordings[9]
                 await asyncio.sleep(3.5)  # several ticks, completed chunks piling up (target blocked)
                 assert 9 in server.active_recordings and rec["process"].returncode is None
-                assert env.alerts_sent() == [] and 7 not in server._vod_guard_state
+                assert env.alerts_sent() == [] and 9 not in server._vod_guard_state
                 # the owner of the machine raises the floor above what is free: the next tick stops it
                 env.db.settings["vod_min_free_gb"] = "1000000"
                 assert await wait_until(lambda: 9 not in server.active_recordings, 25), "not stopped"
@@ -173,7 +173,7 @@ def test_a_recording_running_normally_is_left_alone_and_low_free_space_stops_it_
         assert rc == 0, rc
         check_chunks(session_dir, 2)
         assert sent == ["vod.recording_stopped"], sent
-        assert state[7]["code"] == "low_free_space" and "free" in state[7]["message"], state
+        assert state[9]["code"] == "low_free_space" and "free" in state[9]["message"], state
     assert children_of_this_process() == []
 
 
@@ -192,7 +192,7 @@ def test_a_new_recording_is_refused_with_the_reason_and_one_alert():
         running, sent, state, activity, public = asyncio.run(go())
         assert not running
         assert sent == ["vod.recording_stopped"], sent   # one per stream and reason
-        assert state[7]["kind"] == "refused" and state[7]["code"] == "low_free_space"
+        assert state[9]["kind"] == "refused" and state[9]["code"] == "low_free_space"
         assert public["kind"] == "refused" and set(public) == {"kind", "code", "message", "stream_name", "at"}
         assert all("/" not in v for v in (public["message"],)) or "staging folder" in public["message"]
         assert [a for a in activity if a[1] == "vod_skipped" and "was not started" in a[2]], activity
@@ -218,7 +218,7 @@ def test_total_backlog_of_other_folders_refuses_a_start():
                 return dict(server._vod_guard_state)
 
         state = asyncio.run(go())
-        assert state[7]["kind"] == "refused" and state[7]["code"] == "total_backlog", state
+        assert state[9]["kind"] == "refused" and state[9]["code"] == "total_backlog", state
 
 
 def test_the_backlog_limit_is_counted_per_owner_but_the_free_space_floor_stays_global():
@@ -262,7 +262,7 @@ def test_the_backlog_limit_is_counted_per_owner_but_the_free_space_floor_stays_g
                 return ok, dict(server._vod_guard_state)
 
         ok, state = asyncio.run(go())
-        assert ok and 7 not in state, state
+        assert ok and 9 not in state, state
 
 
 def test_zero_switches_both_checks_off():
@@ -278,7 +278,46 @@ def test_zero_switches_both_checks_off():
                 return ok, rec
 
         ok, rec = asyncio.run(go())
-        assert ok and 7 not in server._vod_guard_state
+        assert ok and 9 not in server._vod_guard_state
+
+
+def test_the_guard_notice_is_kept_per_stream_and_the_most_recent_active_one_is_shown():
+    with tempfile.TemporaryDirectory(prefix="vodguard_") as t:
+        env = Env(t, {"vod_min_free_gb": "1000000", "vod_max_backlog_gb": "0"})   # a floor no disk meets
+
+        async def go():
+            with env:
+                await env.start(9)                      # refused: stream 9 of owner 7
+                first = server._vod_guard_public(7)
+                env.db.settings["vod_min_free_gb"] = "0"
+                await env.start(10)                     # a second stream of the same owner starts normally
+                after_other = server._vod_guard_public(7)
+                keys_after_other = sorted(server._vod_guard_state)
+                await server.stop_vod_recording(10, force=True)   # else the raised floor below would stop it
+                env.db.settings["vod_min_free_gb"] = "1000000"
+                await env.start(11)                     # refused too: the most recent notice wins
+                newest = server._vod_guard_public(7)
+                st11 = server._vod_guard_state[11]
+                newest_ok = (server._vod_guard_state[11]["seq"] > server._vod_guard_state[9]["seq"]
+                             and newest == {k: st11[k] for k in newest})
+                env.db.settings["vod_min_free_gb"] = "0"
+                await env.start(11)                     # stream 11 recovers: the notice about 9 is shown again
+                back_to_first = server._vod_guard_public(7)
+                await env.start(9)                      # stream 9 recovers: nothing left
+                gone = server._vod_guard_public(7)
+                other_owner = server._vod_guard_public(8)
+                for sid in (9, 11):
+                    await server.stop_vod_recording(sid, force=True)
+                return first, after_other, keys_after_other, newest_ok, back_to_first, gone, other_owner
+
+        first, after_other, keys, newest_ok, back, gone, other = asyncio.run(go())
+        assert first["stream_name"] == "My Show" and first["kind"] == "refused", first
+        assert after_other == first, "stream 10 starting normally must not clear the notice about stream 9"
+        assert keys == [9], keys
+        assert newest_ok, "the most recent notice of the owner is shown"
+        assert back == first, back
+        assert gone is None and other is None, (gone, other)
+        assert set(first) == {"kind", "code", "message", "stream_name", "at"}, "the API shape is unchanged"
 
 
 def test_limits_come_from_the_settings_with_the_owner_defaults():
