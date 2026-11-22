@@ -7,6 +7,7 @@ that says where the chunks have to go, so a restart can finish the upload.
 """
 
 import errno
+import ipaddress
 import json
 import logging
 import os
@@ -539,5 +540,17 @@ def highest_remote_index(names) -> int:
 
 
 def is_loopback_host(host: str) -> bool:
-    host = (host or "").strip().lower().strip("[]")
-    return host in ("localhost", "::1") or host.startswith("127.")
+    """True for the literal name localhost and for an IP literal in the loopback range (IPv4 or IPv6,
+    also IPv4-mapped). Anything else, such as a name that merely starts with 127. , is not loopback."""
+    host = (host or "").strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if host == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback

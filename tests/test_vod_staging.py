@@ -1256,6 +1256,17 @@ def test_stale_removal_deletes_only_chunks_and_record():
         assert not (d / "chunk_000.mkv").exists() and not (d / vs.SIDECAR_NAME).exists()
 
 
+def test_is_loopback_host_parses_addresses_instead_of_matching_text():
+    yes = ["localhost", "LOCALHOST", " localhost ", "127.0.0.1", "127.255.255.254", "::1", "[::1]",
+           "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1"]
+    no = ["", None, "127.example.com", "127.0.0.1.evil.example", "127.", "127.1.2", "128.0.0.1",
+          "10.0.0.1", "::2", "::", "0.0.0.0", "localhost.evil.example", "[::1", "::1]x"]
+    for h in yes:
+        assert vs.is_loopback_host(h), h
+    for h in no:
+        assert not vs.is_loopback_host(h), h
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
