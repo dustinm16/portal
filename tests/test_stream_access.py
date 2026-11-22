@@ -879,6 +879,37 @@ def test_vod_routes_refuse_a_stream_key():
         assert "_stream_user_auth(" in chunk and "await authenticate_request(request)" not in chunk, h
 
 
+def test_sftp_vod_routes_refuse_a_stream_key_and_a_scoped_credential():
+    import re
+    from unittest import mock
+    handlers = (("http_sftp_vod_list", "GET"), ("http_sftp_vod_read", "GET"), ("http_sftp_vod_download", "GET"),
+                ("http_sftp_vod_mkdir", "POST"), ("http_sftp_vod_delete", "DELETE"),
+                ("http_sftp_vod_upload", "POST"), ("http_sftp_vod_write", "POST"), ("http_sftp_vod_rename", "POST"))
+    async def body(w):
+        owner_key = w.streams["private"]["live"]
+        for h, method in handlers:
+            for hdrs in ({"X-Stream-Key": owner_key}, {"Authorization": "Stream-Key " + owner_key}):
+                req = make_mocked_request(method, "/api/sftp/vod/x?path=/v/a.mkv", headers=hdrs, transport=Transport())
+                assert (await getattr(server, h)(req)).status == 403, (h, "stream key")
+            # an administrator's narrowly scoped API key or token never reaches the owner's VOD storage
+            scoped = server.TokenPayload({"jti": "apikey-7", "sub": str(w.users["owner"]), "scopes": ["admin"]})
+            async def auth(request, t=scoped):
+                return t
+            with mock.patch.object(server, "authenticate_request", auth):
+                req = make_mocked_request(method, "/api/sftp/vod/x?path=/v/a.mkv", transport=Transport())
+                assert (await getattr(server, h)(req)).status == 403, (h, "scoped key")
+    run(body)
+    # source guard: every /api/sftp/vod handler goes through _stream_user_auth
+    src = (ROOT / "server.py").read_text()
+    routes = re.findall(r'app\.router\.add_\w+\("(/api/sftp/vod/[^"]*)", (\w+)', src)
+    assert len(routes) == len(handlers), routes
+    for _p, h in routes:
+        start = src.index(f"async def {h}(")
+        m = re.search(r"\n(?:async def|def) ", src[start + 10:])
+        chunk = src[start:start + 10 + m.start()]
+        assert "_stream_user_auth(" in chunk and "await authenticate_request(request)" not in chunk, h
+
+
 _ELSEWHERE_CALLS = [
     ("http_list_users", "GET", "/api/users", None),
     ("http_create_user", "POST", "/api/users", {"username": "intruder", "password": "Intruder-pass-12345", "role": "user"}),

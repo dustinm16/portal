@@ -15377,9 +15377,9 @@ async def _get_vod_sftp(request: web.Request, token: TokenPayload):
 
 async def http_sftp_vod_list(request: web.Request) -> web.Response:
     """GET /api/sftp/vod/list - List VOD storage directory."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15399,9 +15399,9 @@ async def http_sftp_vod_list(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_read(request: web.Request) -> web.Response:
     """GET /api/sftp/vod/read - Read file from VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15423,9 +15423,9 @@ async def http_sftp_vod_read(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_download(request: web.Request) -> web.Response:
     """GET /api/sftp/vod/download - Download file from VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15455,9 +15455,9 @@ async def http_sftp_vod_download(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_mkdir(request: web.Request) -> web.Response:
     """POST /api/sftp/vod/mkdir - Create directory on VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15480,9 +15480,9 @@ async def http_sftp_vod_mkdir(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_delete(request: web.Request) -> web.Response:
     """DELETE /api/sftp/vod/delete - Delete file/dir on VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15504,9 +15504,9 @@ async def http_sftp_vod_delete(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_upload(request: web.Request) -> web.Response:
     """POST /api/sftp/vod/upload - Upload file to VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15544,9 +15544,9 @@ async def http_sftp_vod_upload(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_write(request: web.Request) -> web.Response:
     """POST /api/sftp/vod/write - Write text file to VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:
@@ -15577,9 +15577,9 @@ async def http_sftp_vod_write(request: web.Request) -> web.Response:
 
 async def http_sftp_vod_rename(request: web.Request) -> web.Response:
     """POST /api/sftp/vod/rename - Rename path on VOD storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # no scoped key or token and no stream key reaches a VOD
+    if refusal is not None:
+        return refusal
 
     ssh_conn, sftp, err = await _get_vod_sftp(request, token)
     if err:

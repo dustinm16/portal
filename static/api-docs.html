@@ -4723,7 +4723,7 @@ Headers:
 
 
                 <h2 id="sftp-vod">SFTP VOD Storage</h2>
-                <p>Manage VOD files on your configured SFTP VOD storage server. These endpoints operate on your personal VOD storage connection (configured via the VOD Storage settings in the dashboard). Any authenticated user with VOD storage configured can use these endpoints.</p>
+                <p>Manage VOD files on your configured SFTP VOD storage server. These endpoints operate on your personal VOD storage connection (configured via the VOD Storage settings in the dashboard). Any user with VOD storage configured can use these endpoints with a browser session or a full-scope credential (an all-scope <code>*</code> token or API key); stream keys and scoped keys get 403.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
