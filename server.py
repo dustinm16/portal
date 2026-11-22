@@ -12899,9 +12899,13 @@ async def http_delete_vod(request: web.Request) -> web.Response:
 
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
+        # a copy of this chunk that is being prepared is dropped first, so nothing new is added while the
+        # remove is on its way, and again after it (a job that finished meanwhile left an entry)
+        cancelled = _vod_play_purge(owner=token.user_id, path=filename)
         await sftp.remove(remote_path)
-        if _vod_play_cache is not None:
-            _vod_play_cache.purge(owner=token.user_id, path=filename)
+        cancelled += _vod_play_purge(owner=token.user_id, path=filename)
+        if cancelled:
+            await asyncio.wait(cancelled, timeout=5)        # their work folders are gone when this returns
         return web.json_response({"message": f"Deleted {filename}"})
     except asyncssh.SFTPError as e:
         logger.error(f"VOD delete SFTP error for user {token.user_id}: {e}")
@@ -12998,21 +13002,32 @@ async def _vod_play_reconcile_owners() -> None:
             cache.purge(owner=owner, ident_not=vod_play.storage_ident(storage))
 
 
-def _vod_play_purge(owner: Optional[int] = None, ident_not: Optional[str] = None) -> None:
-    """Forget what the cache and the job table hold for an owner (account or storage removed)."""
-    for k in [k for k in _vod_play_jobs if owner is None or k[0] == owner]:
-        job = _vod_play_jobs.get(k)
-        if job and job.get("task") and not job["task"].done():
-            job["task"].cancel()
-        _vod_play_jobs.pop(k, None)
-    for k in [k for k in _vod_session_probes if owner is None or k[0] == owner]:
+def _vod_play_purge(owner: Optional[int] = None, ident_not: Optional[str] = None,
+                    path: Optional[str] = None) -> list:
+    """Forget what the cache and the job table hold for an owner (account or storage removed), or with
+    *path* for that one chunk (it was deleted): its jobs (the MP4 and every segment kind) are flagged,
+    cancelled and dropped, so a job that is finishing adds nothing afterwards, and every cache entry and
+    remembered length of the chunk is removed. Returns the tasks that were cancelled."""
+    cancelled = []
+    for k in [k for k in _vod_play_jobs if (owner is None or k[0] == owner) and (path is None or k[1] == path)]:
+        job = _vod_play_jobs.pop(k, None)
+        if job:
+            job["cancelled"] = True
+            if job.get("task") and not job["task"].done():
+                job["task"].cancel()
+                cancelled.append(job["task"])
+    folder = path.rpartition("/")[0] if path is not None else None
+    for k in [k for k in _vod_session_probes
+              if (owner is None or k[0] == owner) and (path is None or k[1] == folder)]:
         probe = _vod_session_probes.pop(k, None)
         if probe and probe.get("task") and not probe["task"].done():
             probe["task"].cancel()
-    for k in [k for k in _vod_play_stats if owner is None or k[0] == owner]:
+            cancelled.append(probe["task"])
+    for k in [k for k in _vod_play_stats if (owner is None or k[0] == owner) and (path is None or k[2] == path)]:
         _vod_play_stats.pop(k, None)
     if _vod_play_cache is not None:
-        _vod_play_cache.purge(owner=owner, ident_not=ident_not)
+        _vod_play_cache.purge(owner=owner, ident_not=ident_not, path=path)
+    return cancelled
 
 
 async def _vod_play_cancel_all() -> None:
@@ -13334,6 +13349,9 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
                 seconds = vod_play.format_duration(check)
                 if kind == "ts" and seconds is None:
                     raise _VodPlayRemoteError(500, "The chunk could not be converted")
+                if job.get("cancelled") or _vod_play_jobs.get(_vod_play_job_key(owner, path, kind)) is not job:
+                    # deleted (or the account or storage went) while it was prepared: nothing is stored
+                    raise _VodPlayRemoteError(404, "VOD not found")
                 meta = {"owner": owner, "ident": job["ident"], "path": path, "rsize": size, "rmtime": mtime,
                         "kind": kind}
                 stored = cache.add(key, out, meta, reserve)

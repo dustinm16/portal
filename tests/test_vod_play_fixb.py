@@ -241,6 +241,105 @@ async def test_identical_storage_configurations_never_share_a_cached_copy(env):
     spawned = env.ffmpegs()
     assert (await env.play()).status == 200 and env.ffmpegs() == spawned
 
+# -- item 3: a chunk deleted (or an account removed) while it is prepared leaves nothing in the cache ---
+
+class Gate:
+    """Holds the remux of a job until the test lets it go."""
+
+    def __init__(self):
+        self.reached, self.release = asyncio.Event(), asyncio.Event()
+        self.real = server._vod_play_run_tool
+
+    async def run(self, argv, *a, **k):
+        if argv[0] == "ffmpeg":
+            self.reached.set()
+            await self.release.wait()
+        return await self.real(argv, *a, **k)
+
+
+async def delete_chunk(name, user=OWNER):
+    from aiohttp.test_utils import make_mocked_request
+
+    async def auth(request):
+        return SimpleNamespace(user_id=user), None
+
+    req = make_mocked_request("DELETE", "/api/vods/x", match_info={"filename": name})
+    with mock.patch.object(server, "_stream_user_auth", auth):
+        return await server.http_delete_vod(req)
+
+
+def nothing_left(env, name):
+    assert env.cache.entries == {}, env.cache.entries
+    assert [f for f in os.listdir(env.cache.root) if f.endswith((".mp4", ".ts"))] == []
+    assert not [k for k in server._vod_play_jobs if k[1] == name]
+    assert env.cache.reserved == 0
+    work = env.cache.work_root()
+    assert not os.path.isdir(work) or os.listdir(work) == []
+
+
+@with_env(fast_wait=0)
+async def test_deleting_a_chunk_while_it_is_prepared_cancels_the_job_and_leaves_no_copy(env):
+    env.put(NAME, clip())
+    gate = Gate()
+    with mock.patch.object(server, "_vod_play_run_tool", gate.run):
+        assert (await env.play()).status == 202
+        await asyncio.wait_for(gate.reached.wait(), 20)
+        r = await delete_chunk(NAME)
+        assert r.status == 200
+        assert not os.path.exists(env.remote.path("/v/" + NAME))
+        gate.release.set()
+        await asyncio.sleep(0.5)
+    nothing_left(env, NAME)
+    st, body = await env.status()
+    assert st == 404 or body["state"] == "idle"
+
+
+@with_env(fast_wait=0)
+async def test_a_finishing_job_that_is_no_longer_in_the_table_adds_nothing(env):
+    env.put(NAME, clip())
+    gate = Gate()
+    with mock.patch.object(server, "_vod_play_run_tool", gate.run):
+        assert (await env.play()).status == 202
+        await asyncio.wait_for(gate.reached.wait(), 20)
+        (job,) = server._vod_play_jobs.values()
+        server._vod_play_jobs.clear()               # dropped without being cancelled: only the re-check can stop it
+        gate.release.set()
+        await asyncio.wait_for(job["done"].wait(), 30)
+    assert job["state"] == "failed"
+    nothing_left(env, NAME)
+
+
+@with_env(fast_wait=0)
+async def test_removing_the_account_while_a_chunk_is_prepared_leaves_no_copy(env):
+    env.put(NAME, clip())
+    gate = Gate()
+    with mock.patch.object(server, "_vod_play_run_tool", gate.run):
+        assert (await env.play()).status == 202
+        await asyncio.wait_for(gate.reached.wait(), 20)
+        tasks = server._vod_play_purge(owner=OWNER)
+        assert tasks
+        gate.release.set()
+        await asyncio.wait(tasks, timeout=10)
+    nothing_left(env, NAME)
+
+
+@with_env
+async def test_deleting_a_chunk_removes_its_mp4_its_segments_and_remembered_lengths_and_only_its_own(env):
+    other_name = f"{SESSION}/chunk_001.mkv"
+    env.put(NAME, clip("aac", 0))
+    env.put(other_name, clip("aac", 1))
+    assert (await env.play()).status == 200 and (await env.play(other_name)).status == 200
+    ident = vod_play.storage_ident(await env.db.get_vod_storage(OWNER))
+    ts_key = vod_play.entry_key(OWNER, ident, NAME, 5, 5, "ts")
+    env.cache.entries[ts_key] = {"owner": OWNER, "ident": ident, "path": NAME, "rsize": 5, "rmtime": 5,
+                                 "kind": "ts", "file": ts_key + ".ts", "size": 3, "used": time.time()}
+    Path(env.cache.root, ts_key + ".ts").write_bytes(b"abc")
+    env.cache.set_duration(OWNER, ident, NAME, 5, 5, 3.0)
+    assert (await delete_chunk(NAME)).status == 200
+    assert {e["path"] for e in env.cache.entries.values()} == {other_name}
+    assert not os.path.exists(os.path.join(env.cache.root, ts_key + ".ts"))
+    assert not [d for d in env.cache.durations.values() if d["path"] == NAME]
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
