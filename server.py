@@ -18729,6 +18729,18 @@ async def request_id_middleware(request: web.Request, handler):
     token = set_request_id(rid)
     try:
         return await handler(request)
+    except (web.HTTPException, asyncio.CancelledError):
+        # An HTTP answer and a cancellation are not touched here.
+        raise
+    except asyncio.TimeoutError:
+        # aiohttp answers a handler timeout with 504 (and logs a line); same answer, line has the ID.
+        return request.protocol.handle_error(request, 504)
+    except Exception as exc:
+        # aiohttp would log the traceback after this context is reset, and the ID a member reads
+        # out would find nothing. Its own handle_error logs it once, now, with the ID (the log
+        # filter reads the context) and builds the same 500 as before. If a response has already
+        # been started it raises ConnectionError, as it always did.
+        return request.protocol.handle_error(request, 500, exc)
     finally:
         reset_request_id(token)
 
