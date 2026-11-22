@@ -79,6 +79,7 @@ class Env:
         alerts.reset_state()
         alerts.bind(fire=self.fire, notify=self.notify)
         server._vod_guard_state.clear()
+        server._vod_skip_logged.clear()
         self.patches = [
             mock.patch.object(server, "VOD_TEMP_DIR", self.stage),
             mock.patch.object(server, "_PROJECT_ROOT", os.path.join(self.t, "project")),
@@ -318,6 +319,32 @@ def test_the_guard_notice_is_kept_per_stream_and_the_most_recent_active_one_is_s
         assert back == first, back
         assert gone is None and other is None, (gone, other)
         assert set(first) == {"kind", "code", "message", "stream_name", "at"}, "the API shape is unchanged"
+
+
+def test_a_reconnecting_encoder_gets_at_most_one_refusal_row_per_stream_and_reason_per_hour():
+    with tempfile.TemporaryDirectory(prefix="vodguard_") as t:
+        env = Env(t, {"vod_min_free_gb": "1000000", "vod_max_backlog_gb": "0"})
+
+        async def go():
+            with env:
+                server._vod_skip_logged.clear()
+                for _ in range(6):
+                    await env.start(9)               # the encoder reconnects six times
+                rows9 = [a for a in env.db.activity if a[1] == "vod_skipped"]
+                await env.start(10)                  # another stream has its own row
+                rows_both = [a for a in env.db.activity if a[1] == "vod_skipped"]
+                # the hour is over for stream 9: one more row
+                for key in list(server._vod_skip_logged):
+                    server._vod_skip_logged[key] -= server.VOD_SKIP_LOG_WINDOW + 1
+                await env.start(9)
+                rows_later = [a for a in env.db.activity if a[1] == "vod_skipped"]
+                state = server._vod_guard_public(7)
+                return rows9, rows_both, rows_later, state
+
+        rows9, rows_both, rows_later, state = asyncio.run(go())
+        assert len(rows9) == 1, rows9
+        assert len(rows_both) == 2 and len(rows_later) == 3, (len(rows_both), len(rows_later))
+        assert state is not None and state["kind"] == "refused", "the My VODs notice follows every refusal"
 
 
 def test_limits_come_from_the_settings_with_the_owner_defaults():

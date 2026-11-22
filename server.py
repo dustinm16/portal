@@ -7833,6 +7833,10 @@ async def _vod_graceful_stop(process) -> str:
 # the notice about the first. My VODs shows the owner's most recent entry (_vod_guard_public).
 _vod_guard_state: dict = {}
 _vod_guard_seq = 0
+# (stream_id, reason code) -> monotonic time of the last refused-start line in the log and activity log:
+# an encoder that keeps reconnecting is refused each time, but the log gets one row per hour.
+VOD_SKIP_LOG_WINDOW = 3600
+_vod_skip_logged: dict = {}
 
 
 async def _vod_guard_limits() -> tuple:
@@ -7874,7 +7878,8 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
     """Record that the guard stopped or refused a recording: My VODs state, activity log, one admin alert.
 
     A recording is reported once per reason (a flag on the recording); a refused start is reported
-    once per stream and reason by the alert cooldown, the state and the log line follow each refusal.
+    once per stream and reason by the alert cooldown, the state follows each refusal and the log line and
+    activity row are written at most once per stream and reason per hour (VOD_SKIP_LOG_WINDOW).
     """
     code, text = verdict
     shown = _clean_log_name(stream_name)
@@ -7887,16 +7892,20 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
         "kind": kind, "code": code, "message": message, "stream_name": shown,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    log_it = True
     if recording is not None:
         flags = recording.setdefault("alerted", set())
         if code in flags:
             return
         flags.add(code)
-    logger.warning(f"VOD recording {verb} for '{shown}': {text}")
-    try:
-        await db.log_activity(user_id, shown, "vod_stopped" if kind == "stopped" else "vod_skipped", message)
-    except Exception as e:
-        logger.debug(f"Could not log the VOD guard action: {e}")
+    elif not _vod_skip_log_due(stream_id, code):
+        log_it = False  # this refusal was already written this hour; the alert has its own cooldown
+    if log_it:
+        logger.warning(f"VOD recording {verb} for '{shown}': {text}")
+        try:
+            await db.log_activity(user_id, shown, "vod_stopped" if kind == "stopped" else "vod_skipped", message)
+        except Exception as e:
+            logger.debug(f"Could not log the VOD guard action: {e}")
     key = (os.path.basename(recording["session_dir"]) if recording else f"stream{stream_id}", code)
     summary = f"VOD recording {kind if kind == 'stopped' else 'refused'}: {text}"
     alerts.emit(
@@ -7906,6 +7915,18 @@ async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, 
         # a stream may be private: the ntfy, Gotify, Discord and Slack formats never get its name
         third_party={"summary": summary, "details": {"Reason": code, "Action": kind}},
     )
+
+
+def _vod_skip_log_due(stream_id, code: str) -> bool:
+    """True when a refused start of this stream for this reason may be written to the logs now (once per hour)."""
+    now = monotonic()
+    for key in [k for k, at in _vod_skip_logged.items() if now - at >= VOD_SKIP_LOG_WINDOW]:
+        del _vod_skip_logged[key]
+    key = (stream_id, code)
+    if key in _vod_skip_logged:
+        return False
+    _vod_skip_logged[key] = now
+    return True
 
 
 def _clean_log_name(name) -> str:
