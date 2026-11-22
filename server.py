@@ -7755,6 +7755,7 @@ async def http_live_page(request: web.Request) -> web.Response:
 # =============================================================================
 
 VOD_SEGMENT_DURATION = 300  # seconds per chunk (5 minutes)
+VOD_SFTP_START_TIMEOUT = 10  # seconds for the SFTP subsystem to start on a connected, verified SSH session
 VOD_SFTP_META_TIMEOUT = 30  # seconds for one SFTP stat, mkdir or listdir: a remote that hangs must not hold a pass
 VOD_UPLOAD_TICK = 30        # seconds between two uploader passes (the uploader's own pass; the disk guard has its own task and tick)
 VOD_STOP_Q_WAIT = 20        # seconds ffmpeg gets to finish after "q" before the signal ladder starts
@@ -12181,11 +12182,18 @@ async def _vod_dial(user_id: int, storage: dict, addrs: list):
             await _vod_activity(user_id, "vod_host_key_pinned",
                                 f"VOD storage host key pinned on first use ({seen})")
     try:
-        sftp = await conn.start_sftp_client()
+        sftp = await asyncio.wait_for(conn.start_sftp_client(), VOD_SFTP_START_TIMEOUT)
+    except asyncio.TimeoutError:
+        conn.close()
+        logger.warning(f"VOD SFTP session start timed out for user {user_id}")
+        return None, None, "Connection timed out"
     except (asyncssh.Error, OSError) as e:
         conn.close()
         logger.warning(f"VOD SFTP session error for user {user_id}: {e}")
         return None, None, "Connection failed"
+    except BaseException:
+        conn.close()                                # cancelled by a caller's deadline: do not leave it open
+        raise
     return conn, sftp, None
 
 
@@ -12919,6 +12927,7 @@ VOD_PLAY_SLOTS = 2                 # remux jobs running at the same time
 VOD_PLAY_MAX_PER_USER = 3          # queued plus running jobs of one member
 VOD_PLAY_MAX_JOBS = 16             # all members together
 VOD_PLAY_FAST_WAIT = 1.5           # seconds a request waits for its job before it answers 202
+VOD_PLAY_REQUEST_DEADLINE = 20.0   # seconds for everything a play request does before it answers (storage lookups, live check, FAST_WAIT)
 VOD_PLAY_STAT_TTL = 15.0           # seconds a remote size and modification time is trusted
 VOD_PLAY_KEEP_SECONDS = 600        # a finished job (and a download-only verdict) is remembered this long
 VOD_PLAY_FAILED_KEEP = 30          # a failed job is shown to the status route this long, then retried
@@ -13084,8 +13093,36 @@ class _VodPlayRemoteError(Exception):
         self.status, self.message = status, message
 
 
+class _VodLink:
+    """One SFTP connection for the steps of one request (size lookup, live check), opened on first use
+    and closed by the request. A failed dial is remembered, so one request never dials twice."""
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.conn = self.sftp = None
+        self.error: Optional[str] = None
+        self.dials = 0
+
+    async def client(self):
+        if self.sftp is None:
+            if self.error is not None:
+                raise _VodPlayRemoteError(502, self.error)
+            self.dials += 1
+            conn, sftp, error = await _connect_vod_sftp(self.user_id)
+            if error:
+                self.error = error
+                raise _VodPlayRemoteError(502, error)
+            self.conn, self.sftp = conn, sftp
+        return self.sftp
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+        self.conn = self.sftp = None
+
+
 async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: str,
-                                fresh: bool = False) -> tuple:
+                                fresh: bool = False, link: Optional[_VodLink] = None) -> tuple:
     """(size, mtime) of the owner's chunk, from the pinned SFTP connection (remembered for a few seconds
     so that the Range requests of one playback do not each open a connection). Raises _VodPlayRemoteError:
     404 only when the storage says there is no such regular file, 502 when it cannot be reached or does not answer."""
@@ -13093,10 +13130,10 @@ async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: s
     hit = _vod_play_stats.get(memo_key)
     if hit and not fresh and monotonic() - hit[2] < VOD_PLAY_STAT_TTL:
         return hit[0], hit[1]
-    conn, sftp, error = await _connect_vod_sftp(user_id)
-    if error:
-        raise _VodPlayRemoteError(502, error)
+    own = link is None
+    link = link or _VodLink(user_id)
     try:
+        sftp = await link.client()
         remote = f"{storage['remote_path'].rstrip('/')}/{path}"
         try:
             attrs = await asyncio.wait_for(sftp.stat(remote), VOD_SFTP_META_TIMEOUT)
@@ -13116,10 +13153,11 @@ async def _vod_play_remote_stat(user_id: int, storage: dict, path: str, ident: s
         _vod_play_stats[memo_key] = (size, mtime, monotonic())
         return size, mtime
     finally:
-        conn.close()
+        if own:
+            link.close()
 
 
-async def _vod_play_is_live_newest(user_id: int, storage: dict, path: str) -> bool:
+async def _vod_play_is_live_newest(user_id: int, storage: dict, path: str, link: Optional[_VodLink] = None) -> bool:
     """True when the chunk is the newest of a folder a recording is writing to right now."""
     base = storage["remote_path"].rstrip("/")
     dirpart = path.rpartition("/")[0]
@@ -13130,15 +13168,20 @@ async def _vod_play_is_live_newest(user_id: int, storage: dict, path: str) -> bo
     mine = vod_play.chunk_number(path.rpartition("/")[2])
     if mine is None:
         return False
-    conn, sftp, error = await _connect_vod_sftp(user_id)
-    if error:
-        return True            # cannot tell: the safe answer is to leave it alone
+    own = link is None
+    link = link or _VodLink(user_id)
     try:
-        names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)
-    except (asyncssh.SFTPError, OSError, asyncio.TimeoutError):
-        return True
+        try:
+            sftp = await link.client()
+        except _VodPlayRemoteError:
+            return True        # cannot tell: the safe answer is to leave it alone
+        try:
+            names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)
+        except (asyncssh.Error, OSError, asyncio.TimeoutError):
+            return True
     finally:
-        conn.close()
+        if own:
+            link.close()
     numbers = [n for n in (vod_play.chunk_number(x) for x in names) if n is not None]
     return bool(numbers) and mine >= max(numbers)
 
@@ -13377,13 +13420,23 @@ async def http_play_vod(request: web.Request) -> web.StreamResponse:
     # continuation ranges of that playback use the answer remembered for a few seconds.
     rng = request.headers.get("Range")
     start_of_playback = not rng or re.match(r"^\s*bytes\s*=\s*0*-", rng) is not None
+    # One connection serves the size lookup and the live check, and one deadline covers everything up to
+    # the answer (the wait for a fast job included), so a storage that hangs cannot hold the request for minutes.
+    link = _VodLink(user_id)
     try:
-        size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident, fresh=start_of_playback)
+        async with asyncio.timeout(VOD_PLAY_REQUEST_DEADLINE):
+            size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident, fresh=start_of_playback,
+                                                      link=link)
+            outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "mp4",
+                                                      VOD_PLAY_FAST_WAIT, link=link)
     except _VodPlayRemoteError as e:
         return _vod_play_reply({"error": e.message}, e.status)
-    key = vod_play.entry_key(user_id, ident, path, size, mtime)
-
-    outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "mp4", VOD_PLAY_FAST_WAIT)
+    except TimeoutError:
+        logger.warning(f"VOD playback request for user {user_id} passed its deadline")
+        return _vod_play_reply({"error": "The VOD storage is slow to answer; try again in a few seconds"},
+                               503, retry_after=10)
+    finally:
+        link.close()
     if outcome == "file":
         return _vod_play_file(payload)
     if outcome == "live":
@@ -13406,7 +13459,7 @@ async def http_play_vod(request: web.Request) -> web.StreamResponse:
 
 async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, size: int, mtime: int,
                            kind: str, wait: float, duration: Optional[float] = None,
-                           prefetch: bool = False) -> tuple:
+                           prefetch: bool = False, link: Optional[_VodLink] = None) -> tuple:
     """The one place that turns a chunk into a cached output of *kind* ("mp4": the single-chunk player,
     "ts": a segment of a session) or starts, joins and waits for the job that makes it. Both play
     routes use it, so the gate, the cache, the job table, the locks and the slot limit are the same.
@@ -13439,7 +13492,7 @@ async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, s
         job = None
 
     if job is None:
-        if await _vod_play_is_live_newest(user_id, storage, path):
+        if await _vod_play_is_live_newest(user_id, storage, path, link):
             return "live", None
         # no await from here to the registration: two requests for one chunk end up with one job
         current = _vod_play_jobs.get(jobkey)

@@ -123,6 +123,92 @@ async def test_the_502_belongs_to_the_callers_own_storage_and_tells_another_memb
     assert env.spawned == []
 
 
+# -- item 1: one connection, one deadline ------------------------------------------------------------
+
+def dial_spy(dials):
+    real = server._connect_vod_sftp
+
+    async def spy(uid):
+        dials.append(uid)
+        return await real(uid)
+    return spy
+
+
+@with_env(fast_wait=0.1)
+async def test_the_stat_and_the_live_check_share_one_connection(env):
+    env.put(f"{SESSION}/chunk_000.mkv", clip("aac", 0))
+    env.put(f"{SESSION}/chunk_001.mkv", clip("aac", 1))
+    dials = []
+
+    async def slow_job(job, storage, size, mtime):          # the job's own pull is not what is counted here
+        try:
+            await asyncio.sleep(30)
+        finally:
+            job["finished"] = time.monotonic()
+            job["done"].set()
+
+    with mock.patch.object(server, "_connect_vod_sftp", dial_spy(dials)), \
+            mock.patch.object(server, "_vod_remote_dirs_in_use", lambda: {"*"}), \
+            mock.patch.object(server, "_vod_play_job", slow_job):
+        r = await env.play(f"{SESSION}/chunk_000.mkv")      # an older chunk of a folder being recorded: asks the folder
+    assert r.status == 202, await r.text()
+    assert dials == [OWNER], dials                           # one dial for the size and the folder listing
+
+
+@with_env(ttl=15.0)
+async def test_continuation_ranges_open_no_connection(env):
+    env.put(NAME, clip())
+    assert (await env.play()).status == 200
+    dials = []
+    with mock.patch.object(server, "_connect_vod_sftp", dial_spy(dials)):
+        r = await env.play(Range="bytes=10-")
+        assert r.status == 206
+    assert dials == []
+
+
+@with_env
+async def test_a_hanging_storage_ends_the_request_at_the_deadline_with_a_retry_hint(env):
+    env.put(NAME, clip())
+
+    async def hang(uid):
+        await asyncio.sleep(3600)
+
+    t0 = time.time()
+    with mock.patch.object(server, "VOD_PLAY_REQUEST_DEADLINE", 1.0), \
+            mock.patch.object(server, "_connect_vod_sftp", hang):
+        r = await asyncio.wait_for(env.play(), 8)
+    assert r.status == 503 and time.time() - t0 < 6
+    assert r.headers.get("Retry-After") and "private" in r.headers["Cache-Control"].lower()
+    assert env.spawned == [] and env.cache.reserved == 0
+    assert not server._vod_play_jobs
+
+
+def test_the_sftp_subsystem_start_has_a_timeout_and_the_connection_is_closed():
+    class Conn:
+        closed = False
+
+        async def start_sftp_client(self):
+            await asyncio.sleep(3600)
+
+        def close(self):
+            self.closed = True
+
+    conn = Conn()
+
+    async def fake_connect(addrs, opts, **kw):
+        return conn, None
+
+    storage = {"host": "h", "port": 22, "username": "u", "auth_method": "password",
+               "remote_path": "/v", "config": {"password": "x"}}
+
+    async def go():
+        with mock.patch.object(server.hostkeys, "connect_verified", fake_connect), \
+                mock.patch.object(server, "VOD_SFTP_START_TIMEOUT", 0.2):
+            return await asyncio.wait_for(server._vod_dial(1, storage, ["127.0.0.1"]), 5)
+
+    c, sftp, error = asyncio.run(go())
+    assert c is None and sftp is None and error == "Connection timed out" and conn.closed
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
