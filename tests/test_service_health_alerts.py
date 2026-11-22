@@ -263,6 +263,55 @@ async def main():
         check(f"a failed {how} after a manual stop alerts",
               [(x[1]["id"], x[1]["state"]) for x in events] == [(30, "down")], str(events))
 
+    # maintenance: a service in maintenance is not reported as down; the alert is owed and sent
+    # once afterwards if it is still true; a change back inside it cancels it
+    class MaintDb(FakeDb):
+        row = {"maintenance": 0, "maintenance_until": None, "maintenance_message": None}
+
+        async def get_service_by_id(self, sid):
+            return dict(self.row)
+
+    mdb = MaintDb()
+    events.clear()
+    mm = svc.ServiceManager(mdb, on_event=lambda e, d: events.append((e, d)))
+    ms = Fake(40)
+    mm._services[40] = ms
+    for _ in range(2):
+        await mm._check_services_once()
+    mdb.row = {"maintenance": 1, "maintenance_until": None, "maintenance_message": "m"}
+    ms.status = "stopped"
+    for _ in range(5):
+        await mm._check_services_once()
+    check("maintenance: a service that stops sends no 'down' while maintenance lasts", events == [], str(events))
+    mdb.row = {"maintenance": 0, "maintenance_until": None, "maintenance_message": None}
+    await mm._check_services_once()
+    check("maintenance: once it ends, a service still down sends the one owed 'down'",
+          [d["state"] for _, d in events] == ["down"], str(events))
+    await mm._check_services_once()
+    check("maintenance: and only once", len(events) == 1)
+    events.clear()
+    m5 = svc.ServiceManager(mdb, on_event=lambda e, d: events.append((e, d)))
+    m5s = Fake(41)
+    m5._services[41] = m5s
+    await m5._check_services_once()
+    mdb.row = {"maintenance": 1, "maintenance_until": None, "maintenance_message": None}
+    m5s.status = "stopped"
+    for _ in range(3):
+        await m5._check_services_once()
+    m5s.status = "running"
+    for _ in range(3):
+        await m5._check_services_once()
+    mdb.row = {"maintenance": 0, "maintenance_until": None, "maintenance_message": None}
+    for _ in range(3):
+        await m5._check_services_once()
+    check("maintenance: a down and a recovery inside it send nothing at all, now or later", events == [], str(events))
+    mdb.row = {"maintenance": 1, "maintenance_until": "2000-01-01T00:00:00Z", "maintenance_message": None}
+    m5s.status = "stopped"
+    for _ in range(3):
+        await m5._check_services_once()
+    check("maintenance: an end time that has passed is not maintenance",
+          [d["state"] for _, d in events] == ["down"], str(events))
+
     # a broken hook is swallowed
     bad = svc.ServiceManager(FakeDb(), on_event=lambda e, d: 1 / 0)
     bad._services[5] = Fake(5, status="stopped")

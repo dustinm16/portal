@@ -8,6 +8,7 @@ import asyncio
 import logging
 from typing import Dict, Optional, Type
 
+import maintenance
 from config import Config
 
 from .base import ManagedService, ServiceInfo
@@ -501,28 +502,49 @@ class ServiceManager:
         except Exception as e:
             logger.warning(f"on_event hook failed for {event}: {type(e).__name__}")
 
-    def _track_health(self, service: ManagedService, ok: bool) -> None:
+    def _track_health(self, service: ManagedService, ok: bool, quiet: bool = False) -> None:
         """Count one check for a service and report a transition. A service is down after
         HEALTH_FAIL_THRESHOLD failed checks in a row and up again after HEALTH_OK_THRESHOLD good
-        ones, so a flapping service sends nothing and a steady one sends one alert per change."""
+        ones, so a flapping service sends nothing and a steady one sends one alert per change.
+
+        `quiet` (the service is in maintenance) holds an alert back: it is owed and sent by the
+        first check after the maintenance if the service is still in that state; a change back
+        in between cancels it, so a 'down' nobody was told about never gets a 'back up'."""
         st = self._health_state.setdefault(service.id, {"fails": 0, "oks": 0, "down": False})
+
+        def send(state: str) -> None:
+            if quiet:
+                st["owed"] = None if st.get("owed") not in (None, state) else state
+                return
+            st["owed"] = None
+            data = {"id": service.id, "name": service.name, "display_name": service.display_name,
+                    "state": state, "status": service.status}
+            if state == "down":
+                data["failed_checks"] = st["fails"]
+            self._emit("service.health_changed", data)
+
+        if not quiet and st.get("owed") and st["owed"] == ("down" if st["down"] else "up"):
+            send(st["owed"])
         if ok:
             st["fails"] = 0
             if st["down"]:
                 st["oks"] += 1
                 if st["oks"] >= HEALTH_OK_THRESHOLD:
                     st.update(down=False, oks=0)
-                    self._emit("service.health_changed", {
-                        "id": service.id, "name": service.name, "display_name": service.display_name,
-                        "state": "up", "status": service.status})
+                    send("up")
         else:
             st["oks"] = 0
             st["fails"] += 1
             if not st["down"] and st["fails"] >= HEALTH_FAIL_THRESHOLD:
                 st["down"] = True
-                self._emit("service.health_changed", {
-                    "id": service.id, "name": service.name, "display_name": service.display_name,
-                    "state": "down", "status": service.status, "failed_checks": st["fails"]})
+                send("down")
+
+    async def _in_maintenance(self, service_id: int) -> bool:
+        """The service row is in maintenance now (a read that fails counts as not)."""
+        try:
+            return maintenance.state(await self._db.get_service_by_id(service_id)) is not None
+        except Exception:
+            return False
 
     async def _check_services_once(self):
         """One pass of the health monitor over all services."""
@@ -551,6 +573,7 @@ class ServiceManager:
             if service.status == 'running':
                 self._baseline_quiet.discard(service.id)
                 self._stopped_on_purpose.discard(service.id)
+            quiet = service.enabled and await self._in_maintenance(service.id)
             if not service.enabled:
                 self._health_state.pop(service.id, None)
             elif service.status in ('starting', 'stopping'):
@@ -560,7 +583,7 @@ class ServiceManager:
                     # stopped through the portal, or already stopped at startup: not failing
                     self._health_state.pop(service.id, None)
                 else:
-                    self._track_health(service, False)
+                    self._track_health(service, False, quiet)
 
             if service.status != 'running':
                 continue
@@ -571,7 +594,7 @@ class ServiceManager:
 
                 await self._db.update_service_health_status(service.id, health_status)
                 if service.enabled:
-                    self._track_health(service, bool(healthy))
+                    self._track_health(service, bool(healthy), quiet)
 
                 if not healthy:
                     logger.warning(f"Service {service.name} is unhealthy")
@@ -584,7 +607,7 @@ class ServiceManager:
                 logger.error(f"Health check failed for {service.name}: {e}")
                 await self._db.update_service_health_status(service.id, 'unknown')
                 if service.enabled:
-                    self._track_health(service, False)
+                    self._track_health(service, False, quiet)
 
     async def _stage_interval(self) -> float:
         try:
