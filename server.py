@@ -5640,6 +5640,7 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
 # At most one "opened" write per user and connection per minute (a proxied page makes hundreds of
 # requests; they must not each reach the database).
 _open_throttle = dash_prefs.OpenThrottle()
+_open_fail_logged: Optional[float] = None       # monotonic time of the last "write failed" log line
 
 
 async def _note_connection_opened(connection: dict, user_id: int) -> bool:
@@ -5652,8 +5653,14 @@ async def _note_connection_opened(connection: dict, user_id: int) -> bool:
     try:
         await db.note_connection_opened(user_id, conn_id)
     except Exception as e:
-        _open_throttle.forget(user_id, conn_id)
-        logger.warning(f"last-opened write failed: {e}")
+        # The slot stays taken for the minute: a failing database is not asked again by every
+        # sub-request of a proxied page, and the failure is logged at most once a minute.
+        global _open_fail_logged
+        now = monotonic()
+        if _open_fail_logged is None or now - _open_fail_logged >= 60:
+            _open_fail_logged = now
+            logger.warning(f"last-opened write failed ({type(e).__name__}); not retried for a minute")
+        return False
     return True
 
 
@@ -5899,9 +5906,22 @@ async def http_set_connection_prefs(request: web.Request) -> web.Response:
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
+    # The body is at most dash_prefs.BODY_MAX bytes: refused by its Content-Length before a byte is read,
+    # and counted while it is read when the client sent none (chunked) or lied.
+    too_big = web.json_response({"error": "Request too large"}, status=413)
+    if request.content_length is not None and request.content_length > dash_prefs.BODY_MAX:
+        return too_big
+    raw = b""
+    while len(raw) <= dash_prefs.BODY_MAX:
+        chunk = await request.content.read(dash_prefs.BODY_MAX + 1 - len(raw))
+        if not chunk:
+            break
+        raw += chunk
+    if len(raw) > dash_prefs.BODY_MAX:
+        return too_big
     try:
-        data = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     fields, err = dash_prefs.validate(data)
     if err:

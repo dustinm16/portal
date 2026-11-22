@@ -64,5 +64,10 @@ check('"/" inside a textarea or select does not', !core.isSlashShortcut(key({ ta
 check('"/" in an editable element does not', !core.isSlashShortcut(key({ target: { tagName: 'DIV', isContentEditable: true } })));
 check('"/" with a modifier does not', !core.isSlashShortcut(key({ ctrlKey: true })) && !core.isSlashShortcut(key({ metaKey: true })) && !core.isSlashShortcut(key({ altKey: true })));
 check('another key does not', !core.isSlashShortcut(key({ key: 'a' })));
+check('"/" while a dialog is open does not', !core.isSlashShortcut(key(), true) && core.isSlashShortcut(key(), false));
+const disp = (m) => (n) => m.get(n);
+const dlgA = { hidden: false }, dlgB = { hidden: false }, dlgC = { hidden: true };
+check('a dialog is open when one of the nodes is shown', core.anyDialogOpen([dlgA, dlgB], disp(new Map([[dlgA, 'none'], [dlgB, 'flex']]))));
+check('none open when all are none, empty or hidden', !core.anyDialogOpen([dlgA, dlgB, dlgC], disp(new Map([[dlgA, 'none'], [dlgB, ''], [dlgC, 'flex']]))) && !core.anyDialogOpen([], disp(new Map())));
 
 process.exit(failed ? 1 : 0);

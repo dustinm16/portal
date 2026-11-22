@@ -48,10 +48,10 @@ const body = new El('body');
 global.document = {
     readyState: 'complete', body: body, activeElement: null,
     getElementById: (i) => ids[i] || null,
-    createElement: (t) => new El(t), createTextNode: (t) => { const e = new El('#text'); e._text = t; return e; },
+    createElement: (t) => new El(t), createElementNS: (ns, t) => { const e = new El(t); e.ns = ns; return e; }, createTextNode: (t) => { const e = new El('#text'); e._text = t; return e; },
     addEventListener: (t, f) => { (docListeners[t] = docListeners[t] || []).push(f); },
     querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelectorAll: (sel) => (String(sel).includes('.modal') ? [ids['conn-organise-modal']] : []),
 };
 global.window = global;
 const store = {};
@@ -100,6 +100,12 @@ check('Escape clears the filter', input.value === '' && cards().length === 3);
 heads()[0].click();
 check('clicking a folder head collapses it and remembers it', cards().length === 1 && store['portal.dash.folders.7'] === '["Games"]', JSON.stringify(store));
 check('the head says it is collapsed', heads()[0].getAttribute('aria-expanded') === 'false');
+{
+    const caret = heads()[0].children.find(c => c.className === 'conn-folder-caret');
+    const svg = caret && caret.children[0];
+    check('the folder caret is an inline SVG with no text character (U+25B6 is drawn as an emoji on phones)',
+        svg && svg.tagName === 'SVG' && svg.ns === 'http://www.w3.org/2000/svg' && !/[\u25B6\u25BC\u25B8]/.test(heads()[0].textContent) && caret.getAttribute('data-state') === 'collapsed');
+}
 input.value = 'pal'; input.dispatch('input', {});
 check('while filtering a collapsed folder is shown anyway', cards().length === 1 && cards()[0].textContent.includes('Palworld'));
 input.value = ''; input.dispatch('input', {});
@@ -155,12 +161,25 @@ async function await_() {
     slash({ key: '/', target: { tagName: 'INPUT' }, preventDefault() {} });
     check('"/" inside a field does nothing', document.activeElement === null);
 
+    // "/" leaves the page alone while the dialog is open
+    document.activeElement = null;
+    pal().find(n => n.getAttribute('data-act') === 'organise')[0] && cards()[0].find(n => n.getAttribute('data-act') === 'organise')[0].click();
+    check('the dialog is open for the "/" check', ids['conn-organise-modal'].style.display === 'flex');
+    slash({ key: '/', target: { tagName: 'BODY' }, preventDefault() { check('"/" with a dialog open does not prevent the key', false); } });
+    check('"/" with a dialog open does not take focus', document.activeElement !== input);
+    ids['conn-organise-cancel'].click();
+    check('the dialog closed again', ids['conn-organise-modal'].style.display === 'none');
+    slash({ key: '/', target: { tagName: 'BODY' }, preventDefault() {} });
+    check('"/" works again once the dialog is closed', document.activeElement === input);
+    document.activeElement = null;
+
     // a failed save shows the error in the dialog
     global.Portal.api = async () => { throw new Error('Tag has a character that is not allowed'); };
     pal && cards()[0].find(n => n.getAttribute('data-act') === 'organise')[0].click();
     ids['conn-organise-form'].dispatch('submit', {});
     await new Promise(r => setTimeout(r, 10));
     check('a refused save keeps the dialog open and says why', ids['conn-organise-modal'].style.display === 'flex' && ids['conn-organise-error'].textContent.includes('not allowed'));
+    ids['conn-organise-cancel'].click();
 
     // Services tab: the text filter looks at the name and plugin only; Enter clicks the first card left
     const mkCard = (name, plugin, buttons) => {
@@ -175,7 +194,7 @@ async function await_() {
     };
     const pal2 = mkCard('Palworld', 'Game Server', 'Stop Restart Logs Files Backup');
     const web = mkCard('Wiki', 'Proxy', 'Stop Restart Logs');
-    global.document.querySelectorAll = (sel) => (sel === '#services-grid .service-card' ? [pal2, web] : []);
+    global.document.querySelectorAll = (sel) => (sel === '#services-grid .service-card' ? [pal2, web] : String(sel).includes('.modal') ? [ids['conn-organise-modal']] : []);
     const sinput = ids['svc-filter'];
     sinput.value = 'pal'; sinput.dispatch('input', {});
     check('the services filter hides the other card', !pal2.className.includes('conn-hidden') && web.className.includes('conn-hidden'));

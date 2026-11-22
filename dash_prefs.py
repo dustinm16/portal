@@ -20,6 +20,7 @@ TAG_MAX = 24
 TAGS_MAX = 10
 OPEN_MODES = ("default", "same", "new", "embedded")
 FIELDS = ("folder", "tags", "open_mode", "pinned")
+BODY_MAX = 8192             # bytes of a prefs request; a larger one is refused with 413 before it is parsed
 
 # letters and digits of any language, space, and a few separators; no control characters
 _FOLDER_RE = re.compile(r"^[\w .&'()+-]+$")

@@ -1014,7 +1014,7 @@ Your own filing of a connection you can reach (one you own or one shared with yo
 - `open_mode`: `default`, `same`, `new` or `embedded` (the dashboard offers `embedded` only for the HTTP types that open in the portal's browser page).
 - `pinned`: `true` or `false` (a number is refused). An owner's pin is also the connection's `is_pinned`.
 
-**Response:** `{"prefs": {"folder", "tags", "open_mode", "pinned", "last_opened_at"}}`. `400` for an unknown field, an empty body, or a value outside the limits above (nothing is stored). A caller with no access gets the `404 {"error": "Connection not found"}` of a connection that does not exist, whatever the body.
+**Response:** `{"prefs": {"folder", "tags", "open_mode", "pinned", "last_opened_at"}}`. `400` for an unknown field, an empty body, or a value outside the limits above (nothing is stored). `413` for a body over 8 KB (8192 bytes), by its `Content-Length` or, when it has none, counted while it is read; nothing is parsed or stored. A caller with no access gets the `404 {"error": "Connection not found"}` of a connection that does not exist, whatever the body.
 
 `prefs.last_opened_at` (UTC, `null` if never) is set when the connection is opened through `/connect`, the terminal socket or the proxy, at most once a minute per member and connection. For a connection that has no filing yet, `prefs` is `{"folder": "", "tags": [], "open_mode": "default", "pinned": <the owner's older pin>, "last_opened_at": null}`.
 

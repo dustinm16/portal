@@ -58,6 +58,9 @@ check("an author display rule cannot defeat the hidden attribute on the new cont
 check("the services filter reads only the name and plugin", "'.service-name'" in JS and "'.service-plugin'" in JS)
 check("the phone layout has a rule", "@media (max-width: 600px)" in CSS.split("Dashboard organising")[1])
 check("server text is never put in a selector unescaped", "CSS.escape" in JS)
+check("the folder caret is not a text character (U+25B6 is drawn as an emoji on phones) but an inline SVG",
+      not re.search("[\u25b6\u25b8\u25ba\u25bc]", JS) and "createElementNS" in JS and "caretIcon(" in JS)
+check("the / key is ignored while a dialog is open", "isSlashShortcut(e, dialogIsOpen())" in JS and "[role=\"dialog\"]" in JS)
 
 node = shutil.which("node")
 if node:

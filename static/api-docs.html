@@ -1282,7 +1282,7 @@
   <span class="string">"prefs"</span>: {<span class="string">"folder"</span>: <span class="string">"Games"</span>, <span class="string">"tags"</span>: [<span class="string">"survival"</span>, <span class="string">"co-op"</span>], <span class="string">"open_mode"</span>: <span class="string">"new"</span>, <span class="string">"pinned"</span>: <span class="keyword">true</span>, <span class="string">"last_opened_at"</span>: <span class="keyword">null</span>}
 }</pre>
                         </div>
-                        <p><code>400</code> for an unknown field, an empty body or a value outside the limits (nothing is stored). A caller with no access gets the <code>404</code> of a connection that does not exist, whatever the body. <code>last_opened_at</code> is set when the connection is opened through <code>/connect</code>, the terminal socket or the proxy, at most once a minute per member and connection.</p>
+                        <p><code>400</code> for an unknown field, an empty body or a value outside the limits (nothing is stored). <code>413</code> for a body over 8 KB (8192 bytes), by its <code>Content-Length</code> or, when it has none, counted while it is read. A caller with no access gets the <code>404</code> of a connection that does not exist, whatever the body. <code>last_opened_at</code> is set when the connection is opened through <code>/connect</code>, the terminal socket or the proxy, at most once a minute per member and connection.</p>
                     </div>
                 </div>
 

@@ -923,7 +923,7 @@ for _n in ("connection_user_prefs", "connections only", "not an administrator", 
            "exactly the answer of a connection that does not exist", "at most 40 characters", "at most 10 tags",
            "at most once a minute per member and connection", "`use_count`", "when a share is revoked",
            "when a share expires", "the 60 second sweeper", "`/` focuses it", "recently used", "breaking changes.** none",
-           "`conn-organise.js` 2", "`dashboard.js` 60", "`user-connections.js` 59", "`portal.css` 56",
+           "`conn-organise.js` 3", "`dashboard.js` 60", "`user-connections.js` 59", "`portal.css` 56",
            "**not tested.**", "no browser", "fake dom"):
     check(f"1.22.0 states: {_n}", _n in _low122, _n)
 check("1.22.0: docs/API.md and api-docs.html document the prefs route and the prefs field",
@@ -931,7 +931,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 2), ("dashboard.js", 60), ("user-connections.js", 59), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 3), ("dashboard.js", 60), ("user-connections.js", 59), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))
@@ -954,7 +954,7 @@ check("1.22.0 health: the numbers stated are the ones in the code",
 check("1.22.0 health: the setting is off by default in the code", _ch.clamp_interval(None) == 60)
 check("1.22.0 health: the dashboard page loads the versions the notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-health.js", 1), ("conn-health.css", 1), ("conn-organise.js", 2))))
+          for f, v in (("conn-health.js", 1), ("conn-health.css", 1), ("conn-organise.js", 3))))
 check("1.22.0 health: docs/API.md and api-docs.html document both routes",
       all("/api/connections/status" in t_ and "/api/admin/connection-health" in t_ for t_ in (
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))

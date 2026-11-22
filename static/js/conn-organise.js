@@ -124,18 +124,30 @@
     }
 
     /** Is this keydown the "/" shortcut? Not inside a field, not with a modifier. */
-    function isSlashShortcut(e) {
+    function isSlashShortcut(e, dialogOpen) {
         if (!e || e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return false;
+        if (dialogOpen) return false;
         var t = e.target || {};
         var tag = String(t.tagName || '').toUpperCase();
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return false;
         return true;
     }
 
+    /** Is one of these dialog-like nodes on screen? `displayOf(node)` gives its display value. */
+    function anyDialogOpen(nodes, displayOf) {
+        for (var i = 0; i < nodes.length; i++) {
+            var n = nodes[i];
+            if (!n || n.hidden) continue;
+            var d = displayOf(n);
+            if (d && d !== 'none') return true;
+        }
+        return false;
+    }
+
     var core = {
         prefsOf: prefsOf, canEmbed: canEmbed, queryWords: queryWords, matches: matches, sortItems: sortItems,
         groupByFolder: groupByFolder, recentItems: recentItems, tagCounts: tagCounts, parseTags: parseTags,
-        orderedMatches: orderedMatches, isSlashShortcut: isSlashShortcut, OPEN_MODES: OPEN_MODES
+        orderedMatches: orderedMatches, isSlashShortcut: isSlashShortcut, anyDialogOpen: anyDialogOpen, OPEN_MODES: OPEN_MODES
     };
 
     if (typeof module !== 'undefined' && module.exports) {
@@ -154,6 +166,24 @@
         if (cls) n.className = cls;
         if (text !== undefined && text !== null) n.textContent = text;
         return n;
+    }
+
+    /** The folder caret, drawn as an inline SVG: the character U+25B6 is drawn as a coloured emoji on phones. */
+    function caretIcon(collapsed) {
+        var holder = el('span', 'conn-folder-caret');
+        holder.setAttribute('aria-hidden', 'true');
+        holder.setAttribute('data-state', collapsed ? 'collapsed' : 'open');
+        var ns = 'http://www.w3.org/2000/svg';
+        var svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', '0 0 10 10');
+        svg.setAttribute('width', '10');
+        svg.setAttribute('height', '10');
+        var path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', collapsed ? 'M2 1 L9 5 L2 9 Z' : 'M1 2 L9 2 L5 9 Z');
+        path.setAttribute('fill', 'currentColor');
+        svg.appendChild(path);
+        holder.appendChild(svg);
+        return holder;
     }
 
     function button(label, cls, title) {
@@ -404,7 +434,7 @@
                 var head = button('', 'conn-folder-head');
                 head.setAttribute('data-folder', g.folder);
                 head.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
-                head.appendChild(el('span', 'conn-folder-caret', isCollapsed ? '▶' : '▼'));
+                head.appendChild(caretIcon(isCollapsed));
                 head.appendChild(el('span', 'conn-folder-name', g.folder === UNFILED ? 'Unfiled' : g.folder));
                 head.appendChild(el('span', 'conn-folder-count', String(g.items.length)));
                 section.appendChild(head);
@@ -438,6 +468,15 @@
     }
 
     // ---- dialog
+
+    /** A modal or dialog is on screen (the "/" shortcut then leaves the page alone). */
+    function dialogIsOpen() {
+        var nodes = document.querySelectorAll('.modal, [role="dialog"], [aria-modal="true"], dialog[open]');
+        return anyDialogOpen(nodes, function (n) {
+            if (typeof window.getComputedStyle === 'function') return window.getComputedStyle(n).display;
+            return n.style && n.style.display;
+        });
+    }
 
     function openDialog(conn, opener) {
         var modal = $('conn-organise-modal');
@@ -566,7 +605,7 @@
         if (modal) modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeDialog(); } });
 
         document.addEventListener('keydown', function (e) {
-            if (!isSlashShortcut(e)) return;
+            if (!isSlashShortcut(e, dialogIsOpen())) return;
             var tab = activeTabName();
             var target = tab === 'tab-my-connections' ? $('conn-filter') : tab === 'tab-services' ? $('svc-filter') : null;
             if (!target) return;

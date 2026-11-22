@@ -212,10 +212,55 @@ async def main():
     server._open_throttle.clear()
 
     async def failing(*a, **k):
+        failing.calls += 1
         raise RuntimeError("disk full")
+    failing.calls = 0
+    import logging as _logging
+    class _Grab(_logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+        def emit(self, record):
+            self.lines.append(record.getMessage())
+    grab = _Grab()
+    _logging.getLogger("portal").addHandler(grab)
+    server._open_fail_logged = None
     db.note_connection_opened = failing
     check("a failing write does not break the open", await one(bob) == 200)
+    codes = await asyncio.gather(*[one(bob) for _ in range(60)])
     db.note_connection_opened = orig_note
+    _logging.getLogger("portal").removeHandler(grab)
+    check("60 more sub-requests after a failed write answer normally", codes.count(200) == 60, str(codes))
+    check("the failed write is not retried by them: the slot stays taken for the minute", failing.calls == 1, str(failing.calls))
+    check("and it is logged once, not once per request", len([l for l in grab.lines if "last-opened write failed" in l]) == 1, str(grab.lines))
+    server._open_throttle.clock = lambda: _t.monotonic() + 61
+    db.note_connection_opened = orig_note
+    await one(bob)
+    check("a minute later the write is tried again", (await prefs_of(bob, web_uuid))["last_opened_at"] is not None)
+    server._open_throttle.clock = _t.monotonic
+    server._open_throttle.clear()
+
+    # ---- the size of a prefs request ---------------------------------------------------------------------------------
+    big = json.dumps({"folder": "x", "tags": ["t"], "pad": "a" * 9000})
+    async with bob.put(f"{env.base}/api/connections/{palworld}/prefs", data=big, headers={"Content-Type": "application/json"}) as r:
+        check("a body over 8 KB is refused with 413 before it is parsed (not 400 for the unknown field)", r.status == 413, str(r.status))
+    async def chunks():
+        yield b'{"folder": "'
+        yield b"a" * 5000
+        yield b"a" * 5000
+        yield b'"}'
+    async with bob.put(f"{env.base}/api/connections/{palworld}/prefs", data=chunks(), headers={"Content-Type": "application/json"}) as r:
+        check("a chunked body over 8 KB (no Content-Length) is refused with 413 too", r.status == 413, str(r.status))
+    async with bob.put(f"{env.base}/api/connections/{palworld}/prefs", data="{" + " " * dash_prefs.BODY_MAX, headers={"Content-Type": "application/json"}) as r:
+        check("a body over the limit that is not even JSON is 413, a body under it that is not JSON is 400",
+              r.status == 413)
+    async with bob.put(f"{env.base}/api/connections/{palworld}/prefs", data="{not json", headers={"Content-Type": "application/json"}) as r:
+        check("(control) a small body that is not JSON is 400", r.status == 400, str(r.status))
+    ok_body = json.dumps({"folder": "Games"})
+    async with bob.put(f"{env.base}/api/connections/{palworld}/prefs", data=ok_body + " " * (dash_prefs.BODY_MAX - len(ok_body)), headers={"Content-Type": "application/json"}) as r:
+        check("a body of exactly 8 KB is still accepted", r.status == 200, str(r.status))
+    async with env.sessions["dave"].put(f"{env.base}/api/connections/{palworld}/prefs", data=big, headers={"Content-Type": "application/json"}) as r:
+        check("a connection the caller cannot reach is still 404 whatever the body", r.status == 404, str(r.status))
 
     # ---- filing disappears when access ends ---------------------------------------------------------------------------
     async def stored(user, conn_id):
