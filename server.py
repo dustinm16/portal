@@ -138,6 +138,7 @@ import session_recording
 import sshpass_rules
 import grant_expiry
 import maintenance
+import blockref
 import announcements
 import sftp_browser
 from host_check import (
@@ -2846,8 +2847,8 @@ async def http_push_subscribe(request: web.Request) -> web.Response:
         now = monotonic()
         recent = [t for t in _push_subscribe_log.get(token.user_id, []) if t > now - 60]
         if len(recent) >= _PUSH_SUBSCRIBE_LIMIT:
-            return web.json_response({"error": "Too many attempts, try again in a minute"}, status=429,
-                                     headers={"Retry-After": "30"})
+            return await _limited(request, "push_subscribe", "Too many attempts, try again in a minute",
+                                  user_id=token.user_id, headers={"Retry-After": "30"})
         recent.append(now)
         _push_subscribe_log[token.user_id] = recent
         await webpush.check_resolves_public(endpoint, sink)
@@ -3415,7 +3416,8 @@ async def http_create_token(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
 
     if not check_rate_limit(client_ip):
-        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+        return await _limited(request, "register" if request.path == "/api/register" else "token_create",
+                              "Rate limit exceeded", subject=client_ip)
 
     try:
         data = await request.json()
@@ -3462,11 +3464,8 @@ async def http_create_token(request: web.Request) -> web.Response:
             )
         result, retry_after = await verify_second_factor(user, totp_code, client_ip, request=request)
         if result == "throttled":
-            return web.json_response(
-                {"error": "Too many incorrect codes. Try again later."},
-                status=429,
-                headers={"Retry-After": str(retry_after)}
-            )
+            return await _limited(request, "totp_wrong_code", "Too many incorrect codes. Try again later.",
+                                  subject=client_ip, headers={"Retry-After": str(retry_after)})
         if result == "invalid":
             logger.warning(f"Failed 2FA for user '{username}' from {client_ip} (token endpoint)")
             return web.json_response(
@@ -4495,7 +4494,8 @@ async def http_register(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
 
     if not check_rate_limit(client_ip):
-        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+        return await _limited(request, "register" if request.path == "/api/register" else "token_create",
+                              "Rate limit exceeded", subject=client_ip)
 
     try:
         data = await request.json()
@@ -4545,10 +4545,9 @@ async def http_register(request: web.Request) -> web.Response:
         logger.warning(f"Registration rate limit: an unknown account from {client_ip} (already registered in last 24h)")
         security_event_nowait("register_failed", request=request, ip=client_ip,
                               username=await _existing_username(username), result="ip_limit")
-        return web.json_response(
-            {"error": "Registration limit reached. Only one account per IP per 24 hours."},
-            status=429
-        )
+        return await _limited(request, "register_per_day",
+                              "Registration limit reached. Only one account per IP per 24 hours.",
+                              subject=client_ip)
 
     # Validate invite code
     is_valid, code_id = await validate_invite_code(invite_code, db)
@@ -10624,7 +10623,7 @@ async def http_incoming_webhook(request: web.Request) -> web.Response:
     """Receive an incoming webhook and post message to configured channel."""
     client_ip = get_client_ip(request)
     if not check_rate_limit(client_ip):
-        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+        return await _limited(request, "incoming_webhook", "Rate limit exceeded", subject=client_ip)
 
     token_str = request.match_info.get("token", "")
     if not token_str or len(token_str) > 64:
@@ -10640,7 +10639,7 @@ async def http_incoming_webhook(request: web.Request) -> web.Response:
     times = _webhook_incoming_rate_limits.setdefault(token_str, [])
     _webhook_incoming_rate_limits[token_str] = [t for t in times if t > window_start]
     if len(_webhook_incoming_rate_limits[token_str]) >= _WEBHOOK_INCOMING_RATE:
-        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+        return await _limited(request, "incoming_webhook_token", "Rate limit exceeded")
     _webhook_incoming_rate_limits[token_str].append(now)
 
     try:
@@ -11233,8 +11232,7 @@ async def http_stream_viewer_beat(request: web.Request) -> web.Response:
     key = request.match_info.get("stream_key", "")
     ah = _viewers.address_hash(get_client_ip(request))
     if _viewer_refused_rate.full(ah) or not _viewer_beat_rate.allow(ah):
-        return web.json_response({"error": "Too many requests"}, status=429,
-                                 headers={"Retry-After": "10", "Cache-Control": "no-store"})
+        return await _limited(request, "viewer_beat", "Too many requests", headers={"Retry-After": "10"})
     stream, error = await _validate_stream_access(key, request=request)
     if error:
         _viewer_beat_rate.refund(ah)        # not a viewer's beat: charged to the refusals instead
@@ -15262,6 +15260,54 @@ async def http_block_ip(request: web.Request) -> web.Response:
     return web.json_response({"success": True, "ip_address": ip_address, "expires_at": expires_at}, status=201)
 
 
+_ref_lookup_times: dict = {}
+
+
+async def http_block_ref_lookup(request: web.Request) -> web.Response:
+    """GET /api/admin/blocks/ref/{ref} - the stored event behind a reference ID (administrators only).
+
+    Order: sign-in, scope (the rule of the neighbouring block routes), the account's role in the
+    database, a per-administrator limit, then one lookup. A malformed, unknown or too old ID gets the
+    same 404."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    if not await _is_recording_admin(token.user_id):
+        return forbidden_response(request)
+    now = monotonic()
+    times = _ref_lookup_times.setdefault(token.user_id, deque())
+    while times and now - times[0] > 60:
+        times.popleft()
+    if len(times) >= blockref.LOOKUP_PER_MINUTE:
+        return await _limited(request, "ref_lookup", "Too many lookups, try again in a minute",
+                              user_id=token.user_id, headers={"Retry-After": "30"})
+    times.append(now)
+    if len(_ref_lookup_times) > 200:
+        for uid in [u for u, t in _ref_lookup_times.items() if not t or now - t[-1] > 60]:
+            del _ref_lookup_times[uid]
+    ref = blockref.normalize(request.match_info.get("ref", ""))
+    row = await db.get_block_ref(ref or "-", blockref.MAX_AGE_DAYS)
+    if not row:
+        return web.json_response({"error": "Not found"}, status=404, headers={"Cache-Control": "no-store"})
+    block = None
+    active = None
+    subject = row.get("subject")
+    if row["kind"] == "block" and subject:
+        block = await db.get_blocked_ip_row(subject)
+        active = _block_enforced(subject)
+    out = {
+        "ref": blockref.display(row["ref"]), "kind": row["kind"], "limiter": row["limiter"],
+        "source": row.get("source"), "address": subject, "reason": row.get("reason"),
+        "account": ({"id": row["user_id"], "username": row.get("username")} if row.get("user_id") else None),
+        "created_at": row["created_at"], "last_seen": row["last_seen"], "hits": row["hits"],
+        "active": active, "block": block,
+        "can_unblock": bool(row["kind"] == "block" and subject and (active or block)),
+    }
+    return web.json_response(out, headers={"Cache-Control": "no-store"})
+
+
 async def http_unblock_ip(request: web.Request) -> web.Response:
     """DELETE /api/admin/blocked-ips/{ip} - Remove an IP block."""
     token = await authenticate_request(request)
@@ -15287,14 +15333,17 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     await db.forget_ban_history(ip_address)
 
     if removed or lifted:
+        # An unblock made from the reference lookup says so (the ID is only noted when it is well formed).
+        via = blockref.normalize(request.query.get("ref", ""))
         admin_user = await db.get_user_by_id(token.user_id)
         await db.log_activity(
             token.user_id, get_display_name(admin_user) if admin_user else "admin",
-            "ip_unblock", f"Unblocked IP {ip_address}"
+            "ip_unblock", f"Unblocked IP {ip_address}" + (f" (reference {blockref.display(via)})" if via else "")
         )
-        logger.info(f"IP {ip_address} unblocked by user {token.user_id}")
+        logger.info(f"IP {ip_address} unblocked by user {token.user_id}" + (f" via reference {via}" if via else ""))
         await security_event("ip_unblocked", request=request, user=admin_user, user_id=token.user_id,
-                             details={"target_ip": ip_address, "kind": "manual" if removed else "probe"})
+                             details={"target_ip": ip_address, "kind": "manual" if removed else "probe",
+                                      **({"ref": via} if via else {})})
         return web.json_response({"success": True})
     return web.json_response({"error": "IP not found in block list"}, status=404)
 
@@ -17472,14 +17521,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     # Rate limiting
     if not check_rate_limit(client_ip):
         logger.warning(f"Rate limit exceeded for {client_ip}")
-        if is_websocket:
-            return web.Response(status=429, text="Rate limit exceeded")
-        return web.Response(
-            status=429,
-            text=load_static_file("rate_limited.html") if (STATIC_DIR / "rate_limited.html").exists()
-                 else "Rate limit exceeded",
-            content_type="text/html"
-        )
+        return await _limited(request, "websocket_connect", "Rate limit exceeded", subject=client_ip,
+                              plain=is_websocket)
 
     # Authenticate
     token = await authenticate_request(request)
@@ -17500,7 +17543,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     user_ws_count = _online_users.get(token.user_id, 0)
     if user_ws_count >= _MAX_WS_PER_USER:
         logger.warning(f"User {token.user_id} exceeded max WebSocket connections ({_MAX_WS_PER_USER})")
-        return web.Response(status=429, text="Too many active connections")
+        return await _limited(request, "websocket_per_user", "Too many active connections",
+                              user_id=token.user_id, plain=True)
 
     # A target in maintenance is refused before the upgrade (only when the member has access to it).
     blocked = await _ws_maintenance_refusal(request, token, path)
@@ -18056,7 +18100,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
 
     if not check_rate_limit(client_ip):
-        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+        return await _limited(request, "login", "Rate limit exceeded", subject=client_ip)
 
     # Handle both form data and JSON
     content_type = request.content_type
@@ -18112,11 +18156,8 @@ async def http_login_submit(request: web.Request) -> web.Response:
         # Verify TOTP or backup code (shared wrong-code throttle)
         result, retry_after = await verify_second_factor(user, totp_code, client_ip, request=request)
         if result == "throttled":
-            return web.json_response(
-                {"error": "Too many incorrect codes. Try again later."},
-                status=429,
-                headers={"Retry-After": str(retry_after)}
-            )
+            return await _limited(request, "totp_wrong_code", "Too many incorrect codes. Try again later.",
+                                  subject=client_ip, headers={"Retry-After": str(retry_after)})
         if result == "invalid":
             logger.warning(f"Failed 2FA for user '{username}' from {client_ip}")
             return web.json_response({"error": "Invalid 2FA code"}, status=401)
@@ -18719,6 +18760,95 @@ def _upstream_error_page(request: web.Request, service_name, status: int, retry_
         '<a href="/dashboard" id="upstream-error-home">Back to Dashboard</a></p></main>'
         '<script src="/static/js/upstream-error.js?v=2"></script></body></html>')
     return web.Response(status=status, text=page, content_type="text/html", headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Reference IDs on block and rate-limit answers (1.22.0, blockref.py)
+#
+# Every 403 from an IP block and every 429 from a rate limiter carries a short random ID (a
+# `ref` field in JSON, a line on the page for a browser that asks for HTML). The page is the
+# same for every kind of block: it never names the reason, the rule, the address the server
+# saw or whether the block lasts, it loads no script and sets no Retry-After on a 403. The
+# friendly page of _upstream_error_page is not used for it: that page reloads itself and loads
+# a script, which a blocked client cannot fetch anyway, and it carries a retry countdown.
+# ---------------------------------------------------------------------------
+
+_refs = blockref.RefIssuer(db)
+
+
+def _wants_page(request: web.Request) -> bool:
+    """A browser navigation: the Accept header asks for HTML, and the request is not an API call or an XHR."""
+    if request.path.startswith("/api/") or request.path == "/api":
+        return False
+    if request.headers.get("X-Requested-With", "").lower() == "xmlhttprequest":
+        return False
+    return "text/html" in request.headers.get("Accept", "").lower()
+
+
+def _ref_page(status: int, ref: Optional[str], headers: dict) -> web.Response:
+    title = "Access denied" if status == 403 else "Too many requests"
+    lead = "" if status == 403 else "<p>Wait a moment before trying again.</p>"
+    shown = (f'<p class="meta">Reference: <code id="block-ref">{_html.escape(blockref.display(ref))}</code></p>'
+             if ref else "")
+    page = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{title}</title>"
+        "<style>body{background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;margin:0;padding:2rem}"
+        "main{max-width:36rem}h1{font-size:1.4rem}code{background:#0f0f1e;padding:.1rem .4rem;"
+        "border-radius:4px;letter-spacing:.05em}.meta{opacity:.8}</style></head><body><main>"
+        f"<h1>{title}</h1>{lead}<p>Give this reference to an administrator.</p>{shown}</main></body></html>")
+    return web.Response(status=status, text=page, content_type="text/html", headers=headers)
+
+
+async def _ref_answer(request: web.Request, status: int, error: str, *, kind: str, limiter: str,
+                      subject: Optional[str], user_id: Optional[int] = None, loader=None,
+                      headers: Optional[dict] = None, plain: bool = False,
+                      reason: Optional[str] = None) -> web.Response:
+    """The 403 or 429 answer with a reference ID. Never raises: when no ID can be stored the
+    answer is the old one without it."""
+    _refs.db = db
+    try:
+        ref = await _refs.issue(kind, limiter, subject, user_id=user_id, loader=loader, reason=reason)
+    except Exception:
+        ref = None
+    out_headers = {"Cache-Control": "no-store"}
+    out_headers.update(headers or {})
+    if plain:
+        return web.Response(status=status, text=error + (f" (reference {blockref.display(ref)})" if ref else ""),
+                            headers=out_headers)
+    if _wants_page(request):
+        return _ref_page(status, ref, out_headers)
+    body = {"error": error}
+    if ref:
+        body["ref"] = blockref.display(ref)
+    return web.json_response(body, status=status, headers=out_headers)
+
+
+async def _limited(request: web.Request, limiter: str, error: str, *, subject: Optional[str] = None,
+                   user_id: Optional[int] = None, headers: Optional[dict] = None,
+                   plain: bool = False) -> web.Response:
+    """The 429 of a rate limiter. `limiter` names it for the administrator's lookup."""
+    return await _ref_answer(
+        request, 429, error, kind="limit", limiter=limiter,
+        subject=subject if subject is not None else get_client_ip(request),
+        user_id=user_id, headers=headers, plain=plain, reason=f"limit reached: {limiter}")
+
+
+async def _blocked_answer(request: web.Request, client_ip: str) -> web.Response:
+    """The 403 for a blocked address. The same text for a manual block, a sign-in ban and a scanner block."""
+    canon = ipguard.canonical_ip(client_ip) or client_ip
+
+    async def loader():
+        if not _is_ip_blocked(canon):
+            return "probe", "repeated scanner probes"
+        row = await db.get_blocked_ip_row(canon)
+        if row:
+            return (row.get("kind") or row.get("source") or "manual"), row.get("reason")
+        return "block", None
+
+    return await _ref_answer(request, 403, "Access denied", kind="block", limiter="ip_block",
+                             subject=canon, loader=loader)
 
 
 # ---------------------------------------------------------------------------
@@ -23536,8 +23666,8 @@ async def http_get_channel_messages(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     wait = _history_rate_wait(token.user_id)
     if wait:
-        return web.json_response({"error": "Too many history requests"}, status=429,
-                                 headers={"Retry-After": str(wait)})
+        return await _limited(request, "chat_history", "Too many history requests",
+                              user_id=token.user_id, headers={"Retry-After": str(wait)})
     user = await db.get_user_by_id(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
     channel = await db.get_chat_channel(channel_id)
@@ -26722,7 +26852,7 @@ async def http_search_messages(request: web.Request) -> web.Response:
     user_times = _search_rate_limits.setdefault(token.user_id, [])
     user_times[:] = [t for t in user_times if now - t < 60]
     if len(user_times) >= 10:
-        return web.json_response({"error": "Rate limit exceeded (10 searches/min)"}, status=429)
+        return await _limited(request, "chat_search", "Rate limit exceeded (10 searches/min)", user_id=token.user_id)
     user_times.append(now)
     # Prune stale entries for users who haven't searched recently
     for uid in [k for k, v in _search_rate_limits.items() if not v]:
@@ -27954,9 +28084,8 @@ async def http_update_chat_anonymous(request: web.Request) -> web.Response:
     times = _anonymous_toggle_times.setdefault(token.user_id, [])
     times[:] = [t for t in times if now - t < _ANONYMOUS_TOGGLE_WINDOW]
     if len(times) >= _ANONYMOUS_TOGGLE_LIMIT:
-        return web.json_response(
-            {"error": "Too many changes, try again in a minute"}, status=429,
-            headers={"Retry-After": str(int(_ANONYMOUS_TOGGLE_WINDOW))})
+        return await _limited(request, "anonymous_toggle", "Too many changes, try again in a minute",
+                              user_id=token.user_id, headers={"Retry-After": str(int(_ANONYMOUS_TOGGLE_WINDOW))})
     times.append(now)
     for uid in [k for k, v in _anonymous_toggle_times.items()
                 if not v or now - v[-1] >= _ANONYMOUS_TOGGLE_WINDOW]:
@@ -29248,8 +29377,8 @@ async def _proxy_limit_refusal(request: web.Request) -> Optional[web.Response]:
         return None
     security_event_nowait("rate_limited", ip=ip, details={"scope": "logged_out_proxy"})
     retry = max(1, int(math.ceil(wait)))
-    return web.json_response({"error": "Too many requests, retry shortly"}, status=429,
-                             headers={"Retry-After": str(retry), "Cache-Control": "no-store"})
+    return await _limited(request, "logged_out_proxy", "Too many requests, retry shortly",
+                          subject=_proxy_bucket_key(ip), headers={"Retry-After": str(retry)})
 
 
 @web.middleware
@@ -29293,7 +29422,7 @@ async def security_headers_middleware(request: web.Request, handler):
     client_ip = get_client_ip(request)
     _note_request_peer(request)
     if _block_enforced(client_ip):
-        response = web.json_response({"error": "Access denied"}, status=403)
+        response = await _blocked_answer(request, client_ip)
     else:
         try:
             response = await handler(request)
@@ -30035,6 +30164,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/blocked-ips", http_list_blocked_ips)
     app.router.add_post("/api/admin/blocked-ips", http_block_ip)
     app.router.add_delete("/api/admin/blocked-ips/{ip}", http_unblock_ip)
+    app.router.add_get("/api/admin/blocks/ref/{ref}", http_block_ref_lookup)
     app.router.add_get("/api/admin/never-ban", http_get_never_ban)
     app.router.add_put("/api/admin/never-ban", http_put_never_ban)
     app.router.add_get("/api/admin/proxy-trust", http_get_proxy_trust)

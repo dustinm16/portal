@@ -1146,6 +1146,21 @@ MIGRATIONS = [
     "ALTER TABLE user_connections ADD COLUMN maintenance INTEGER DEFAULT 0",
     "ALTER TABLE user_connections ADD COLUMN maintenance_until TEXT DEFAULT NULL",
     "ALTER TABLE user_connections ADD COLUMN maintenance_message TEXT DEFAULT NULL",
+    # Reference IDs shown on a block or rate-limit answer (1.22.0): one row per client and period,
+    # not per request; bounded by count and age (blockref.py). No foreign key: rows outlive accounts.
+    """CREATE TABLE IF NOT EXISTS block_refs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ref TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL,
+        limiter TEXT NOT NULL,
+        source TEXT,
+        subject TEXT,
+        reason TEXT,
+        user_id INTEGER,
+        hits INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        last_seen TEXT NOT NULL
+    )""",
     # App-wide IP blocking
     """CREATE TABLE IF NOT EXISTS blocked_ips (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7859,6 +7874,7 @@ class Database:
     # Escalating automatic bans (failed sign-ins and scanner probes)
 
     BAN_REPEAT_DAYS = 7
+    BLOCK_REF_DAYS = 7      # equal to blockref.MAX_AGE_DAYS (a test compares them)
 
     async def peek_ban_offences(self, ip_address: str, kind: str) -> int:
         """The count record_ban_offence would return now, without recording anything."""
@@ -7921,6 +7937,9 @@ class Database:
         await self.conn.execute(
             "DELETE FROM login_addresses WHERE last_login_at < datetime('now', ?)",
             (f"-{self.LOGIN_ADDRESS_DAYS} days",))
+        # Reference IDs of block and rate-limit answers (not counted in the result)
+        await self.conn.execute(
+            "DELETE FROM block_refs WHERE created_at <= datetime('now', ?)", (f"-{self.BLOCK_REF_DAYS} days",))
         await self.conn.commit()
         return removed
 
@@ -8030,6 +8049,60 @@ class Database:
             await self.conn.executemany("DELETE FROM blocked_ips WHERE id = ?", ids)
         await self.conn.commit()
         return bool(ids)
+
+    # Reference IDs (blockref.py)
+
+    async def insert_block_ref(self, ref: str, kind: str, limiter: str, source, subject, reason, user_id,
+                               max_rows: int) -> None:
+        """Store one reference row and drop the oldest rows beyond `max_rows` (ids grow with time)."""
+        cursor = await self.conn.execute(
+            """INSERT INTO block_refs (ref, kind, limiter, source, subject, reason, user_id, hits, created_at, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, strftime('%Y-%m-%d %H:%M:%S', 'now'), strftime('%Y-%m-%d %H:%M:%S', 'now'))""",
+            (ref, kind, limiter, source, subject, reason, user_id))
+        last = cursor.lastrowid
+        if last and last > max_rows:
+            await self.conn.execute("DELETE FROM block_refs WHERE id <= ?", (last - max_rows,))
+        await self.conn.commit()
+
+    async def touch_block_ref(self, ref: str, hits: int) -> None:
+        """Record the hits counted since the row was written (written at most once a minute per ref)."""
+        await self.conn.execute(
+            "UPDATE block_refs SET hits = ?, last_seen = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE ref = ?",
+            (int(hits), ref))
+        await self.conn.commit()
+
+    async def get_block_ref(self, ref: str, max_age_days: int) -> Optional[dict]:
+        """One row by its ID, only while it is younger than `max_age_days` (an older row that the
+        sweep has not removed yet answers as unknown)."""
+        cursor = await self.conn.execute(
+            """SELECT r.*, u.username AS username FROM block_refs r
+               LEFT JOIN users u ON u.id = r.user_id
+               WHERE r.ref = ? AND r.created_at > datetime('now', ?)""",
+            (ref, f"-{int(max_age_days)} days"))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def prune_block_refs(self, max_age_days: int) -> int:
+        cursor = await self.conn.execute(
+            "DELETE FROM block_refs WHERE created_at <= datetime('now', ?)", (f"-{int(max_age_days)} days",))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def count_block_refs(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) AS n FROM block_refs")
+        return (await cursor.fetchone())["n"]
+
+    async def get_blocked_ip_row(self, ip_address: str) -> Optional[dict]:
+        """The stored block row of one address (any state), or None. Matched in canonical form."""
+        canon = ipguard.canonical_ip(ip_address) or ip_address
+        cursor = await self.conn.execute(
+            """SELECT b.ip_address, b.reason, b.blocked_by, b.created_at, b.expires_at, b.source,
+                      COALESCE(b.kind, CASE WHEN b.source = 'manual' THEN 'manual' ELSE 'auto' END) AS kind,
+                      u.username AS blocked_by_username
+               FROM blocked_ips b LEFT JOIN users u ON u.id = b.blocked_by
+               WHERE b.ip_address = ? ORDER BY b.created_at DESC LIMIT 1""", (canon,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def list_blocked_ips(self) -> list[dict]:
         """List all blocked IPs (including expired ones — caller filters)."""

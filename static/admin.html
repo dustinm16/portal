@@ -2079,6 +2079,15 @@
                                 <tbody id="blocked-ips-body"></tbody>
                             </table>
                         </div>
+                        <h3 style="margin-top:1.25rem;">Reference lookup</h3>
+                        <p style="color: var(--text-muted); font-size: 0.8rem; margin: -0.5rem 0 0.75rem;">
+                            A blocked or rate-limited visitor sees a reference like ABCD-EFGH. Paste it here to see the event, whether the block is still active, and to unblock.
+                        </p>
+                        <div class="sysmon-toolbar">
+                            <input type="text" id="block-ref-input" placeholder="Reference, e.g. ABCD-EFGH" maxlength="40" autocomplete="off" style="max-width: 220px;">
+                            <button class="range-btn" type="button" id="block-ref-go">Look up</button>
+                        </div>
+                        <div id="block-ref-result" style="margin-bottom:1rem;font-size:0.9rem;"></div>
                     </div>
                 </div>
             </div>
@@ -2532,6 +2541,7 @@
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/recordings-admin.js?v=4"></script>
     <script src="/static/js/maintenance-admin.js?v=1"></script>
+    <script src="/static/js/block-ref-admin.js?v=1"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {

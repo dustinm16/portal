@@ -885,6 +885,31 @@ check("1.22.0: maintenance and announcements are in the API reference and the AP
                                      "maintenance_active", "maintenance.global_set", "announcement.delete", "maintenance_changed")))
 check("the README feature section names maintenance mode and announcements",
       "**Maintenance mode and announcements.**" in text and "[notes for 1.22.0](#upgrade-notes-for-1220)" in text)
+# --- 1.22.0: reference IDs on block and rate-limit pages ---------------------------------------------
+import blockref as _blockref
+for name, needles in {
+        "answers": ("`_blocked_answer`", "`_limited`", "`secrets`", "8 characters", "`abcd-efgh`", "give this reference to an administrator.",
+                    "not derived from an address or an account", "the same bytes", "no `retry-after`", "`ref`"),
+        "storage": ("`block_refs`", "1 hour", "10,000 requests from one blocked address are one row", "60 new ids are made a minute", "`overflow`",
+                    "5000 rows", "7 days", "never returned by the lookup"),
+        "lookup": ("`get /api/admin/blocks/ref/{ref}`", "20 lookups a minute", "same `404`", "before the id is looked at",
+                   "`static/js/block-ref-admin.js`", "`delete /api/admin/blocked-ips/{ip}?ref=...`", "`ip_unblocked`"),
+        "behaviour, breaking, database, not tested": ("behaviour changes", "breaking changes", "`create table if not exists block_refs`",
+                                                      "1.21.0 starts on the migrated database", "not tested", "cloudflare", "fakes only",
+                                                      "not proven at all", "scanner blocking and the sign-in ban are unchanged"),
+}.items():
+    check(f"1.22.0 states: reference ids {name}", all(n in low22 for n in needles), str([n for n in needles if n not in low22]))
+check("1.22.0: the bounds stated for reference IDs are the ones in the code",
+      (_blockref.REUSE_SECONDS, _blockref.NEW_PER_MINUTE, _blockref.MAX_ROWS, _blockref.MAX_AGE_DAYS, _blockref.LOOKUP_PER_MINUTE,
+       _blockref.REF_LENGTH, _blockref.CACHE_MAX) == (3600, 60, 5000, 7, 20, 8, 5000)
+      and "capped at 5000 entries" in _sec22 and "at most every 10 minutes" in _sec22 and _blockref.PRUNE_SECONDS == 600)
+check("1.22.0: the script version stated for the lookup is the one the admin page loads",
+      "`block-ref-admin.js` v1" in _sec22 and "/static/js/block-ref-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text())
+check("1.22.0: reference IDs are in the API reference and the API page",
+      all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref="))
+      and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=")))
+check("the README feature section names the reference IDs",
+      "**Reference IDs on block and rate-limit pages.**" in text)
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:

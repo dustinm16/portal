@@ -4085,7 +4085,18 @@ Block an address by hand: `{"ip_address": "203.0.113.7", "reason": "...", "durat
 #### DELETE /api/admin/blocked-ips/{ip}
 Remove the block for an address (and any temporary scanner block held in memory for it). It also forgets the address's escalation history and failed-sign-in count, so its next automatic ban starts at the base duration.
 
+Optional query `?ref=ABCD-EFGH`: the reference the administrator looked up (see below). When it is well formed it is written into the activity entry and the `ip_unblocked` security event (`ref`); it changes nothing else.
+
 **Auth**: Admin
+
+#### GET /api/admin/blocks/ref/{ref}
+Look up the event behind a reference ID. Every `403` from an IP block (manual, failed sign-in ban, scanner block) and every `429` from a rate limiter carries a random 8 character ID, shown as `ABCD-EFGH`; the lookup ignores case, spaces and the hyphen. A browser that asks for HTML (`Accept: text/html`, not under `/api`, not an XHR) gets a page with the ID and the sentence "Give this reference to an administrator."; every other client gets the old JSON with one extra field: `{"error": "Access denied", "ref": "ABCD-EFGH"}` (`{"error": "Rate limit exceeded", "ref": "..."}` and so on, each 429 keeping its `Retry-After`). The page and the JSON never contain the reason, the rule, the address the server saw or whether the block is permanent, and the ID is random: it is not derived from an address or an account.
+
+Response (200): `{"ref", "kind": "block" | "limit" | "overflow", "limiter" ("ip_block", "login", "register", "logged_out_proxy", ...), "source" (`manual`, `login`, `probe` for a block), "address" (the address or, for the logged-out proxy limit, the IPv6 /64), "reason", "account": {"id", "username"} or null, "created_at", "last_seen", "hits" (approximate, written at most once a minute), "active" (a block: whether it is enforced now; `null` otherwise), "block" (the stored block row, or null), "can_unblock"}`. The `overflow` kind is the one ID shared by every new client past 60 new IDs in a minute. To unblock, call `DELETE /api/admin/blocked-ips/{address}?ref={ref}`; a rate-limit event has nothing to unblock.
+
+**Errors**: `401` not signed in; `403` not an administrator (checked before the ID is read); `404` an unknown, malformed or expired ID (one answer for all three); `429` more than 20 lookups a minute by one administrator.
+
+**Auth**: Admin (the scope rule of the other block routes, and the account's role read from the database). **Bounds**: one ID per client and limiter for an hour; at most 60 new IDs a minute; at most 5000 rows; rows older than 7 days are removed and never returned.
 
 An automatic block never overwrites or shortens a manual block, never shortens an automatic one and never turns a permanent block into a timed one; it only replaces a row whose own expiry has passed. Failed sign-ins (see `PUT /api/admin/login-ban`) and, when `PROBE_BLOCK_STRIKES` is on, scanner probes write automatic blocks with kind `login` or `probe`, always with an expiry.
 

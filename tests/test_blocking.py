@@ -721,6 +721,7 @@ class _BlockRequest:
         self.transport = _Transport(peer)
         self.headers = CIMultiDict({})
         self.match_info = match or {}
+        self.query = {}
         self._body = body
 
     async def json(self):
