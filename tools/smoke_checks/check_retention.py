@@ -155,7 +155,7 @@ async def run(ctx):
             # ---- retention settings
             st, _ = await call(gmod, "PUT", f"/api/chat/channels/{c['short']}/retention", json={"retention_days": 2, "confirm": True})
             ok("a moderator cannot set a channel's retention (403)", st == 403, str(st))
-            st, r = await call(adm, "PUT", f"/api/chat/channels/{c['capped']}/retention", json={"retention_days": "forever"})
+            st, r = await call(adm, "PUT", f"/api/chat/channels/{c['capped']}/retention", json={"retention_days": "forever", "confirm": True})   # confirmed: where the global setting keeps everything, the cap is shorter
             ok("an administrator sets a channel to forever, stored as the cap",
                st == 200 and r["applied"] and r["retention_days"] == r["cap_days"], f"{st} {r}")
             st, r = await call(adm, "PUT", f"/api/chat/channels/{c['short']}/retention", json={"retention_days": 2})
