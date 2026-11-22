@@ -7850,7 +7850,14 @@ async def http_live_page(request: web.Request) -> web.Response:
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
     html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
-    return web.Response(text=html, content_type="text/html")
+    # The page does not load portal.js (which brings the announcement banner everywhere else). A
+    # signed-in member gets the small banner script alone, from the portal's own origin (no change to
+    # the content security policy); a visitor gets no extra script and so no 401 poll every minute.
+    if "</body>" in html and await authenticate_request(request):
+        html = html.replace(
+            "</body>",
+            '<script src="/static/js/announce.js?v=1" data-url="/api/announcements"></script></body>', 1)
+    return web.Response(text=html, content_type="text/html", headers={"Vary": "Cookie"})
 
 
 # =============================================================================

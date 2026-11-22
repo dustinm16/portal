@@ -114,6 +114,23 @@ async def main():
         page = await r.text()
         check("the login page carries no announcement text", "Storage is down" not in page and "alert(1)" not in page)
 
+    # ---- the public live page has no portal.js: a signed-in member gets the banner script alone ---------------------
+    async with anon.get(f"{env.base}/live") as r:
+        live_anon, csp_anon = await r.text(), r.headers.get("Content-Security-Policy")
+        anon_status = r.status
+    async with bob.get(f"{env.base}/live") as r:
+        live_bob, csp_bob = await r.text(), r.headers.get("Content-Security-Policy")
+        bob_headers = dict(r.headers)
+    tag = '<script src="/static/js/announce.js?v=1" data-url="/api/announcements"></script>'
+    check("/live: a visitor gets no banner script (nothing to poll with a 401)",
+          anon_status == 200 and "announce.js" not in live_anon, str(anon_status))
+    check("/live: a signed-in member gets the banner script once, for the member list, and nothing else added",
+          live_bob.count(tag) == 1 and live_bob.count("announce.js") == 1 and "portal.js" not in live_bob
+          and len(live_bob) == len(live_anon) + len(tag), f"{live_bob.count(tag)} {len(live_bob)} {len(live_anon)}")
+    check("/live: the content security policy is the same for both and allows only own-origin scripts for it",
+          csp_anon and csp_anon == csp_bob and "script-src 'self'" in csp_bob, f"{csp_anon!r} {csp_bob!r}")
+    check("/live: the answer varies by cookie", "Cookie" in bob_headers.get("Vary", ""))
+
     # ---- show before sign-in -----------------------------------------------------------------------------------
     async with adm.put(f"{admin_url}/{aid}", json={"show_before_signin": True}) as r:
         check("an administrator ticks show before sign-in", r.status == 200 and (await r.json())["show_before_signin"] is True)
