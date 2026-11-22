@@ -1066,7 +1066,7 @@ function createConnectionConfigField(key, prop, isRequired) {
             } else {
                 const s = document.createElement('input');
                 s.type = 'text';
-                s.placeholder = 'e.g. X-User-* or X-Request-ID';
+                s.placeholder = 'e.g. X-User-* or X-Tenant-Id';
                 s.style.flex = '1';
                 s.value = matchVal || '';
                 s.addEventListener('input', syncHidden);

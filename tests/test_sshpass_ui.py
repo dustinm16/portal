@@ -29,7 +29,7 @@ check("the form says the grantee gets a shell without knowing the password",
       index.count("without knowing the password") >= 2)
 check("the stored password input is a password field the browser does not fill",
       re.search(r'<input type="password" id="connection-ssh-stored-password" autocomplete="new-password"', index) is not None)
-check("the script version in index.html was bumped", "user-connections.js?v=58" in index)
+check("the script version in index.html was bumped", "user-connections.js?v=59" in index)
 check("the edit form records the switch state it opened with and passes it on",
       "pwField.dataset.initialPrompt = " in js and "collectSSHCredential(type, isEdit, pwFieldNow.dataset.hadStored === '1', initialPrompt)" in js)
 check("the edit form reads has_stored_password and never puts a value in the field", "config.has_stored_password" in js and "pwField.value = '';" in js)

@@ -270,7 +270,7 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0, user-connections.js and dashboard.js again in 1.22.0)",
-      re.search(r"user-connections\.js\?v=58", (ROOT / "static" / "index.html").read_text())
+      re.search(r"user-connections\.js\?v=59", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=60", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
@@ -481,7 +481,7 @@ check("the chat part of What You Get describes levels, mute, badges and mass men
 check("the old 'enable desktop alerts' star sentence is gone from the chat part",
       "Enable desktop alerts to get browser notifications" not in text)
 # Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
-MOVED_ON_1_22 = {"portal.js": 47, "admin.js": 40, "user-connections.js": 58, "portal.css": 56}
+MOVED_ON_1_22 = {"portal.js": 47, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -516,8 +516,8 @@ for name, needles in (("recording is off unless the flag is exactly true, 1, '1'
                       ("what is not tested", ("not tested", "no browser", "no microphone", "cloudflare", "real ssh server"))):
     check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
 _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
-# user-connections.js moved on to 58 in 1.22.0: the 1.20.0 notes keep the version of their release
-for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 58)):
+# user-connections.js moved on to 59 in 1.22.0: the 1.20.0 notes keep the version of their release
+for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 59)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
           loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}), str(loaded))
@@ -617,7 +617,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "58")}  # stated in 1.20.0, loaded since 1.22.0
+_moved20 = {"user-connections.js": ("56", "59")}  # stated in 1.20.0, loaded since 1.22.0
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -876,7 +876,7 @@ check("1.22.0: the close code, the CLI actor name and the setting stated are the
       and "(command line: server.py maintenance-off)" in (ROOT / "maintenance_cli.py").read_text()
       and _maint.GLOBAL_KEY == "maintenance_global" and "maintenance-off" in _srv_text)
 check("1.22.0: the static file versions stated are the ones the pages load",
-      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v1", "version 47", "`admin.js` 40", "`user-connections.js` 58"))
+      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v1", "version 47", "`admin.js` 40", "`user-connections.js` 59"))
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "js" / "portal.js").read_text()
       and "/static/js/maintenance-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "login.html").read_text())
@@ -923,7 +923,7 @@ for _n in ("connection_user_prefs", "connections only", "not an administrator", 
            "exactly the answer of a connection that does not exist", "at most 40 characters", "at most 10 tags",
            "at most once a minute per member and connection", "`use_count`", "when a share is revoked",
            "when a share expires", "the 60 second sweeper", "`/` focuses it", "recently used", "breaking changes.** none",
-           "`conn-organise.js` 2", "`dashboard.js` 60", "`user-connections.js` 58", "`portal.css` 56",
+           "`conn-organise.js` 2", "`dashboard.js` 60", "`user-connections.js` 59", "`portal.css` 56",
            "**not tested.**", "no browser", "fake dom"):
     check(f"1.22.0 states: {_n}", _n in _low122, _n)
 check("1.22.0: docs/API.md and api-docs.html document the prefs route and the prefs field",
@@ -931,7 +931,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 2), ("dashboard.js", 60), ("user-connections.js", 58), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 2), ("dashboard.js", 60), ("user-connections.js", 59), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))

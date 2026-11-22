@@ -179,7 +179,7 @@ try:
         ("X-Forwarded-For", "6.6.6.6"), ("X-REAL-IP", "6.6.6.6"), ("x-forwarded-host", "evil.example"),
         ("X-Forwarded-Prefix", "/evil"), ("X-Forwarded-Server", "evil"), ("Forwarded", "for=6.6.6.6"),
         ("Authorization", "Bearer secret"), ("Cookie", f"a=1; {SESSION}=SECRETSESSION; b=2"),
-        ("Cookie", f"c=3; {SESSION}=SECRETSESSION"), ("X-Request-ID", "r1")]), cfg, "up", P, False)
+        ("Cookie", f"c=3; {SESSION}=SECRETSESSION"), ("X-Tenant-Id", "r1")]), cfg, "up", P, False)
     check("headers: forward_headers=['*'] still replaces X-Forwarded-For", h.getall("X-Forwarded-For") == ["203.0.113.50"], str(dict(h)))
     check("headers: forward_headers=['*'] still replaces X-Real-IP", h.getall("X-Real-IP") == ["203.0.113.50"])
     check("headers: forward_headers=['*'] still replaces X-Forwarded-Host", h.getall("X-Forwarded-Host") == ["portal.example"])
@@ -190,7 +190,7 @@ try:
     for pats in (["*"], ["cf-*", "true-*", "x-client-*"]):
         hh = server._proxy_request_headers(req(headers=[
             ("CF-Connecting-IP", "6.6.6.6"), ("True-Client-IP", "6.6.6.7"), ("X-Client-IP", "6.6.6.8"),
-            ("Forwarded", "for=6.6.6.9"), ("X-Request-ID", "r1")]), {"forward_headers": pats}, "up", P, False)
+            ("Forwarded", "for=6.6.6.9"), ("X-Tenant-Id", "r1")]), {"forward_headers": pats}, "up", P, False)
         check(f"headers: forward_headers={pats} never copies CF-Connecting-IP, True-Client-IP, X-Client-IP or Forwarded",
               not any(n in hh for n in ("CF-Connecting-IP", "True-Client-IP", "X-Client-IP", "Forwarded"))
               and "6.6.6." not in json.dumps(list(hh.items())), str(dict(hh)))
@@ -201,17 +201,17 @@ try:
           "6.6.6." not in json.dumps(list(hh.items())), str(dict(hh)))
     check("headers: the session cookie is never copied (two Cookie lines)",
           "SECRETSESSION" not in json.dumps(list(h.items())) and h.get("Cookie") == "a=1; b=2; c=3", str(h.get("Cookie")))
-    check("headers: a whitelisted header is still copied", h.get("X-Request-ID") == "r1")
+    check("headers: a whitelisted header is still copied", h.get("X-Tenant-Id") == "r1")
 
     # portal credentials sent as API-key headers are never copied either
     for pats in (["*"], ["x-*"], ["x-api-key", "x-stream-key"]):
         h = server._proxy_request_headers(req(headers=[
-            ("X-API-Key", "portal_SECRETKEY"), ("X-Stream-Key", "live_SECRETKEY"), ("X-Request-ID", "r1")]),
+            ("X-API-Key", "portal_SECRETKEY"), ("X-Stream-Key", "live_SECRETKEY"), ("X-Tenant-Id", "r1")]),
             {"forward_headers": pats}, "up", P, False)
         check(f"headers: forward_headers={pats} never copies X-API-Key or X-Stream-Key",
               "X-API-Key" not in h and "X-Stream-Key" not in h and "SECRETKEY" not in json.dumps(list(h.items())), str(dict(h)))
         if pats != ["x-api-key", "x-stream-key"]:
-            check(f"headers: forward_headers={pats} still copies an ordinary header", h.get("X-Request-ID") == "r1")
+            check(f"headers: forward_headers={pats} still copies an ordinary header", h.get("X-Tenant-Id") == "r1")
 
     # configured headers still win over the generated ones, without duplicates
     cfg = {"auth_header": "Bearer upstreamtoken", "forwarded_host": True,
@@ -726,7 +726,7 @@ async def main():
             async with c.get(f"{base}/echo", headers={
                     "X-Forwarded-Host": "evil.example", "x-forwarded-server": "evil", "X-Real-IP": "6.6.6.6",
                     "Authorization": "Bearer PORTALSECRET", "Cookie": f"{SESSION}=PORTALSESSION",
-                    "X-Request-ID": "r1"}) as r:
+                    "X-Tenant-Id": "r1"}) as r:
                 raw = await r.text()
                 hdrs = {}
                 for k, v in json.loads(raw)["headers"]:
@@ -736,15 +736,15 @@ async def main():
                 check("forward_headers=*: client X-Real-IP replaced", hdrs.get("x-real-ip") == ["127.0.0.1"])
                 check("forward_headers=*: Authorization and portal session still stripped",
                       "authorization" not in hdrs and "cookie" not in hdrs and "PORTALSESSION" not in raw, raw[:300])
-                check("forward_headers=*: whitelisted header passes", hdrs.get("x-request-id") == ["r1"])
+                check("forward_headers=*: whitelisted header passes", hdrs.get("x-tenant-id") == ["r1"])
 
             async with c.get(f"{base}/echo", headers={
-                    "X-API-Key": "portal_SECRETKEY", "X-Stream-Key": "live_SECRETKEY", "X-Request-ID": "r1"}) as r:
+                    "X-API-Key": "portal_SECRETKEY", "X-Stream-Key": "live_SECRETKEY", "X-Tenant-Id": "r1"}) as r:
                 raw = await r.text()
                 hdrs = {k.lower() for k, v in json.loads(raw)["headers"]}
                 check("forward_headers=*: portal API key and stream key never reach the upstream",
                       "x-api-key" not in hdrs and "x-stream-key" not in hdrs and "SECRETKEY" not in raw, raw[:300])
-                check("forward_headers=*: ordinary header still passes next to them", "x-request-id" in hdrs)
+                check("forward_headers=*: ordinary header still passes next to them", "x-tenant-id" in hdrs)
 
             # --- a client-chosen Host header does not reach the upstream as X-Forwarded-Host
             CONFIG.clear()

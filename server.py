@@ -19144,6 +19144,9 @@ _PROXY_BLOCKED_HEADERS = frozenset({
     "cf-connecting-ip", "true-client-ip", "x-client-ip",
     # Portal credentials (authenticate_request accepts both): never passed on.
     "x-api-key", "x-stream-key",
+    # The portal makes the request ID; one a client sends is never copied to an upstream, also when
+    # a forward_headers pattern (x-*, *) would match it.
+    "x-request-id", "x-correlation-id", "request-id",
 })
 _PROXY_HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,255}$")
 

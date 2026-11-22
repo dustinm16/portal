@@ -127,7 +127,7 @@ async def fake_auth(request):
 
 
 async def fake_get_connection(conn_id, user_id):
-    return dict(CONNECTION, config={})
+    return dict(CONNECTION)
 
 
 async def fake_usage(*a, **k):
@@ -371,6 +371,18 @@ async def main():
                 seen = await r.json()
             check("searxng: no request ID header is forwarded to the search service",
                   not any(k in seen for k in ("x-request-id", "x-correlation-id", "request-id")), str(seen))
+
+            # a forward_headers pattern never passes a client's request ID to the connection's own service
+            for pats in (["*"], ["x-*"], ["x-request-id", "x-correlation-id", "request-id", "x-user-id"]):
+                CONNECTION.update({"config": {"forward_headers": pats}})
+                async with c.get(f"{base}/proxy/xyz/echo", headers={
+                        "X-Request-ID": "FORGED-IN", "X-Correlation-ID": "FORGED-IN", "Request-Id": "FORGED-IN",
+                        "X-User-Id": "kept"}) as r:
+                    seen = await r.json()
+                check(f"proxy: forward_headers {pats[0]!r}: the client's request ID headers are not copied, others are",
+                      r.status == 200 and not any(k in seen for k in ("x-request-id", "x-correlation-id", "request-id"))
+                      and "FORGED-IN" not in json.dumps(seen) and seen.get("x-user-id") == "kept", str(seen))
+            CONNECTION.update({"config": {}})
 
             # --- the page for a service that is down
             dead = free_port()
