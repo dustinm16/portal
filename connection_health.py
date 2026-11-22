@@ -9,8 +9,8 @@ what the connection already holds, exactly as a real connection attempt of that 
 
 What is probed
   * TCP connect to the connection's host and port, for the ssh and vnc plugins and the tunnel
-    plugins (tcp_tunnel, secure_tunnel; databases and the like ride on those). Nothing is sent
-    and no banner is read.
+    plugins (tcp_tunnel, secure_tunnel; databases and the like ride on those). A TCP connect that
+    is closed again at once: nothing is written and no banner is read.
   * HEAD (GET on 405 or 501, the body read only up to BODY_CAP bytes) of "/" on the origin the
     HTTP proxy would dial (the connection's target_url, else scheme://host:port by the proxy's
     own scheme rule), for the http_proxy plugin. Redirects are NOT followed. No cookie, header,
@@ -30,15 +30,32 @@ successes in a row; unknown until then. HTTP status below 500 counts as up (any 
 the service is there, a 401 or 404 included), 5xx, a refused or reset connection and a timeout
 count as a failure. Only the status class and the latency are kept from a response.
 
-State is in memory; only a change of status is stored (connection_health_log) and the table is
-pruned (LOG_KEEP_DAYS, never the latest row of a connection). service.health_changed fires once
-per change between up and down (a connection that was never up never alerts), through the
-alert module's cooldown, in the member bucket so a flood of flapping upstreams cannot starve the
-rest; third-party formats get a text with no name and no host.
+State is in memory; only a change of status is stored (connection_health_log). Stored rows are
+bounded three ways: at most STORE_PER_DAY (24) transitions per connection per UTC day (after
+that the status still changes in memory and is shown, but nothing more is stored or alerted
+until the next day), LOG_KEEP_DAYS, and a global row cap LOG_MAX_ROWS with oldest-first pruning
+(never the latest row of a connection). service.health_changed fires once per change between up
+and down (a connection that was never up never alerts), in a bucket of its own (alerts.HEALTH_BUCKET)
+so a flapping upstream cannot hold back moderation, automod or account-security alerts, and at
+most once per connection per ALERT_PERIOD (10 minutes); third-party formats get a text with no
+name and no host. A stored "down" older than SEED_MAX_AGE (30 minutes) is not remembered as
+"known" after a restart or after the feature is switched off and on, so a recovery then sends no
+"back up" for a "down" nobody was told about recently.
 
-Limits: at most PROBE_ROUND_CAP (100) probes per round (least recently probed first, so the
-cap rotates), at most PROBE_PARALLEL (5) at once, PROBE_TIMEOUT seconds each, never two probes
-of one target at once, and connections with the same target share one probe.
+Maintenance: a connection that is in maintenance (maintenance.state) is probed as usual but its
+transitions fire no alert while the maintenance lasts; an alert it would have sent is owed and is
+sent once afterwards if the status is still what it was (an up and a down in between cancel
+each other). The status shows "maintenance" for everybody who can reach the connection.
+
+Limits: PROBE_ROUND_CAP (100) probes per round over all members, at most PER_OWNER_PROBES (10)
+distinct targets per owner per round, filled in rotation across owners (the owner whose oldest
+check is the oldest goes first) and, within an owner, least recently probed first; a target
+several connections share is probed once and counts once, against whichever owner's turn picked
+it. An owner looks at no more than OWNER_SCAN (100) of their connections per round; the excess is
+probed less often and reads "unknown" once stale. At most PROBE_PARALLEL (5) at once,
+PROBE_TIMEOUT seconds each, never two probes of one target at once. A target that the host policy
+refuses is remembered with a backoff (REFUSED_BACKOFF doubling to REFUSED_BACKOFF_MAX): not
+resolved again until it ends, one warning when it starts and one when it ends.
 
 Staged instance (PORTAL_STAGE_MODE): rounds run every second and nothing is probed, except a literal 127.0.0.1 target whose
 port is in the stage_health_target_ports setting (comma separated), under the LAN policy
@@ -62,6 +79,8 @@ import aiohttp.resolver
 from yarl import URL
 
 import alerts
+import host_check
+import maintenance
 from host_check import (HostBlockedError, HostCheckError, _CheckedConnector, resolve_checked_host,
                         try_each_address)
 
@@ -76,14 +95,25 @@ RECENT_DAYS = 7
 DOWN_AFTER = 3
 UP_AFTER = 2
 PROBE_ROUND_CAP = 100
+PER_OWNER_PROBES = 10        # distinct targets one owner may have probed in one round
+OWNER_SCAN = 100             # connections of one owner looked at (decoded) in one round
 PROBE_PARALLEL = 5
 PROBE_TIMEOUT = 6.0          # whole probe, resolve included
 RESOLVE_TIMEOUT = 3.0
 CONNECT_TIMEOUT = 4.0
 BODY_CAP = 1024
-CANDIDATE_LIMIT = 1000
+CANDIDATE_LIMIT = 1000       # connection rows decoded in one round, all owners together
+CANDIDATE_REF_LIMIT = 50000  # safety bound on the (id, owner) list the round chooses from
 LOG_KEEP_DAYS = 14
-PRUNE_EVERY = 6 * 3600.0
+LOG_MAX_ROWS = 50000         # stored transitions, all connections; the oldest go first
+STORE_PER_DAY = 24           # stored (and alerted) transitions per connection per UTC day
+PRUNE_EVERY = 3600.0
+ALERT_PERIOD = 600.0         # at most one alert per connection in this many seconds
+SEED_MAX_AGE = 1800.0        # a stored "down" older than this is not "known" after a restart
+REFUSED_BACKOFF = 600.0      # a target the host policy refuses is not tried again for this long,
+REFUSED_BACKOFF_MAX = 3600.0 # doubling up to this
+REFUSED_MAX = 1000           # remembered refused targets
+LOG_BUDGET = 20              # [Health] warnings per hour about refused targets
 JITTER = 0.10
 STAGE_ROUND_SECONDS = 1.0     # a staged instance rounds every second (it probes only its own loopback test targets)
 
@@ -100,6 +130,15 @@ def proxy_scheme(conn_type: str, port) -> str:
 
 def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _recent(stamp, now_dt: datetime) -> bool:
+    """True when the stored timestamp is within SEED_MAX_AGE of now; an unreadable one is not."""
+    try:
+        t = datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return timedelta(0) <= now_dt - t <= timedelta(seconds=SEED_MAX_AGE)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +288,7 @@ async def _probe_http(target: Target, lan: bool) -> Result:
 
 async def probe_target(target: Target, *, lan: bool = False) -> Result:
     """One probe. `lan` (a staged test target only) applies the LAN policy instead of the default."""
+    quiet = host_check.quiet_refusals.set(True)       # the monitor logs a refused target once, itself
     try:
         inner = _probe_tcp(target, lan) if target.kind == "tcp" else _probe_http(target, lan)
         return await asyncio.wait_for(inner, PROBE_TIMEOUT)
@@ -260,6 +300,8 @@ async def probe_target(target: Target, *, lan: bool = False) -> Result:
         return Result("fail")
     except (asyncio.TimeoutError, OSError, aiohttp.ClientError, HostCheckError):
         return Result("fail")
+    finally:
+        host_check.quiet_refusals.reset(quiet)
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +309,7 @@ async def probe_target(target: Target, *, lan: bool = False) -> Result:
 # ---------------------------------------------------------------------------
 
 class Entry:
-    __slots__ = ("key", "status", "since", "known", "fails", "oks", "latency_ms", "status_class", "checked")
+    __slots__ = ("key", "status", "since", "known", "fails", "oks", "latency_ms", "status_class", "checked", "owed")
 
     def __init__(self, key=None, status="unknown", since=None, known=None):
         self.key = key
@@ -279,6 +321,7 @@ class Entry:
         self.latency_ms = None
         self.status_class = None
         self.checked = None          # monotonic time of the last result in this process
+        self.owed = None             # "up" or "down": an alert held back by maintenance
 
 
 @dataclass
@@ -288,17 +331,47 @@ class Transition:
     new: str
     since: str
     alert: Optional[str]             # "down", "up" or None
+    store: bool = True               # False: an alert owed from maintenance, the change itself is stored already
 
 
 class HealthState:
     def __init__(self):
         self.entries: dict[int, Entry] = {}
 
-    def seed(self, rows: dict) -> None:
-        self.entries = {cid: Entry(None, st if st in ("up", "down", "unknown") else "unknown", since, known)
-                        for cid, (st, since, known) in rows.items()}
+    def seed(self, rows: dict, now_dt: Optional[datetime] = None) -> None:
+        """Read the stored states back. The last known "down" is remembered only when it is recent
+        (SEED_MAX_AGE): the alert for an old one was sent long ago, or never, and a recovery now must
+        not announce "back up" for it. The status itself (down since...) is kept for the view."""
+        now_dt = now_dt or datetime.now(timezone.utc)
+        out = {}
+        for cid, row in rows.items():
+            st, since, known = row[0], row[1], row[2]
+            known_since = row[3] if len(row) > 3 else since
+            if known == "down" and not _recent(known_since, now_dt):
+                known = None
+            out[cid] = Entry(None, st if st in ("up", "down", "unknown") else "unknown", since, known)
+        self.entries = out
 
-    def apply(self, conn_id: int, key: tuple, result: Result, now: float, iso: str) -> Optional[Transition]:
+    def apply(self, conn_id: int, key: tuple, result: Result, now: float, iso: str,
+              quiet: bool = False) -> Optional[Transition]:
+        """Fold one result in. `quiet` (the connection is in maintenance) holds an alert back: it is
+        owed and sent by a later call that is not quiet, if the status is still the one it was for."""
+        tr = self._apply(conn_id, key, result, now, iso)
+        e = self.entries[conn_id]
+        if tr is not None and tr.alert:
+            if quiet:
+                e.owed = None if (e.owed and e.owed != tr.alert) else tr.alert
+                tr.alert = None
+            else:
+                e.owed = None
+        elif tr is not None and tr.new != e.owed:
+            e.owed = None                  # it left the state the alert was owed for
+        if not quiet and e.owed and tr is None and result.kind in ("ok", "fail") and e.status == e.owed:
+            tr = Transition(conn_id, e.status, e.status, e.since or iso, e.owed, store=False)
+            e.owed = None
+        return tr
+
+    def _apply(self, conn_id: int, key: tuple, result: Result, now: float, iso: str) -> Optional[Transition]:
         e = self.entries.get(conn_id)
         if e is None:
             e = self.entries[conn_id] = Entry(key, "unknown", None, None)
@@ -389,6 +462,12 @@ class Monitor:
         self._inflight: set = set()
         self._task: Optional[asyncio.Task] = None
         self._last_prune: Optional[float] = None
+        self._stored_since_prune = 0
+        self._stored_today: dict[int, tuple] = {}     # connection id -> (UTC date, rows stored that day)
+        self._refused: dict = {}                      # target key -> [retry at, delay]; bounded by REFUSED_MAX
+        self._warn_window: Optional[float] = None
+        self._warned = 0
+        self._warn_suppressed = 0
         self.rounds = 0
 
     # -- settings
@@ -401,10 +480,51 @@ class Monitor:
         self.enabled, self.interval = enabled, interval
         return enabled, interval, stage_ports
 
+    # -- log lines about refused targets, a few per hour at most
+
+    def _warn(self, now: float, message: str, *args) -> None:
+        if self._warn_window is None or now - self._warn_window >= 3600.0:
+            if self._warn_suppressed:
+                logger.warning("[Health] %d more message(s) about refused targets were not written", self._warn_suppressed)
+            self._warn_window, self._warned, self._warn_suppressed = now, 0, 0
+        if self._warned >= LOG_BUDGET:
+            self._warn_suppressed += 1
+            return
+        self._warned += 1
+        logger.warning(message, *args)
+
+    def _refused_now(self, key: tuple, now: float) -> bool:
+        """True while a refused target is inside its backoff (it is not resolved or dialled)."""
+        hit = self._refused.get(key)
+        return hit is not None and now < hit[0]
+
+    def _note_refused(self, target: Target, now: float) -> None:
+        hit = self._refused.get(target.key)
+        if hit is None:
+            while len(self._refused) >= REFUSED_MAX:
+                self._refused.pop(next(iter(self._refused)))
+            self._refused[target.key] = [now + REFUSED_BACKOFF, REFUSED_BACKOFF]
+            self._warn(now, "[Health] the host %r resolves to an address the host policy refuses; it is not "
+                       "probed and its connections read unknown (looked at again in %d s)",
+                       target.host[:100], int(REFUSED_BACKOFF))
+        else:
+            hit[1] = min(hit[1] * 2, REFUSED_BACKOFF_MAX)
+            hit[0] = now + hit[1]
+
+    def _note_not_refused(self, target: Target, now: float) -> None:
+        if self._refused.pop(target.key, None) is not None:
+            self._warn(now, "[Health] the host %r is no longer refused by the host policy and is probed again",
+                       target.host[:100])
+
     # -- one round
 
     def _lan_allowed(self, target: Target, stage_ports: frozenset) -> bool:
         return self.stage_mode and target.host == "127.0.0.1" and target.port in stage_ports
+
+    def _age(self, cid: int) -> float:
+        """When the connection was last probed in this process; never probed sorts before everything."""
+        e = self.state.entries.get(cid)
+        return -1.0 if e is None or e.checked is None else e.checked
 
     async def run_round(self) -> int:
         """One round. Returns the number of probes made (0 with the feature off)."""
@@ -412,41 +532,79 @@ class Monitor:
         if not enabled:
             self.state = HealthState()
             self._seeded = False
+            self._refused.clear()
             return 0
+        now_dt = self.wall()
         if not self._seeded:
             try:
-                self.state.seed(await self.db.load_health_state())
+                self.state.seed(await self.db.load_health_state(), now_dt)
             except Exception as e:
                 logger.warning("[Health] could not read the stored states: %s", type(e).__name__)
             self._seeded = True
-        now_dt = self.wall()
         since = _iso(now_dt - timedelta(days=RECENT_DAYS))
-        rows = await self.db.list_health_candidates(since, CANDIDATE_LIMIT)
-        groups: dict = {}                 # target key -> (target, [rows])
-        unprobed = []
-        for row in rows:
-            t = target_of(row, self.types)
-            if t is None or (self.stage_mode and not self._lan_allowed(t, stage_ports)):
-                unprobed.append(row)
-                continue
-            groups.setdefault(t.key, (t, []))[1].append(row)
+        refs = await self.db.list_health_candidate_refs(since, CANDIDATE_REF_LIMIT)
+
+        # Who is looked at: each owner's least recently probed OWNER_SCAN connections, in turn across
+        # owners (the owner with the oldest check first) until CANDIDATE_LIMIT rows are decoded, so one
+        # member's hundreds of connections never push another's out.
+        by_owner: dict = {}
+        for cid, oid in refs:
+            by_owner.setdefault(oid, []).append(cid)
+        for lst in by_owner.values():
+            lst.sort(key=lambda c: (self._age(c), c))
+        owners = sorted(by_owner, key=lambda o: (self._age(by_owner[o][0]), o))
+        chosen: list = []
+        for rank in range(OWNER_SCAN):
+            for o in owners:
+                if len(chosen) >= CANDIDATE_LIMIT:
+                    break
+                if rank < len(by_owner[o]):
+                    chosen.append(by_owner[o][rank])
+        rowmap = {r["id"]: r for r in await self.db.get_health_candidate_rows(chosen)}
+
         now = self.clock()
+        groups: dict = {}                 # target key -> (target, [rows])
+        owner_keys: dict = {}             # owner -> target keys in the order they are to be probed
+        unprobed = []
+        for o in owners:
+            mine: list = []
+            for cid in by_owner[o][:OWNER_SCAN]:
+                row = rowmap.get(cid)
+                if row is None:
+                    continue
+                t = target_of(row, self.types)
+                if t is None or (self.stage_mode and not self._lan_allowed(t, stage_ports)):
+                    unprobed.append((row, ("none",)))
+                    continue
+                if self._refused_now(t.key, now):
+                    unprobed.append((row, t.key))
+                    continue
+                if t.key in mine:
+                    groups[t.key][1].append(row)
+                elif len(mine) < PER_OWNER_PROBES:
+                    mine.append(t.key)
+                    groups.setdefault(t.key, (t, []))[1].append(row)
+                # else: this owner's excess, not probed this round
+            owner_keys[o] = mine
         iso = _iso(now_dt)
         transitions = []
-        for row in unprobed:
-            # not probeable (or not allowed here): reads "unknown", nothing is dialled
-            tr = self.state.apply(row["id"], ("none",), Result("refused"), now, iso)
+        for row, key in unprobed:
+            # not probeable (or not allowed here, or refused and waiting): reads "unknown", nothing is dialled
+            tr = self.state.apply(row["id"], key, Result("refused"), now, iso, quiet=self._quiet(row, now_dt))
             if tr:
                 transitions.append((row, tr))
 
-        def last_checked(item):
-            """Least recently probed first (never probed before everything), so the cap rotates."""
-            def one_of(r):
-                e = self.state.entries.get(r["id"])
-                return -1.0 if e is None or e.checked is None else e.checked
-            return min(one_of(r) for r in item[1])
-
-        ordered = sorted(groups.values(), key=last_checked)[:PROBE_ROUND_CAP]
+        # fill the round in rotation: first target of every owner, then the second of every owner, ...
+        ordered: list = []
+        taken: set = set()
+        for rank in range(PER_OWNER_PROBES):
+            for o in owners:
+                if len(ordered) >= PROBE_ROUND_CAP:
+                    break
+                lst = owner_keys[o]
+                if rank < len(lst) and lst[rank] not in taken:
+                    taken.add(lst[rank])
+                    ordered.append(groups[lst[rank]])
         sem = asyncio.Semaphore(PROBE_PARALLEL)
 
         async def one(target: Target, members: list):
@@ -472,38 +630,77 @@ class Monitor:
             if res is None:
                 continue
             probes += 1
+            if res.kind == "refused":
+                self._note_refused(target, now)
+            elif res.kind in ("ok", "fail"):
+                self._note_not_refused(target, now)
             for row in members:
-                tr = self.state.apply(row["id"], target.key, res, now, iso)
+                tr = self.state.apply(row["id"], target.key, res, now, iso, quiet=self._quiet(row, now_dt))
                 if tr:
                     transitions.append((row, tr))
         for row, tr in transitions:
-            await self._persist_and_alert(row, tr)
-        keep = {r["id"] for r in rows}
+            await self._persist_and_alert(row, tr, now_dt, now)
+        keep = {cid for cid, _ in refs}
         limit = stale_after(interval)
         for cid in [c for c, e in self.state.entries.items()
                     if c not in keep and (e.checked is None or now - e.checked > limit)]:
             del self.state.entries[cid]
+        today = now_dt.strftime("%Y-%m-%d")
+        for cid in [c for c, (d, _n) in self._stored_today.items() if d != today or c not in self.state.entries]:
+            del self._stored_today[cid]
+        for key in [k for k, (until, delay) in self._refused.items() if now - until > 2 * REFUSED_BACKOFF_MAX]:
+            del self._refused[key]
+        if self._stored_since_prune >= LOG_MAX_ROWS // 10:
+            await self._prune(now)
         self.rounds += 1
         return probes
 
-    async def _persist_and_alert(self, row: dict, tr: Transition) -> None:
+    @staticmethod
+    def _quiet(row: dict, now_dt: datetime) -> bool:
+        """The connection is in maintenance now: its transitions send no alert."""
+        return maintenance.state(row, now_dt) is not None
+
+    async def _prune(self, now: float) -> None:
+        self._last_prune = now
+        self._stored_since_prune = 0
         try:
-            await self.db.add_health_transition(tr.conn_id, tr.new, tr.since)
+            n = await self.db.prune_health_log(LOG_KEEP_DAYS, LOG_MAX_ROWS)
+            if n:
+                logger.info("[Health] pruned %d old status change(s)", n)
         except Exception as e:
-            logger.warning("[Health] could not store a status change: %s", type(e).__name__)
+            logger.warning("[Health] could not prune the status changes: %s", type(e).__name__)
+
+    async def _persist_and_alert(self, row: dict, tr: Transition, now_dt: datetime, now: float) -> None:
+        # At most STORE_PER_DAY changes per connection per UTC day are stored or alerted; the status
+        # itself keeps changing in memory and is shown.
+        cid = tr.conn_id
+        day = now_dt.strftime("%Y-%m-%d")
+        d, n = self._stored_today.get(cid, (day, 0))
+        if d != day:
+            n = 0
+        if n >= STORE_PER_DAY:
+            self._stored_today[cid] = (day, n)
+            return
+        self._stored_today[cid] = (day, n + 1)
+        if tr.store:
+            try:
+                await self.db.add_health_transition(cid, tr.new, tr.since)
+                self._stored_since_prune += 1
+            except Exception as e:
+                logger.warning("[Health] could not store a status change: %s", type(e).__name__)
         if not tr.alert:
             return
         name = str(row.get("name") or "a connection")[:80]
         owner = str(row.get("owner_username") or "")
         try:
             if tr.alert == "down":
-                self.emit("service.health_changed", key=("conn", tr.conn_id), bucket=alerts.MEMBER_BUCKET,
-                          severity="warning", summary=f"Connection '{name}' is down",
+                self.emit("service.health_changed", key=("conn", cid), bucket=alerts.HEALTH_BUCKET,
+                          cooldown=ALERT_PERIOD, severity="warning", summary=f"Connection '{name}' is down",
                           details={"Connection": name, "Owner": owner, "Type": row.get("type")},
                           third_party={"summary": "A member's connection is down", "details": {}})
             else:
-                self.emit("service.health_changed", key=("conn", tr.conn_id), bucket=alerts.MEMBER_BUCKET,
-                          cooldown=0.0, severity="info", summary=f"Connection '{name}' is back up",
+                self.emit("service.health_changed", key=("conn", cid), bucket=alerts.HEALTH_BUCKET,
+                          cooldown=ALERT_PERIOD, severity="info", summary=f"Connection '{name}' is back up",
                           details={"Connection": name, "Owner": owner, "Type": row.get("type")},
                           third_party={"summary": "A member's connection is back up", "details": {}})
         except Exception as e:
@@ -512,15 +709,23 @@ class Monitor:
     # -- what the API shows
 
     async def statuses_for(self, user_id: int) -> dict:
-        """{uuid: {status, latency_ms, since}} for the connections the user can reach; {} when off."""
+        """{uuid: {status, latency_ms, since}} for the connections the user can reach; {} when off.
+        A connection in maintenance reads "maintenance" for everybody who can reach it (no more than
+        the maintenance page says)."""
         raw = await self.db.get_setting(SETTING_ENABLED)
         if str(raw).strip() != "1":
             return {}
         interval = clamp_interval(await self.db.get_setting(SETTING_INTERVAL))
         stale = stale_after(self._round_seconds(interval))
         now = self.clock()
-        return {uuid: self.state.view(cid, now, stale)
-                for cid, uuid in await self.db.list_accessible_connection_refs(user_id)}
+        now_dt = self.wall()
+        out = {}
+        for cid, uuid, maint in await self.db.list_accessible_connection_refs(user_id):
+            if maintenance.state(maint, now_dt) is not None:
+                out[uuid] = {"status": "maintenance", "latency_ms": None, "since": None}
+            else:
+                out[uuid] = self.state.view(cid, now, stale)
+        return out
 
     # -- the task
 
@@ -549,10 +754,7 @@ class Monitor:
                 await asyncio.sleep(delay)
                 await self.run_round()
                 if self.enabled and (self._last_prune is None or self.clock() - self._last_prune > PRUNE_EVERY):
-                    self._last_prune = self.clock()
-                    n = await self.db.prune_health_log(LOG_KEEP_DAYS)
-                    if n:
-                        logger.info("[Health] pruned %d old status change(s)", n)
+                    await self._prune(self.clock())
             except asyncio.CancelledError:
                 raise
             except Exception as e:

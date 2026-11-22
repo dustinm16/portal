@@ -101,17 +101,23 @@ SEVERITY = {
     "moderation.action": "info", "automod.triggered": "info", "alerts.suppressed": "warning",
 }
 
-CAP_ALERTS = 30
+CAP_ALERTS = 33
 CAP_WINDOW = 600.0
 # Smaller caps, in the same window, for what an unauthenticated actor (failed sign-ins, probes
 # that get blocked) or any member can set off. They are counted per bucket, which is the event
 # name unless BUCKET_OF or the emitter names another. With these, at least CAP_ALERTS minus their
 # sum (20) minus the one notice (9 slots) stays free for everything else.
 MEMBER_BUCKET = "member"
+# A member's connection going down or up (connection_health.py): a member can make a target flap at
+# will, so these alerts have a bucket and a cap of their own and cannot use the member bucket that
+# moderation and automod alerts count in. CAP_ALERTS was raised by this cap (30 to 33) so that the
+# room left for everything else is unchanged.
+HEALTH_BUCKET = "service.health_changed:connection"
 SUB_CAPS = {
     "auth.login_failed_burst": 5,
     "ip.blocked:auto": 5,
     MEMBER_BUCKET: 5,
+    HEALTH_BUCKET: 3,
     # Account-security signals have a bucket each, apart from moderation and automod: a member
     # who bans raiders from their own stream chat must not be able to silence the alert for a
     # turned-off two-factor sign-in, and creating API keys must not silence it either.

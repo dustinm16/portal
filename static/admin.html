@@ -2375,7 +2375,7 @@
                         Nothing is sent until you create a system webhook above and pick events in it. "*" never includes an alert.
                         A checked box here also shows the alert as a notification to every administrator inside the portal (nothing leaves the machine).
                         Alerts carry a title and a one-line summary; addresses, user agents and rule names are sent only to a hook with "Include details".
-                        All alerts together are capped at 30 per 10 minutes.
+                        All alerts together are capped at 33 per 10 minutes.
                     </p>
                     <div id="wh-alerts-body"></div>
                 </div>
@@ -6718,12 +6718,14 @@
             const d = connHealthState;
             el.innerHTML = `
                 <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
-                    Shows a status dot (up, down or unknown) on each dashboard card. It is off by default and only a superadmin can change it.
+                    Shows a status dot (up, down, in maintenance or unknown) on each dashboard card. It is off by default and only a superadmin can change it.
                     While it is on, the portal checks only connections that are pinned or were opened in the last 7 days by somebody who
                     still has access: a TCP connect for SSH, desktop and tunnel connections, a HEAD request for web connections, always through
                     the same address rules as a real connection (a name that resolves to a private or local address is never contacted and shows unknown).
-                    Nothing is sent to the other side, redirects are not followed, and members who were given a connection see the dot and the
-                    response time, never a host or an error. An alert is raised when a connection goes down and when it is back.
+                    A check is one TCP connect that is closed again at once, or one HEAD request (a GET if the answer is 405 or 501) for "/" with no credentials or cookies;
+                    nothing else is sent and redirects are not followed. At most 10 targets per member are checked in a round, so one member cannot crowd out the others.
+                    Members who were given a connection see the dot and the response time, never a host or an error. An alert is raised when a connection goes down and when it is back
+                    (at most one per connection every 10 minutes, none while the connection is in maintenance).
                 </p>
                 <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" id="ch-enabled" ${d.enabled ? 'checked' : ''}> Check connections</label>
                 <label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-top:0.5rem;">Seconds between rounds (${parseInt(d.min)} to ${parseInt(d.max)}, default ${parseInt(d.default)})</label>

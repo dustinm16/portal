@@ -17,6 +17,7 @@ server-side instead.
 """
 
 import asyncio
+import contextvars
 import ipaddress
 import logging
 import re
@@ -27,6 +28,11 @@ import aiohttp
 import aiohttp.resolver
 
 logger = logging.getLogger("portal")
+
+# A caller that repeats the same check on a schedule (the connection health probe) sets this so that
+# a refused name does not write one warning per attempt; it keeps its own, once-per-change log. Only
+# the log line is affected: the refusal itself is raised exactly as before.
+quiet_refusals: contextvars.ContextVar = contextvars.ContextVar("host_check_quiet_refusals", default=False)
 
 # Blocked hosts for user connections (security - no local server access)
 BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
@@ -251,7 +257,8 @@ async def resolve_checked_host(host: str, port: int = 0, *, timeout: float = 5.0
         raise HostResolveError()
     for addr in addrs:
         if _addr_blocked(addr, allow_private):
-            logger.warning(f"Outbound host check: {h!r} resolves to a blocked address ({addr})")
+            if not quiet_refusals.get():
+                logger.warning(f"Outbound host check: {h!r} resolves to a blocked address ({addr})")
             raise HostBlockedError()
     return addrs
 

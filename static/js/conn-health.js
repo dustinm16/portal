@@ -16,7 +16,7 @@
 
     var POLL_MS = 60000;
     var MIN_GAP_MS = 30000;   // a tab that becomes visible again refreshes if the answer is older than this
-    var STATUSES = { up: 1, down: 1, unknown: 1 };
+    var STATUSES = { up: 1, down: 1, unknown: 1, maintenance: 1 };
 
     function statusOf(entry) {
         return entry && STATUSES[entry.status] ? entry.status : 'unknown';
@@ -39,6 +39,7 @@
             var since = formatSince(entry && entry.since);
             return since ? 'down since ' + since : 'down';
         }
+        if (s === 'maintenance') return 'in maintenance';
         return 'status unknown';
     }
 

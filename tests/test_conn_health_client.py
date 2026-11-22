@@ -32,16 +32,16 @@ def check(name, ok, detail=""):
 
 
 check("index.html loads conn-health.js before conn-organise.js",
-      0 < INDEX.find("conn-health.js?v=1") < INDEX.find("conn-organise.js?v="))
-check("index.html loads the dot stylesheet", 'css/conn-health.css?v=1"' in INDEX)
+      0 < INDEX.find("conn-health.js?v=2") < INDEX.find("conn-organise.js?v="))
+check("index.html loads the dot stylesheet", 'css/conn-health.css?v=2"' in INDEX)
 check("conn-organise.js asks for a dot when it draws a card", "root.ConnHealth" in ORG and "ConnHealth.dot(conn.id)" in ORG)
 check("conn-health.js polls the status route every 60 seconds and only while the tab is visible",
       "/api/connections/status" in JS and "POLL_MS = 60000" in JS and "visibilityState" in JS and "visibilitychange" in JS)
 check("conn-health.js has no inline handler, no innerHTML and no eval",
       "innerHTML" not in JS and "eval(" not in JS and not re.search(r"\bon(click|change|input|submit)\s*=", JS))
 check("the dot's words are set as attributes", "setAttribute('title'" in JS and "setAttribute('aria-label'" in JS)
-check("the stylesheet has up, down and unknown",
-      all(c in CSS for c in (".conn-health-up", ".conn-health-down", ".conn-health-unknown")))
+check("the stylesheet has up, down, maintenance and unknown",
+      all(c in CSS for c in (".conn-health-up", ".conn-health-down", ".conn-health-unknown", ".conn-health-maintenance")))
 check("the admin page has the setting card and no inline handler for it",
       'id="connhealth-body"' in ADMIN and "data-connhealth-action" in ADMIN and "/api/admin/connection-health" in ADMIN
       and "onclick=\"saveConnHealth" not in ADMIN)

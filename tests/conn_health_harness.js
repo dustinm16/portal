@@ -82,6 +82,13 @@ const tick = () => new Promise(r => setImmediate(r));
     const dx = ca.querySelector('.conn-health-dot');
     check('an unexpected status is shown as unknown, never as markup', dx.className === 'conn-health-dot conn-health-unknown' && dx.getAttribute('title') === 'status unknown');
 
+    answer = { a: { status: 'maintenance', latency_ms: null, since: null } };
+    await H.refresh();
+    const dm = ca.querySelector('.conn-health-dot');
+    check('a connection in maintenance gets its own neutral dot with its own words',
+        dm.className === 'conn-health-dot conn-health-maintenance' && dm.getAttribute('title') === 'in maintenance'
+        && dm.getAttribute('aria-label').includes('in maintenance'));
+
     const before = fetches;
     global.document.visibilityState = 'hidden';
     intervals[0].f();

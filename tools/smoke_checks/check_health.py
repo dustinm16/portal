@@ -204,6 +204,20 @@ async def run(ctx):
             rows = sql("SELECT status FROM connection_health_log WHERE connection_id = ? ORDER BY id", (cid["pinned"],))
             ok("the log has up, down, up", [r[0] for r in rows] == ["up", "down", "up"], rows)
 
+            # ---- maintenance: a neutral dot for everybody who can reach the connection --------------------------
+            sql("UPDATE user_connections SET maintenance = 1, maintenance_until = NULL, maintenance_message = 'smoke secret' WHERE id = ?", (cid["pinned"],))
+            st_o, body_o = await status(owner)
+            st_b, body_b = await status(bob)
+            ok("a connection in maintenance reads maintenance for the owner and the grantee, with nothing else",
+               (body_o or {}).get(data["pinned"]) == {"status": "maintenance", "latency_ms": None, "since": None}
+               and (body_b or {}).get(data["pinned"]) == (body_o or {}).get(data["pinned"]), f"{body_o} {body_b}")
+            ok("the maintenance message is not in the status answer", "smoke secret" not in json.dumps([body_o, body_b]))
+            st_c, body_c = await status(carol)
+            ok("a member with no access still sees nothing of it", st_c == 200 and body_c == {}, f"{st_c} {body_c}")
+            sql("UPDATE user_connections SET maintenance = 0, maintenance_until = NULL, maintenance_message = NULL WHERE id = ?", (cid["pinned"],))
+            back2 = await until(owner, data["pinned"], "up")
+            ok("when the maintenance is cleared the real status shows again", bool(back2), back2)
+
             # ---- the stage rule, after many rounds ------------------------------------------------------------
             st, body = await status(owner)
             ok("after many rounds the unnamed port and the public address are still unknown",

@@ -1,5 +1,5 @@
 /* Status dot of a dashboard card (connection health checks). Colour is never the only signal:
-   the title and the accessible label say up, down since a time, or unknown. */
+   the title and the accessible label say up, down since a time, in maintenance, or unknown. */
 .conn-health-dot {
     display: inline-block;
     width: 0.6rem;
@@ -13,3 +13,5 @@
 .conn-health-up { background: var(--accent-green, #2ecc71); }
 .conn-health-down { background: var(--accent-red, #e74c3c); }
 .conn-health-unknown { background: var(--text-muted, #8a8f98); opacity: 0.6; }
+/* In maintenance: a neutral ring, neither the up nor the down colour */
+.conn-health-maintenance { background: transparent; box-shadow: 0 0 0 2px var(--text-muted, #8a8f98); }

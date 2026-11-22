@@ -346,7 +346,10 @@ async def db_checks(env):
     await db.note_connection_opened(uid["bob"], gone)
     await db.conn.execute("UPDATE connection_shares SET expires_at = '2000-01-01T00:00:00Z' WHERE connection_id = ?", (gone,))
     await db.conn.commit()
-    rows = await db.list_health_candidates(iso(now - timedelta(days=7)), 100)
+    async def cands(limit):
+        return await db.get_health_candidate_rows([c for c, _o in await db.list_health_candidate_refs(iso(now - timedelta(days=7)), limit)])
+
+    rows = await cands(100)
     names = {r["name"] for r in rows if r["name"] in
              {"pinned", "recent", "old", "plain", "shared-open", "share-gone", "legacy-pin", "unpinned"}}
     check("candidates: pinned, opened this week, opened by a grantee with a live share, owner's older pin",
@@ -355,10 +358,10 @@ async def db_checks(env):
           not ({"old", "plain", "share-gone", "unpinned"} & names), str(names))
     check("candidates: each connection once", len(rows) == len({r["id"] for r in rows}))
     await db.remove_connection_share(shared, uid["bob"])
-    rows = await db.list_health_candidates(iso(now - timedelta(days=7)), 100)
+    rows = await cands(100)
     check("candidates: a revoked share no longer keeps the connection in (nobody with access opened it)",
           "shared-open" not in {r["name"] for r in rows})
-    check("candidates: the limit holds", len(await db.list_health_candidates(iso(now - timedelta(days=7)), 1)) == 1)
+    check("candidates: the limit holds", len(await cands(1)) == 1)
 
     # ---- the monitor ---------------------------------------------------------------------------------
     for k in (ch.SETTING_ENABLED, ch.SETTING_INTERVAL):
@@ -382,6 +385,7 @@ async def db_checks(env):
     alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
     alerts.bind_record(None)
     clock = {"t": 1000.0}
+    alerts._clock = lambda: clock["t"]
     mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=fake_probe, clock=lambda: clock["t"])
     n = await mon.run_round()
     check("feature off (the default): no probe at all", n == 0 and not calls)
@@ -435,6 +439,7 @@ async def db_checks(env):
     check("the log holds the transitions only (up, down)", [r["status"] for r in rows] == ["up", "down"], str([r["status"] for r in rows]))
 
     verdict["v"] = "ok"
+    clock["t"] += ch.ALERT_PERIOD + 1        # the per-connection alert period has passed
     await mon.run_round()
     await settle()
     check("one success after down: still down", (await mon.statuses_for(uid["owner"]))[pinned_u]["status"] == "down")
@@ -561,6 +566,449 @@ async def db_checks(env):
     await db.set_setting(ch.SETTING_ENABLED, "0")
 
 
+
+# ---------------------------------------------------------------------------------------------------
+# Fix pass C: fairness, bounded log and state, own alert bucket, maintenance, dialled address, seeding
+# ---------------------------------------------------------------------------------------------------
+
+class LogCatcher:
+    def __init__(self):
+        import logging
+        self.records = []
+        outer = self
+
+        class H(logging.Handler):
+            def emit(self, record):
+                outer.records.append(record.getMessage())
+        self.handler = H(level=logging.DEBUG)
+        self.logger = logging.getLogger("portal")
+
+    def __enter__(self):
+        self.logger.addHandler(self.handler)
+        return self
+
+    def __exit__(self, *a):
+        self.logger.removeHandler(self.handler)
+
+    def health(self):
+        return [m for m in self.records if m.startswith("[Health]")]
+
+
+async def dial_checks():
+    """The probe dials the address that was checked, never the name a second time."""
+    import itertools
+    real_resolve, real_open = host_check._resolve, asyncio.open_connection
+    asked = []
+
+    async def flipping(host, port):
+        asked.append(host)
+        return ["93.184.216.34"] if len(asked) == 1 else ["127.0.0.1"]
+
+    dialled = []
+
+    async def fake_open(host, port, **kw):
+        dialled.append(host)
+        raise ConnectionRefusedError()
+
+    host_check._resolve = flipping
+    asyncio.open_connection = fake_open
+    try:
+        r = await ch.probe_target(ch.Target("tcp", "flip.example", 8022))
+    finally:
+        host_check._resolve, asyncio.open_connection = real_resolve, real_open
+    check("tcp probe: dials the checked address, not the name (a second lookup would have said 127.0.0.1)",
+          dialled == ["93.184.216.34"] and len(asked) == 1 and r.kind == "fail", f"{dialled} {asked} {r}")
+
+    up = await Upstream().start()
+    asked.clear()
+    outbound_guard.refused.clear()
+    host_check._resolve = flipping
+    try:
+        t = ch.Target("http", "flip.example", up.port, "http", False, f"http://flip.example:{up.port}/")
+        r = await ch.probe_target(t)
+    finally:
+        host_check._resolve = real_resolve
+    check("http probe: dials the checked address, not the name: the loopback upstream saw nothing",
+          not up.seen and len(asked) == 1 and r.kind == "fail", f"{up.seen} {asked} {r}")
+    check("http probe: the connection attempt went to the checked public address (stopped by the test guard)",
+          outbound_guard.refused[:1] == ["93.184.216.34"], str(outbound_guard.refused))
+    outbound_guard.refused.clear()
+    await up.stop()
+
+    # a refused name: the refusal is raised as before, but this probe writes no warning of its own
+    async def to_loopback(host, port):
+        return ["127.0.0.1"]
+    host_check._resolve = to_loopback
+    try:
+        with LogCatcher() as lc:
+            r = await ch.probe_target(ch.Target("tcp", "sneaky.example", 80))
+            quiet_msgs = [m for m in lc.records if "Outbound host check" in m]
+        try:
+            await host_check.resolve_checked_host("sneaky.example", 80)
+            raised = False
+        except host_check.HostBlockedError:
+            raised = True
+        with LogCatcher() as lc2:
+            try:
+                await host_check.resolve_checked_host("sneaky.example", 80)
+            except host_check.HostBlockedError:
+                pass
+            loud = [m for m in lc2.records if "Outbound host check" in m]
+    finally:
+        host_check._resolve = real_resolve
+    check("a refused name is still refused by the probe, without a warning per attempt", r.kind == "refused" and not quiet_msgs, f"{r} {quiet_msgs}")
+    check("the host policy itself is untouched: it still raises and still warns outside a probe", raised and len(loud) == 1, f"{raised} {loud}")
+
+
+def alert_and_state_units():
+    # seeding: a stale stored "down" is not "known" after a restart; a fresh one is
+    now_dt = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    iso = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    st = ch.HealthState()
+    st.seed({1: ("down", iso(now_dt - timedelta(hours=3)), "down", iso(now_dt - timedelta(hours=3))),
+             2: ("down", iso(now_dt - timedelta(minutes=2)), "down", iso(now_dt - timedelta(minutes=2))),
+             3: ("unknown", iso(now_dt - timedelta(minutes=1)), "down", iso(now_dt - timedelta(hours=5))),
+             4: ("up", iso(now_dt - timedelta(days=9)), "up", iso(now_dt - timedelta(days=9)))}, now_dt)
+    check("seed: an old stored down is not known, a recent one is, a down behind a recent unknown is judged by its own time, an old up stays known",
+          [st.entries[i].known for i in (1, 2, 3, 4)] == [None, "down", None, "up"], str([st.entries[i].known for i in (1, 2, 3, 4)]))
+    check("seed: the status itself is kept for the view", st.entries[1].status == "down")
+
+    # maintenance: an alert is owed, sent afterwards when still true, cancelled by the opposite
+    K = ("tcp", "", "h", 1, False)
+    ok, bad = ch.Result("ok", 5), ch.Result("fail")
+    s2 = ch.HealthState()
+    for i in range(2):
+        s2.apply(1, K, ok, float(i), "t")
+    trs = [s2.apply(1, K, bad, 10.0 + i, "t", quiet=True) for i in range(3)]
+    check("maintenance: the down is a transition but sends no alert", trs[2].new == "down" and trs[2].alert is None and s2.entries[1].owed == "down")
+    tr = s2.apply(1, K, bad, 20.0, "t2")
+    check("after maintenance, a status still down sends the owed alert once, not stored again",
+          tr is not None and tr.alert == "down" and tr.store is False and s2.apply(1, K, bad, 21.0, "t3") is None)
+    s3 = ch.HealthState()
+    for i in range(2):
+        s3.apply(1, K, ok, float(i), "t")
+    for i in range(3):
+        s3.apply(1, K, bad, 10.0 + i, "t", quiet=True)
+    for i in range(2):
+        s3.apply(1, K, ok, 20.0 + i, "t", quiet=True)
+    check("maintenance: down then up inside it cancel (no orphan 'back up' afterwards)",
+          s3.entries[1].owed is None and s3.apply(1, K, ok, 30.0, "t") is None)
+
+
+async def fix_c_checks(env):
+    db = env.db
+    uid = env.uid
+    await db.conn.execute("DELETE FROM user_connections")
+    await db.conn.execute("DELETE FROM connection_health_log")
+    await db.conn.commit()
+    await db.set_setting(ch.SETTING_ENABLED, "1")
+    clock = {"t": 5000.0}
+    alerts.reset_state()
+    fire = Fire()
+    alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
+    alerts.bind_record(None)
+    alerts._clock = lambda: clock["t"]
+
+    async def mk(owner, name, host, ctype="ssh", port=22, pin=True):
+        u = await db.create_user_connection(uid[owner], name, ctype, host, port, "{}")
+        cid = (await (await db.conn.execute("SELECT id FROM user_connections WHERE uuid = ?", (u,))).fetchone())["id"]
+        if pin:
+            await db.set_connection_prefs(uid[owner], cid, {"pinned": True}, owner=True)
+        return u, cid
+
+    async def wipe():
+        await db.conn.execute("DELETE FROM user_connections")
+        await db.conn.execute("DELETE FROM connection_health_log")
+        await db.conn.commit()
+
+    # ---- 1. fairness ------------------------------------------------------------------------------
+    calls = []
+
+    async def ok_probe(target, *, lan=False):
+        calls.append(target.host)
+        return ch.Result("ok", 3)
+
+    for i in range(25):
+        await mk("owner", f"o{i}", f"o{i:02d}.example")
+    await mk("bob", "b0", "bob0.example")
+    await mk("carol", "c0", "o00.example")           # the same target as the first of owner's
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=ok_probe, clock=lambda: clock["t"])
+    n = await mon.run_round()
+    owner_hosts = [h_ for h_ in calls if h_.startswith("o")]
+    check("fairness: one member's 25 pinned targets get at most PER_OWNER_PROBES probes in a round",
+          len(owner_hosts) == ch.PER_OWNER_PROBES, str(calls))
+    check("fairness: another member's single connection is probed in the same round", "bob0.example" in calls, str(calls))
+    check("fairness: a target two members share is probed once", calls.count("o00.example") == 1)
+    for _ in range(2):
+        clock["t"] += 60
+        await mon.run_round()
+    check("fairness: the owner's excess is probed in later rounds, least recently probed first (all 25 within three rounds)",
+          {f"o{i:02d}.example" for i in range(25)} <= set(calls), str(len(set(calls))))
+    # the cap of the round and the cap on decoded rows are shared out in turn too
+    old_round, old_limit = ch.PROBE_ROUND_CAP, ch.CANDIDATE_LIMIT
+    ch.PROBE_ROUND_CAP = 4
+    calls.clear()
+    mon_b = ch.Monitor(db, TYPES, emit=alerts.emit, probe=ok_probe, clock=lambda: clock["t"])
+    try:
+        await mon_b.run_round()
+    finally:
+        ch.PROBE_ROUND_CAP = old_round
+    check("fairness: with a small round cap every member still has a turn", {"bob0.example"} & set(calls) and len(calls) == 4, str(calls))
+    ch.CANDIDATE_LIMIT = 3
+    calls.clear()
+    mon_c = ch.Monitor(db, TYPES, emit=alerts.emit, probe=ok_probe, clock=lambda: clock["t"])
+    try:
+        await mon_c.run_round()
+    finally:
+        ch.CANDIDATE_LIMIT = old_limit
+    check("fairness: with a small cap on decoded rows every member is still looked at", "bob0.example" in calls and len(calls) <= 3, str(calls))
+
+    # ---- 2. bounded log and state -------------------------------------------------------------------
+    await wipe()
+    u, cid = await mk("owner", "flappy", "flap.example")
+    phase = {"i": 0}
+
+    async def flap_probe(target, *, lan=False):
+        phase["i"] += 1
+        return ch.Result("ok", 1) if (phase["i"] - 1) % 5 < 2 else ch.Result("fail")
+
+    sent = []
+    day = {"d": datetime(2030, 3, 1, 12, 0, 0, tzinfo=timezone.utc)}
+    old_store = ch.STORE_PER_DAY
+    ch.STORE_PER_DAY = 4
+    mon = ch.Monitor(db, TYPES, emit=lambda *a, **k: sent.append(k), probe=flap_probe, clock=lambda: clock["t"], wall=lambda: day["d"])
+    try:
+        for _ in range(30):                       # six cycles of two ups and three downs: twelve changes
+            clock["t"] += 60
+            await mon.run_round()
+        rows = await (await db.conn.execute("SELECT status FROM connection_health_log WHERE connection_id = ?", (cid,))).fetchall()
+        check("bounded: at most STORE_PER_DAY transitions of one connection are stored in a day", len(rows) == 4, str(len(rows)))
+        check("bounded: and no alert after them either (of the four stored changes the first, to up, never alerts)", len(sent) == 3, str(len(sent)))
+        view = mon.state.view(cid, clock["t"], 1e9)
+        check("bounded: the status keeps changing in memory and is shown", view["status"] in ("up", "down") and mon.state.entries[cid].since, str(view))
+        day["d"] += timedelta(days=1)
+        for _ in range(10):
+            clock["t"] += 60
+            await mon.run_round()
+        rows2 = await (await db.conn.execute("SELECT status FROM connection_health_log WHERE connection_id = ?", (cid,))).fetchall()
+        check("bounded: the next day stores again (up to the cap)", 4 < len(rows2) <= 8, str(len(rows2)))
+    finally:
+        ch.STORE_PER_DAY = old_store
+
+    await wipe()
+    ids = []
+    for i in range(3):
+        _, c = await mk("owner", f"cap{i}", f"cap{i}.example", pin=False)
+        ids.append(c)
+    for j in range(60):
+        await db.conn.execute("INSERT INTO connection_health_log (connection_id, status, since) VALUES (?, ?, ?)",
+                              (ids[j % 3], "up" if j % 2 else "down", "2030-01-01T00:00:%02dZ" % (j % 60)))
+    await db.conn.commit()
+    latest = {r["connection_id"]: r["id"] for r in await (await db.conn.execute(
+        "SELECT connection_id, MAX(id) AS id FROM connection_health_log GROUP BY connection_id")).fetchall()}
+    n = await db.prune_health_log(100000, 20)
+    left = [r["id"] for r in await (await db.conn.execute("SELECT id FROM connection_health_log ORDER BY id")).fetchall()]
+    check("bounded: the global row cap deletes the oldest rows first and keeps each connection's latest",
+          n == 40 and len(left) == 20 and set(latest.values()) <= set(left) and left == sorted(left)
+          and min(left) > 30, f"{n} {left}")
+
+    # refused target: one warning when it starts, one when it ends
+    await wipe()
+    await mk("owner", "sneaky", "sneaky.example")
+    verdict = {"v": "refused"}
+    probed = []
+
+    async def refusing(target, *, lan=False):
+        probed.append(clock["t"])
+        return ch.Result(verdict["v"])
+
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=refusing, clock=lambda: clock["t"])
+    with LogCatcher() as lc:
+        for _ in range(8):
+            clock["t"] += 60
+            await mon.run_round()
+        starts = list(lc.health())
+        check("refused: eight rounds log one warning, not eight, and probe once inside the backoff",
+              len(starts) == 1 and "refuses" in starts[0] and len(probed) == 1, f"{starts} {probed}")
+        clock["t"] += ch.REFUSED_BACKOFF + 1
+        await mon.run_round()
+        check("refused: tried again after the backoff, still one warning", len(probed) == 2 and len(lc.health()) == 1, f"{probed} {lc.health()}")
+        verdict["v"] = "ok"
+        clock["t"] += ch.REFUSED_BACKOFF_MAX + 1
+        await mon.run_round()
+        check("refused: one more warning when it ends, none after", len(lc.health()) == 2 and "no longer refused" in lc.health()[1], str(lc.health()))
+        for _ in range(3):
+            clock["t"] += 60
+            await mon.run_round()
+        check("refused: nothing further", len(lc.health()) == 2)
+    check("refused: the remembered targets are bounded", len(mon._refused) <= ch.REFUSED_MAX)
+
+    # ---- 3. alert bucket and period -----------------------------------------------------------------
+    await wipe()
+    alerts.reset_state()
+    fire = Fire()
+    alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
+    alerts.bind_record(None)
+    alerts._clock = lambda: clock["t"]
+    cids = []
+    for i in range(6):
+        _, c = await mk("owner", f"alert{i}", f"alert{i}.example")
+        cids.append(c)
+    verdict2 = {"v": "ok"}
+
+    async def probe2(target, *, lan=False):
+        return ch.Result(verdict2["v"], 2 if verdict2["v"] == "ok" else None)
+
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=probe2, clock=lambda: clock["t"])
+    for _ in range(2):
+        clock["t"] += 1
+        await mon.run_round()
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 1
+        await mon.run_round()
+    await settle()
+    downs = [p for e, p in fire.sent if e == "service.health_changed" and "is down" in p["summary"]]
+    check("alerts: six connections going down use only the health bucket's own cap", len(downs) == alerts.SUB_CAPS[alerts.HEALTH_BUCKET], str(len(downs)))
+    check("alerts: a moderation alert is still admitted (the member bucket is untouched)",
+          alerts.emit("moderation.action", key=("t", 1), summary="x") is True)
+    check("alerts: the health bucket is its own, not the member bucket", alerts.HEALTH_BUCKET != alerts.MEMBER_BUCKET and alerts.HEALTH_BUCKET in alerts.SUB_CAPS)
+    check("alerts: the caps still leave the room the rest of the portal was promised",
+          sum(alerts.SUB_CAPS.values()) <= alerts.CAP_ALERTS - alerts.MEMBER_RESERVE)
+
+    await wipe()
+    alerts.reset_state()
+    fire = Fire()
+    alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
+    alerts.bind_record(None)
+    alerts._clock = lambda: clock["t"]
+    _, one = await mk("owner", "once", "once.example")
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=probe2, clock=lambda: clock["t"])
+    seq = ["ok"] * 2 + ["fail"] * 3 + ["ok"] * 2 + ["fail"] * 3
+    for v in seq:
+        verdict2["v"] = v
+        clock["t"] += 5
+        await mon.run_round()
+    await settle()
+    mine = [p["summary"] for e, p in fire.sent if e == "service.health_changed"]
+    check("alerts: a connection that goes down, up and down again within the period sends one alert", len(mine) == 1 and "is down" in mine[0], str(mine))
+    clock["t"] += ch.ALERT_PERIOD
+    for v in ["ok"] * 2:
+        verdict2["v"] = v
+        await mon.run_round()
+    await settle()
+    check("alerts: after the period the next change is announced",
+          len([p for e, p in fire.sent if e == "service.health_changed"]) == 2, str(fire.sent[-1:]))
+
+    # ---- 4. maintenance ---------------------------------------------------------------------------
+    await wipe()
+    alerts.reset_state()
+    fire = Fire()
+    alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
+    alerts.bind_record(None)
+    alerts._clock = lambda: clock["t"]
+    mu, mc = await mk("owner", "serviced", "svc.example")
+    await db.add_connection_share(mc, uid["bob"], uid["owner"], "30d")
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=probe2, clock=lambda: clock["t"])
+    verdict2["v"] = "ok"
+    for _ in range(2):
+        clock["t"] += 5
+        await mon.run_round()
+    await db.conn.execute("UPDATE user_connections SET maintenance = 1, maintenance_until = NULL, maintenance_message = 'secret plan' WHERE id = ?", (mc,))
+    await db.conn.commit()
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 5
+        await mon.run_round()
+    await settle()
+    check("maintenance: the connection goes down without an alert while maintenance lasts", mon.state.entries[mc].status == "down" and not fire.sent, str(fire.sent))
+    for who in ("owner", "bob"):
+        v = (await mon.statuses_for(uid[who]))[mu]
+        check(f"maintenance: the dot reads 'maintenance' for {who} and carries nothing else",
+              v == {"status": "maintenance", "latency_ms": None, "since": None}, str(v))
+    check("maintenance: a member with no access sees nothing of it", await mon.statuses_for(uid["carol"]) == {})
+    check("maintenance: the message is not in the answer", "secret plan" not in json.dumps(await mon.statuses_for(uid["bob"])))
+    await db.conn.execute("UPDATE user_connections SET maintenance = 0 WHERE id = ?", (mc,))
+    await db.conn.commit()
+    clock["t"] += 5
+    await mon.run_round()
+    await settle()
+    after = [p["summary"] for e, p in fire.sent]
+    check("maintenance: once it ends, a connection that is still down sends the one owed alert",
+          len(after) == 1 and "is down" in after[0], str(after))
+    check("maintenance: the dot shows the real status again", (await mon.statuses_for(uid["owner"]))[mu]["status"] == "down")
+    clock["t"] += 5
+    await mon.run_round()
+    await settle()
+    check("maintenance: and not a second time", len(fire.sent) == 1)
+    # an end time that has passed means no maintenance
+    await db.conn.execute("UPDATE user_connections SET maintenance = 1, maintenance_until = '2000-01-01T00:00:00Z' WHERE id = ?", (mc,))
+    await db.conn.commit()
+    check("maintenance: an end time in the past is no maintenance", (await mon.statuses_for(uid["owner"]))[mu]["status"] == "down")
+
+    # ---- 5c. a stale stored down does not announce 'back up' -----------------------------------------
+    await wipe()
+    ru, rc = await mk("owner", "restarted", "restart.example")
+    got = []
+    emit_rec = lambda *a, **k: got.append(k.get("summary"))
+    mon = ch.Monitor(db, TYPES, emit=emit_rec, probe=probe2, clock=lambda: clock["t"])
+    verdict2["v"] = "ok"
+    for _ in range(2):
+        clock["t"] += 5
+        await mon.run_round()
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 5
+        await mon.run_round()
+    check("restart setup: one 'down' alert", len(got) == 1 and "is down" in got[0], str(got))
+    iso_ago = lambda **kw: (datetime.now(timezone.utc) - timedelta(**kw)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db.conn.execute("UPDATE connection_health_log SET since = ? WHERE connection_id = ? AND status = 'down'", (iso_ago(hours=3), rc))
+    await db.conn.commit()
+    got.clear()
+    fresh = ch.Monitor(db, TYPES, emit=emit_rec, probe=probe2, clock=lambda: clock["t"])
+    verdict2["v"] = "ok"
+    for _ in range(3):
+        clock["t"] += 5
+        await fresh.run_round()
+    check("restart: a connection stored as down three hours ago comes back up without a 'back up' alert",
+          fresh.state.entries[rc].status == "up" and not got, str(got))
+    # switching the feature off and on
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 5
+        await fresh.run_round()
+    check("off/on setup: down again, announced", len(got) == 1 and "is down" in got[0], str(got))
+    await db.conn.execute("UPDATE connection_health_log SET since = ? WHERE connection_id = ? AND status = 'down'", (iso_ago(hours=2), rc))
+    await db.conn.commit()
+    await db.set_setting(ch.SETTING_ENABLED, "0")
+    await fresh.run_round()
+    await db.set_setting(ch.SETTING_ENABLED, "1")
+    got.clear()
+    verdict2["v"] = "ok"
+    for _ in range(3):
+        clock["t"] += 5
+        await fresh.run_round()
+    check("off then on: an old stored down does not announce 'back up'", fresh.state.entries[rc].status == "up" and not got, str(got))
+    # and a recent one still does (the control: the rule is the age, not a silenced recovery)
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 5
+        await fresh.run_round()
+    got.clear()
+    await db.conn.execute("UPDATE connection_health_log SET since = ? WHERE connection_id = ? AND status = 'down'", (iso_ago(minutes=2), rc))
+    await db.conn.commit()
+    await db.set_setting(ch.SETTING_ENABLED, "0")
+    await fresh.run_round()
+    await db.set_setting(ch.SETTING_ENABLED, "1")
+    verdict2["v"] = "ok"
+    for _ in range(3):
+        clock["t"] += 5
+        await fresh.run_round()
+    check("control: a down stored two minutes ago does announce 'back up' after a restart", len(got) == 1 and "back up" in got[0], str(got))
+    await db.set_setting(ch.SETTING_ENABLED, "0")
+    alerts._clock = __import__("time").monotonic
+
+
 async def stage_checks(env):
     db = env.db
     uid = env.uid
@@ -678,8 +1126,17 @@ async def api_checks(env):
     check("the grantee sees down since a time, no latency", jb[uuid]["status"] == "down" and jb[uuid]["since"] and jb[uuid]["latency_ms"] is None, text)
     check("the grantee's answer holds no host, address, port or error text",
           not any(x in text for x in ("secret-host", "2222", "error", "refused", "timeout", "Palworld")), text)
+    # 5b. a share that was revoked or has ended shows the grantee nothing of the connection
     async with bob.get(base + "/api/connections/status") as r:
         check("no-store", "no-store" in r.headers.get("Cache-Control", ""))
+    await db.remove_connection_share(cid, env.uid["bob"])
+    check("a revoked share: the grantee's map no longer holds the connection", uuid not in json.loads((await get(bob))[1]))
+    check("a revoked share: the owner still sees it", uuid in json.loads((await get(owner))[1]))
+    await db.add_connection_share(cid, env.uid["bob"], env.uid["owner"], "30d")
+    check("a live share shows it again", uuid in json.loads((await get(bob))[1]))
+    await db.conn.execute("UPDATE connection_shares SET expires_at = '2000-01-01T00:00:00Z' WHERE connection_id = ?", (cid,))
+    await db.conn.commit()
+    check("an expired share: the grantee's map no longer holds the connection", uuid not in json.loads((await get(bob))[1]))
     async with adm.put(f"{base}/api/admin/connection-health", json={"enabled": False}) as r:
         check("switched off again", r.status == 200)
     check("off again: the empty map at once", json.loads((await get(owner))[1]) == {})
@@ -691,9 +1148,12 @@ async def main():
     unit_checks()
     outbound_guard.refused.clear()
     await probe_checks()
+    await dial_checks()
+    alert_and_state_units()
     env = await h.boot()
     try:
         await db_checks(env)
+        await fix_c_checks(env)
         await stage_checks(env)
         await api_checks(env)
     finally:

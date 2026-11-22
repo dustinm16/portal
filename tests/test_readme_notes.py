@@ -946,7 +946,7 @@ for _n in ("connection health checks", "off by default", "`put /api/admin/connec
            "up after 2 successes in a row", "`connection_health_log`", "14 days", "`service.health_changed`",
            "no name and no host", "`get /api/connections/status`", "registered before `/api/connections/{id}`",
            "the same shape for owner and grantee", "only while the tab is visible", "`stage_health_target_ports`",
-           "`conn-health.js` 1", "`conn-health.css` 1", "tests/test_connection_health_migration.py", "rollback."):
+           "`conn-health.js` 2", "`conn-health.css` 2", "tests/test_connection_health_migration.py", "rollback."):
     check(f"1.22.0 health states: {_n}", _n in _low122h, _n)
 check("1.22.0 health: the numbers stated are the ones in the code",
       (_ch.PROBE_ROUND_CAP, _ch.PROBE_PARALLEL, _ch.PROBE_TIMEOUT, _ch.DOWN_AFTER, _ch.UP_AFTER, _ch.LOG_KEEP_DAYS, _ch.RECENT_DAYS,
@@ -954,7 +954,7 @@ check("1.22.0 health: the numbers stated are the ones in the code",
 check("1.22.0 health: the setting is off by default in the code", _ch.clamp_interval(None) == 60)
 check("1.22.0 health: the dashboard page loads the versions the notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-health.js", 1), ("conn-health.css", 1), ("conn-organise.js", 3))))
+          for f, v in (("conn-health.js", 2), ("conn-health.css", 2), ("conn-organise.js", 3))))
 check("1.22.0 health: docs/API.md and api-docs.html document both routes",
       all("/api/connections/status" in t_ and "/api/admin/connection-health" in t_ for t_ in (
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
