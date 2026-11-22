@@ -703,6 +703,8 @@ async def fix_c_checks(env):
     await db.conn.commit()
     await db.set_setting(ch.SETTING_ENABLED, "1")
     clock = {"t": 5000.0}
+    old_notice = (alerts.NOTICE_DELAY, alerts.NOTICE_INTERVAL)
+    alerts.NOTICE_DELAY = alerts.NOTICE_INTERVAL = 0.01      # the "held back" notice must not wait in real time
     alerts.reset_state()
     fire = Fire()
     alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
@@ -744,6 +746,10 @@ async def fix_c_checks(env):
         await mon.run_round()
     check("fairness: the owner's excess is probed in later rounds, least recently probed first (all 25 within three rounds)",
           {f"o{i:02d}.example" for i in range(25)} <= set(calls), str(len(set(calls))))
+    since_iso = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    kept = await db.list_health_candidate_refs(since_iso, 3)
+    check("fairness: when the safety limit on the candidate list bites, every owner's first connection is kept first",
+          {o for _c, o in kept} >= {uid["owner"], uid["bob"], uid["carol"]}, str(kept))
     # the cap of the round and the cap on decoded rows are shared out in turn too
     old_round, old_limit = ch.PROBE_ROUND_CAP, ch.CANDIDATE_LIMIT
     ch.PROBE_ROUND_CAP = 4
@@ -1007,6 +1013,7 @@ async def fix_c_checks(env):
     check("control: a down stored two minutes ago does announce 'back up' after a restart", len(got) == 1 and "back up" in got[0], str(got))
     await db.set_setting(ch.SETTING_ENABLED, "0")
     alerts._clock = __import__("time").monotonic
+    alerts.NOTICE_DELAY, alerts.NOTICE_INTERVAL = old_notice
 
 
 async def stage_checks(env):

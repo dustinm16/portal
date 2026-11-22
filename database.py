@@ -2789,7 +2789,8 @@ class Database:
         ended). Pinned follows the dashboard rule: the member's own filing when it names a pin, else
         the owner's older is_pinned. Each connection once. Only two integers per row, no config is
         read or decrypted, so the monitor can see every owner's candidates and choose fairly; `limit`
-        is a safety bound on the answer, not the share of any one member."""
+        is a safety bound on the answer; when it bites, the rows kept are every owner's first one, then every
+        owner's second, and so on, so no owner can push another's out."""
         cursor = await self.conn.execute(
             f"""WITH acc(user_id, connection_id, is_owner) AS (
                     SELECT user_id, id, 1 FROM user_connections
@@ -2805,7 +2806,7 @@ class Database:
                     LEFT JOIN user_connections o ON o.id = acc.connection_id
                     WHERE COALESCE(p.pinned, CASE WHEN acc.is_owner = 1 THEN o.is_pinned ELSE 0 END, 0) = 1
                        OR p.last_opened_at >= ?)
-                ORDER BY uc.id LIMIT ?""",
+                ORDER BY ROW_NUMBER() OVER (PARTITION BY uc.user_id ORDER BY uc.id), uc.id LIMIT ?""",
             (grant_expiry.live_param(), since_iso, int(limit)))
         return [(r["id"], r["user_id"]) for r in await cursor.fetchall()]
 
