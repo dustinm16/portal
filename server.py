@@ -20272,9 +20272,23 @@ async def http_search_status(request: web.Request) -> web.Response:
     return web.json_response({"available": available})
 
 
+# Seconds the search service may take for one request (a module value so a test can shorten it).
+_SEARXNG_PROXY_TIMEOUT = 60
+# While search is simply not enabled every request used to log one ERROR line. That is a state, not a
+# failure: one INFO line at most once per 10 minutes (monotonic time of the last one).
+_SEARXNG_UNAVAILABLE_LOG_EVERY = 600
+_searxng_unavailable_logged_at: Optional[float] = None
+
+
 def _searxng_unavailable_response(request: web.Request) -> web.Response:
+    global _searxng_unavailable_logged_at
+    now = monotonic()
+    if _searxng_unavailable_logged_at is None or now - _searxng_unavailable_logged_at >= _SEARXNG_UNAVAILABLE_LOG_EVERY:
+        _searxng_unavailable_logged_at = now
+        logger.info("Search was asked for while the search service is not enabled or not running "
+                    "(logged at most once every 10 minutes)")
     return _upstream_error_page(
-        request, "Search", 503, 30, reason="SearXNG is not enabled or not running",
+        request, "Search", 503, 30, reason="SearXNG is not enabled or not running", quiet=True,
         json_error="Search is not enabled on this portal",
         detail="The search service is not running on this portal. "
                "An administrator can turn it on in the Services panel.",
@@ -20335,7 +20349,7 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
 
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60),
+            timeout=aiohttp.ClientTimeout(total=_SEARXNG_PROXY_TIMEOUT),
             auto_decompress=True,
         ) as session:
             async with session.request(
@@ -20380,6 +20394,11 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                     out = out.replace(b"</head>", _SEARXNG_HEAD_INJECT + b"</head>", 1)
 
                 return web.Response(status=resp.status, headers=resp_headers, body=out)
+    except asyncio.TimeoutError:
+        # A hung search backend: asyncio's timeout is not an aiohttp.ClientError.
+        return _upstream_error_page(request, "Search", 504, 15,
+                                    reason="SearXNG proxy: timed out",
+                                    force_json=request.query.get("format") == "json")
     except aiohttp.ClientError as e:
         return _upstream_error_page(request, "Search", 502, 15,
                                     reason=f"SearXNG proxy: {type(e).__name__}: {e}",

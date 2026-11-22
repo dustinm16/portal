@@ -154,6 +154,11 @@ async def echo_headers(request):
     return web.json_response({k.lower(): v for k, v in request.headers.items()})
 
 
+async def slow_search(request):
+    await asyncio.sleep(5)
+    return web.Response(text="late")
+
+
 async def sets_request_id(request):
     return web.Response(text="body", headers={"X-Request-ID": "UPSTREAM-ID"})
 
@@ -216,6 +221,7 @@ async def main():
     up_app = web.Application()
     up_app.router.add_get("/echo", echo_headers)
     up_app.router.add_get("/search/echo", echo_headers)
+    up_app.router.add_get("/search/slow", slow_search)
     up_app.router.add_get("/setid", sets_request_id)
     up_app.router.add_get("/streamid", streams_request_id)
     upstream = TestServer(up_app, host="127.0.0.1")
@@ -424,13 +430,45 @@ async def main():
             check("searxng off: 503 page with the name, the ID and Retry-After",
                   r.status == 503 and ">Search is not available" in page and f">{sid}<" in page
                   and r.headers.get("Retry-After") == "30", f"{r.status} {page[:300]}")
-            check("searxng off: the reason is logged once with that ID",
-                  len([x for x in log_text().splitlines() if f"[req={sid}]" in x and "Upstream error 503" in x]) == 1)
+            check("searxng off: no ERROR line per request (a state, not a failure)",
+                  not [x for x in log_text().splitlines() if f"[req={sid}]" in x and "[ERROR]" in x])
+            info_lines = [x for x in log_text().splitlines() if "[INFO]" in x and "not enabled or not running" in x]
+            check("searxng off: one INFO line for the first request", len(info_lines) == 1, str(info_lines))
+            for _ in range(3):
+                async with c.get(f"{base}/search/", headers={"Accept": "text/html"}) as r:
+                    await r.read()
+            info_lines = [x for x in log_text().splitlines() if "not enabled or not running" in x]
+            check("searxng off: three more requests within 10 minutes add no line", len(info_lines) == 1, str(info_lines))
+            server._searxng_unavailable_logged_at -= 601
+            async with c.get(f"{base}/search/", headers={"Accept": "text/html"}) as r:
+                await r.read()
+            info_lines = [x for x in log_text().splitlines() if "not enabled or not running" in x]
+            check("searxng off: after 10 minutes the next request logs again", len(info_lines) == 2, str(info_lines))
             async with c.get(f"{base}/search/?format=json") as r:
                 data = await r.json()
             check("searxng off: format=json keeps its JSON error and gains request_id",
                   r.status == 503 and data["error"] == "Search is not enabled on this portal"
                   and data["request_id"] == r.headers["X-Request-ID"], str(data))
+
+            # --- SearXNG up but hung: 504 through the same page
+            SEARX.update(available=True, port=upstream.port)
+            old_to = server._SEARXNG_PROXY_TIMEOUT
+            server._SEARXNG_PROXY_TIMEOUT = 0.3
+            try:
+                async with c.get(f"{base}/search/slow", headers={"Accept": "text/html"}) as r:
+                    page = await r.text()
+                    sid = r.headers.get("X-Request-ID")
+                async with c.get(f"{base}/search/slow?format=json") as r:
+                    jdata = await r.json()
+                    jstatus = r.status
+            finally:
+                server._SEARXNG_PROXY_TIMEOUT = old_to
+            terr = [x for x in log_text().splitlines() if f"[req={sid}]" in x and "Upstream error 504" in x]
+            check("searxng hung: 504 page with the ID, no port, one log line",
+                  r.status == 504 and f">{sid}<" in page and str(upstream.port) not in page and len(terr) == 1,
+                  f"{r.status} {terr}")
+            check("searxng hung: format=json answers 504 JSON with request_id",
+                  jstatus == 504 and jdata.get("request_id") and "error" in jdata, str(jdata))
 
             # --- SearXNG up but its socket closed
             SEARX.update(available=True, port=dead)
