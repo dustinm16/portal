@@ -1513,7 +1513,7 @@ class Database:
                 del config["recording"]
                 text = json.dumps(config)
                 value = encrypt_config(text) if stored.startswith("enc:") else text
-                if stored.startswith("enc:") and not value.startswith("enc:"):
+                if stored.startswith("enc:") and not value.startswith("enc:") and text != "{}":
                     # Never write an encrypted config back in the clear.
                     logger.warning(f"Recording flag clean-up: connection {row['id']} skipped, "
                                    "its config could not be encrypted again")
