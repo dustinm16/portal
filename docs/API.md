@@ -4631,6 +4631,9 @@ Delete remote file or empty directory.
 
 **Query:** `?path=/home/file.txt`
 
+#### /api/sftp/vod/* (your own VOD storage)
+`GET /api/sftp/vod/list`, `GET /api/sftp/vod/read`, `GET /api/sftp/vod/download`, `POST /api/sftp/vod/mkdir`, `POST /api/sftp/vod/upload`, `POST /api/sftp/vod/write`, `POST /api/sftp/vod/rename` and `DELETE /api/sftp/vod/delete` work on the caller's own VOD storage connection (see VOD Storage) instead of a connection id, with the same `path` query as the routes above. **Credentials (1.21.0):** like every other VOD route they need a browser session or a token or API key with the all-scope `*`; a stream key and a narrowly scoped API key or token get `403`. They are a plain file browser on the storage account, separate from the VOD routes of the VOD Storage section: the confinement to your VOD root described there is not applied to them.
+
 ---
 
 ### Deprecated Endpoints

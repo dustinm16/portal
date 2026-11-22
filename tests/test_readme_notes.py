@@ -777,6 +777,43 @@ _pl = (ROOT / "static" / "vod-player.html").read_text()
 check("1.21.0: the Static files bullet states the versions vod-player.html really loads",
       all(f"`{f}` v{v}" in _static21 for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl)), _static21[:200])
 
+# --- 1.21.0: the older paragraphs and the notes describe what the code does now ----------------------
+_outside21 = text.replace(_sec21, "")
+_vodpar = next(par for par in _outside21.split("\n") if "Chunks wait in a local staging folder" in par)
+check("the older VOD paragraph no longer describes a _recovered suffix, a fixed 1 GB limit or a fixed 14 days",
+      "gets a `_recovered` suffix" not in _outside21 and "kept for 14 days" not in _outside21
+      and "less than 1 GB is free" not in _outside21 and "next free `chunk_NNN` number" in _vodpar
+      and "`vod_orphan_max_age_days` days (default 14" in _vodpar and "`vod_min_free_gb` (default 1 GB" in _vodpar
+      and "`vod_max_backlog_gb`" in _vodpar and "a running one is stopped" in _vodpar)
+_envex = (ROOT / ".env.example").read_text()
+check(".env.example no longer states a fixed 14 days or 1 GB, and lists VOD_PLAY_CACHE_DIR next to VOD_TEMP_DIR",
+      "deleted after 14 days" not in _envex and "less than 1 GB is free" not in _envex
+      and "# VOD_TEMP_DIR=data/vod_tmp" in _envex and "# VOD_PLAY_CACHE_DIR=data/vod_play_cache" in _envex
+      and 0 < _envex.index("# VOD_PLAY_CACHE_DIR=") - _envex.index("# VOD_TEMP_DIR=") < 2500
+      and "vod_play_cache_mb" in _envex.split("# VOD_PLAY_CACHE_DIR=")[0].split("# VOD_TEMP_DIR=")[1])
+check(".env.example names the same default folders as config.py",
+      "\"data\", \"vod_play_cache\"" in (ROOT / "config.py").read_text() and "\"data\", \"vod_tmp\"" in (ROOT / "config.py").read_text())
+check("1.21.0 states: scoped keys, storage links, recovered names, rename on the storage, cache 0 bookkeeping",
+      all(n in low21 for n in ("`/api/sftp/vod/*`", "narrowly scoped api key or token", "`403`", "symbolic link",
+                               "itself a symbolic link is refused", "still inside the root", "`realpath`", "openssh",
+                               "`chunk_nnn_recovered`", "not part of the whole-session timeline",
+                               "refusing a plain rename onto a file that already exists",
+                               "the small bookkeeping files stay")))
+check("1.21.0: a chunk_NNN_recovered name plays alone (play route) but is not in the session timeline (as stated)",
+      _vp21.chunk_path_from_url("Show/2026-01-01/chunk_001_recovered.mkv.mp4") == "Show/2026-01-01/chunk_001_recovered.mkv"
+      and _vp21.session_chunks([("chunk_001_recovered.mkv", 1, 1), ("chunk_000.mkv", 1, 1)]) == [(0, "chunk_000.mkv", 1, 1)])
+check("1.21.0: a link that is itself the chunk is refused, a folder link inside the root passes (as stated)",
+      "S_ISREG(attrs.permissions)" in _srv21[_srv21.index("async def _vod_remote_confine("):_srv21.index("async def _vod_remote_confine_dir(")]
+      and "real != real_root and not real.startswith(real_root" in _srv21)
+check("the API reference describes the /api/sftp/vod routes and their credential rule",
+      "#### /api/sftp/vod/* (your own VOD storage)" in (ROOT / "docs" / "API.md").read_text()
+      and "narrowly scoped API key or token get `403`" in (ROOT / "docs" / "API.md").read_text()
+      and 'id="sftp-vod"' in (ROOT / "static" / "api-docs.html").read_text())
+check("1.21.0 states: the settings form refuses decimals in the whole-number fields",
+      all(n in low21 for n in ("a decimal are refused with a message next to the field", "`0.5` can no longer be saved as `0`", "the form shows the values the server kept")))
+check("1.21.0: the player notes say a fallback leaves the remembered mode alone and a 401 goes to sign-in",
+      "for that visit only" in low21 and "sign-in page" in low21 and "empty, `.` or `..` segment" in low21)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
