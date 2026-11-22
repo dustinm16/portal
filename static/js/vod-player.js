@@ -371,7 +371,7 @@
 
     function setMode(next, remember) {
         mode = next === 'session' && folder ? 'session' : 'chunk';
-        if (remember) { try { localStorage.setItem(MODE_KEY, mode); } catch (e) { /* ignore */ } }
+        if (remember) { try { localStorage.setItem(MODE_KEY, mode); } catch (e) { /* ignore */ } }   // only the member's button remembers
         const u = new URL(location.href);
         u.searchParams.set('mode', mode);
         try { history.replaceState(null, '', u.pathname + u.search); } catch (e) { /* ignore */ }
@@ -466,7 +466,7 @@
                 setMode(mode === 'session' ? 'chunk' : 'session', true);
                 load();             // the old source is saved and detached first thing in load
             });
-            setMode(mode, true);
+            setMode(mode, false);       // showing the page's mode (from the URL or the saved choice) never saves anything
         }
 
         video.addEventListener('loadedmetadata', () => {

@@ -133,7 +133,7 @@ function sessionResponder(first) {
   h.handlers.hlsError('hlsError', { fatal: true, type: 'networkError', response: { code: 415 } });
   await t.run();
   check('a 415 segment falls back to the single-chunk player', h.destroyed && t.fetches.includes(CHUNK_URL) && t.toasts.some((m) => /chunk by chunk/.test(m)), JSON.stringify(t.fetches));
-  check('the page shows chunk mode for now but the saved choice is left as it was', t.store.vodmode === 'session' && /mode=chunk/.test(t.sandbox.__lastUrl || ''), t.store.vodmode);
+  check('the page shows chunk mode for now but nothing was saved as the mode', !('vodmode' in t.store) && /mode=chunk/.test(t.sandbox.__lastUrl || ''), t.store.vodmode);
 
   // 4. other fatal errors: a network error restarts loading a few times, then falls back
   t = boot({ query: '&mode=session', respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
@@ -183,7 +183,7 @@ function sessionResponder(first) {
   check('a remembered session mode is used when the URL says nothing', t.hlsInstances.length === 1);
   t = boot({ storage: { vodmode: 'session' }, query: '&mode=chunk', respond: (url) => ({ status: 206 }) });
   await t.run();
-  check('the URL wins over the remembered mode', t.hlsInstances.length === 0 && t.fetches.includes(CHUNK_URL) && !t.fetches.includes(SESSION_URL));
+  check('the URL wins over the remembered mode, without overwriting it', t.hlsInstances.length === 0 && t.fetches.includes(CHUNK_URL) && !t.fetches.includes(SESSION_URL) && t.store.vodmode === 'session', t.store.vodmode);
 
   // 8. (a) switching mode pauses and detaches the old source before the async load; the position goes to the mode that was attached
   t = boot({ query: '&mode=session', respond: sessionResponder(() => ({ status: 200, text: PLAYLIST })) });
