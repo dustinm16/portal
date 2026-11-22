@@ -60,6 +60,22 @@ frame; nothing is painted in). hls.js is not loaded (the request to its host is 
 machine). The admin picture is the four VOD fields of the Data Retention card, read from
 the staged instance's own settings.
 
+Pictures of 1.22.0 (dashboard-organise, dashboard-organise-dialog, announcement-banner, maintenance-page,
+upstream-error-page, block-page, admin-block-lookup, admin-maintenance, admin-announcements) need no extra setup
+either; each makes what it shows through the portal's own routes inside its picture and removes it afterwards (the
+announcement, the maintenance flag and the shared connection of the maintenance picture), so no later picture
+carries a banner or a flag. The status dots of dashboard-organise are the feature's own state: the staged instance
+probes nothing except a literal 127.0.0.1 target whose port is in its stage-only setting, so three demo
+connections are pointed at 127.0.0.1 in the stage's own database, one port has a listener of this script (up) and
+one port has none (down), the checks are switched on through the stage's settings, and the picture is taken once
+the real status route answers up and down. The cards would then show 127.0.0.1 and a random port, so the browser
+session of that picture rewrites the host and port of those three cards (and only these) in the list answer to
+the fictional names they were created with; the dots, their tooltips and everything else are what the portal
+answered. The checks are switched off again after the picture. The upstream error page is the one a member
+gets for /search/ while the search service is not running (nothing is dialled). The block page is the one a client
+at the already blocked documentation address 198.51.100.77 gets; the reference is read from that page and typed into
+the administrator's Reference lookup. Unblock is never pressed.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -708,9 +724,10 @@ class Shooter:
         return self._admin_ctx
 
     # -- contexts and pages -------------------------------------------------
-    def context(self, user: str | None, viewport=None, theme: str | None = None, mobile: bool = False, scale: int = 1):
+    def context(self, user: str | None, viewport=None, theme: str | None = None, mobile: bool = False, scale: int = 1,
+                address: str | None = None):
         opts = dict(viewport=viewport or VIEWPORT, ignore_https_errors=True, device_scale_factor=scale,
-                    extra_http_headers={"CF-Connecting-IP": ADDRESSES.get(user or "", "192.0.2.10")},
+                    extra_http_headers={"CF-Connecting-IP": address or ADDRESSES.get(user or "", "192.0.2.10")},
                     user_agent=DESKTOP_AGENT, locale="en-US", timezone_id="UTC")
         if mobile:
             opts.update(device_scale_factor=2, is_mobile=True, has_touch=True)
@@ -1343,12 +1360,14 @@ def forbidden_strings(s) -> list:
     return sorted({v for v in vals if v and len(v) >= 4 and v.lower() not in ("localhost", "root")})
 
 
-def assert_clean(s, page, name: str) -> None:
-    """Fail the picture when its page text (visible or not, and every input value) names something real."""
+def assert_clean(s, page, name: str, scope: str | None = None) -> None:
+    """Fail the picture when its page text (visible or not, and every input value) names something real.
+    scope: a selector, for a picture of one element of a page that holds other things of this machine."""
     text = page.evaluate(
-        "() => document.body.textContent + ' ' + Array.from(document.querySelectorAll('input,textarea,select'))"
-        ".map(e => e.value).join(' ') + ' ' + Array.from(document.querySelectorAll('[title],[alt]'))"
-        ".map(e => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('alt') || '')).join(' ')").lower()
+        "(scope) => { const r = scope ? document.querySelector(scope) : document.body;"
+        " return r.textContent + ' ' + Array.from(r.querySelectorAll('input,textarea,select'))"
+        ".map(e => e.value).join(' ') + ' ' + Array.from(r.querySelectorAll('[title],[alt]'))"
+        ".map(e => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('alt') || '')).join(' '); }", scope).lower()
     for bad in forbidden_strings(s):
         if bad.lower() in text:
             raise Fail(f"picture {name}: the page text holds a value of this machine ({len(bad)} characters)")
@@ -1619,6 +1638,400 @@ def _admin_vod_settings(s):
     page.wait_for_timeout(300)
     assert_clean(s, page, "admin-vod-settings")
     s.save("admin-vod-settings", page.locator("#retention-config").locator("xpath=ancestor::div[contains(@class,'admin-card')][1]"))
+
+
+# -- 1.22.0: dashboard organising, health dots, announcements, maintenance, request and reference IDs ----
+
+import contextlib
+import re
+import socket
+import sqlite3
+import threading
+
+REF_RE = re.compile(r"\b[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}\b")
+
+
+def api(page, method: str, path: str, body=None):
+    """A call of the signed-in browser session (its cookie and address), made from a page of the demo host."""
+    res = page.evaluate(
+        """async ([m, p, b]) => { const r = await fetch(p, {method: m, headers: {'Content-Type': 'application/json'},
+            body: b === null ? undefined : JSON.stringify(b)}); let j = null; try { j = await r.json(); } catch (e) {}
+            return [r.status, j]; }""", [method, path, body])
+    return res[0], res[1]
+
+
+def api_ok(page, method: str, path: str, body=None, ok=(200, 201, 204)):
+    status, data = api(page, method, path, body)
+    if status not in ok:
+        raise Fail(f"{method} {path} -> {status} {data}")
+    return data
+
+
+def api_page(s, ctx):
+    page = ctx.new_page()
+    page.goto(f"{s.stage.base}/about")
+    page.wait_for_load_state("domcontentloaded")
+    return page
+
+
+def stage_db(s) -> sqlite3.Connection:
+    return sqlite3.connect(str(s.stage.dir / "portal.db"), timeout=30)
+
+
+DEMO_FILING = {
+    # name: (folder, tags, pinned)
+    "Build server": ("Servers", ["linux", "build"], True),
+    "Inventory database": ("Servers", ["database"], True),
+    "Workshop desktop": ("Home lab", ["desktop", "workshop"], False),
+    "Office PC": ("Home lab", ["desktop"], False),
+    "Metrics dashboard": ("Media and metrics", ["web", "grafana"], False),
+    "Media library": ("Media and metrics", ["web", "media"], False),
+}
+# opened oldest first, so the newest ends first in the Recently used row
+DEMO_OPENED = ["Metrics dashboard", "Workshop desktop", "Build server"]
+
+
+def organised_alex(s) -> dict:
+    """Alex files his demo connections (folders, tags, pins) and opens four of them. Once per run."""
+    if getattr(s, "_organised", None):
+        return s._organised
+    ctx = s.context("alex")
+    page = api_page(s, ctx)
+    listing = api_ok(page, "GET", "/api/connections")
+    by_name = {c["name"]: c["id"] for c in (listing.get("connections") if isinstance(listing, dict) else listing)}
+    for name, (folder, tags, pinned) in DEMO_FILING.items():
+        api_ok(page, "PUT", f"/api/connections/{by_name[name]}/prefs", {"folder": folder, "tags": tags, "pinned": pinned})
+    for name in DEMO_OPENED:
+        api_ok(page, "GET", f"/api/connections/{by_name[name]}/connect")
+        page.wait_for_timeout(1100)
+    page.close()
+    s._organised = by_name
+    return by_name
+
+
+class _Listener:
+    """A TCP listener on 127.0.0.1 that accepts and closes at once: the target of an 'up' demo connection."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.sock.settimeout(0.3)
+        self.port = self.sock.getsockname()[1]
+        self.stopped = False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while not self.stopped:
+            try:
+                conn, _ = self.sock.accept()
+                conn.close()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
+    def stop(self):
+        self.stopped = True
+        self.thread.join(timeout=3)
+        self.sock.close()
+
+
+def closed_port() -> int:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def put_setting(db, key: str, value) -> None:
+    if value is None:
+        db.execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+    db.commit()
+
+
+@contextlib.contextmanager
+def health_dots(s, ctx_page, by_name: dict):
+    """Switch the health checks on for three demo connections through the stage's own state and wait until the
+    real status route answers up, up and down. Yields {connection id: (demo host, demo port)} for the rewrite of the
+    cards. Everything is put back afterwards."""
+    up_names, down_name = ("Build server", "Workshop desktop"), "Inventory database"
+    listener = _Listener()
+    down_port = closed_port()
+    db = stage_db(s)
+    keys = ("connection_health_enabled", "connection_health_interval", "stage_health_target_ports")
+    saved = {k: (db.execute("SELECT value FROM settings WHERE key = ?", (k,)).fetchone() or [None])[0] for k in keys}
+    originals = {}
+    try:
+        for name in up_names + (down_name,):
+            row = db.execute("SELECT host, port FROM user_connections WHERE uuid = ?", (by_name[name],)).fetchone()
+            originals[by_name[name]] = (row[0], row[1])
+            port = listener.port if name in up_names else down_port
+            db.execute("UPDATE user_connections SET host = '127.0.0.1', port = ? WHERE uuid = ?", (port, by_name[name]))
+        db.commit()
+        put_setting(db, "stage_health_target_ports", f"{listener.port},{down_port}")
+        put_setting(db, "connection_health_enabled", "1")
+        want = {by_name[n]: "up" for n in up_names}
+        want[by_name[down_name]] = "down"
+        deadline = time.monotonic() + 40
+        got = {}
+        while time.monotonic() < deadline:
+            status, body = api(ctx_page, "GET", "/api/connections/status")
+            got = {k: (body or {}).get(k, {}).get("status") for k in want} if status == 200 else {}
+            if got == want:
+                break
+            ctx_page.wait_for_timeout(1000)
+        else:
+            raise Fail(f"the health checks did not reach {want}: {got}")
+        yield {by_name[n]: originals[by_name[n]] for n in up_names + (down_name,)}
+    finally:
+        for uuid_, (host, port) in originals.items():
+            db.execute("UPDATE user_connections SET host = ?, port = ? WHERE uuid = ?", (host, port, uuid_))
+        db.commit()
+        for k, v in saved.items():
+            put_setting(db, k, v)
+        db.close()
+        listener.stop()
+
+
+def rewrite_card_hosts(s, ctx, rewrite: dict) -> None:
+    """The three probed demo connections point at 127.0.0.1 inside the stage only: in this browser session the list
+    answer shows them under their fictional names again (host and port only; the status route is untouched)."""
+    def handler(route):
+        # the route's own request does not use the browser's host rule: it goes to the loopback address directly
+        resp = route.fetch(url=route.request.url.replace(s.stage.base, s.stage.direct))
+        try:
+            data = resp.json()
+        except Exception:
+            route.fulfill(response=resp)
+            return
+        items = data.get("connections") if isinstance(data, dict) else data
+        for item in items or []:
+            if item.get("id") in rewrite:
+                item["host"], item["port"] = rewrite[item["id"]]
+        route.fulfill(response=resp, body=json.dumps(data), headers={**resp.headers, "content-type": "application/json"})
+    ctx.route(re.compile(r".*/api/connections(\?.*)?$"), handler)
+
+
+def connections_tab(page) -> None:
+    page.click("#tab-btn-my-connections")
+    page.wait_for_selector("#conn-organiser:not([hidden])", timeout=15000)
+    page.wait_for_selector(".conn-folder", timeout=15000)
+    page.wait_for_timeout(500)
+
+
+def organise_page(s, ctx, with_dots: bool = False):
+    page = s.open(ctx, "/", "#tab-btn-my-connections")
+    connections_tab(page)
+    if with_dots:
+        page.wait_for_selector(".conn-health-dot", timeout=15000)
+    return page
+
+
+@shot("dashboard-organise")
+def _dashboard_organise(s):
+    by_name = organised_alex(s)
+    ctx = s.context("alex", viewport={"width": 1280, "height": 1240})
+    helper = api_page(s, ctx)
+    with health_dots(s, helper, by_name) as rewrite:
+        rewrite_card_hosts(s, ctx, rewrite)
+        page = organise_page(s, ctx, with_dots=True)
+        dots = page.evaluate("() => Array.from(document.querySelectorAll('.conn-health-dot')).map((d) => d.getAttribute('data-conn-health'))")
+        if "up" not in dots or "down" not in dots:
+            raise Fail(f"the dashboard drew the dots {dots}, not an up and a down one")
+        # two of the three folders are collapsed (the caret of a folder head), the first stays open
+        for folder in ("Home lab", "Media and metrics"):
+            page.click(f'.conn-folder-head[data-folder="{folder}"]')
+        page.focus("#conn-filter")
+        page.evaluate("() => window.scrollTo(0, document.querySelector('#tab-btn-my-connections').getBoundingClientRect().top + window.scrollY - 90)")
+        page.wait_for_timeout(400)
+        assert_clean(s, page, "dashboard-organise")
+        s.save("dashboard-organise", page)
+
+
+@shot("dashboard-organise-dialog")
+def _dashboard_organise_dialog(s):
+    organised_alex(s)
+    ctx = s.context("alex")
+    page = organise_page(s, ctx)
+    # the folder and tags dialog of one card
+    page.evaluate("""() => { const card = Array.from(document.querySelectorAll('.connection-card'))
+        .find((c) => /Workshop desktop/.test(c.textContent)); card.querySelector('button[title="Folder and tags"]').click(); }""")
+    page.wait_for_selector("#conn-organise-modal", state="visible", timeout=10000)
+    page.wait_for_timeout(500)
+    assert_clean(s, page, "dashboard-organise-dialog")
+    s.save("dashboard-organise-dialog", page)
+
+
+@contextlib.contextmanager
+def announcement(s, body: str, level: str = "warning"):
+    ctx = s.admin_ctx
+    page = api_page(s, ctx)
+    made = api_ok(page, "POST", "/api/admin/announcements", {"level": level, "body": body})
+    ident = (made.get("announcement") or made).get("id")
+    try:
+        yield ident
+    finally:
+        try:
+            api_ok(page, "DELETE", f"/api/admin/announcements/{ident}")
+        finally:
+            page.close()
+
+
+ANNOUNCEMENT_TEXT = ("**Planned maintenance:** the relay host gets its monthly updates on Saturday from 02:00 to 03:00 UTC. "
+                     "Streams may drop for a few minutes. Details in the [schedule](https://example.org/schedule).")
+
+
+@shot("announcement-banner")
+def _announcement_banner(s):
+    with announcement(s, ANNOUNCEMENT_TEXT):
+        page = s.open(s.context("alex"), "/chat", ".announce", settle=900)
+        assert_clean(s, page, "announcement-banner")
+        s.save("announcement-banner", page)
+
+
+@contextlib.contextmanager
+def maintenance_fixture(s):
+    """A connection of the administrator, shared with alex, in maintenance until a full hour from now with a
+    message; deleted afterwards. Yields its id."""
+    from datetime import datetime, timedelta, timezone
+    admin_page_ = api_page(s, s.admin_ctx)
+    until = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
+    made = api_ok(admin_page_, "POST", "/api/connections", {
+        "name": "Team wiki", "type": "grafana", "host": "wiki.example.org", "port": 3000, "config": {}})
+    ident = (made.get("connection") or made).get("id")
+    try:
+        api_ok(admin_page_, "POST", f"/api/connections/{ident}/shares", {"usernames": ["alex"], "expires_in": "30d"})
+        api_ok(admin_page_, "PUT", f"/api/connections/{ident}", {
+            "name": "Team wiki", "type": "grafana", "host": "wiki.example.org", "port": 3000,
+            "maintenance": True, "maintenance_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "maintenance_message": "Moving the wiki to a new disk. Pages are read-only elsewhere until then."})
+        yield ident
+    finally:
+        try:
+            api_ok(admin_page_, "DELETE", f"/api/connections/{ident}")
+        finally:
+            admin_page_.close()
+
+
+@shot("maintenance-page")
+def _maintenance_page(s):
+    with maintenance_fixture(s) as ident:
+        ctx = s.context("alex", scale=2)
+        page = ctx.new_page()
+        response = page.goto(f"{s.stage.base}/proxy/{ident}/")
+        page.wait_for_load_state("networkidle")
+        if response.status != 503:
+            raise Fail(f"the maintenance page answered {response.status}, not 503")
+        page.wait_for_function("() => /until|maintenance/i.test(document.body.textContent)", timeout=10000)
+        page.wait_for_timeout(500)
+        assert_clean(s, page, "maintenance-page")
+        save_cropped(s, "maintenance-page", page, 640, 280)
+
+
+@shot("upstream-error-page")
+def _upstream_error_page(s):
+    ctx = s.context("alex", scale=2)
+    page = ctx.new_page()
+    response = page.goto(f"{s.stage.base}/search/")
+    page.wait_for_load_state("networkidle")
+    rid = response.headers.get("x-request-id", "")
+    if response.status != 503 or not rid:
+        raise Fail(f"/search/ answered {response.status} with request id {rid!r}")
+    if rid not in page.inner_text("body"):
+        raise Fail("the request ID of the answer is not on the page")
+    assert_clean(s, page, "upstream-error-page")
+    # the page reloads itself after its countdown: the picture is taken at once
+    save_cropped(s, "upstream-error-page", page, 640, 260)
+
+
+def save_cropped(s, name: str, page, width: int, height: int) -> None:
+    """A page that is only a few lines of text: the top-left part of it, at twice the resolution."""
+    from io import BytesIO
+    from PIL import Image
+    raw = page.screenshot(clip={"x": 0, "y": 0, "width": width, "height": height})
+    s.write(name, Image.open(BytesIO(raw)).convert("RGB"))
+
+
+def block_reference(s) -> str:
+    """The reference a client at the already blocked documentation address sees (read from the page itself)."""
+    if getattr(s, "_block_ref", None):
+        return s._block_ref
+    ctx = s.context(None, address="198.51.100.77", scale=2)
+    page = ctx.new_page()
+    response = page.goto(f"{s.stage.base}/", wait_until="domcontentloaded")
+    page.wait_for_timeout(500)
+    if response.status != 403:
+        raise Fail(f"the blocked address got {response.status}, not 403")
+    m = REF_RE.search(page.inner_text("body"))
+    if not m:
+        raise Fail("no reference on the block page")
+    s._block_ref = m.group(0)
+    s._block_page = page
+    return s._block_ref
+
+
+@shot("block-page")
+def _block_page(s):
+    block_reference(s)
+    page = s._block_page
+    assert_clean(s, page, "block-page")
+    save_cropped(s, "block-page", page, 480, 170)
+
+
+@shot("admin-block-lookup")
+def _admin_block_lookup(s):
+    ref = block_reference(s)
+    page = admin_page(s, "system", "#tab-system")
+    page.evaluate("showSysSubTab('network')")
+    page.wait_for_selector("#block-ref-input", state="visible", timeout=10000)
+    page.fill("#block-ref-input", ref)
+    # block-ref-admin.js calls window.Portal, but portal.js declares Portal with const, which makes a global
+    # binding and no window property: on the unmodified page the lookup answers "The lookup failed." (reported
+    # with the release notes). The picture needs a result, so this page gets the property it expects.
+    page.evaluate("() => { if (!window.Portal) { window.Portal = Portal; window.__portal_property_was_missing = true; } }")
+    page.click("#block-ref-go")
+    page.wait_for_function("() => document.getElementById('block-ref-result').textContent.trim().length > 0", timeout=10000)
+    page.wait_for_timeout(500)
+    # only the lookup: everything above its heading in the same section is hidden for the picture
+    page.evaluate("""() => {
+        const h = Array.from(document.querySelectorAll('h3')).find((x) => /Reference lookup/.test(x.textContent));
+        const section = h.parentElement;
+        for (const c of Array.from(section.children)) { if (c === h) break; c.style.display = 'none'; }
+        section.id = 'shot-scope';
+    }""")
+    text = page.inner_text("#block-ref-result")
+    if "198.51.100.77" not in text:
+        raise Fail(f"the lookup did not show the blocked address: {text[:120]!r}")
+    assert_clean(s, page, "admin-block-lookup", "#shot-scope")
+    s.save("admin-block-lookup", page.locator("#block-ref-input").locator("xpath=ancestor::div[contains(@class,'sys-net-section')][1]"))
+
+
+@shot("admin-maintenance")
+def _admin_maintenance(s):
+    with maintenance_fixture(s):
+        page = admin_page(s, "settings", "#maintenance-card")
+        page.wait_for_function("() => document.getElementById('maintenance-conns').textContent.trim().length > 0", timeout=10000)
+        page.fill("#maint-message", "Planned work on the proxy host.")
+        page.wait_for_timeout(300)
+        assert_clean(s, page, "admin-maintenance")
+        s.save("admin-maintenance", page.locator("#maintenance-card"))
+
+
+@shot("admin-announcements")
+def _admin_announcements(s):
+    with announcement(s, ANNOUNCEMENT_TEXT):
+        page = admin_page(s, "settings", "#announcements-card")
+        page.get_by_role("button", name="New announcement").click()
+        page.wait_for_selector("#announce-form-slot textarea", timeout=10000)
+        page.fill("#announce-form-slot textarea", "Heads up: the chat server restarts at 03:00 UTC tonight.")
+        page.wait_for_timeout(400)
+        assert_clean(s, page, "admin-announcements")
+        s.save("admin-announcements", page.locator("#announcements-card"))
 
 
 class _Terminated(BaseException):

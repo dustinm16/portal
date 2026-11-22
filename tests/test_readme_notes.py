@@ -993,6 +993,10 @@ check("1.22.0: every script and style version the Static files bullet names is t
       all(re.search(rf"{re.escape(f)}\?v={v}\b", "".join(_pages22.values()) + (ROOT / "static" / "js" / "portal.js").read_text()
                     + _srv_text) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
       and len(re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet)) >= 11)
+check("1.22.0: the screenshots section shows the new pictures and each file exists",
+      all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in (
+          "dashboard-organise", "dashboard-organise-dialog", "announcement-banner", "maintenance-page", "upstream-error-page",
+          "block-page", "admin-block-lookup", "admin-maintenance", "admin-announcements")))
 check("1.22.0: What You Get names request IDs and connection health checks",
       "**Request IDs and friendly error pages.**" in text and "**Connection health checks.**" in text
       and "**Organising the dashboard.**" in text)
