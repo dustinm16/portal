@@ -53,7 +53,8 @@ check("the grant dialog preselects keep when someone already has a grant, and om
       and "[usernames.filter(n => _grantExisting.has(n.toLowerCase())), null]" in admin
       and "[usernames.filter(n => !_grantExisting.has(n.toLowerCase())), '30d']" in admin)
 check("a shared card shows the time left (both dashboards)",
-      "formatGrantRemaining(conn.share_expires_in)" in ucjs and "formatGrantRemaining(conn.share_expires_in)" in dash)
+      "formatGrantRemaining(conn.share_expires_in)" in ucjs
+      and "formatGrantRemaining(conn.share_expires_in)" in (STATIC / "js" / "conn-organise.js").read_text())
 check("the share list shows grantor, creation and time left", "describeGrant(s)" in ucjs)
 check("both dialogs have an all-grants view",
       "/api/me/shares" in ucjs and "/api/admin/grants" in admin and "describeGrantLine(g)" in admin)

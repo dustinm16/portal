@@ -136,6 +136,7 @@ import jobs as bg_jobs
 import hostkeys
 import session_recording
 import sshpass_rules
+import dash_prefs
 import grant_expiry
 import maintenance
 import blockref
@@ -5629,6 +5630,34 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to create connection"}, status=500)
 
 
+# At most one "opened" write per user and connection per minute (a proxied page makes hundreds of
+# requests; they must not each reach the database).
+_open_throttle = dash_prefs.OpenThrottle()
+
+
+async def _note_connection_opened(connection: dict, user_id: int) -> bool:
+    """Record that the caller opened a connection they have just been shown to may reach (the
+    caller went through get_accessible_connection). True when this call took the minute's slot
+    and so did the write; False when the slot was already taken. Never raises."""
+    conn_id = connection["id"]
+    if not _open_throttle.take(user_id, conn_id):
+        return False
+    try:
+        await db.note_connection_opened(user_id, conn_id)
+    except Exception as e:
+        _open_throttle.forget(user_id, conn_id)
+        logger.warning(f"last-opened write failed: {e}")
+    return True
+
+
+def _attach_prefs(connections: list, exposed: list, prefs: dict) -> None:
+    """Put the caller's own filing on each listed connection (`connections` are the rows with
+    the internal id, `exposed` the same rows as returned to the client, in the same order)."""
+    for raw, out in zip(connections, exposed):
+        owned = not raw.get("shared")
+        out["prefs"] = dash_prefs.describe(prefs.get(raw["id"]), owner_pinned=owned and bool(raw.get("is_pinned")))
+
+
 async def http_list_user_connections(request: web.Request) -> web.Response:
     """List all connections for the authenticated user."""
     token = await authenticate_request(request)
@@ -5644,8 +5673,10 @@ async def http_list_user_connections(request: web.Request) -> web.Response:
         else:
             connections = await db.get_user_connections(token.user_id)
 
+        exposed = [redact_connection_config(c) for c in connections]
+        _attach_prefs(connections, exposed, await db.get_connection_prefs_map(token.user_id))
         return web.json_response({
-            "connections": [_externalize_connection(redact_connection_config(c)) for c in connections]
+            "connections": [_externalize_connection(c) for c in exposed]
         })
     except Exception as e:
         logger.error(f"Failed to list connections: {e}")
@@ -5846,6 +5877,32 @@ async def http_delete_user_connection(request: web.Request) -> web.Response:
         return web.json_response({"error": "Connection not found"}, status=404)
 
 
+async def http_set_connection_prefs(request: web.Request) -> web.Response:
+    """PUT /api/connections/{id}/prefs - the caller's own filing of a connection they can reach
+    (their own or one shared with them): folder, tags, open_mode, pinned. Fields not named keep
+    their value. A connection the caller cannot reach answers exactly like one that does not
+    exist, before the body is read."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    fields, err = dash_prefs.validate(data)
+    if err:
+        return web.json_response({"error": err}, status=400)
+    owned = not connection.get("shared")
+    row = await db.set_connection_prefs(token.user_id, connection["id"], fields, owner=owned)
+    return web.json_response({"prefs": dash_prefs.describe(row, owner_pinned=owned and bool(connection.get("is_pinned")))})
+
+
 async def http_toggle_connection_pin(request: web.Request) -> web.Response:
     """Toggle pin status for a connection."""
     token = await authenticate_request(request)
@@ -5911,6 +5968,7 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
 
     # Record usage
     await db.record_connection_usage(connection["id"], token.user_id)
+    await _note_connection_opened(connection, token.user_id)
 
     # Get SSH key public key if associated
     ssh_public_key = None
@@ -6133,6 +6191,10 @@ async def sweep_expired_grants_once() -> int:
     and close what the grantee held open through each. Access was refused by the live
     predicate from the second the time passed; this is the cleanup. Returns rows deleted."""
     rows = await db.sweep_expired_grants()
+    try:
+        await db.cleanup_orphan_connection_prefs()
+    except Exception as e:
+        logger.warning(f"clean-up of connection filing failed: {e}")
     for row in rows:
         conn = row["kind"] == "conn"
         # the grantor is the actor; a grantor who no longer exists cannot be an audit actor
@@ -17764,6 +17826,7 @@ async def handle_user_connection_ws(
 
     # Record connection usage
     await db.record_connection_usage(conn_id, token.user_id)
+    await _note_connection_opened(connection, token.user_id)
 
     conn_type = connection.get("type", "custom")
     config = connection.get("config", {})
@@ -19675,8 +19738,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     fwd_headers = _proxy_request_headers(
         request, config, parsed_target.netloc, proxy_prefix, browser_mode)
 
-    # Record connection usage
-    await db.record_connection_usage(connection["id"], token.user_id)
+    # Record connection usage: once a minute per user and connection, not once per proxied request
+    if await _note_connection_opened(connection, token.user_id):
+        await db.record_connection_usage(connection["id"], token.user_id)
     if call.aborted:
         return web.Response(status=401, text="Session revoked")
 
@@ -20159,7 +20223,7 @@ _SEARXNG_DEFAULT_PORT = 8890
 # navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
 _SEARXNG_HEAD_INJECT = (
     b'<script src="/static/js/theme.js?v=3"></script>'
-    b'<link rel="stylesheet" href="/static/css/portal.css?v=55">'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=56">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
     b'<script src="/static/js/push.js?v=4" defer></script>'
@@ -30026,6 +30090,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/connections/{id}", http_update_user_connection)
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
     app.router.add_post("/api/connections/{id}/pin", http_toggle_connection_pin)
+    app.router.add_put("/api/connections/{id}/prefs", http_set_connection_prefs)
     app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
     app.router.add_post("/api/connections/{id}/host-key/accept", http_accept_connection_host_key)
     app.router.add_post("/api/services/{id}/host-key/accept", http_accept_service_host_key)

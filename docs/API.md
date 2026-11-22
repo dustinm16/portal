@@ -881,11 +881,14 @@ List user's remote connections. Sensitive config fields (passwords, private keys
       "port": 22,
       "config": {"username": "john", "auth_method": "password", "credential_mode": "stored", "has_stored_password": true},
       "icon": "terminal",
-      "created_at": "2026-02-01T00:00:00Z"
+      "created_at": "2026-02-01T00:00:00Z",
+      "prefs": {"folder": "Games", "tags": ["survival"], "open_mode": "default", "pinned": false, "last_opened_at": "2026-11-22T10:00:00Z"}
     }
   ]
 }
 ```
+
+`prefs` (1.22.0) is the caller's own filing of the item (see `PUT /api/connections/{id}/prefs`).
 
 **Redacted fields:** `password`, `private_key`, `private_key_path`, `auth_header`, `psk` are never returned. If a field has a value, `has_<field>: true` is returned instead. For `ssh` and `sftp` connections the password is the **stored password** (1.18.0) and the flag is `has_stored_password: true` (the older `has_password` is no longer sent for these two types; other types keep `has_<field>`). The same redaction applies to every route that returns a connection (list, details, `/connect`) for the owner and for a user the connection is shared with; the value is never in any response, WebSocket frame, log line or error text.
 
@@ -983,7 +986,7 @@ Delete connection. `{id}` is the opaque string token.
 ---
 
 #### POST /api/connections/{id}/pin
-Toggle the pinned status of a connection. Pinned connections sort to the top of the connections list.
+Toggle the pinned status of a connection you own. Pinned connections sort to the top of the connections list. Since 1.22.0 the dashboard pins through `PUT /api/connections/{id}/prefs`, which also works for a shared connection; the two stay in step for an owner.
 
 **Response:**
 ```json
@@ -991,6 +994,24 @@ Toggle the pinned status of a connection. Pinned connections sort to the top of 
   "is_pinned": true
 }
 ```
+
+---
+
+#### PUT /api/connections/{id}/prefs
+Your own filing of a connection you can reach (one you own or one shared with you; 1.22.0): `folder`, `tags`, `open_mode`, `pinned`. Fields you leave out keep their value. The filing is private: nobody else sees it, neither the owner of a shared connection nor an administrator, and `GET /api/connections` returns only yours, as `prefs` on each item. It ends with your access: revoking or leaving a share, an expired share, deleting the connection or the user delete it. Managed services have no filing.
+
+```json
+{"folder": "Games", "tags": ["survival", "co-op"], "open_mode": "new", "pinned": true}
+```
+
+- `folder`: text of at most 40 characters (letters and digits of any language, space and `_ - . & ( ) + '`); `""` or `null` clears it.
+- `tags`: a list of at most 10 tags of at most 24 characters (letters, digits and `. + # - _`, no spaces), stored lower-case without duplicates; `[]` or `null` clears them.
+- `open_mode`: `default`, `same`, `new` or `embedded` (the dashboard offers `embedded` only for the HTTP types that open in the portal's browser page).
+- `pinned`: `true` or `false` (a number is refused). An owner's pin is also the connection's `is_pinned`.
+
+**Response:** `{"prefs": {"folder", "tags", "open_mode", "pinned", "last_opened_at"}}`. `400` for an unknown field, an empty body, or a value outside the limits above (nothing is stored). A caller with no access gets the `404 {"error": "Connection not found"}` of a connection that does not exist, whatever the body.
+
+`prefs.last_opened_at` (UTC, `null` if never) is set when the connection is opened through `/connect`, the terminal socket or the proxy, at most once a minute per member and connection. For a connection that has no filing yet, `prefs` is `{"folder": "", "tags": [], "open_mode": "default", "pinned": <the owner's older pin>, "last_opened_at": null}`.
 
 ---
 

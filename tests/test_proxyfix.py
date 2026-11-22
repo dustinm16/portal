@@ -637,6 +637,8 @@ async def main():
     server.authenticate_request = fake_auth
     server.db.get_accessible_connection = fake_get_connection
     server.db.record_connection_usage = fake_usage
+    saved_note = server.db.note_connection_opened
+    server.db.note_connection_opened = fake_usage  # the last-opened write needs a database too
     server.resolve_checked_host = fake_resolve
     server.resolve_checked_host_cached = fake_resolve
     server._SSRFSafeConnector = lambda ssl=None, **kw: aiohttp.TCPConnector(ssl=ssl)
@@ -1237,6 +1239,7 @@ async def main():
          server.db.record_connection_usage, server.resolve_checked_host,
          server.resolve_checked_host_cached, server._SSRFSafeConnector) = saved
         server.db.get_user_by_id, server.db.is_token_valid = saved_cred
+        server.db.note_connection_opened = saved_note
         server._searxng_status = saved_sx_status
         await portal.close()
         await upstream.close()

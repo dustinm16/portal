@@ -1350,6 +1350,22 @@ MIGRATIONS = [
     "ALTER TABLE chat_channels ADD COLUMN file_retention_days INTEGER",
     # set when the uploaded file of a message was removed by file retention (the message stays)
     "ALTER TABLE chat_messages ADD COLUMN file_removed INTEGER DEFAULT 0",
+    # Each user's own filing of the connections they can reach (folder, tags, open mode, pin, last
+    # opened). A new table only: nothing existing is rewritten, 1.21.0 never reads it.
+    # pinned NULL = follow the owner's older user_connections.is_pinned.
+    """CREATE TABLE IF NOT EXISTS connection_user_prefs (
+        user_id INTEGER NOT NULL,
+        connection_id INTEGER NOT NULL,
+        folder TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '',
+        open_mode TEXT NOT NULL DEFAULT 'default',
+        pinned INTEGER,
+        last_opened_at TEXT,
+        PRIMARY KEY (user_id, connection_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_conn_prefs_conn ON connection_user_prefs(connection_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2666,6 +2682,94 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    # ------------------------------------------------------------------
+    # Dashboard filing: connection_user_prefs (one row per user and connection)
+    # ------------------------------------------------------------------
+    async def get_connection_prefs_map(self, user_id: int) -> dict:
+        """{connection internal id: row} of the caller's own filing. Only the caller's rows are
+        ever read; the list API attaches a row to a connection only if that connection is in
+        the caller's live list, so the row of a share that ended is never returned."""
+        cursor = await self.conn.execute(
+            """SELECT connection_id, folder, tags, open_mode, pinned, last_opened_at
+               FROM connection_user_prefs WHERE user_id = ?""", (user_id,))
+        return {r["connection_id"]: r for r in await cursor.fetchall()}
+
+    async def set_connection_prefs(self, user_id: int, conn_id: int, fields: dict,
+                                   owner: bool) -> dict:
+        """Store the named fields of the caller's filing (absent fields keep their value) and
+        return the row. The caller has already been through get_accessible_connection. An
+        owner's pin is also written to user_connections.is_pinned, which older clients read."""
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO connection_user_prefs (user_id, connection_id) VALUES (?, ?)",
+            (user_id, conn_id))
+        sets, params = [], []
+        if "folder" in fields:
+            sets.append("folder = ?")
+            params.append(fields["folder"])
+        if "tags" in fields:
+            sets.append("tags = ?")
+            params.append(json.dumps(fields["tags"]) if fields["tags"] else "")
+        if "open_mode" in fields:
+            sets.append("open_mode = ?")
+            params.append(fields["open_mode"])
+        if "pinned" in fields:
+            sets.append("pinned = ?")
+            params.append(1 if fields["pinned"] else 0)
+            if owner:
+                await self.conn.execute(
+                    "UPDATE user_connections SET is_pinned = ? WHERE id = ? AND user_id = ?",
+                    (1 if fields["pinned"] else 0, conn_id, user_id))
+        if sets:
+            await self.conn.execute(
+                f"UPDATE connection_user_prefs SET {', '.join(sets)} WHERE user_id = ? AND connection_id = ?",
+                (*params, user_id, conn_id))
+        await self.conn.commit()
+        cursor = await self.conn.execute(
+            """SELECT folder, tags, open_mode, pinned, last_opened_at FROM connection_user_prefs
+               WHERE user_id = ? AND connection_id = ?""", (user_id, conn_id))
+        return await cursor.fetchone()
+
+    async def note_connection_opened(self, user_id: int, conn_id: int) -> bool:
+        """Set last_opened_at for the caller's filing of a connection. Writes only when the
+        caller owns the connection or holds a live share of it, so it never creates a row for
+        somebody who has lost access in the meantime."""
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor = await self.conn.execute(
+            f"""INSERT INTO connection_user_prefs (user_id, connection_id, last_opened_at)
+                SELECT ?, uc.id, ? FROM user_connections uc
+                WHERE uc.id = ? AND (uc.user_id = ? OR EXISTS
+                    (SELECT 1 FROM connection_shares cs WHERE cs.connection_id = uc.id
+                     AND cs.grantee_user_id = ? AND {grant_expiry.live_sql('cs')}))
+                ON CONFLICT(user_id, connection_id) DO UPDATE SET last_opened_at = excluded.last_opened_at""",
+            (user_id, now, conn_id, user_id, user_id, grant_expiry.live_param()))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def _drop_grantee_prefs(self, connection_id: int, grantee_id: int) -> None:
+        """Remove a grantee's filing of a connection (never the owner's). Part of the caller's
+        transaction: the caller commits."""
+        await self.conn.execute(
+            """DELETE FROM connection_user_prefs WHERE connection_id = ? AND user_id = ?
+               AND NOT EXISTS (SELECT 1 FROM user_connections WHERE id = ? AND user_id = ?)""",
+            (connection_id, grantee_id, connection_id, grantee_id))
+
+    async def cleanup_orphan_connection_prefs(self) -> int:
+        """Delete filing nobody can use: the user neither owns the connection nor holds a live
+        share of it (a share that ended without one of the paths above running, a database put
+        back from a backup, a rollback to an older release). Returns rows deleted."""
+        cursor = await self.conn.execute(
+            f"""DELETE FROM connection_user_prefs
+                WHERE NOT EXISTS (SELECT 1 FROM user_connections uc
+                                  WHERE uc.id = connection_user_prefs.connection_id
+                                  AND uc.user_id = connection_user_prefs.user_id)
+                AND NOT EXISTS (SELECT 1 FROM connection_shares cs
+                                WHERE cs.connection_id = connection_user_prefs.connection_id
+                                AND cs.grantee_user_id = connection_user_prefs.user_id
+                                AND {grant_expiry.live_sql('cs')})""",
+            (grant_expiry.live_param(),))
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def delete_user(self, user_id: int) -> bool:
         """Delete a user and all associated data (tokens, connections, streams, etc.).
 
@@ -2751,6 +2855,10 @@ class Database:
             ("login_addresses", "DELETE FROM login_addresses WHERE user_id = ?"),
             # API keys
             ("api_keys", "DELETE FROM api_keys WHERE user_id = ?"),
+            # Dashboard filing: the user's own, and everybody's of the connections the user owns
+            ("connection_user_prefs", "DELETE FROM connection_user_prefs WHERE user_id = ?"),
+            ("connection_user_prefs", "DELETE FROM connection_user_prefs WHERE connection_id IN "
+                                      "(SELECT id FROM user_connections WHERE user_id = ?)"),
             # User connections
             ("user_connections", "DELETE FROM user_connections WHERE user_id = ?"),
             # User streams (cascade handles related stream data)
@@ -4202,7 +4310,11 @@ class Database:
         return False
 
     async def delete_user_connection(self, conn_id: int, user_id: int) -> bool:
-        """Delete a user connection (must be owned by user)."""
+        """Delete a user connection (must be owned by user); everybody's filing of it goes too."""
+        await self.conn.execute(
+            """DELETE FROM connection_user_prefs WHERE connection_id = ? AND EXISTS
+               (SELECT 1 FROM user_connections WHERE id = ? AND user_id = ?)""",
+            (conn_id, conn_id, user_id))
         cursor = await self.conn.execute(
             "DELETE FROM user_connections WHERE id = ? AND user_id = ?",
             (conn_id, user_id)
@@ -4235,6 +4347,10 @@ class Database:
             "UPDATE user_connections SET is_pinned = ? WHERE id = ? AND user_id = ?",
             (new_state, conn_id, user_id)
         )
+        # the owner's dashboard pin (connection_user_prefs.pinned) follows, when there is one
+        await self.conn.execute(
+            "UPDATE connection_user_prefs SET pinned = ? WHERE connection_id = ? AND user_id = ? AND pinned IS NOT NULL",
+            (new_state, conn_id, user_id))
         await self.conn.commit()
         return bool(new_state)
 
@@ -4369,6 +4485,15 @@ class Database:
         expired one the sweeper has not deleted yet) the API default, never."""
         expires_at = grant_expiry.expires_at_for(duration)
         try:
+            # a share that ran out and was not swept yet is gone for good: its filing must not
+            # come back when the same person is given access again
+            await self.conn.execute(
+                f"""DELETE FROM connection_user_prefs WHERE connection_id = ? AND user_id = ?
+                    AND NOT EXISTS (SELECT 1 FROM connection_shares cs WHERE cs.connection_id = ?
+                                    AND cs.grantee_user_id = ? AND {grant_expiry.live_sql('cs')})
+                    AND NOT EXISTS (SELECT 1 FROM user_connections WHERE id = ? AND user_id = ?)""",
+                (connection_id, grantee_id, connection_id, grantee_id, grant_expiry.live_param(),
+                 connection_id, grantee_id))
             await self.conn.execute(
                 """INSERT INTO connection_shares
                    (connection_id, grantee_user_id, granted_by, expires_at) VALUES (?, ?, ?, ?)
@@ -4390,6 +4515,7 @@ class Database:
             "DELETE FROM connection_shares WHERE connection_id = ? AND grantee_user_id = ?",
             (connection_id, grantee_id),
         )
+        await self._drop_grantee_prefs(connection_id, grantee_id)
         await self.conn.commit()
         return cursor.rowcount > 0
 
@@ -4489,6 +4615,7 @@ class Database:
                 "DELETE FROM connection_shares WHERE id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
                 (r["id"], now))
             if d.rowcount > 0:
+                await self._drop_grantee_prefs(r["connection_id"], r["grantee_user_id"])
                 out.append({"kind": "conn", "resource_id": r["connection_id"],
                             "resource_name": r["connection_name"], "resource_uuid": r["connection_uuid"],
                             "grantee_id": r["grantee_user_id"], "grantee_username": r["grantee_username"],

@@ -7,7 +7,7 @@
     <title>Open Relay Portal - Dashboard</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#0f172a">
-    <link rel="stylesheet" href="/static/css/portal.css?v=55">
+    <link rel="stylesheet" href="/static/css/portal.css?v=56">
     <link rel="stylesheet" href="/static/js/vendor/codemirror/lib/codemirror.css?v=1">
     <link rel="stylesheet" href="/static/css/codemirror-portal.css?v=1">
     <script src="/static/js/theme.js?v=3"></script>
@@ -320,6 +320,11 @@
                 </div>
                 <p class="tab-description" style="margin-bottom: 1rem;">Backend services - both proxy routes to external backends and managed processes run by Portal.</p>
 
+                <div class="conn-filter-row">
+                    <input type="search" id="svc-filter" class="conn-filter" placeholder="Filter services ( / )" autocomplete="off" spellcheck="false" aria-label="Filter services">
+                    <button type="button" id="svc-filter-clear" class="btn btn-secondary btn-sm" hidden>Clear</button>
+                </div>
+
                 <div id="loading" class="loading">
                     <div class="spinner"></div>
                     <span>Loading services...</span>
@@ -372,7 +377,19 @@
                     <div class="spinner"></div>
                     <span>Loading connections...</span>
                 </div>
-                <div id="inline-connections-grid" class="connections-grid" style="display: none;"></div>
+                <div id="conn-organiser" class="conn-organiser" hidden>
+                    <div class="conn-filter-row">
+                        <input type="search" id="conn-filter" class="conn-filter" placeholder="Filter by name, host, type, folder or tag ( / )" autocomplete="off" spellcheck="false" aria-label="Filter connections">
+                        <button type="button" id="conn-filter-clear" class="btn btn-secondary btn-sm" hidden>Clear</button>
+                    </div>
+                    <div id="conn-tag-chips" class="conn-tag-chips" role="group" aria-label="Filter by tag" hidden></div>
+                    <div id="conn-recent" class="conn-recent" hidden>
+                        <h3 class="conn-section-title">Recently used</h3>
+                        <div id="conn-recent-grid" class="connections-grid"></div>
+                    </div>
+                    <p id="conn-filter-none" class="conn-filter-none" hidden>No connection matches the filter.</p>
+                </div>
+                <div id="inline-connections-grid" class="conn-folders" style="display: none;"></div>
                 <div id="inline-connections-empty" class="empty-state" style="display: none;">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
@@ -1712,6 +1729,31 @@
         </div>
     </div>
 
+    <!-- Folder and tags of one connection (the signed-in member's own filing) -->
+    <div id="conn-organise-modal" class="modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="conn-organise-title">
+        <div class="modal-backdrop" id="conn-organise-backdrop"></div>
+        <form class="modal-content" id="conn-organise-form" autocomplete="off">
+            <div class="modal-header">
+                <h3 id="conn-organise-title">Folder and tags: <span id="conn-organise-name"></span></h3>
+            </div>
+            <div class="form-group">
+                <label for="conn-organise-folder">Folder</label>
+                <input type="text" id="conn-organise-folder" list="conn-organise-folders" maxlength="40" placeholder="No folder">
+                <datalist id="conn-organise-folders"></datalist>
+            </div>
+            <div class="form-group">
+                <label for="conn-organise-tags">Tags</label>
+                <input type="text" id="conn-organise-tags" maxlength="300" placeholder="Separate with commas or spaces">
+                <small style="color: var(--text-muted);">Only you see your folders and tags, also on a connection shared with you. Up to 10 tags.</small>
+            </div>
+            <p id="conn-organise-error" class="conn-organise-error" role="alert"></p>
+            <div class="conn-organise-buttons">
+                <button type="button" class="btn btn-secondary" id="conn-organise-cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </form>
+    </div>
+
     <!-- Share Connection Modal -->
     <div id="share-connection-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('share-connection-modal')"></div>
@@ -2070,10 +2112,11 @@
     <script src="/static/js/vendor/codemirror/mode/sql/sql.js?v=1"></script>
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
-    <script src="/static/js/dashboard.js?v=59"></script>
+    <script src="/static/js/conn-organise.js?v=1"></script>
+    <script src="/static/js/dashboard.js?v=60"></script>
     <script src="/static/js/admin.js?v=40"></script>
     <script src="/static/js/ssh-keys.js?v=25"></script>
-    <script src="/static/js/user-connections.js?v=57"></script>
+    <script src="/static/js/user-connections.js?v=58"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

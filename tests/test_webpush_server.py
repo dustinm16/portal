@@ -971,6 +971,8 @@ async def proxied():
     server.authenticate_request = auth
     server.db.get_accessible_connection = get_conn
     server.db.record_connection_usage = nothing
+    saved_note = server.db.note_connection_opened
+    server.db.note_connection_opened = nothing
     server.resolve_checked_host = server.resolve_checked_host_cached = lambda *a, **k: asyncio.sleep(0, [])
     server._SSRFSafeConnector = lambda ssl=None, **kw: aiohttp.TCPConnector(ssl=ssl)
     server.db.get_user_by_id = user
@@ -997,6 +999,7 @@ async def proxied():
         (server.authenticate_request, server.db.get_accessible_connection, server.db.record_connection_usage,
          server.resolve_checked_host, server.resolve_checked_host_cached, server._SSRFSafeConnector,
          server.db.get_user_by_id, server.db.is_token_valid) = saved
+        server.db.note_connection_opened = saved_note
         await portal.close()
         await upstream.close()
 

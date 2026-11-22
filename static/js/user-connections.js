@@ -1807,9 +1807,26 @@ async function leaveSharedConnection(uuid) {
 }
 
 /**
+ * Open a window or tab for a connection. `mode` is the member's own open mode from the dashboard:
+ * "same" replaces this page, "new" and "embedded" open a normal tab, anything else keeps the
+ * sized window the type has always opened (`features`).
+ */
+function _openConnectionTarget(url, features, mode) {
+    if (mode === 'same') {
+        window.location.href = url;
+    } else if (mode === 'new' || mode === 'embedded') {
+        window.open(url, '_blank');
+    } else if (features) {
+        window.open(url, '_blank', features);
+    } else {
+        window.open(url, '_blank');
+    }
+}
+
+/**
  * Connect to a connection
  */
-async function connectTo(connectionId) {
+async function connectTo(connectionId, openMode) {
     try {
         const response = await Portal.fetch(`/api/connections/${connectionId}/connect`);
         if (!response.ok) {
@@ -1823,22 +1840,22 @@ async function connectTo(connectionId) {
 
         // If server provides a direct URL, use it
         if (data.url) {
-            window.open(data.url, '_blank');
+            _openConnectionTarget(data.url, null, openMode);
             return;
         }
 
         // Types that have dedicated UIs (not reverse-proxied)
-        const DEDICATED_TYPES = {
-            'sftp': () => window.open(`/files#sftp-${connectionId}`, '_blank'),
-            'ssh': () => window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600'),
-            'terminal': () => window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600'),
-            'vnc': () => window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
-            'rdp': () => window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
-            'spice': () => window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
-            'proxmox': () => window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
-            'github': () => window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900'),
-            'mediamtx': () => window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
-            'stream': () => window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+        const DEDICATED_TYPES = {  // type: [address, window features]
+            'sftp': [`/files#sftp-${connectionId}`, null],
+            'ssh': [`/terminal/connect?connection=${connectionId}`, 'width=900,height=600'],
+            'terminal': [`/terminal/connect?connection=${connectionId}`, 'width=900,height=600'],
+            'vnc': [`/vnc/connect?connection=${connectionId}`, 'width=1280,height=800'],
+            'rdp': [`/vnc/connect?connection=${connectionId}`, 'width=1280,height=800'],
+            'spice': [`/spice/connect?connection=${connectionId}`, 'width=1280,height=800'],
+            'proxmox': [`/proxmox/connect?connection=${connectionId}`, 'width=1280,height=800'],
+            'github': [`/github/connect?connection=${connectionId}`, 'width=1400,height=900'],
+            'mediamtx': [`/media/connect?connection=${connectionId}`, 'width=1280,height=800'],
+            'stream': [`/media/connect?connection=${connectionId}`, 'width=1280,height=800'],
         };
         // TCP-only types that can't be proxied in a browser
         const TCP_ONLY = new Set([
@@ -1848,12 +1865,12 @@ async function connectTo(connectionId) {
         ]);
 
         if (DEDICATED_TYPES[type]) {
-            DEDICATED_TYPES[type]();
+            _openConnectionTarget(DEDICATED_TYPES[type][0], DEDICATED_TYPES[type][1], openMode);
         } else if (TCP_ONLY.has(type)) {
             Portal.toast(`${conn.name || 'Connection'}: Use a native client with Portal's WebSocket relay`, 'info');
         } else {
             // Everything else is an HTTP proxy type — open in Portal's embedded browser
-            window.open(`/browser?connection=${connectionId}`, '_blank', 'width=1280,height=900');
+            _openConnectionTarget(`/browser?connection=${connectionId}`, 'width=1280,height=900', openMode);
         }
     } catch (error) {
         console.error('[Connections] Error connecting:', error);

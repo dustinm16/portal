@@ -59,7 +59,7 @@
         }
     }
     </script>
-    <link rel="stylesheet" href="/static/css/portal.css?v=55">
+    <link rel="stylesheet" href="/static/css/portal.css?v=56">
     <script src="/static/js/theme.js?v=3"></script>
     <style>
         /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */
@@ -1236,6 +1236,34 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Permanently delete a connection.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/connections/{id}/prefs</span>
+                        <span class="endpoint-desc">File a connection in your own folders and tags</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Your own filing of a connection you can reach, one you own or one shared with you: <code>folder</code>, <code>tags</code>, <code>open_mode</code>, <code>pinned</code>. Fields you leave out keep their value. The filing is private: nobody else sees it, neither the owner of a shared connection nor an administrator, and <code>GET /api/connections</code> returns only yours, as <code>prefs</code> on each item. It ends with your access (revoked or left share, expired share, deleted connection or user). Managed services have no filing.</p>
+                        <h4>Request</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"folder"</span>: <span class="string">"Games"</span>,
+  <span class="string">"tags"</span>: [<span class="string">"survival"</span>, <span class="string">"co-op"</span>],
+  <span class="string">"open_mode"</span>: <span class="string">"new"</span>,
+  <span class="string">"pinned"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                        <p><code>folder</code>: at most 40 characters (letters and digits of any language, space and <code>_ - . &amp; ( ) + '</code>), <code>""</code> clears it. <code>tags</code>: at most 10 tags of at most 24 characters (letters, digits and <code>. + # - _</code>, no spaces), stored lower-case without duplicates. <code>open_mode</code>: <code>default</code>, <code>same</code>, <code>new</code> or <code>embedded</code>. <code>pinned</code>: <code>true</code> or <code>false</code>.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"prefs"</span>: {<span class="string">"folder"</span>: <span class="string">"Games"</span>, <span class="string">"tags"</span>: [<span class="string">"survival"</span>, <span class="string">"co-op"</span>], <span class="string">"open_mode"</span>: <span class="string">"new"</span>, <span class="string">"pinned"</span>: <span class="keyword">true</span>, <span class="string">"last_opened_at"</span>: <span class="keyword">null</span>}
+}</pre>
+                        </div>
+                        <p><code>400</code> for an unknown field, an empty body or a value outside the limits (nothing is stored). A caller with no access gets the <code>404</code> of a connection that does not exist, whatever the body. <code>last_opened_at</code> is set when the connection is opened through <code>/connect</code>, the terminal socket or the proxy, at most once a minute per member and connection.</p>
                     </div>
                 </div>
 

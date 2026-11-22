@@ -4600,3 +4600,194 @@ html[data-theme-mode="light"] .theme-swatch-circle { border-color: rgba(0, 0, 0,
     line-height: 1;
     white-space: nowrap;
 }
+
+/* Dashboard organising: filter box, folders, tag chips, recently used (static/js/conn-organise.js) */
+/* an author display rule (.btn, the chip row) would otherwise win over the hidden attribute */
+.conn-organiser [hidden],
+.conn-filter-row [hidden],
+.conn-recent[hidden],
+.conn-tag-chips[hidden] {
+    display: none !important;
+}
+
+.conn-filter-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.conn-filter {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.5rem 0.75rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.conn-filter:focus {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 1px;
+}
+
+.conn-hidden {
+    display: none !important;
+}
+
+.conn-tag-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.conn-tag {
+    padding: 0.2rem 0.65rem;
+    border-radius: 9999px;
+    border: 1px solid var(--card-border);
+    background: var(--badge-bg);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.conn-tag:hover,
+.conn-tag:focus-visible,
+.conn-tag[aria-pressed="true"] {
+    border-color: var(--accent-blue);
+    color: var(--text-primary);
+}
+
+.conn-tag[aria-pressed="true"] {
+    background: rgba(96, 165, 250, 0.2);
+}
+
+.conn-tag-small {
+    padding: 0.05rem 0.5rem;
+    font-size: 0.7rem;
+}
+
+.conn-section-title {
+    font-size: 0.9rem;
+    margin: 0.25rem 0 0.5rem;
+    color: var(--text-secondary);
+}
+
+.conn-recent {
+    margin-bottom: 1rem;
+}
+
+.conn-folder {
+    margin-bottom: 1rem;
+}
+
+.conn-folder-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.4rem 0.25rem;
+    margin-bottom: 0.5rem;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--card-border);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.conn-folder-head:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 1px;
+}
+
+.conn-folder-caret {
+    font-size: 0.7rem;
+    width: 1rem;
+    color: var(--text-muted);
+}
+
+.conn-folder-count {
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.conn-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    justify-content: center;
+    margin-top: 0.4rem;
+}
+
+.conn-folder-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    padding: 0.05rem 0.4rem;
+    border: 1px dashed var(--card-border);
+    border-radius: 6px;
+}
+
+.conn-open-mode {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.conn-open-mode-select {
+    max-width: 10rem;
+    padding: 0.15rem 0.3rem;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    font-size: 0.75rem;
+}
+
+.conn-filter-none {
+    color: var(--text-muted);
+}
+
+.conn-organise-error {
+    color: var(--accent-red, #ef4444);
+    min-height: 1.2em;
+    margin: 0 1.25rem;
+    font-size: 0.85rem;
+}
+
+.conn-organise-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem 1.25rem;
+}
+
+@media (max-width: 600px) {
+    .conn-folders .connections-grid,
+    .conn-recent .connections-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .conn-filter {
+        font-size: 1rem;
+    }
+
+    .connection-actions {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .conn-organise-buttons .btn {
+        flex: 1;
+    }
+}
