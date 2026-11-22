@@ -811,6 +811,10 @@ check("the API reference describes the /api/sftp/vod routes and their credential
       and 'id="sftp-vod"' in (ROOT / "static" / "api-docs.html").read_text())
 check("1.21.0 states: the settings form refuses decimals in the whole-number fields",
       all(n in low21 for n in ("a decimal are refused with a message next to the field", "`0.5` can no longer be saved as `0`", "the form shows the values the server kept")))
+check("1.21.0: no text says that cache 0 empties the folder (the small index, lengths and marker files stay)",
+      "(it empties the folder)" not in text and "set `vod_play_cache_mb` to `0` first (it removes the playable copies" in text
+      and "the cache emptied" not in (ROOT / "docs" / "API.md").read_text() and "the playable copies removed; the small `index.json`" in (ROOT / "docs" / "API.md").read_text()
+      and "the cache emptied" not in (ROOT / "static" / "api-docs.html").read_text())
 check("1.21.0: the player notes say a fallback leaves the remembered mode alone and a 401 goes to sign-in",
       "for that visit only" in low21 and "sign-in page" in low21 and "empty, `.` or `..` segment" in low21)
 
