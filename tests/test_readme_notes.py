@@ -270,12 +270,12 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0)",
-      re.search(r"user-connections\.js\?v=56", (ROOT / "static" / "index.html").read_text())
+      re.search(r"user-connections\.js\?v=(56|57)", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
 check("1.18.0: the admin.js and portal.css versions stated are the ones the 1.18.0 pages loaded (admin.js moved on in 1.19.0)",
-      re.search(r"js/admin\.js\?v=39", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
+      re.search(r"js/admin\.js\?v=(39|[4-9]\d)", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
       and re.search(r"css/portal\.css\?v=55", (ROOT / "static" / "index.html").read_text()) and "`portal.css` 55" in sec18)
 check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
 check("docs/API.md documents expires_in, the 400 case and both new routes",
@@ -480,11 +480,13 @@ check("the chat part of What You Get describes levels, mute, badges and mass men
       all(x in get.split("### Direct Messages")[0] for x in ("bell", "mute", "@everyone", "@here", "badge")))
 check("the old 'enable desktop alerts' star sentence is gone from the chat part",
       "Enable desktop alerts to get browser notifications" not in text)
+# Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
+MOVED_ON_1_22 = {"portal.js": 47, "admin.js": 40, "user-connections.js": 57}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
-          loaded == {str(ver)} and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}) and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
 check("the README names the three pictures and they exist",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file()
           for n in ("chat-notify-menu", "phone-notifications", "admin-push")))
@@ -516,7 +518,8 @@ for name, needles in (("recording is off unless the flag is exactly true, 1, '1'
 _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("terminal.js", 7), ("recordings-admin.js", 4), ("user-connections.js", 56)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
-    check(f"1.20.0 states {js} as version {ver} and the pages load exactly that", loaded == {str(ver)}, str(loaded))
+    check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}), str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",
       all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
 # --- 1.20.0 notes: voice moderation and the room cap -----------------------------------
@@ -614,7 +617,7 @@ _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load",
-      all(_loaded_all[j] == {_stated.get(j)} for j in _loaded_all) and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
+      all(_loaded_all[j] in ({_stated.get(j)}, {str(MOVED_ON_1_22.get(j))}) for j in _loaded_all) and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
 for name, needles in (
         ("recordings can contain secrets shown on screen", ("recordings can contain secrets", "shown on screen")),
         ("who switches recording on and who plays", ("only administrators can switch recording on or off", "only administrators can list, play, download or delete")),
@@ -775,7 +778,8 @@ check("1.21.0: the administrators' summary says plainly who plays, the limits, t
 _static21 = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec21, re.M)), "")
 _pl = (ROOT / "static" / "vod-player.html").read_text()
 check("1.21.0: the Static files bullet states the versions vod-player.html really loads",
-      all(f"`{f}` v{v}" in _static21 for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl)), _static21[:200])
+      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v
+          for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl)), _static21[:200])
 
 # --- 1.21.0: the older paragraphs and the notes describe what the code does now ----------------------
 _outside21 = text.replace(_sec21, "")
@@ -836,11 +840,51 @@ _log22 = (ROOT / "logger.py").read_text()
 check("1.22.0: the log prefix and ID length stated are the ones in the code",
       "[req={rid}]" in _log22 and "REQUEST_ID_LENGTH = 8" in _log22)
 check("1.22.0: the script and version stated are the ones the page loads",
-      "`upstream-error.js` v1" in _sec22 and "/static/js/upstream-error.js?v=1" in _srv22
+      "`upstream-error.js` v2" in _sec22 and "/static/js/upstream-error.js?v=2" in _srv22
       and (ROOT / "static" / "js" / "upstream-error.js").is_file())
 check("1.22.0: the request ID and the upstream errors are in the API reference and the API page",
       "X-Request-ID" in (ROOT / "docs" / "API.md").read_text() and "request_id" in (ROOT / "docs" / "API.md").read_text()
       and "X-Request-ID" in (ROOT / "static" / "api-docs.html").read_text())
+# --- 1.22.0: maintenance mode and announcements -----------------------------------------------------
+import maintenance as _maint
+import announcements as _ann
+for name, needles in {
+        "per target": ("`maintenance_until`", "`maintenance_message`", "only an administrator sets them", "403", "no job",
+                       "exactly what they got before", "`retry-after`", "at most 300 seconds", "before the upgrade"),
+        "entry points": ("`_proxy_connection_authed`", "`http_browser_page`", "`http_searxng_proxy`", "`_get_sftp_connection`",
+                         "`_ws_maintenance_refusal`", "4503", "tests/test_maintenance.py", "not covered, on purpose"),
+        "global flag": ("`maintenance_global`", "`put /api/admin/maintenance`", "never by `/login`, `/logout`, `/api`, `/admin`, `/health`",
+                        "every 3 seconds", "`server.py maintenance-off`", "`maintenance_changed`", "`maintenance.global_set`",
+                        "`maintenance.global_clear`", "no migration", "never creates a database"),
+        "announcements": ("`announcements`", "`/api/admin/announcements`", "`announcement.create`", "`announce.js`", "dom nodes",
+                          "`http` and `https`", "`rel=\"noopener noreferrer\"`", "`localstorage`", "show before sign-in", "default off"),
+        "database, rollback, not tested": ("`alter table", "`create table if not exists announcements`", "1.21.0 starts on the migrated database",
+                                           "open to members again", "fakes only", "not proven at all", "cloudflare", "no browser"),
+}.items():
+    check(f"1.22.0 states: maintenance {name}", all(n in low22 for n in needles), str([n for n in needles if n not in low22]))
+check("1.22.0: the limits stated for maintenance and announcements are the ones in the code",
+      _maint.RETRY_AFTER_CAP == 300 and _maint.MESSAGE_MAX == 200 and _ann.BODY_MAX == 1000 and _ann.MAX_ROWS == 200
+      and "up to 1000 characters" in _sec22 and "at most 200 rows" in _sec22 and _server._MAINT_CACHE_TTL == 3.0)
+_srv_text = (ROOT / "server.py").read_text()
+check("1.22.0: the close code, the CLI actor name and the setting stated are the ones in the code",
+      "code=4503" in _srv_text and "4503" in _sec22 and "ACTOR_NAME" in (ROOT / "maintenance_cli.py").read_text()
+      and "(command line: server.py maintenance-off)" in _sec22
+      and "(command line: server.py maintenance-off)" in (ROOT / "maintenance_cli.py").read_text()
+      and _maint.GLOBAL_KEY == "maintenance_global" and "maintenance-off" in _srv_text)
+check("1.22.0: the static file versions stated are the ones the pages load",
+      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v1", "version 47", "`admin.js` 40", "`user-connections.js` 57"))
+      and "/static/js/announce.js?v=1" in (ROOT / "static" / "js" / "portal.js").read_text()
+      and "/static/js/maintenance-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
+      and "/static/js/announce.js?v=1" in (ROOT / "static" / "login.html").read_text())
+_api22 = (ROOT / "docs" / "API.md").read_text()
+_html22 = (ROOT / "static" / "api-docs.html").read_text()
+check("1.22.0: maintenance and announcements are in the API reference and the API page",
+      all(x in _api22 for x in ("/api/admin/maintenance", "/api/announcements", "/api/announcements/public", "/api/admin/announcements",
+                                "maintenance_active", "maintenance.global_set", "announcement.delete", "maintenance_changed"))
+      and all(x in _html22 for x in ("/api/admin/maintenance", "/api/announcements", "/api/announcements/public", "/api/admin/announcements",
+                                     "maintenance_active", "maintenance.global_set", "announcement.delete", "maintenance_changed")))
+check("the README feature section names maintenance mode and announcements",
+      "**Maintenance mode and announcements.**" in text and "[notes for 1.22.0](#upgrade-notes-for-1220)" in text)
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:

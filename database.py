@@ -1126,6 +1126,26 @@ MIGRATIONS = [
     "ALTER TABLE stream_relay_destinations ADD COLUMN last_error_at TEXT DEFAULT NULL",
     # Bind any service (proxy or managed) to a systemd unit for lifecycle control
     "ALTER TABLE services ADD COLUMN systemd_unit TEXT DEFAULT NULL",
+    # Admin announcements (1.22.0). Times are UTC text YYYY-MM-DDTHH:MM:SSZ; an empty end is open-ended.
+    """CREATE TABLE IF NOT EXISTS announcements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        level TEXT NOT NULL DEFAULT 'info',
+        body TEXT NOT NULL,
+        starts_at TEXT,
+        ends_at TEXT,
+        show_before_signin INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    # Maintenance (1.22.0): flag, optional end time (UTC text, empty = open-ended) and a short message.
+    # Adding a column is a catalogue change only, so this is cheap on a large database.
+    "ALTER TABLE services ADD COLUMN maintenance INTEGER DEFAULT 0",
+    "ALTER TABLE services ADD COLUMN maintenance_until TEXT DEFAULT NULL",
+    "ALTER TABLE services ADD COLUMN maintenance_message TEXT DEFAULT NULL",
+    "ALTER TABLE user_connections ADD COLUMN maintenance INTEGER DEFAULT 0",
+    "ALTER TABLE user_connections ADD COLUMN maintenance_until TEXT DEFAULT NULL",
+    "ALTER TABLE user_connections ADD COLUMN maintenance_message TEXT DEFAULT NULL",
     # App-wide IP blocking
     """CREATE TABLE IF NOT EXISTS blocked_ips (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3217,6 +3237,62 @@ class Database:
         row = await cursor.fetchone()
         return self._parse_service(row) if row else None
 
+    # ---- announcements (1.22.0) ----
+
+    async def list_announcements(self, limit: int = 200) -> list[dict]:
+        cursor = await self.conn.execute("SELECT * FROM announcements ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_announcement(self, announcement_id: int) -> Optional[dict]:
+        cursor = await self.conn.execute("SELECT * FROM announcements WHERE id = ?", (announcement_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def count_announcements(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) AS n FROM announcements")
+        return (await cursor.fetchone())["n"]
+
+    async def active_announcements(self, now_stamp: str, public_only: bool = False) -> list[dict]:
+        """Announcements active at `now_stamp` (UTC text, same format as the stored times), newest first."""
+        sql = ("SELECT * FROM announcements WHERE (starts_at IS NULL OR starts_at <= ?) "
+               "AND (ends_at IS NULL OR ends_at > ?)")
+        if public_only:
+            sql += " AND show_before_signin = 1"
+        cursor = await self.conn.execute(sql + " ORDER BY id DESC LIMIT 50", (now_stamp, now_stamp))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def create_announcement(self, values: dict, created_by: Optional[int], now_stamp: str) -> int:
+        cursor = await self.conn.execute(
+            """INSERT INTO announcements (level, body, starts_at, ends_at, show_before_signin,
+               created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (values["level"], values["body"], values.get("starts_at"), values.get("ends_at"),
+             values.get("show_before_signin", 0), created_by, now_stamp, now_stamp))
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def update_announcement(self, announcement_id: int, values: dict, now_stamp: str) -> bool:
+        allowed = {"level", "body", "starts_at", "ends_at", "show_before_signin"}
+        values = {k: v for k, v in values.items() if k in allowed}
+        if not values:
+            return False
+        sets = ", ".join(f"{k} = ?" for k in values)
+        cursor = await self.conn.execute(
+            f"UPDATE announcements SET {sets}, updated_at = ? WHERE id = ?",
+            list(values.values()) + [now_stamp, announcement_id])
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_announcement(self, announcement_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM announcements WHERE id = ?", (announcement_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_service_by_name(self, name: str) -> Optional[dict]:
+        """Get a service by its unique name (any enabled state)."""
+        cursor = await self.conn.execute("SELECT * FROM services WHERE name = ?", (name,))
+        row = await cursor.fetchone()
+        return self._parse_service(row) if row else None
+
     async def get_all_services(self) -> list[dict]:
         """Get all enabled services."""
         cursor = await self.conn.execute(
@@ -3395,6 +3471,7 @@ class Database:
             "auto_start", "health_check_url", "status", "pid", "health_status",
             "error_message", "restart_count", "last_started_at", "last_stopped_at",
             "last_health_check", "systemd_unit",
+            "maintenance", "maintenance_until", "maintenance_message",
         }
         updates = {k: v for k, v in updates.items() if k in allowed_fields}
         if not updates:
@@ -4025,7 +4102,8 @@ class Database:
         **kwargs
     ) -> bool:
         """Update a user connection (must be owned by user)."""
-        allowed_fields = {"name", "type", "host", "port", "config", "ssh_key_id", "icon", "portal_access", "api_access"}
+        allowed_fields = {"name", "type", "host", "port", "config", "ssh_key_id", "icon", "portal_access", "api_access",
+                          "maintenance", "maintenance_until", "maintenance_message"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False

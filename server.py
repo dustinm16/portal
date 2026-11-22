@@ -137,6 +137,8 @@ import hostkeys
 import session_recording
 import sshpass_rules
 import grant_expiry
+import maintenance
+import announcements
 import sftp_browser
 from host_check import (
     BLOCKED_HOSTS, is_blocked_host, is_private_or_loopback_address, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
@@ -3812,6 +3814,7 @@ async def http_list_services(request: web.Request) -> web.Response:
             "service_type": s.get("service_type", "proxy"),
             "icon": s.get("icon", "server"),
             "systemd_unit": s.get("systemd_unit"),
+            **maintenance.public_fields(s),
         }
         # Include process management fields for managed services
         if s.get("service_type") == "managed":
@@ -3898,6 +3901,9 @@ async def http_create_service(request: web.Request) -> web.Response:
 
     if systemd_unit and not system_monitor._validate_service_name(systemd_unit):
         return web.json_response({"error": "Invalid systemd unit name"}, status=400)
+    maint_updates, err = _maintenance_fields_from(data)
+    if err:
+        return err
 
     # For managed services, use 127.0.0.1 as default host
     if service_type == "managed" and host == "localhost":
@@ -3928,6 +3934,9 @@ async def http_create_service(request: web.Request) -> web.Response:
             systemd_unit=systemd_unit
         )
         logger.info(f"Service '{name}' ({service_type}) created by user {token.user_id}")
+        if maint_updates:
+            await db.update_service_full(service_id, **maint_updates)
+            await _audit_maintenance("service.maintenance", token, name, None, maint_updates)
 
         response = {
             "id": service_id,
@@ -3940,6 +3949,9 @@ async def http_create_service(request: web.Request) -> web.Response:
             "service_type": service_type,
             "icon": icon,
             "systemd_unit": systemd_unit,
+            **({"maintenance": True, "maintenance_until": maint_updates.get("maintenance_until"),
+                "maintenance_message": maint_updates.get("maintenance_message"), "maintenance_active": True}
+               if maint_updates.get("maintenance") else {}),
         }
         if service_type == "managed":
             response.update({
@@ -4047,12 +4059,20 @@ async def http_update_service(request: web.Request) -> web.Response:
             return web.json_response({"error": "Invalid systemd unit name"}, status=400)
         updates["systemd_unit"] = unit
 
+    maint_updates, err = _maintenance_fields_from(data)
+    if err:
+        return err
+    updates.update(maint_updates)
+
     if not updates:
         return web.json_response({"error": "No fields to update"}, status=400)
 
     try:
         # Use the unified update method
         await db.update_service_full(service_id, **updates)
+        if maint_updates:
+            _maint_service_cache.pop(service.get("name"), None)
+            await _audit_maintenance("service.maintenance", token, service.get("name"), service, maint_updates)
 
         # Get updated service
         updated = await db.get_service_by_id(service_id)
@@ -4070,6 +4090,7 @@ async def http_update_service(request: web.Request) -> web.Response:
             "service_type": updated.get("service_type", "proxy"),
             "icon": updated.get("icon", "server"),
             "systemd_unit": updated.get("systemd_unit"),
+            **maintenance.public_fields(updated),
         }
         if updated.get("service_type") == "managed":
             response.update({
@@ -4115,6 +4136,7 @@ async def http_get_service(request: web.Request) -> web.Response:
         "service_type": service.get("service_type", "proxy"),
         "icon": service.get("icon", "server"),
         "systemd_unit": service.get("systemd_unit"),
+        **maintenance.public_fields(service),
     }
 
     if service.get("systemd_unit"):
@@ -5262,6 +5284,8 @@ def _externalize_connection(conn: dict) -> dict:
     """Swap internal integer ID for the external UUID in a connection dict."""
     if "uuid" in conn:
         conn["id"] = conn.pop("uuid")
+    if "maintenance" in conn:
+        conn.update(maintenance.public_fields(conn))
     return conn
 
 
@@ -5491,6 +5515,11 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         # Not an error, so a client that always sends the key keeps working: a member's value
         # is ignored and a new connection starts without the flag.
         config = {k: v for k, v in config.items() if k != "recording"}
+    maint_updates, err = _maintenance_fields_from(data)
+    if err:
+        return err
+    if maint_updates and not await _is_recording_admin(token.user_id):
+        return web.json_response({"error": "Only an administrator can set maintenance"}, status=403)
     ssh_key_id = data.get("ssh_key_id")
     icon = data.get("icon")
     portal_access = 1 if data.get("portal_access", 1) else 0
@@ -5575,6 +5604,11 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         )
 
         logger.info(f"Connection '{name}' ({conn_type}) created by user {token.user_id}")
+        if maint_updates:
+            created = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+            if created:
+                await db.update_user_connection(created["id"], token.user_id, **maint_updates)
+                await _audit_maintenance("connection.maintenance", token, name, None, maint_updates)
         user = await db.get_user_by_id(token.user_id)
         await db.log_activity(token.user_id, get_display_name(user) if user else "unknown", "connection_create", f"Created {conn_type} connection '{name}'")
 
@@ -5693,6 +5727,16 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
         # Not an error: a member's value is ignored, so the stored flag is kept as it is.
         data["config"] = {k: v for k, v in data["config"].items() if k != "recording"}
 
+    # Maintenance fields: validated here, administrators only (a member's request is refused)
+    maint_updates, err = _maintenance_fields_from(data)
+    if err:
+        return err
+    if maint_updates and not await _is_recording_admin(token.user_id):
+        return web.json_response({"error": "Only an administrator can set maintenance"}, status=403)
+    for _k in maintenance.FIELDS:
+        data.pop(_k, None)
+    data.update(maint_updates)
+
     # Resolve UUID to internal connection
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
@@ -5766,6 +5810,7 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     try:
         if await db.update_user_connection(int_id, token.user_id, **data):
             logger.info(f"Connection {conn_uuid} updated by user {token.user_id}")
+            await _audit_maintenance("connection.maintenance", token, connection.get("name"), connection, maint_updates)
             body = {"status": "updated"}
             if password_cleared:
                 body["stored_password_cleared"] = True
@@ -5861,6 +5906,9 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
+    blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+    if blocked:
+        return blocked
 
     # Record usage
     await db.record_connection_usage(connection["id"], token.user_id)
@@ -15735,6 +15783,9 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return None, None, web.json_response({"error": "Connection not found"}, status=404)
+    blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+    if blocked:
+        return None, None, blocked
 
     if connection.get("type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
         return None, None, web.json_response({"error": "Connection is not SSH/SFTP type"}, status=400)
@@ -17451,6 +17502,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         logger.warning(f"User {token.user_id} exceeded max WebSocket connections ({_MAX_WS_PER_USER})")
         return web.Response(status=429, text="Too many active connections")
 
+    # A target in maintenance is refused before the upgrade (only when the member has access to it).
+    blocked = await _ws_maintenance_refusal(request, token, path)
+    if blocked:
+        return blocked
+
     # Create WebSocket response
     ws = web.WebSocketResponse(heartbeat=30)
     try:
@@ -17659,6 +17715,8 @@ async def handle_user_connection_ws(
         await ws.send_json({"type": "error", "message": "Connection not found"})
         await ws.close(code=4004, message=b"Connection not found")
         return
+    if await _ws_refuse_in_maintenance(ws, token, connection):
+        return
 
     # Record connection usage
     await db.record_connection_usage(conn_id, token.user_id)
@@ -17849,6 +17907,8 @@ async def handle_relay_ws(
         )
         await ws.send_json({"type": "error", "message": "Forbidden - insufficient scopes"})
         await ws.close(code=4003, message=b"Forbidden")
+        return
+    if await _ws_refuse_in_maintenance(ws, token, service):
         return
 
     # Get plugin for this service
@@ -18205,6 +18265,9 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         conn_type = connection.get("type", "")
         # Build WS path with shell override if specified
         ws_path = f"/ws/user-connection/{conn_id}"
@@ -18225,6 +18288,9 @@ async def http_terminal_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("terminal.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
@@ -18249,6 +18315,9 @@ async def http_vnc_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         html = load_static_file("vnc.html")
         html = html.replace("{{SERVICE_ID}}", conn_id)
         html = html.replace("{{SERVICE_NAME}}", connection.get("name", "VNC"))
@@ -18262,6 +18331,9 @@ async def http_vnc_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("vnc.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
@@ -18285,6 +18357,9 @@ async def http_media_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         html = load_static_file("mediamtx.html")
         html = html.replace("{{SERVICE_ID}}", conn_id)
         html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Media"))
@@ -18298,6 +18373,9 @@ async def http_media_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("mediamtx.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
@@ -18321,6 +18399,9 @@ async def http_spice_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         html = load_static_file("spice.html")
         html = html.replace("{{SERVICE_ID}}", conn_id)
         html = html.replace("{{SERVICE_NAME}}", connection.get("name", "SPICE Console"))
@@ -18334,6 +18415,9 @@ async def http_spice_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("spice.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
@@ -18357,6 +18441,9 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         html = load_static_file("proxmox.html")
         html = html.replace("{{SERVICE_ID}}", conn_id)
         html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Proxmox VE"))
@@ -18370,6 +18457,9 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("proxmox.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
@@ -18393,6 +18483,9 @@ async def http_github_page(request: web.Request) -> web.Response:
         connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        blocked = await _maintenance_block(request, token, connection, connection.get("name"))
+        if blocked:
+            return blocked
         html = load_static_file("github.html")
         return web.Response(text=html, content_type="text/html")
 
@@ -18403,6 +18496,9 @@ async def http_github_page(request: web.Request) -> web.Response:
 
     if not check_service_authorization(service, token):
         return web.Response(status=403, text="Access denied")
+    blocked = await _maintenance_block(request, token, service, service.get("name"))
+    if blocked:
+        return blocked
 
     html = load_static_file("github.html")
     return web.Response(text=html, content_type="text/html")
@@ -18421,6 +18517,9 @@ async def http_browser_page(request: web.Request) -> web.Response:
     connection = await db.get_accessible_connection(conn_id, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
+    blocked = await _maintenance_block(request, token, connection, connection.get("name"), use_global=True)
+    if blocked:
+        return blocked
 
     conn_type = connection.get("type", "custom")
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
@@ -18568,7 +18667,9 @@ def _wants_json_error(request: web.Request) -> bool:
 
 def _upstream_error_page(request: web.Request, service_name, status: int, retry_after: int = 15, *,
                          reason: str = "", json_error: Optional[str] = None,
-                         detail: Optional[str] = None, force_json: bool = False) -> web.Response:
+                         detail: Optional[str] = None, force_json: bool = False,
+                         quiet: bool = False, title: Optional[str] = None, note: Optional[str] = None,
+                         extra_json: Optional[dict] = None, until_iso: Optional[str] = None) -> web.Response:
     """The answer for an upstream that cannot be reached (502), is not available (503) or is
     too slow (504): a small page with the escaped service name, the request ID and a retry
     countdown that reloads (static/js/upstream-error.js, no inline script), or, for an
@@ -18584,16 +18685,21 @@ def _upstream_error_page(request: web.Request, service_name, status: int, retry_
         retry = max(1, min(300, int(retry_after)))
     except (TypeError, ValueError):
         retry = 15
-    logger.error(f"Upstream error {status} for service '{name}': {_log_text(reason) or 'unreachable'}",
-                 extra={"request_id": rid} if rid else None)
+    if not quiet:
+        logger.error(f"Upstream error {status} for service '{name}': {_log_text(reason) or 'unreachable'}",
+                     extra={"request_id": rid} if rid else None)
     headers = {"Retry-After": str(retry), "Cache-Control": "no-store"}
-    title, sentence = _UPSTREAM_ERROR_TITLES.get(status, _UPSTREAM_ERROR_TITLES[502])
+    default_title, sentence = _UPSTREAM_ERROR_TITLES.get(status, _UPSTREAM_ERROR_TITLES[502])
+    title = title if title is not None else default_title
     if force_json or _wants_json_error(request):
-        return web.json_response(
-            {"error": json_error or title.format(name=name), "request_id": rid, "retry_after": retry},
-            status=status, headers=headers)
+        body = {"error": json_error or title.format(name=name), "request_id": rid, "retry_after": retry}
+        if extra_json:
+            body.update(extra_json)
+        return web.json_response(body, status=status, headers=headers)
     esc = _html.escape
     auto = "1" if request.method in ("GET", "HEAD") else "0"
+    until_attr = f' data-until="{esc(until_iso)}"' if until_iso else ""
+    note_html = f'<p id="upstream-error-note">{esc(note)}</p>' if note else ""
     page = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -18605,13 +18711,194 @@ def _upstream_error_page(request: web.Request, service_name, status: int, retry_
         "cursor:pointer;margin-right:1rem}.meta{opacity:.8}</style></head><body>"
         f'<main id="upstream-error" data-retry="{retry}" data-auto="{auto}">'
         f"<h1>{esc(title.format(name=name))}</h1>"
-        f"<p>{esc(detail or sentence.format(name=name))}</p>"
+        f'<p id="upstream-error-detail"{until_attr}>{esc(detail or sentence.format(name=name))}</p>'
+        f"{note_html}"
         f'<p class="meta">Request ID: <code id="upstream-error-id">{esc(rid or "-")}</code></p>'
         '<p class="meta" id="upstream-error-countdown"></p>'
         '<p><button type="button" id="upstream-error-retry">Try again now</button>'
         '<a href="/dashboard" id="upstream-error-home">Back to Dashboard</a></p></main>'
-        '<script src="/static/js/upstream-error.js?v=1"></script></body></html>')
+        '<script src="/static/js/upstream-error.js?v=2"></script></body></html>')
     return web.Response(status=status, text=page, content_type="text/html", headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Maintenance (1.22.0)
+#
+# A service row or a connection row can be in maintenance (maintenance.state: flag set and the
+# end time empty or ahead; an end time that has passed needs no clean-up). The global flag is
+# one value in the settings table, read through a few seconds of cache so that
+# `server.py maintenance-off` run from outside takes effect while the server runs.
+# _maintenance_block is called right AFTER each entry point's own access check, so a member
+# without access gets exactly the answer they got before and nothing says the target exists.
+# An administrator (role read from the database) always passes. The global flag is only
+# looked at by the HTTP paths /proxy, /browser and /search (use_global=True); /login, /logout,
+# /api, /admin, /health and static files never call it.
+# ---------------------------------------------------------------------------
+
+_MAINT_CACHE_TTL = 3.0
+_maint_global_cache: dict = {"flag": None, "at": None}
+_maint_service_cache: dict = {}          # service name -> (monotonic time, row fields)
+
+
+async def _maintenance_global_flag() -> Optional[dict]:
+    """The stored global flag (a dict or None), re-read at most every few seconds. A failed read
+    keeps the last known value."""
+    now = monotonic()
+    at = _maint_global_cache["at"]
+    if at is None or now - at > _MAINT_CACHE_TTL:
+        try:
+            _maint_global_cache["flag"] = maintenance.decode_global(await db.get_setting(maintenance.GLOBAL_KEY))
+        except Exception as e:
+            logger.debug(f"Could not read the maintenance flag: {type(e).__name__}")
+        _maint_global_cache["at"] = now
+    return _maint_global_cache["flag"]
+
+
+def _maintenance_cache_reset() -> None:
+    """Forget what was read, so the next check reads the database (after a change made here)."""
+    _maint_global_cache["at"] = None
+    _maint_service_cache.clear()
+
+
+async def _maintenance_service_row(name: str) -> Optional[dict]:
+    """The maintenance fields of a named service (the search service has no id in the route),
+    cached for a few seconds because /search/ serves many files for one page."""
+    now = monotonic()
+    hit = _maint_service_cache.get(name)
+    if hit and now - hit[0] <= _MAINT_CACHE_TTL:
+        return hit[1]
+    row = None
+    try:
+        svc = await db.get_service_by_name(name)
+        if svc:
+            row = {k: svc.get(k) for k in maintenance.FIELDS}
+    except Exception as e:
+        logger.debug(f"Could not read the maintenance state of {name}: {type(e).__name__}")
+    if len(_maint_service_cache) > 50:
+        _maint_service_cache.clear()
+    _maint_service_cache[name] = (now, row)
+    return row
+
+
+async def _maintenance_exempt(token) -> bool:
+    """Administrators pass through maintenance: the account's role in the database now."""
+    return await _is_recording_admin(token.user_id)
+
+
+def _maintenance_fields_from(data: dict):
+    """(updates, error answer) for the maintenance fields in a request body. Nothing is read
+    from `data` when it has none of them."""
+    try:
+        return maintenance.parse_update(data), None
+    except ValueError as e:
+        return None, web.json_response({"error": str(e)}, status=400)
+
+
+async def _audit_maintenance(action: str, token, name, before: Optional[dict], updates: dict) -> None:
+    """Audit entry for a change of a service's or connection's maintenance (who, which, was, now).
+    Written only when something changed."""
+    if not updates:
+        return
+    keys = list(maintenance.FIELDS)
+    was = {k: (before or {}).get(k) or None for k in keys}
+    now = {k: (updates[k] if k in updates else was[k]) or None for k in keys}
+    if was == now:
+        return
+    user = await db.get_user_by_id(token.user_id)
+    await audit_log(action, token.user_id, (user or {}).get("username", "unknown"),
+                    target_name=_log_text(name, 80), details={"was": was, "now": now})
+
+
+def _maintenance_answer(request: web.Request, name, st: dict, force_json: bool = False) -> web.Response:
+    """The 503 for a target in maintenance: the page of the previous lane (JSON for an API-style
+    request) with "Down for maintenance until <time>", the administrator's message and a
+    Retry-After of the time left (capped)."""
+    until = st["until"]
+    headline = maintenance.describe_until(until)
+    shown = _log_text(name, 80) if name else ""
+    shown = shown or "the service"
+    return _upstream_error_page(
+        request, shown, 503, maintenance.retry_after(until), quiet=True,
+        title="{name} is down for maintenance", detail=headline,
+        note=st.get("message") or None, json_error=headline, force_json=force_json,
+        until_iso=until.strftime("%Y-%m-%dT%H:%M:%SZ") if until else None,
+        extra_json={"maintenance": True, "message": st.get("message") or "",
+                    "until": until.strftime("%Y-%m-%dT%H:%M:%SZ") if until else None})
+
+
+async def _maintenance_block(request: web.Request, token, row: Optional[dict], name, *,
+                             use_global: bool = False, force_json: bool = False) -> Optional[web.Response]:
+    """None to carry on; else the 503 answer. `row` is the service or connection row (anything
+    with the maintenance fields). Call it only after the access check passed."""
+    st = maintenance.state(row)
+    if st is None and use_global:
+        st = maintenance.global_state(await _maintenance_global_flag())
+    if st is None:
+        return None
+    if await _maintenance_exempt(token):
+        return None
+    return _maintenance_answer(request, name, st, force_json)
+
+
+async def _ws_maintenance_refusal(request: web.Request, token, path: str) -> Optional[web.Response]:
+    """For a WebSocket route, before the upgrade: the 503 when the target this path would reach
+    is in maintenance and the member has access to it. In every other case (no access, no such
+    target, local terminal) None, and the handler goes on as it always did, so the answer for a
+    member without access is unchanged. The same lookups the handlers make later are repeated
+    here; the handlers keep their own check as well (handle_user_connection_ws, handle_relay_ws)."""
+    try:
+        row, name = await _ws_target(path, token)
+    except Exception as e:
+        logger.debug(f"maintenance pre-check skipped: {type(e).__name__}")
+        return None
+    if row is None:
+        return None
+    return await _maintenance_block(request, token, row, name)
+
+
+async def _ws_refuse_in_maintenance(ws, token, row) -> bool:
+    """The same refusal as _ws_maintenance_refusal, for a socket that is already open (the
+    handlers' own check, after their access check; the pre-upgrade check normally got there
+    first). Closes with 4503."""
+    st = maintenance.state(row)
+    if st is None or await _maintenance_exempt(token):
+        return False
+    await ws.send_json({"type": "error", "message": maintenance.describe_until(st["until"]),
+                        "maintenance": True})
+    await ws.close(code=4503, message=b"Maintenance")
+    return True
+
+
+async def _ws_target(path: str, token):
+    """(row, name) of the connection or service a /ws path reaches for this member, access
+    included, or (None, None). Mirrors websocket_handler's dispatch."""
+    if path in ("/", "/ws", "/ws/chat", "/ws/terminal/local"):
+        return None, None
+    m = re.match(r"^/ws/user-connection/([A-Za-z0-9_-]+)$", path)
+    if m:
+        conn = await db.get_accessible_connection(m.group(1), token.user_id)
+        return (conn, conn.get("name")) if conn else (None, None)
+    id_re = r"([A-Za-z0-9_-]+)"
+    kind = re.match(rf"^/ws/(?:terminal|vnc|media|spice|proxmox)/{id_re}$", path)
+    service = None
+    if kind:
+        matched = kind.group(1)
+        if matched.isdigit():
+            service = await db.get_service_by_id(int(matched))
+    else:
+        service = await get_service_for_path(path)
+    if service:
+        if check_service_authorization(service, token):
+            return service, service.get("name")
+        return None, None
+    if kind:
+        matched = kind.group(1)
+        conn = await db.get_accessible_connection(matched, token.user_id)
+        if not conn and matched.isdigit():
+            conn = await db.get_user_connection(int(matched), token.user_id)
+        if conn:
+            return conn, conn.get("name")
+    return None, None
 
 
 def _proxy_timeout_seconds(value) -> int:
@@ -19062,6 +19349,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     # A proxied call (a long download, an event stream) opened through a share ends with it.
     if not await _track_shared_access(connection, token.user_id, call):
         return web.Response(status=404, text="Connection not found")
+    # Right after the access check, before any dial and before the WebSocket branch below.
+    blocked = await _maintenance_block(request, token, connection, connection.get("name"), use_global=True)
+    if blocked:
+        return blocked
 
     conn_type = connection.get("type", "custom")
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
@@ -19797,6 +20088,14 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                 request.query.get("format") == "json":
             return web.json_response({"error": "Unauthorized"}, status=401)
         raise web.HTTPFound("/login")
+
+    # Authenticated is this route's access check; the search service row has its own maintenance
+    # fields (set in the service form) and the global flag applies as well.
+    blocked = await _maintenance_block(request, token, await _maintenance_service_row("searxng"),
+                                       "Search", use_global=True,
+                                       force_json=request.query.get("format") == "json")
+    if blocked:
+        return blocked
 
     available, port = await _searxng_status()
     if not available:
@@ -28465,6 +28764,225 @@ async def http_put_proxy_limit(request: web.Request) -> web.Response:
     return web.json_response(view)
 
 
+async def _maintenance_global_view(*, fresh: bool = False) -> dict:
+    """The global maintenance flag as the admin page shows it. `active` is whether it blocks now
+    (set and its end time not passed); `set` is whether a value is stored at all."""
+    if fresh:
+        _maintenance_cache_reset()
+    flag = await _maintenance_global_flag()
+    st = maintenance.global_state(flag)
+    return {
+        "set": flag is not None,
+        "active": st is not None,
+        "message": (flag or {}).get("message", ""),
+        "until": (flag or {}).get("until"),
+        "set_by": (flag or {}).get("set_by", ""),
+        "set_at": (flag or {}).get("set_at"),
+        "message_max": maintenance.MESSAGE_MAX,
+        "applies_to": ["/proxy", "/browser", "/search"],
+        "never_blocks": ["/login", "/logout", "/api", "/admin", "/health", "/static"],
+    }
+
+
+async def http_get_maintenance(request: web.Request) -> web.Response:
+    """GET /api/admin/maintenance - the global maintenance flag (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(await _maintenance_global_view(fresh=True))
+
+
+async def http_put_maintenance(request: web.Request) -> web.Response:
+    """PUT /api/admin/maintenance - set or clear the global flag (superadmin).
+
+    Body {"active": true, "message": "...", "until": "<ISO time>" or null} sets it
+    (open-ended without `until`); {"active": false} clears it. It gates /proxy, /browser and /search
+    for everyone except administrators and nothing else. Audited and recorded as a security event."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    unknown = sorted(str(k) for k in data if k not in ("active", "message", "until"))
+    if unknown:
+        return web.json_response({"error": f"Unknown field: {unknown[0][:40]}"}, status=400)
+    if not isinstance(data.get("active"), bool):
+        return web.json_response({"error": "active must be true or false"}, status=400)
+    before = await _maintenance_global_view(fresh=True)
+    actor = user.get("username", "unknown")
+    try:
+        if data["active"]:
+            message = maintenance.clean_message(data.get("message"))
+            until = maintenance.parse_until(data.get("until"))
+            await db.set_setting(maintenance.GLOBAL_KEY, maintenance.encode_global(message, until, actor))
+        else:
+            await db.conn.execute("DELETE FROM settings WHERE key = ?", (maintenance.GLOBAL_KEY,))
+            await db.conn.commit()
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.warning(f"Could not save the maintenance flag: {type(e).__name__}")
+        return web.json_response({"error": "Could not save the setting"}, status=500)
+    view = await _maintenance_global_view(fresh=True)
+    details = {"was": {k: before[k] for k in ("set", "active", "message", "until")},
+               "now": {k: view[k] for k in ("set", "active", "message", "until")}}
+    action = "maintenance.global_set" if data["active"] else "maintenance.global_clear"
+    await security_event("maintenance_changed", request=request, user=user, details=details)
+    await audit_log(action, user["id"], actor, target_type="maintenance", target_name="global", details=details)
+    logger.info(f"Global maintenance {'set' if data['active'] else 'cleared'} by user {user['id']}")
+    view["saved"] = True
+    return web.json_response(view)
+
+
+# ---------------------------------------------------------------------------
+# Announcements (1.22.0): written by administrators, read by signed-in members (active ones only)
+# and, when "show before sign-in" is ticked, by visitors on the login page. The text is plain text
+# stored as written; the page shows a small safe subset of markup built with DOM nodes.
+# ---------------------------------------------------------------------------
+
+async def http_list_announcements(request: web.Request) -> web.Response:
+    """GET /api/announcements - the active announcements for a signed-in member."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    rows = await db.active_announcements(announcements.now_stamp())
+    return web.json_response({"announcements": [announcements.member_view(r) for r in rows]},
+                             headers={"Cache-Control": "no-store"})
+
+
+async def http_public_announcements(request: web.Request) -> web.Response:
+    """GET /api/announcements/public - no sign-in: only active announcements an administrator ticked
+    "show before sign-in" for (none by default)."""
+    rows = await db.active_announcements(announcements.now_stamp(), public_only=True)
+    return web.json_response({"announcements": [announcements.member_view(r) for r in rows]},
+                             headers={"Cache-Control": "no-store"})
+
+
+async def http_admin_announcements_list(request: web.Request) -> web.Response:
+    """GET /api/admin/announcements - every announcement with its status (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    rows = await db.list_announcements()
+    return web.json_response({"announcements": [announcements.admin_view(r) for r in rows],
+                              "levels": list(announcements.LEVELS), "body_max": announcements.BODY_MAX})
+
+
+async def _announcement_actor(token) -> tuple:
+    user = await db.get_user_by_id(token.user_id)
+    return token.user_id, (user or {}).get("username", "unknown")
+
+
+def _announcement_audit_details(row: dict, **extra) -> dict:
+    return {"id": row.get("id"), "level": row.get("level"), "text": (row.get("body") or "")[:80],
+            "starts_at": row.get("starts_at"), "ends_at": row.get("ends_at"),
+            "show_before_signin": bool(row.get("show_before_signin")), **extra}
+
+
+async def _announcement_json(request: web.Request):
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None, web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return None, web.json_response({"error": "Body must be an object"}, status=400)
+    return data, None
+
+
+async def http_admin_announcements_create(request: web.Request) -> web.Response:
+    """POST /api/admin/announcements - {level, body, starts_at?, ends_at?, show_before_signin?} (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    data, err = await _announcement_json(request)
+    if err:
+        return err
+    try:
+        values = announcements.parse(data)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if await db.count_announcements() >= announcements.MAX_ROWS:
+        return web.json_response({"error": f"At most {announcements.MAX_ROWS} announcements; delete old ones"}, status=400)
+    uid, uname = await _announcement_actor(token)
+    new_id = await db.create_announcement(values, uid, announcements.now_stamp())
+    row = await db.get_announcement(new_id)
+    await audit_log("announcement.create", uid, uname, target_id=new_id, target_type="announcement",
+                    details=_announcement_audit_details(row))
+    return web.json_response(announcements.admin_view(row), status=201)
+
+
+async def _announcement_from_route(request: web.Request):
+    raw = request.match_info.get("id", "")
+    if not raw.isdigit():
+        return None, web.json_response({"error": "Invalid announcement ID"}, status=400)
+    row = await db.get_announcement(int(raw))
+    if not row:
+        return None, web.json_response({"error": "Announcement not found"}, status=404)
+    return row, None
+
+
+async def http_admin_announcements_update(request: web.Request) -> web.Response:
+    """PUT /api/admin/announcements/{id} - change any of the fields; a change makes it show again to
+    members who dismissed the old text (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    row, err = await _announcement_from_route(request)
+    if err:
+        return err
+    data, err = await _announcement_json(request)
+    if err:
+        return err
+    try:
+        values = announcements.parse(data, existing=row)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if not values:
+        return web.json_response({"error": "No fields to update"}, status=400)
+    uid, uname = await _announcement_actor(token)
+    await db.update_announcement(row["id"], values, announcements.now_stamp())
+    new = await db.get_announcement(row["id"])
+    await audit_log("announcement.update", uid, uname, target_id=row["id"], target_type="announcement",
+                    details=_announcement_audit_details(new, was=_announcement_audit_details(row)))
+    return web.json_response(announcements.admin_view(new))
+
+
+async def http_admin_announcements_end(request: web.Request) -> web.Response:
+    """POST /api/admin/announcements/{id}/end - end it now (it stays in the list as ended)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    row, err = await _announcement_from_route(request)
+    if err:
+        return err
+    stamp = announcements.now_stamp()
+    uid, uname = await _announcement_actor(token)
+    await db.update_announcement(row["id"], {"ends_at": stamp}, stamp)
+    new = await db.get_announcement(row["id"])
+    await audit_log("announcement.end", uid, uname, target_id=row["id"], target_type="announcement",
+                    details=_announcement_audit_details(new))
+    return web.json_response(announcements.admin_view(new))
+
+
+async def http_admin_announcements_delete(request: web.Request) -> web.Response:
+    """DELETE /api/admin/announcements/{id} (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    row, err = await _announcement_from_route(request)
+    if err:
+        return err
+    uid, uname = await _announcement_actor(token)
+    await db.delete_announcement(row["id"])
+    await audit_log("announcement.delete", uid, uname, target_id=row["id"], target_type="announcement",
+                    details=_announcement_audit_details(row))
+    return web.json_response({"deleted": True})
+
+
 async def http_get_proxy_trust(request: web.Request) -> web.Response:
     """GET /api/admin/proxy-trust - the proxy-trust self-check (admin)."""
     token, err = await _admin_only(request)
@@ -29526,6 +30044,15 @@ def create_app() -> web.Application:
     app.router.add_put("/api/admin/login-ban", http_put_login_ban)
     app.router.add_get("/api/admin/voice", http_get_voice_settings)
     app.router.add_put("/api/admin/voice", http_put_voice_settings)
+    app.router.add_get("/api/announcements", http_list_announcements)
+    app.router.add_get("/api/announcements/public", http_public_announcements)
+    app.router.add_get("/api/admin/announcements", http_admin_announcements_list)
+    app.router.add_post("/api/admin/announcements", http_admin_announcements_create)
+    app.router.add_put("/api/admin/announcements/{id}", http_admin_announcements_update)
+    app.router.add_post("/api/admin/announcements/{id}/end", http_admin_announcements_end)
+    app.router.add_delete("/api/admin/announcements/{id}", http_admin_announcements_delete)
+    app.router.add_get("/api/admin/maintenance", http_get_maintenance)
+    app.router.add_put("/api/admin/maintenance", http_put_maintenance)
     app.router.add_get("/api/admin/proxy-limit", http_get_proxy_limit)
     app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
@@ -30718,6 +31245,7 @@ def main():
     # Lift IP blocks without the web UI (server stopped; no migrations are run)
     unblock_cmd = subparsers.add_parser("unblock", help="Remove the IP block(s) for one address from the database (run with the server stopped)")
     unblock_cmd.add_argument("ip", help="IPv4 or IPv6 address")
+    subparsers.add_parser("maintenance-off", help="Clear the global maintenance flag (works while the server runs or is stopped)")
     subparsers.add_parser("clear-bans", help="Remove every IP block from the database (run with the server stopped)")
     subparsers.add_parser("cf-ranges-reset", help="Forget the saved Cloudflare range list so the built-in one is used (run with the server stopped)")
 
@@ -30816,6 +31344,9 @@ def main():
     elif args.command == "unblock":
         import ban_cli
         sys.exit(ban_cli.unblock(args.ip, Config.DATABASE_PATH))
+    elif args.command == "maintenance-off":
+        import maintenance_cli
+        sys.exit(maintenance_cli.maintenance_off(Config.DATABASE_PATH))
     elif args.command == "clear-bans":
         import ban_cli
         sys.exit(ban_cli.clear_bans(Config.DATABASE_PATH))

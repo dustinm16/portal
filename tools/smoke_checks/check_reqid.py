@@ -90,7 +90,7 @@ async def run(ctx):
         ctx.ok("reqid: the search error page names the service and shows the same ID as the header",
                ID_RE.match(rid) and "Search" in page and f">{rid}<" in page and bool(retry), f"{status} {rid!r} {retry!r}")
         ctx.ok("reqid: the page has the countdown script from a static file and no upstream address",
-               "/static/js/upstream-error.js?v=1" in page and "127.0.0.1" not in page and "onclick" not in page)
+               "/static/js/upstream-error.js?v=2" in page and "127.0.0.1" not in page and "onclick" not in page)
         ctx.ok("reqid: the error is in the server log once under that ID, with a reason",
                await _log_has(ctx, f"[req={rid}] Upstream error {status} for service 'Search'")
                and ctx.server_log().count(f"[req={rid}]") == 1)

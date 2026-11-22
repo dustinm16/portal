@@ -429,6 +429,7 @@
                         <li><a href="#ip-blocking">IP Blocking</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
                         <li><a href="#recordings">Session Recordings</a></li>
+                        <li><a href="#maintenance">Maintenance and Announcements</a></li>
                         <li><a href="#security-events">Security Events</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
@@ -6615,6 +6616,71 @@ Headers:
                     </div>
                 </div>
 
+                <!-- Maintenance and announcements -->
+                <h2 id="maintenance">Maintenance and Announcements</h2>
+                <p>A service or a connection can be put in maintenance by an administrator (<code>maintenance</code>, <code>maintenance_until</code>, <code>maintenance_message</code> on <code>POST</code> and <code>PUT /api/services</code> and <code>/api/connections</code>; a member who sends them gets <code>403</code>; every answer that returns the object has these and <code>maintenance_active</code>). A member who has access then gets <code>503</code> with <code>Retry-After</code> (the time left, at most 300 seconds) and a page that says "Down for maintenance until 20:00 UTC" with the message (JSON with <code>maintenance: true</code>, <code>until</code> and <code>message</code> for an API-style request) from <code>/proxy</code>, <code>/browser</code>, <code>/search</code>, the terminal, VNC, media, SPICE, Proxmox and GitHub pages, <code>/api/connections/{id}/connect</code>, <code>/api/sftp/{id}/...</code> and, before the upgrade, the WebSockets. Administrators pass; someone without access gets what they always got. An end time that has passed stops applying with no clean-up.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/maintenance</span>
+                        <span class="endpoint-desc">The global maintenance flag</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"set": true, "active": true, "message": "...", "until": "2026-11-23T20:00:00Z", "set_by": "name", "set_at": "...", "applies_to": ["/proxy", "/browser", "/search"], "never_blocks": [...]}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/maintenance</span>
+                        <span class="endpoint-desc">Set or clear the global flag</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{"active": true, "message": "...", "until": "&lt;ISO time or null&gt;"}</code> sets it, <code>{"active": false}</code> clears it (<code>400</code> for a bad field, a past end time or a message over 200 characters). While it is active <code>/proxy</code>, <code>/browser</code> and <code>/search</code> give every non-administrator with access the maintenance answer; <code>/login</code>, <code>/logout</code>, <code>/api</code>, <code>/admin</code>, <code>/health</code>, static files, chat and terminal sockets are never gated. The portal re-reads it every 3 seconds. <code>server.py maintenance-off</code> clears it from the command line, with the server running or stopped.</p>
+                        <p>Auth: superadmin. Audited as <code>maintenance.global_set</code> and <code>maintenance.global_clear</code> and recorded as the security event <code>maintenance_changed</code>; the command-line clear writes both too (source <code>cli</code>, audit actor <code>(command line: server.py maintenance-off)</code>).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/announcements</span>
+                        <span class="endpoint-desc">Active announcements for a signed-in member</span>
+                        
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"announcements": [{"id": 3, "level": "outage", "body": "text", "updated_at": "...", "ends_at": null}]}</code>. <code>body</code> is plain text as stored; pages show a safe subset (bold, italic, code, http and https links, line breaks) built with DOM nodes. A dismissal is remembered in the browser by <code>id</code> and <code>updated_at</code>, so an edit shows again.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/announcements/public</span>
+                        <span class="endpoint-desc">Announcements shown before sign-in</span>
+                        
+                    </div>
+                    <div class="endpoint-body">
+                        <p>No credential. Only active announcements an administrator ticked "show before sign-in" for (none by default).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/announcements</span>
+                        <span class="endpoint-desc">Create an announcement</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>level</code> (<code>info</code>, <code>warning</code>, <code>outage</code>), <code>body</code> (1 to 1000 characters), optional <code>starts_at</code>, <code>ends_at</code> (ISO 8601), <code>show_before_signin</code> (boolean, default false). <code>201</code> with the announcement and its <code>status</code>; <code>400</code> for a bad value (at most 200 announcements). <code>GET /api/admin/announcements</code> lists all with status, <code>PUT /api/admin/announcements/{id}</code> changes the fields sent (and moves <code>updated_at</code>), <code>POST /api/admin/announcements/{id}/end</code> ends it now, <code>DELETE /api/admin/announcements/{id}</code> removes it. Members get <code>403</code>. Audited as <code>announcement.create</code>, <code>announcement.update</code>, <code>announcement.end</code> and <code>announcement.delete</code>.</p>
+                    </div>
+                </div>
+
                 <!-- Session Recordings -->
                 <h2 id="recordings">Session Recordings <span class="badge-admin">ADMIN</span></h2>
                 <p>Recorded terminal and SSH sessions (asciicast v2). Only administrators (role <code>admin</code> or <code>superadmin</code>) can use these routes, with a browser session or an all-scope (<code>*</code>) bearer token. Anyone else who is signed in gets <code>404</code> for every route and every id, a request without a credential gets <code>401</code>, and every API key (also one made with <code>*</code>) and every narrowly scoped token gets <code>403</code>: no existing scope covers recordings. A file name or path is never returned. Recording is off per connection unless its config has <code>"recording"</code> set to <code>true</code>, <code>1</code>, <code>"1"</code> or <code>"true"</code> (any case), and only an administrator can set or clear that flag (a member's value is ignored without an error); it is also limited by the recordings disk budget (setting <code>recording_max_total_mb</code>, free-space floor). Input is never recorded.</p>
@@ -6892,7 +6958,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=46"></script>
+    <script src="/static/js/portal.js?v=47"></script>
     <script src="/static/js/push.js?v=4"></script>
     <script>
         // Headers added since 1.20.0 carry data-toggle-endpoint instead of an inline onclick.

@@ -804,6 +804,7 @@ async function showAddConnectionModal() {
     // Reset form
     document.getElementById('connection-form').reset();
     document.getElementById('connection-id').value = '';
+    fillConnectionMaintenance(null);
     document.getElementById('connection-modal-title').textContent = 'Add Connection';
     document.getElementById('connection-submit-btn').textContent = 'Add Connection';
 
@@ -1197,6 +1198,40 @@ function onSSHAuthChange() {
         (!isSftp && connectionRecordingAllowed()) ? 'block' : 'none';
 }
 
+/** Shows the maintenance group to an administrator only and fills it from a connection (null: empty form).
+ * Only an active maintenance fills it: one whose end time has passed shows as off. */
+function fillConnectionMaintenance(conn) {
+    const group = document.getElementById('connection-maint-group');
+    if (!group) return;
+    group.style.display = connectionRecordingAllowed() ? 'block' : 'none';
+    const active = !!(conn && conn.maintenance_active);
+    document.getElementById('connection-maint').checked = active;
+    let local = '';
+    if (active && conn.maintenance_until) {
+        const d = new Date(conn.maintenance_until);
+        if (!isNaN(d.getTime())) {
+            const p = (n) => String(n).padStart(2, '0');
+            local = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+        }
+    }
+    document.getElementById('connection-maint-until').value = local;
+    document.getElementById('connection-maint-msg').value = active ? (conn.maintenance_message || '') : '';
+}
+
+/** The maintenance fields of the form for the request body: nothing for a member; for an administrator
+ * the flag on edit (unticking ends it) and only a ticked flag on add. */
+function connectionMaintenanceValues(isEdit) {
+    if (!connectionRecordingAllowed() || !document.getElementById('connection-maint')) return {};
+    if (!document.getElementById('connection-maint').checked) return isEdit ? { maintenance: false } : {};
+    const raw = document.getElementById('connection-maint-until').value;
+    const when = raw ? new Date(raw) : null;
+    return {
+        maintenance: true,
+        maintenance_until: when && !isNaN(when.getTime()) ? when.toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+        maintenance_message: document.getElementById('connection-maint-msg').value.trim() || null
+    };
+}
+
 /** True for an administrator (role admin or superadmin). */
 function connectionRecordingAllowed() {
     return typeof currentUser !== 'undefined' && !!currentUser && Portal.isAdmin(currentUser);
@@ -1348,7 +1383,8 @@ async function submitConnection(event) {
     const portalAccess = document.getElementById('connection-portal-access').checked ? 1 : 0;
     const apiAccess = document.getElementById('connection-api-access').checked ? 1 : 0;
 
-    const data = { name, type, host, port, icon, config, portal_access: portalAccess, api_access: apiAccess };
+    const data = { name, type, host, port, icon, config, portal_access: portalAccess, api_access: apiAccess,
+                   ...connectionMaintenanceValues(isEdit) };
 
     try {
         const url = isEdit ? `/api/connections/${connectionId}` : '/api/connections';
@@ -1415,6 +1451,7 @@ async function editConnection(connectionId) {
         document.getElementById('connection-host').value = conn.host;
         document.getElementById('connection-port').value = conn.port || '';
         document.getElementById('connection-icon').value = conn.icon || 'link';
+        fillConnectionMaintenance(conn);
 
         // Reset preset
         document.getElementById('connection-preset').value = '';

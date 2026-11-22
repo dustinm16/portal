@@ -1161,6 +1161,18 @@ const NotificationBell = {
 // sync) lives in static/js/theme.js, which every page loads in <head> before
 // this file. `window.ThemeSwitcher` is used below.
 
+// Announcement banners (static/js/announce.js): on every page that loads this file, never inside a frame
+// (the embedded browser and the search page are framed). The list is fetched from /api/announcements; a
+// signed-out visitor gets a 401 and sees nothing.
+(function () {
+    if (window.self !== window.top || window.Announce) return;
+    var s = document.createElement('script');
+    s.src = '/static/js/announce.js?v=1';
+    s.setAttribute('data-url', '/api/announcements');
+    s.async = true;
+    document.head.appendChild(s);
+})();
+
 // Auto-init notification bell on pages with navbar (skip login page)
 document.addEventListener('DOMContentLoaded', () => {
     if (document.querySelector('.navbar-user')) {

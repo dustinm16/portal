@@ -16,6 +16,21 @@
         home.setAttribute('rel', 'noopener');
     }
 
+    // A maintenance page names its end time in UTC; show it in the member's own time zone.
+    var detail = document.getElementById('upstream-error-detail');
+    var until = detail && detail.getAttribute('data-until');
+    if (until) {
+        var when = new Date(until);
+        if (!isNaN(when.getTime())) {
+            var now = new Date();
+            var sameDay = when.toDateString() === now.toDateString();
+            var opts = { hour: '2-digit', minute: '2-digit' };
+            var text = sameDay ? when.toLocaleTimeString([], opts)
+                : when.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' }) + ' ' + when.toLocaleTimeString([], opts);
+            detail.textContent = 'Down for maintenance until ' + text;
+        }
+    }
+
     function reload() { window.location.reload(); }
     if (button) button.addEventListener('click', reload);
     if (!auto) {

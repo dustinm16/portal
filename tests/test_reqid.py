@@ -387,7 +387,7 @@ async def main():
             check("down upstream: the dashboard link has no target (the embedded frame cannot navigate the top window)",
                   "_top" not in page and 'id="upstream-error-home"' in page and "target=" not in page)
             check("down upstream: a retry countdown from a static script, no inline script, no inline handler",
-                  'data-retry="15"' in page and '<script src="/static/js/upstream-error.js?v=1"></script>' in page
+                  'data-retry="15"' in page and '<script src="/static/js/upstream-error.js?v=2"></script>' in page
                   and page.count("<script") == 1 and "onclick" not in page and "javascript:" not in page)
             check("down upstream: Retry-After and no-store, and the portal CSP is the one the middleware adds, unchanged",
                   retry == "15" and cache == "no-store" and "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:" in csp
@@ -492,7 +492,7 @@ try:
     callers.discard("_upstream_error_page")
     check("source guard: every _upstream_error_page call is in a function that has `request`", not no_request, str(no_request))
     check("source guard: the entry points that answer through the helper are the ones documented",
-          callers == {"_proxy_connection_authed", "_searxng_unavailable_response", "http_searxng_proxy",
+          callers == {"_maintenance_answer", "_proxy_connection_authed", "_searxng_unavailable_response", "http_searxng_proxy",
                       "http_stream_hls_proxy", "http_stream_webrtc_whep", "http_stream_webrtc_whip",
                       "http_stream_webrtc_session"},
           str(sorted(callers)))

@@ -452,6 +452,40 @@ function collectPluginConfig() {
 }
 
 /**
+ * Maintenance fields of the service forms (checkbox, end time in the browser's time zone, message).
+ * `prefix` is "service" (add form) or "edit-service". The body fields are only sent when the box is
+ * ticked (add) or always (edit: unticking ends the maintenance).
+ */
+function maintenanceFormValues(prefix, alwaysSend) {
+    const on = document.getElementById(prefix + '-maint').checked;
+    if (!on) return alwaysSend ? { maintenance: false } : {};
+    const raw = document.getElementById(prefix + '-maint-until').value;
+    const when = raw ? new Date(raw) : null;
+    return {
+        maintenance: true,
+        maintenance_until: when && !isNaN(when.getTime()) ? when.toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+        maintenance_message: document.getElementById(prefix + '-maint-msg').value.trim() || null
+    };
+}
+
+function fillMaintenanceForm(prefix, service) {
+    // Only an active maintenance fills the form: one whose end time has passed shows as off, so saving
+    // the form does not send a past end time.
+    const active = !!(service && service.maintenance_active);
+    document.getElementById(prefix + '-maint').checked = active;
+    let local = '';
+    if (active && service.maintenance_until) {
+        const d = new Date(service.maintenance_until);
+        if (!isNaN(d.getTime())) {
+            const p = (n) => String(n).padStart(2, '0');
+            local = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+        }
+    }
+    document.getElementById(prefix + '-maint-until').value = local;
+    document.getElementById(prefix + '-maint-msg').value = active ? (service.maintenance_message || '') : '';
+}
+
+/**
  * Submit Add Service Form
  */
 async function submitAddService(event) {
@@ -482,7 +516,8 @@ async function submitAddService(event) {
                 port: port ? parseInt(port, 10) || 0 : 0,
                 config,
                 required_scopes: scopes,
-                systemd_unit: systemdUnit || null
+                systemd_unit: systemdUnit || null,
+                ...maintenanceFormValues('service', false)
             })
         });
 
@@ -529,6 +564,7 @@ async function showEditServiceModal(serviceId) {
         document.getElementById('edit-service-port').value = service.port || '';
         document.getElementById('edit-service-enabled').checked = service.enabled !== false;
         document.getElementById('edit-service-systemd-unit').value = service.systemd_unit || '';
+        fillMaintenanceForm('edit-service', service);
 
         // Handle scopes - can be string or array
         const scopes = Array.isArray(service.required_scopes)
@@ -754,7 +790,8 @@ async function submitEditService(event) {
                 enabled,
                 config,
                 required_scopes: scopes,
-                systemd_unit: systemdUnit || null
+                systemd_unit: systemdUnit || null,
+                ...maintenanceFormValues('edit-service', true)
             })
         });
 
