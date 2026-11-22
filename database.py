@@ -1512,9 +1512,14 @@ class Database:
                     continue
                 del config["recording"]
                 text = json.dumps(config)
+                value = encrypt_config(text) if stored.startswith("enc:") else text
+                if stored.startswith("enc:") and not value.startswith("enc:"):
+                    # Never write an encrypted config back in the clear.
+                    logger.warning(f"Recording flag clean-up: connection {row['id']} skipped, "
+                                   "its config could not be encrypted again")
+                    continue
                 await self._connection.execute(
-                    "UPDATE user_connections SET config = ? WHERE id = ?",
-                    (encrypt_config(text) if stored.startswith("enc:") else text, row["id"]))
+                    "UPDATE user_connections SET config = ? WHERE id = ?", (value, row["id"]))
                 cleared += 1
             await self._connection.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')", (key,))
