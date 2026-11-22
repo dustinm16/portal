@@ -729,6 +729,94 @@ def test_the_live_uploader_never_replaces_a_remote_chunk_when_the_start_listing_
         assert not [n for n in files if n.endswith(".part")], (mode, files)
 
 
+class _Hanging:
+    """Wraps an SFTP client; the n-th call of one method never answers (a remote that stops replying)."""
+
+    def __init__(self, inner, method, nth=1):
+        self._inner, self._method, self._nth, self._count = inner, method, nth, 0
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def _maybe(self, name):
+        if name == self._method:
+            self._count += 1
+            return self._count == self._nth
+        return False
+
+    async def stat(self, path):
+        if self._maybe("stat"):
+            await asyncio.sleep(3600)
+        return await self._inner.stat(path)
+
+    async def rename(self, a, b):
+        if self._maybe("rename"):
+            await asyncio.sleep(3600)
+        return await self._inner.rename(a, b)
+
+
+def test_every_sftp_metadata_call_of_the_sweep_has_a_time_limit_and_the_pass_ends():
+    """stat after the put, rename, stat after the rename: each hangs once. The call must give up,
+    the chunk stays local, nothing half-made stays on the remote, and the running flag is cleared."""
+    cases = [("stat", 2, "stat after the put"), ("rename", 1, "rename"), ("stat", 3, "stat after the rename")]
+
+    async def one(method, nth):
+        with tempfile.TemporaryDirectory(prefix="vodsweep_") as t:
+            async with Remote(t) as remote:
+                d = session(t, "1_2026-01-01_5", {"chunk_000.mkv": b"payload"})
+                real_connect = server._connect_vod_sftp
+                hang = {"on": True}
+
+                async def connect(uid):
+                    conn, sftp, err = await real_connect(uid)
+                    return conn, (_Hanging(sftp, method, nth) if (not err and hang["on"]) else sftp), err
+
+                with Patched(t, remote, SweepDb(remote)), mock.patch.object(server, "_connect_vod_sftp", connect), \
+                        mock.patch.object(server, "VOD_SFTP_META_TIMEOUT", 0.3):
+                    began = asyncio.get_event_loop().time()
+                    # no outer cancel: the pass has to end by itself (the guard below is only a test fence)
+                    await asyncio.wait_for(server.recover_vod_staging(), 20)
+                    took = asyncio.get_event_loop().time() - began
+                    flag = server._vod_recovery_running
+                    kept = (d / "chunk_000.mkv").exists()
+                    left = [n for n in remote.listing(REMOTE) if n.endswith(".part")]
+                    hang["on"] = False
+                    await asyncio.wait_for(server.recover_vod_staging(), 20)   # the next pass is not blocked
+                    return took, flag, kept, left, remote.listing(REMOTE), d.exists()
+
+    for method, nth, label in cases:
+        took, flag, kept, left, listing, gone_after = asyncio.run(one(method, nth))
+        assert took < 10, (label, took)
+        assert flag is False, label
+        assert kept, f"{label}: the local chunk must stay when the remote did not answer"
+        assert left == [], (label, left)
+        assert gone_after is False, f"{label}: the next pass delivers the chunk"
+        assert any(n.startswith("chunk_") and n.endswith(".mkv") for n in listing), (label, listing)
+
+
+def test_a_failing_folder_does_not_end_the_pass_and_the_flag_is_cleared():
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodsweep_") as t:
+            async with Remote(t) as remote:
+                session(t, "1_a", {"chunk_000.mkv": b"a"})
+                d2 = session(t, "2_b", {"chunk_000.mkv": b"b"}, remote="/v/other/2026-01-01")
+                real = server._vod_recover_one
+                seen = []
+
+                async def recover(session_dir, budget=None):
+                    seen.append(os.path.basename(session_dir))
+                    if session_dir.endswith("1_a"):
+                        raise RuntimeError("boom")
+                    return await real(session_dir, budget)
+
+                with Patched(t, remote, SweepDb(remote)), mock.patch.object(server, "_vod_recover_one", recover):
+                    await server.recover_vod_staging()
+                return seen, server._vod_recovery_running, d2.exists()
+
+    seen, flag, d2_exists = run(go())
+    assert seen == ["1_a", "2_b"] and flag is False and not d2_exists, (seen, flag, d2_exists)
+
+
 def test_the_sweep_runs_as_the_existing_start_and_clean_up_task_and_names_its_rules():
     src = (ROOT / "server.py").read_text()
     assert "self._start_vod_recovery()" in src and src.count("self._start_vod_recovery()") >= 2

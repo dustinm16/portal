@@ -8507,7 +8507,12 @@ async def recover_vod_staging(session_dirs: Optional[list] = None) -> None:
             if budget["left"] <= 0:
                 logger.info("VOD sweep: the cap for one pass is reached; the rest follows in the next pass")
                 break
-            await _vod_recover_one(session_dir, budget)
+            try:
+                await _vod_recover_one(session_dir, budget)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # one folder's failure must not end the pass for the others
+                logger.error(f"VOD sweep failed for {os.path.basename(session_dir)}: {e}")
     finally:
         _vod_recovery_running = False
 
@@ -8623,17 +8628,18 @@ async def _vod_sweep_put(sftp, remote_dir: str, local: str, size: int, top: int,
         try:
             await asyncio.wait_for(sftp.put(local, temp), timeout=300)
             try:
-                await sftp.stat(final)
+                await asyncio.wait_for(sftp.stat(final), VOD_SFTP_META_TIMEOUT)
                 await _vod_remove_partial(sftp, temp)
                 continue  # someone took the number while we uploaded
             except asyncssh.SFTPNoSuchFile:
                 pass
             try:
-                await sftp.rename(temp, final)  # a plain rename: it does not replace an existing file
+                # a plain rename: it does not replace an existing file
+                await asyncio.wait_for(sftp.rename(temp, final), VOD_SFTP_META_TIMEOUT)
             except asyncssh.SFTPError:
                 await _vod_remove_partial(sftp, temp)
                 continue
-            attrs = await sftp.stat(final)
+            attrs = await asyncio.wait_for(sftp.stat(final), VOD_SFTP_META_TIMEOUT)
             if attrs.size != size:
                 logger.error(
                     f"VOD sweep: {os.path.basename(local)} arrived with {attrs.size} bytes instead of {size}; "
