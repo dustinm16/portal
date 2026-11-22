@@ -638,6 +638,54 @@ async def test_a_session_segment_does_not_make_the_single_chunk_status_ready(env
 
 
 @with_env
+async def test_a_chunk_that_changed_while_its_job_runs_gets_its_own_job_never_the_old_ones_state(env):
+    put_session(env, durations=[2.0, 3.0])
+    assert (await playlist(env)).status == 200
+    name = f"{FOLDER}/chunk_001.mkv"
+    jobkey = (OWNER, name, "ts")
+    gate = asyncio.Event()
+    real_pull = server._vod_play_pull
+
+    async def gated(*a, **k):
+        await gate.wait()
+        return await real_pull(*a, **k)
+
+    with mock.patch.object(server, "VOD_SESSION_SEG_WAIT", 0.05), mock.patch.object(server, "_vod_play_pull", gated):
+        r = await segment(env, "chunk_001.ts")
+        assert r.status == 503
+        old = server._vod_play_jobs[jobkey]
+        old_key = old["key"]
+        # the chunk is replaced on the storage by a longer one while the old job is still running
+        data, newer = clip(4.0, 9), int(time.time()) + 100
+        env.put(name, data, mtime=newer)
+        r = await segment(env, "chunk_001.ts")
+        assert r.status == 503 and (await r.json())["state"] == "preparing"
+        new = server._vod_play_jobs[jobkey]
+        assert new is not old and new["key"] != old_key, "the new request must not join the job of the other version"
+        # an older version asking now, while the newer one is prepared, is told to wait and does not displace it
+        env.put(name, clip(2.5, 8), mtime=int(time.time()) + 50)
+        r = await segment(env, "chunk_001.ts")
+        assert r.status == 503 and (await r.json())["state"] == "busy" and r.headers.get("Retry-After")
+        assert server._vod_play_jobs[jobkey] is new
+        env.put(name, data, mtime=newer)                  # the newer version is back, exactly as it was
+        gate.set()
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.2)
+            r = await segment(env, "chunk_001.ts")
+            if r.status == 200:
+                got = await r.read()
+                break
+            assert r.status == 503, r.status
+        assert got
+    assert old["state"] == "failed" and old.get("status") == 409, old
+    assert new["key"] == server._vod_play_jobs[jobkey]["key"]
+    path = os.path.join(env.t, "got.ts")
+    Path(path).write_bytes(got)
+    assert abs(probe_ts(path)[1] - 4.0) < 0.5, "the segment is the new version"
+
+
+@with_env
 async def test_too_many_chunks_being_prepared_answers_503_for_a_segment_not_429(env):
     put_session(env, durations=[2.0, 3.0])
     assert (await playlist(env)).status == 200

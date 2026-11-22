@@ -13389,6 +13389,8 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
         job["state"], job["error"], job["status"] = "failed", e.message, e.status
     except asyncio.CancelledError:
         job["state"], job["error"] = "failed", "Preparation was cancelled"
+        if job.get("superseded"):
+            job["error"], job["status"] = "The chunk changed while it was being prepared; try again", 409
         raise
     except asyncio.TimeoutError:
         logger.warning(f"VOD playback job for user {owner} timed out")
@@ -13539,23 +13541,38 @@ async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, s
             return "unplayable", job
         job = None
 
+    stale = None                                              # a running job for another version of this chunk
+    if job is not None and job["finished"] is None and job["key"] != key:
+        stale, job = job, None
     if job is None:
         if await _vod_play_is_live_newest(user_id, storage, path, link):
             return "live", None
         # no await from here to the registration: two requests for one chunk end up with one job
         current = _vod_play_jobs.get(jobkey)
         if current is not None and current["finished"] is None:
-            job = current
+            if current["key"] == key:
+                job = current                                 # only a job for this very version is joined
+            else:
+                stale = current
+    if job is None and stale is not None and stale["finished"] is None and mtime <= stale.get("mtime", 0):
+        # the chunk is being prepared in a newer version: this request's version is the old one
+        return "limit", (503, "This chunk is being prepared in a newer version; try again shortly")
     if job is None:
-        active = [j for j in _vod_play_jobs.values() if j["finished"] is None]
+        active = [j for j in _vod_play_jobs.values() if j["finished"] is None and j is not stale]
         if len([j for j in active if j["owner"] == user_id]) >= VOD_PLAY_MAX_PER_USER:
             return "limit", (429, "Too many chunks are being prepared; wait for one to finish")
         if len(active) >= VOD_PLAY_MAX_JOBS:
             return "limit", (503, "The server is busy preparing videos; try again shortly")
         job = {"owner": user_id, "path": path, "key": key, "ident": ident, "state": "queued", "kind": kind,
                "finished": None, "done": asyncio.Event(), "started": monotonic(),
-               "duration": duration, "prefetch": prefetch}
+               "duration": duration, "prefetch": prefetch, "mtime": mtime}
         _vod_play_jobs[jobkey] = job
+        if stale is not None and stale["finished"] is None:
+            # the chunk changed on the storage: what the old job makes would be thrown away, so it stops
+            # (its ffmpeg is ours) and whoever waits for it is told to ask again
+            stale["superseded"] = True
+            if stale.get("task") and not stale["task"].done():
+                stale["task"].cancel()
         task = asyncio.create_task(_vod_play_job(job, storage, size, mtime))
         job["task"] = task
         _vod_play_tasks.add(task)
