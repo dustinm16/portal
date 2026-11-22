@@ -209,6 +209,38 @@ def test_the_sftp_subsystem_start_has_a_timeout_and_the_connection_is_closed():
     c, sftp, error = asyncio.run(go())
     assert c is None and sftp is None and error == "Connection timed out" and conn.closed
 
+# -- item 6: identical storage configurations never share a cached copy -----------------------------
+
+class SameStorageDb(Db):
+    """Two members whose VOD storage settings are identical (same host, port, user, folder)."""
+
+    async def get_vod_storage(self, uid):
+        return None if uid == ADMIN else await Db.get_vod_storage(self, OWNER)
+
+
+@with_env
+async def test_identical_storage_configurations_never_share_a_cached_copy(env):
+    env.db.__class__ = SameStorageDb
+    env.put(NAME, clip(), mtime=1700000000)
+    a = vod_play.storage_ident(await env.db.get_vod_storage(OWNER))
+    assert a == vod_play.storage_ident(await env.db.get_vod_storage(OTHER))
+    assert (await env.play()).status == 200
+    first = env.ffmpegs()
+    assert first >= 1 and {e["owner"] for e in env.cache.entries.values()} == {OWNER}
+    # the other member asks for the same path on the same storage: the owner's copy is not offered
+    r = await env.play(user=OTHER)
+    assert r.status == 200
+    assert env.ffmpegs() > first, "the other member was served from the first member's cached copy"
+    assert sorted(e["owner"] for e in env.cache.entries.values()) == [OWNER, OTHER]
+    assert len({e["file"] for e in env.cache.entries.values()}) == 2
+    # the keys differ only by the owner
+    assert vod_play.entry_key(OWNER, a, NAME, 1, 1) != vod_play.entry_key(OTHER, a, NAME, 1, 1)
+    # purging one member's copies leaves the other's alone
+    env.cache.purge(owner=OTHER)
+    assert {e["owner"] for e in env.cache.entries.values()} == {OWNER}
+    spawned = env.ffmpegs()
+    assert (await env.play()).status == 200 and env.ffmpegs() == spawned
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
