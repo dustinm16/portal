@@ -13044,17 +13044,28 @@ def _vod_play_setup(path: Optional[str] = None) -> Optional[str]:
         vod_play.prepare_dir(folder, _PROJECT_ROOT, (STATIC_DIR,),
                              (VOD_TEMP_DIR, Config.VOD_TEMP_DIR_DEFAULT, Config.RECORDINGS_DIR))
     except (OSError, ValueError) as e:
-        _vod_play_cache, _vod_play_refused = None, str(e)
-        logger.error(f"VOD playback cache folder {folder} is not usable: {e}. "
-                     f"Browser playback of VODs is off until this is fixed")
-        return _vod_play_refused
-    cache = vod_play.PlayCache(folder)
-    stats = cache.reconcile()
-    if stats["dropped"] or stats["strays"]:
-        logger.info(f"VOD playback cache: kept {stats['kept']}, dropped {stats['dropped']} "
-                    f"entries, removed {stats['strays']} stray file(s)")
+        return _vod_play_off(folder, str(e))
+    except Exception as e:        # nothing in the cache folder may keep the portal from starting
+        return _vod_play_off(folder, f"{type(e).__name__}: {e}")
+    try:
+        cache = vod_play.PlayCache(folder)
+        stats = cache.reconcile()
+        if stats["dropped"] or stats["strays"]:
+            logger.info(f"VOD playback cache: kept {stats['kept']}, dropped {stats['dropped']} "
+                        f"entries, removed {stats['strays']} stray file(s)")
+    except Exception as e:        # a bad file, a link in the folder, a full or unreadable disk: playback is off
+        return _vod_play_off(folder, f"{type(e).__name__}: {e}")
     _vod_play_cache, _vod_play_refused = cache, None
     return None
+
+
+def _vod_play_off(folder: str, why: str) -> str:
+    """Turn browser playback off for this run and log why, once. Returns the reason."""
+    global _vod_play_cache, _vod_play_refused
+    _vod_play_cache, _vod_play_refused = None, why
+    logger.error(f"VOD playback cache folder {folder} is not usable: {why}. "
+                 f"Browser playback of VODs is off until this is fixed")
+    return why
 
 
 async def _vod_play_reconcile_owners() -> None:
@@ -29673,7 +29684,10 @@ class PortalServer:
 
         # Browser playback cache of VOD chunks: folder setup, index check, strays removed
         await asyncio.to_thread(_vod_play_setup)
-        await _vod_play_reconcile_owners()
+        try:
+            await _vod_play_reconcile_owners()
+        except Exception as e:      # the playback cache must never keep the portal from starting
+            _vod_play_off(Config.VOD_PLAY_CACHE_DIR, f"{type(e).__name__}: {e}")
 
         # Security event log: bind the database and start the aggregate flusher
         secevents.log.bind(db)

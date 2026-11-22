@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -413,6 +414,15 @@ def prepare_dir(path: str, project_root: Optional[str] = None, forbidden_roots: 
         fh.write("Created by the portal for the browser playback cache of VOD chunks.\n")
 
 
+def _finite(value) -> Optional[float]:
+    """*value* (None or 0 counts as 0) as a finite float, or None when it is not one."""
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _remove_path(path: str) -> int:
     """Remove a file or a folder of ours without following links. Returns the bytes freed."""
     freed = 0
@@ -491,7 +501,18 @@ class PlayCache:
     def work_root(self) -> str:
         return os.path.join(self.root, WORK_NAME)
 
+    def check_work_root(self) -> None:
+        """Raise ValueError when work/ exists and is a link or not a folder: it is then not ours, and nothing
+        is written into it or deleted from it (a link would lead the cleanup and the jobs somewhere else)."""
+        try:
+            st = os.lstat(self.work_root())
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise ValueError(f"{self.work_root()} is a link or not a folder, so it is not the cache's own work folder")
+
     def new_work_dir(self) -> str:
+        self.check_work_root()
         os.makedirs(self.work_root(), mode=0o700, exist_ok=True)
         path = os.path.join(self.work_root(), f"job-{os.urandom(8).hex()}")
         os.mkdir(path, 0o700)
@@ -514,6 +535,7 @@ class PlayCache:
         """Load the index and make the folder agree with it: entries whose file is missing or has
         another size are dropped, files and work folders the index does not know are removed
         (names that are not ours are left alone). Blocking: run it in a thread at start."""
+        self.check_work_root()                  # before anything is removed: a link there is left alone
         stats = {"kept": 0, "dropped": 0, "strays": 0}
         loaded: dict = {}
         try:
@@ -522,7 +544,7 @@ class PlayCache:
                 data = json.load(fh)
             raw = data.get("entries") if isinstance(data, dict) else None
             loaded = raw if isinstance(raw, dict) else {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):   # unreadable, not JSON or nested too deeply: start empty
             loaded = {}
         keep: dict = {}
         for key, e in loaded.items():
@@ -535,10 +557,12 @@ class PlayCache:
                 if ok:
                     st = os.lstat(os.path.join(self.root, e["file"]))
                     ok = stat.S_ISREG(st.st_mode) and st.st_size == e["size"]
-            except OSError:
+                if ok:
+                    e["used"] = _finite(e.get("used"))   # a bad value drops this entry only
+                    ok = e["used"] is not None
+            except (OSError, TypeError, ValueError, OverflowError):
                 ok = False
             if ok:
-                e["used"] = float(e.get("used") or 0)
                 keep[key] = e
             else:
                 stats["dropped"] += 1
@@ -585,21 +609,27 @@ class PlayCache:
                 data = json.load(fh)
             raw = data.get("durations") if isinstance(data, dict) else None
             loaded = raw if isinstance(raw, dict) else {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             loaded = {}
         keep: dict = {}
         for key, d in loaded.items():
-            if (isinstance(key, str) and isinstance(d, dict) and len(key) == 32
-                    and all(isinstance(d.get(k), int) for k in ("owner", "rsize", "rmtime"))
-                    and isinstance(d.get("path"), str) and isinstance(d.get("ident"), str)
-                    and isinstance(d.get("duration"), (int, float)) and 0 < d["duration"] < 86400 * 2
-                    and isinstance(d.get("playable"), bool)):
-                d["at"] = float(d.get("at") or 0)
-                if d.get("provisional"):
-                    d["provisional"] = True
-                else:
-                    d.pop("provisional", None)
-                keep[key] = d
+            try:
+                if not (isinstance(key, str) and isinstance(d, dict) and len(key) == 32
+                        and all(isinstance(d.get(k), int) for k in ("owner", "rsize", "rmtime"))
+                        and isinstance(d.get("path"), str) and isinstance(d.get("ident"), str)
+                        and isinstance(d.get("duration"), (int, float)) and 0 < d["duration"] < 86400 * 2
+                        and isinstance(d.get("playable"), bool)):
+                    continue
+                d["at"] = _finite(d.get("at"))
+                if d["at"] is None:                     # a bad time drops this entry only
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if d.get("provisional"):
+                d["provisional"] = True
+            else:
+                d.pop("provisional", None)
+            keep[key] = d
         self.durations, self._dur_by_path, self._dur_by_folder = {}, {}, {}
         for key, d in sorted(keep.items(), key=lambda kv: kv[1]["at"]):     # oldest first: the cap forgets from the front
             self._dur_put(key, d)

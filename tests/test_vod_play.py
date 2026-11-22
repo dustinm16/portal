@@ -760,6 +760,102 @@ async def test_the_zip_download_does_not_follow_links_out_of_the_owners_root(env
         assert zf.read(NAME) == clip()
 
 
+def _setup_in_fresh_folder(prepare):
+    """Run the real start-up of the cache on a folder that *prepare(folder)* has filled; returns
+    (reason or None, cache, logged lines). The module's state is reset afterwards."""
+    import logging
+    lines = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    handler = H(level=logging.DEBUG)
+    log = logging.getLogger("portal")
+    log.addHandler(handler)
+    try:
+        with tempfile.TemporaryDirectory(prefix="vodplay_") as t:
+            folder = os.path.join(t, "cache")
+            server._vod_play_setup(folder)          # creates the folder with its marker
+            server._vod_play_cache = server._vod_play_refused = None
+            prepare(folder)
+            why = server._vod_play_setup(folder)
+            cache = server._vod_play_cache
+            return why, cache, lines, t
+    finally:
+        log.removeHandler(handler)
+        server._vod_play_cache = server._vod_play_refused = None
+
+
+def _dur(at, path="S/d/chunk_000.mkv"):
+    return {"owner": 1, "ident": "i", "path": path, "rsize": 5, "rmtime": 6, "duration": 3.0,
+            "playable": True, "at": at}
+
+
+def test_a_bad_entry_in_the_remembered_lengths_or_the_index_is_skipped_and_start_goes_on():
+    def prepare(folder):
+        good, bad = "a" * 32, "b" * 32
+        Path(folder, "durations.json").write_text(json.dumps({"version": 1, "durations": {
+            good: _dur(5.0), bad: _dur("junk", "S/d/chunk_001.mkv"), "c" * 32: _dur(1e999, "S/d/chunk_002.mkv"),
+            "d" * 32: _dur([1], "S/d/chunk_003.mkv")}}).replace("Infinity", "1e999"))
+        for key, used in (("1" * 32, 7), ("2" * 32, "junk"), ("3" * 32, [1])):
+            Path(folder, key + ".mp4").write_bytes(b"x" * 10)
+        entry = lambda k, used: {"file": k + ".mp4", "size": 10, "owner": 1, "rsize": 1, "rmtime": 1,
+                                 "path": "S/d/" + k, "ident": "i", "used": used, "kind": "mp4"}
+        Path(folder, "index.json").write_text(json.dumps({"version": 1, "entries": {
+            k: entry(k, u) for k, u in (("1" * 32, 7), ("2" * 32, "junk"), ("3" * 32, [1]))}}))
+
+    why, cache, lines, _t = _setup_in_fresh_folder(prepare)
+    assert why is None and cache is not None, (why, lines)
+    assert set(cache.durations) == {"a" * 32}, "only the entry with a usable time is kept"
+    assert set(cache.entries) == {"1" * 32}, "an entry with a bad value is dropped, the others stay"
+
+
+def test_a_deeply_nested_or_unreadable_cache_file_does_not_stop_the_start():
+    def prepare(folder):
+        deep = "[" * 200000 + "]" * 200000
+        Path(folder, "durations.json").write_text(deep)
+        Path(folder, "index.json").write_text(deep)
+
+    why, cache, lines, _t = _setup_in_fresh_folder(prepare)
+    assert why is None and cache is not None and cache.durations == {} and cache.entries == {}, (why, lines)
+
+
+def test_any_error_while_the_cache_starts_turns_playback_off_with_one_logged_reason():
+    patcher = mock.patch.object(vod_play.PlayCache, "reconcile", side_effect=RuntimeError("boom"))
+    try:
+        why, cache, lines, _t = _setup_in_fresh_folder(lambda folder: patcher.start())   # after the folder exists
+    finally:
+        patcher.stop()
+    assert why and "boom" in why and cache is None, (why, cache)
+    assert len([l for l in lines if "Browser playback of VODs is off" in l]) == 1, lines
+
+
+def test_a_linked_work_folder_is_not_ours_nothing_in_it_is_removed_or_written():
+    with tempfile.TemporaryDirectory(prefix="vodplay_target_") as target:
+        victim = Path(target, "job-1234")
+        victim.mkdir()
+        Path(victim, "precious.txt").write_text("keep")
+
+        def prepare(folder):
+            os.symlink(target, os.path.join(folder, "work"))
+
+        why, cache, lines, _t = _setup_in_fresh_folder(prepare)
+        assert why and "work" in why and cache is None, (why, lines)
+        assert [n for n in os.listdir(target)] == ["job-1234"] and (victim / "precious.txt").read_text() == "keep"
+        # a link put in place after the start is refused by the job's own folder as well
+        with tempfile.TemporaryDirectory(prefix="vodplay_") as t:
+            cache = vod_play.PlayCache(os.path.join(t, "cache"))
+            os.mkdir(cache.root)
+            os.symlink(target, cache.work_root())
+            try:
+                cache.new_work_dir()
+                raise AssertionError("a linked work folder was used")
+            except ValueError:
+                pass
+        assert sorted(os.listdir(target)) == ["job-1234"], "a job folder was made through the link"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
