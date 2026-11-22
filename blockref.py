@@ -10,9 +10,15 @@ Bounds (all constants below, stated in the README):
 * One ID per (kind, limiter, address, account) for REUSE_SECONDS: a client that keeps hitting the same
   block or limiter gets the same ID and costs no row, no database read and no log line after the first.
   10,000 requests from one blocked address are one row.
-* At most NEW_PER_MINUTE new IDs a minute across all clients. Past that, every further new client in
-  that minute is given one shared "overflow" ID per kind (one row a minute at most), so a flood of
-  distinct addresses cannot fill the table; the overflow row says so.
+* At most NEW_PER_MINUTE new IDs a minute for IP blocks and, separately, NEW_PER_MINUTE for rate
+  limiters (two budgets of their own, 120 rows a minute at most in all): a flood over a limiter, for
+  example anonymous requests from many addresses against the sign-in limiter, cannot use up the budget
+  of the blocks, so a member who is blocked still gets an ID of their own. Past a budget, every further
+  new client of that kind in that minute is given one shared "overflow" ID (one row a minute at most
+  per kind), so a flood of distinct addresses cannot fill the table; the overflow row says so. A rate
+  limiter's ID is kept per address, an IPv6 address as its /64 network (the caller does that).
+* An ID is dropped when its block is removed or written again (forget), so a later block of the same
+  address gets a new ID and a new row, never the old one with the old source and reason.
 * The table keeps at most MAX_ROWS rows (the oldest go on insert) and no row older than MAX_AGE_DAYS
   (removed on insert at most every PRUNE_SECONDS, by the daily retention sweep, and a lookup never
   returns one). The in-memory map is capped at CACHE_MAX entries, least recently used first.
@@ -71,15 +77,18 @@ class RefIssuer:
         self.db = db
         self.clock = clock
         self._cache: "OrderedDict[tuple, dict]" = OrderedDict()
-        self._minute = None
-        self._minute_new = 0
+        self._minutes: dict = {}                       # kind -> [minute, new IDs made in it]
         self._last_prune = None
 
     def reset(self) -> None:
         self._cache.clear()
-        self._minute = None
-        self._minute_new = 0
+        self._minutes.clear()
         self._last_prune = None
+
+    def forget(self, kind: str, limiter: str, subject: Optional[str]) -> None:
+        """Drop the held ID of an address for good (its block was removed or written again), so the
+        next refusal gets a new ID and a new row. Without an account in the key: block IDs have none."""
+        self._cache.pop((kind, limiter, subject, None), None)
 
     def cached(self, key: tuple) -> Optional[str]:
         """The ID for `key` when one is held and still fresh. Counts the hit."""
@@ -93,13 +102,15 @@ class RefIssuer:
         self._cache.move_to_end(key)
         return entry["ref"]
 
-    def _budget_left(self, now: float) -> bool:
+    def _budget_left(self, now: float, kind: str) -> bool:
+        """One budget of NEW_PER_MINUTE new IDs a minute for each kind ("block" and "limit")."""
         minute = int(now // 60)
-        if minute != self._minute:
-            self._minute, self._minute_new = minute, 0
-        if self._minute_new >= NEW_PER_MINUTE:
+        slot = self._minutes.get(kind)
+        if slot is None or slot[0] != minute:
+            slot = self._minutes[kind] = [minute, 0]
+        if slot[1] >= NEW_PER_MINUTE:
             return False
-        self._minute_new += 1
+        slot[1] += 1
         return True
 
     def _store(self, key: tuple, ref: str, now: float, until: float) -> dict:
@@ -161,7 +172,7 @@ class RefIssuer:
                 await self._flush_hits(entry, self.clock())
                 return ref
             now = self.clock()
-            if self._budget_left(now):
+            if self._budget_left(now, kind):
                 until = now + REUSE_SECONDS
                 entry = self._store(key, "", now, until)       # reserved: a concurrent request waits no row
                 entry["ref"] = pending = new_ref()

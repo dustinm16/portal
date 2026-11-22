@@ -201,6 +201,7 @@ def _is_ip_blocked(ip: str) -> bool:
         return True
     # Expired — evict from cache (DB row is left for the admin's own record; harmless)
     del _blocked_ips[ip]
+    _forget_block_ref(ip)
     return False
 
 
@@ -291,6 +292,7 @@ def _record_probe(ip: str, path: str, user_agent: Optional[str] = None) -> None:
     if count >= Config.PROBE_BLOCK_STRIKES:
         _probe_strikes.pop(ip, None)
         _probe_blocks[ip] = now + Config.PROBE_BLOCK_SECONDS
+        _forget_block_ref(ip)           # a new block gets a new reference ID
         logger.info(
             f"Blocking {ip} for {Config.PROBE_BLOCK_SECONDS}s after repeated scanner probes (last: {path[:80]})"
         )
@@ -1262,6 +1264,7 @@ async def _auto_block(ip: str, reason: str, duration_seconds: int, kind: Optiona
                          source="auto", kind=kind):
         _blocked_ips[canon] = expires_at
         _auto_blocked_ips.add(canon)
+        _forget_block_ref(canon)        # a new or lengthened automatic block gets a new reference ID
         return None, expires_at
     return None, None
 
@@ -1441,6 +1444,7 @@ async def _drop_exempt_auto_bans() -> int:
         await db.delete_blocked_rows(i for i, _ in gone)
         for _, addr in gone:
             _blocked_ips.pop(addr, None)
+            _forget_block_ref(addr)
         # Discard and add, never clear: an automatic block written during the awaits above stays.
         _auto_blocked_ips.difference_update(a for _, a in gone)
         dropped = {i for i, _ in gone}
@@ -15319,6 +15323,7 @@ async def http_block_ip(request: web.Request) -> web.Response:
     await db.block_ip(ip_address, reason=reason, blocked_by=token.user_id, expires_at=expires_at)
     _blocked_ips[ip_address] = expires_at
     _auto_blocked_ips.discard(ip_address)       # a manual block replaces an automatic one
+    _forget_block_ref(ip_address)               # the source changed: the old ID's row would say otherwise
 
     admin_user = await db.get_user_by_id(token.user_id)
     await db.log_activity(
@@ -15394,20 +15399,31 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     removed = await db.unblock_ip(ip_address)
     _blocked_ips.pop(ip_address, None)
     _blocked_ips.pop(typed, None)
+    _forget_block_ref(ip_address)
+    _forget_block_ref(typed)
     _auto_blocked_ips.discard(ip_address)
     _auto_blocked_ips.discard(typed)
     # Unblocking also lifts a temporary scanner-probe block on that address.
     # Those are held in memory only, keyed by the canonical address form.
     probe_key = _valid_ip(ip_address) or ip_address
     lifted = _probe_blocks.pop(probe_key, None) is not None
+    _forget_block_ref(probe_key)
     _probe_strikes.pop(probe_key, None)
     # Lifting a block also forgets its escalation history and the failed-sign-in count.
     _login_fails.pop(probe_key, None)
     await db.forget_ban_history(ip_address)
 
     if removed or lifted:
-        # An unblock made from the reference lookup says so (the ID is only noted when it is well formed).
+        # An unblock made from the reference lookup says so. The ID is noted only when it is well formed
+        # and its stored row is a block of this very address; any other ?ref= is ignored.
         via = blockref.normalize(request.query.get("ref", ""))
+        if via:
+            try:
+                ref_row = await db.get_block_ref(via, blockref.MAX_AGE_DAYS)
+            except Exception:
+                ref_row = None
+            if not ref_row or ref_row.get("kind") != "block" or ref_row.get("subject") != ip_address:
+                via = None
         admin_user = await db.get_user_by_id(token.user_id)
         await db.log_activity(
             token.user_id, get_display_name(admin_user) if admin_user else "admin",
@@ -18862,6 +18878,16 @@ def _upstream_error_page(request: web.Request, service_name, status: int, retry_
 _refs = blockref.RefIssuer(db)
 
 
+def _forget_block_ref(ip: Optional[str]) -> None:
+    """Drop the held reference ID of a blocked address (the block was removed, replaced or written
+    again), so that the next block of it gets a new ID and a new row. Never raises."""
+    try:
+        if ip:
+            _refs.forget("block", "ip_block", ipguard.canonical_ip(ip) or ip)
+    except Exception:
+        pass
+
+
 def _wants_page(request: web.Request) -> bool:
     """A browser navigation: the Accept header asks for HTML, and the request is not an API call or an XHR."""
     if request.path.startswith("/api/") or request.path == "/api":
@@ -18914,10 +18940,11 @@ async def _ref_answer(request: web.Request, status: int, error: str, *, kind: st
 async def _limited(request: web.Request, limiter: str, error: str, *, subject: Optional[str] = None,
                    user_id: Optional[int] = None, headers: Optional[dict] = None,
                    plain: bool = False) -> web.Response:
-    """The 429 of a rate limiter. `limiter` names it for the administrator's lookup."""
+    """The 429 of a rate limiter. `limiter` names it for the administrator's lookup. The ID is kept per
+    address, an IPv6 address as its /64 network, so addresses rotated inside one /64 share one ID."""
     return await _ref_answer(
         request, 429, error, kind="limit", limiter=limiter,
-        subject=subject if subject is not None else get_client_ip(request),
+        subject=_proxy_bucket_key(subject if subject is not None else get_client_ip(request)),
         user_id=user_id, headers=headers, plain=plain, reason=f"limit reached: {limiter}")
 
 
@@ -28856,6 +28883,7 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     # Stored automatic blocks (sign-in and scanner) on addresses the list now covers go too.
     for gone in await db.remove_auto_bans_in(nets):
         _blocked_ips.pop(gone, None)
+        _forget_block_ref(gone)
         _auto_blocked_ips.discard(gone)
         cleared += 1
     saved = [str(n) for n in nets]

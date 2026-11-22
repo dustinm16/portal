@@ -119,6 +119,9 @@ async def bounds_unit():
     await server.db.touch_block_ref(got[0]["ref"], 10000)
 
     # a flood of distinct sources: bounded rows, still an ID every time
+    # (a frozen clock: a flood that runs across a minute boundary would be given two budgets)
+    real_clock = server._refs.clock
+    server._refs.clock = lambda: 5000.0
     server._refs.reset()
     before = await server.db.count_block_refs()
     seen = set()
@@ -132,6 +135,45 @@ async def bounds_unit():
     over = await rows("kind = 'overflow'")
     check("the overflow ID is one shared row that says why", len(over) <= 2 and all("more than" in (o["reason"] or "") and o["subject"] is None for o in over), str(over))
     check("every one of the 3000 answers carries an ID", all(re.fullmatch(r"[A-Z2-9]{4}-[A-Z2-9]{4}", s) for s in seen) and len(seen) <= 63, str(len(seen)))
+
+    # blocks have a budget of their own: a flood over a limiter cannot use it up
+    server._refs.reset()
+    for i in range(blockref.NEW_PER_MINUTE + 30):
+        a = f"198.18.{i // 250}.{i % 250 + 1}"
+        await server._limited(req(a, "/api/x"), "login", "Rate limit exceeded", subject=a)
+    flood_over = len(await rows("kind = 'overflow' AND limiter = 'limit'"))
+    bip = "203.0.113.77"
+    await server.db.block_ip(bip, reason=REASON, blocked_by=None, expires_at=None)
+    server._blocked_ips[bip] = None
+    r = await through(bip, "/api/me")
+    bref = blockref.normalize(json.loads(r.text)["ref"])
+    brow = await server.db.get_block_ref(bref, blockref.MAX_AGE_DAYS)
+    check("after 90 distinct limited addresses a blocked member still gets an ID of their own, not the overflow ID",
+          flood_over >= 1 and brow and brow["kind"] == "block" and brow["subject"] == bip and brow["reason"] == REASON, str(brow))
+    server._blocked_ips.pop(bip, None)
+    server._refs.reset()
+    one = blockref.RefIssuer(server.db, clock=lambda: 5000.0)
+    got = [await one.issue("block", "ip_block", f"198.19.0.{i}", source="manual") for i in range(blockref.NEW_PER_MINUTE + 3)]
+    kinds = [(await server.db.get_block_ref(x, blockref.MAX_AGE_DAYS) or {}).get("kind") for x in got]
+    check("the block budget is 60 a minute too: new blocks past it share one overflow ID",
+          kinds.count("block") == blockref.NEW_PER_MINUTE and kinds[-1] == "overflow", str(kinds.count("block")))
+
+    # a limiter's ID is kept per IPv6 /64, not per address
+    server._refs.reset()
+    before = await server.db.count_block_refs()
+    seen6 = set()
+    for i in range(40):
+        a = f"2001:db8:5:6:{i:x}::{i + 1:x}"
+        r = await server._limited(req(a, "/api/x"), "login", "Rate limit exceeded", subject=a)
+        seen6.add(json.loads(r.text)["ref"])
+    other = json.loads((await server._limited(req("2001:db8:5:7::1", "/api/x"), "login", "Rate limit exceeded")).text)["ref"]
+    added6 = await server.db.count_block_refs() - before
+    got6 = await rows("subject LIKE '2001:db8:5:%'")
+    check("40 addresses inside one IPv6 /64 share one limiter ID and one row; another /64 has its own",
+          len(seen6) == 1 and other not in seen6 and added6 == 2 and sorted(g["subject"] for g in got6) == ["2001:db8:5:6::/64", "2001:db8:5:7::/64"],
+          f"{len(seen6)} {added6} {[g['subject'] for g in got6]}")
+
+    server._refs.clock = real_clock
 
     # concurrent requests from one client during the first write: one ID, and it is the stored one
     server._refs.reset()
@@ -287,6 +329,16 @@ def source_guard_unit():
              if re.search(r"status\s*=\s*429|Response\(429|json_response\([^)]*429", l) and "response_status" not in l]
     check("no 429 is built by hand in server.py (every one goes through _limited; the lookup's own limit too)",
           not found, str(found))
+    # A 429 written as a tuple, such as `return "limit", (429, "message")`, is built by hand as well: the
+    # reply function that turns it into an answer never goes through _limited. The one allowed is the cap
+    # on running VOD chunk jobs per member: it is not a rate limiter (it counts jobs that are running, frees
+    # itself as they finish, and answers a signed-in owner with its own Retry-After), so it has no reference.
+    tuples = [(i + 1, l.strip()) for i, l in enumerate(text.splitlines())
+              if re.search(r"\(\s*429\s*,", l) and not l.strip().startswith(("#", '"""'))]
+    exempt = [t for t in tuples if "Too many chunks are being prepared" in t[1]]
+    check("the guard sees tuple-style 429 answers (the VOD per-member job cap is found)", len(exempt) == 1, str(tuples))
+    check("every tuple-style 429 other than the VOD job cap is absent (it would need a reference)",
+          [t for t in tuples if t not in exempt] == [], str(tuples))
     check("no handler calls check_rate_limit without answering through _limited",
           len(re.findall(r"if not check_rate_limit\(client_ip\):\n\s+(?:logger\.warning\([^\n]*\)\n\s+)?return await _limited", text))
           == len(re.findall(r"if not check_rate_limit\(", text)))
@@ -373,6 +425,62 @@ async def e2e_unit():
         async with sa.delete(base + f"/api/admin/blocked-ips/{target}?ref=not-an-id") as r:
             check("(control) a malformed ref in the query changes nothing about the answer", r.status == 404)
 
+        # a ?ref= is noted only when it is a block of the address being unblocked
+        other_ip = "203.0.113.92"
+        for ip_ in (target, other_ip):
+            async with sa.post(base + "/api/admin/blocked-ips", json={"ip_address": ip_, "reason": REASON}) as r:
+                check(f"(setup) {ip_} blocked again", r.status == 201)
+        server._refs.reset()
+        ref_t = re.search(r"[A-Z2-9]{4}-[A-Z2-9]{4}", (await through(target, "/proxy/abc/", HTML)).text).group(0)
+        ref_o = re.search(r"[A-Z2-9]{4}-[A-Z2-9]{4}", (await through(other_ip, "/proxy/abc/", HTML)).text).group(0)
+        check("(setup) the two addresses have different IDs", ref_t != ref_o)
+        async with sa.delete(base + f"/api/admin/blocked-ips/{target}?ref={ref_o}") as r:
+            check("unblocking with the ID of another address still unblocks", r.status == 200)
+        await secevents.log.flush()
+        cur = await server.db.conn.execute("SELECT details FROM security_events WHERE event = 'ip_unblocked' ORDER BY id DESC LIMIT 1")
+        det = json.loads((await cur.fetchone())["details"])
+        cur = await server.db.conn.execute(
+            "SELECT detail FROM activity_log WHERE user_id = ? AND action = 'ip_unblock' ORDER BY id DESC LIMIT 1", (ids["sa"],))
+        detail = (await cur.fetchone())["detail"]
+        check("the ID of another address is recorded neither in the security event nor in the activity entry",
+              "ref" not in det and det.get("target_ip") == target and ref_o not in detail and "reference" not in detail, f"{det} {detail}")
+        async with sa.delete(base + f"/api/admin/blocked-ips/{other_ip}?ref={ref_o}") as r:
+            check("the ID of this very address is accepted", r.status == 200)
+        await secevents.log.flush()
+        cur = await server.db.conn.execute("SELECT details FROM security_events WHERE event = 'ip_unblocked' ORDER BY id DESC LIMIT 1")
+        check("and recorded in the security event", json.loads((await cur.fetchone())["details"]).get("ref") == blockref.normalize(ref_o))
+        for ip_ in (target,):
+            async with sa.post(base + "/api/admin/blocked-ips", json={"ip_address": ip_, "reason": REASON}) as r:
+                pass
+        async with sa.delete(base + f"/api/admin/blocked-ips/{target}?ref=ZZZZ-ZZZZ") as r:
+            check("an unknown but well-formed ID is ignored too", r.status == 200)
+        await secevents.log.flush()
+        cur = await server.db.conn.execute("SELECT details FROM security_events WHERE event = 'ip_unblocked' ORDER BY id DESC LIMIT 1")
+        check("and not recorded", "ref" not in json.loads((await cur.fetchone())["details"]))
+
+        ip_r = "45.9.9.90"
+        # (a public address: a private one is exempt from automatic bans) an unblock and a later block of the same address give a new ID whose row matches the new block
+        async with sa.post(base + "/api/admin/blocked-ips", json={"ip_address": ip_r, "reason": REASON}) as r:
+            pass
+        server._refs.reset()
+        old = blockref.normalize(json.loads((await through(ip_r, "/api/me")).text)["ref"])
+        async with sa.delete(base + f"/api/admin/blocked-ips/{ip_r}") as r:
+            check("(setup) unblocked", r.status == 200)
+        check("an unblock drops the held ID", ("block", "ip_block", ip_r, None) not in server._refs._cache)
+        exempt_why, _until = await server._auto_block(ip_r, "failed sign-ins ban", 600, kind="login")
+        new = blockref.normalize(json.loads((await through(ip_r, "/api/me")).text)["ref"])
+        newrow = await server.db.get_block_ref(new, blockref.MAX_AGE_DAYS)
+        check("a sign-in ban of the same address after an unblock gets a new ID, not the old manual one",
+              exempt_why is None and new != old and newrow and newrow["source"] == "login" and newrow["reason"] == "failed sign-ins ban", f"{old} {new} {newrow}")
+        async with sa.post(base + "/api/admin/blocked-ips", json={"ip_address": ip_r, "reason": "now by hand"}) as r:
+            check("(setup) a manual block replaces the automatic one", r.status == 201)
+        third = blockref.normalize(json.loads((await through(ip_r, "/api/me")).text)["ref"])
+        thirdrow = await server.db.get_block_ref(third, blockref.MAX_AGE_DAYS)
+        check("a manual block written over an automatic one gets a new ID whose row says manual",
+              third not in (old, new) and thirdrow and thirdrow["source"] == "manual" and thirdrow["reason"] == "now by hand", str(thirdrow))
+        async with sa.delete(base + f"/api/admin/blocked-ips/{ip_r}") as r:
+            pass
+
         # a rate-limited sign-in: the ID finds the limiter event
         Config.RATE_LIMIT_REQUESTS = 3
         server.rate_limits.clear()
@@ -393,6 +501,13 @@ async def e2e_unit():
             check("the ID finds the limiter event: limiter login, address, not unblockable",
                   r.status == 200 and d3["kind"] == "limit" and d3["limiter"] == "login" and d3["address"] == "127.0.0.1"
                   and d3["can_unblock"] is False and d3["active"] is None, str(d3))
+        async with sa.post(base + "/api/admin/blocked-ips", json={"ip_address": target, "reason": REASON}) as r:
+            pass
+        async with sa.delete(base + f"/api/admin/blocked-ips/{target}?ref={last[1]['ref']}") as r:
+            check("the ID of a rate-limit event is not a block of the address and is not recorded", r.status == 200)
+        await secevents.log.flush()
+        cur = await server.db.conn.execute("SELECT details FROM security_events WHERE event = 'ip_unblocked' ORDER BY id DESC LIMIT 1")
+        check("(limit ID) not in the security event", "ref" not in json.loads((await cur.fetchone())["details"]))
         # the lookup is rate limited
         codes = []
         for _ in range(blockref.LOOKUP_PER_MINUTE + 3):
