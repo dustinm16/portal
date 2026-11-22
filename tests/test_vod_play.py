@@ -337,7 +337,7 @@ async def test_cache_cap_holds_one_file_and_the_second_evicts_the_first(env):
     a, b = clip("aac", 0), clip("aac", 5)
     env.put(f"{SESSION}/chunk_000.mkv", a)
     env.put(f"{SESSION}/chunk_001.mkv", b)
-    cap = vod_play.job_reserve(max(len(a), len(b))) + 10_000
+    cap = vod_play.output_limit(max(len(a), len(b))) + 10_000      # holds one finished copy, not two
     env.db.settings["vod_play_cache_mb"] = str(cap / (1024 * 1024))
     peak = {"max": 0, "stop": False}
 
@@ -360,7 +360,8 @@ async def test_cache_cap_holds_one_file_and_the_second_evicts_the_first(env):
     finally:
         peak["stop"] = True
         await watcher
-    assert peak["max"] <= cap, (peak["max"], cap)
+    # the cap counts stored copies; while a job works its pulled source and output are on disk besides
+    assert peak["max"] <= cap + vod_play.job_reserve(max(len(a), len(b))), (peak["max"], cap)
     assert env.cache.disk_bytes() <= cap
 
 
@@ -498,9 +499,10 @@ async def test_at_most_two_jobs_run_at_once_and_a_member_has_a_queue_limit(env):
 
 @with_env(fast_wait=0, settings={"vod_min_free_gb": "1"})
 async def test_free_space_check_counts_what_other_running_jobs_have_reserved(env):
+    # two members: one member's jobs run one after the other, so their working space never adds up
     a, b = clip("aac", 0), clip("aac", 1)
-    env.put(f"{SESSION}/chunk_000.mkv", a)
-    env.put(f"{SESSION}/chunk_001.mkv", b)
+    env.put(NAME, a)
+    env.put(NAME, b, root="/w")
     floor = 1024 ** 3
     room = floor + max(vod_play.job_reserve(len(a)), vod_play.job_reserve(len(b))) + 10   # room for one job only
     real_pull = server._vod_play_pull
@@ -510,11 +512,11 @@ async def test_free_space_check_counts_what_other_running_jobs_have_reserved(env
         return await real_pull(*args, **kw)
     with mock.patch.object(vod_staging, "free_bytes", lambda path: room), \
             mock.patch.object(server, "_vod_play_pull", slow_pull):
-        codes = [(await env.play(f"{SESSION}/chunk_00{i}.mkv")).status for i in range(2)]
+        codes = [(await env.play(NAME, user=u)).status for u in (OWNER, OTHER)]
         assert codes == [202, 202], codes
         states = []
-        for i in range(2):
-            states.append((await env.wait_state({"ready", "failed"}, f"{SESSION}/chunk_00{i}.mkv"))["state"])
+        for u in (OWNER, OTHER):
+            states.append((await env.wait_state({"ready", "failed"}, NAME, user=u))["state"])
     assert sorted(states) == ["failed", "ready"], states
     assert len(env.cache.entries) == 1 and env.cache.reserved == 0
 

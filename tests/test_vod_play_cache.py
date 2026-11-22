@@ -162,24 +162,40 @@ def test_entries_are_0600_and_lru_evicts_the_oldest_to_fit():
             kc = vp.entry_key(1, "aa", "c", 300, 1)
             assert ka not in c.entries and kb in c.entries and kc in c.entries
             assert not os.path.exists(os.path.join(c.root, ka + ".mp4"))
-            assert c.committed() <= cap and c.disk_bytes() <= cap + 1000
+            assert c.used_bytes() <= cap and c.disk_bytes() <= cap + 1000
             c.release(300)
             assert not c.try_reserve(cap + 1, cap)           # can never fit
             assert not await c.reserve(cap + 1, cap, 0.1)
     asyncio.run(go())
 
 
-def test_a_reservation_waits_for_a_running_job():
+def test_the_cap_counts_stored_copies_and_a_reservation_is_working_space_only():
     async def go():
         with tempfile.TemporaryDirectory(prefix="vodplay_") as t:
             c = _cache(t)
-            assert c.try_reserve(800, 1000)
-            waiter = asyncio.create_task(c.reserve(800, 1000, 5))
-            await asyncio.sleep(0.2)
-            assert not waiter.done()
-            c.release(800)
-            assert await asyncio.wait_for(waiter, 3) is True
-            assert not await c.reserve(800, 1000, 0.2)       # now held: times out
+            cap = 1000
+            # a job that works on 800 + 800 bytes and will store up to 800: allowed, the cap is about the copy
+            assert c.try_reserve(1600, cap, 800)
+            assert c.reserved == 1600
+            # a second one is not made to wait for the first: its working space is bounded elsewhere
+            assert await c.reserve(1600, cap, 0.2, 800)
+            c.release(3200)
+            assert c.reserved == 0
+            # only a copy that alone exceeds the cap is refused
+            assert not c.try_reserve(1600, cap, 1001) and c.reserved == 0
+            assert not await c.reserve(1600, cap, 0.2, 1001)
+            # room for the copy is made by evicting the least recently used copies, never by refusing
+            for i, name in enumerate("ab"):
+                k = vp.entry_key(1, "aa", name, 400, 1)
+                c.add(k, _make(c, "o.mp4", 400), _meta(path=name), 0)
+                c.entries[k]["used"] = 10 + i
+            assert c.used_bytes() == 800
+            assert c.try_reserve(1000, cap, 500)
+            assert c.used_bytes() <= 500 and vp.entry_key(1, "aa", "b", 400, 1) in c.entries
+            c.release(1000)
+            # reserving ahead never evicts
+            assert not c.try_reserve_free(1000, cap, 700) and c.used_bytes() == 400
+            assert c.try_reserve_free(1000, cap, 600) and c.reserved == 1000
     asyncio.run(go())
 
 

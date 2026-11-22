@@ -340,6 +340,109 @@ async def test_deleting_a_chunk_removes_its_mp4_its_segments_and_remembered_leng
     assert not os.path.exists(os.path.join(env.cache.root, ts_key + ".ts"))
     assert not [d for d in env.cache.durations.values() if d["path"] == NAME]
 
+# -- item 4: the cap counts stored copies, not working space -----------------------------------------
+
+@with_env
+async def test_a_chunk_whose_working_space_exceeds_the_cap_but_whose_copy_fits_is_played(env):
+    data = clip()
+    env.put(NAME, data)
+    cap = vod_play.output_limit(len(data)) + 10_000
+    assert vod_play.job_reserve(len(data)) > cap >= vod_play.output_limit(len(data))
+    env.db.settings["vod_play_cache_mb"] = str(cap / (1024 * 1024))
+    r = await env.play()
+    assert r.status == 200, await r.text()
+    assert len(env.cache.entries) == 1 and env.cache.used_bytes() <= cap and env.cache.reserved == 0
+
+
+@with_env
+async def test_the_free_space_floor_still_bounds_working_space_when_the_cap_is_small(env):
+    data = clip()
+    env.put(NAME, data)
+    cap = vod_play.output_limit(len(data)) + 10_000
+    env.db.settings["vod_play_cache_mb"] = str(cap / (1024 * 1024))
+    env.db.settings["vod_min_free_gb"] = "1"
+    with mock.patch.object(server.vod_staging, "free_bytes", lambda path: 1024 ** 3 + 10):
+        r = await env.play()
+    assert r.status == 503 and "free disk space" in (await r.json())["error"]
+    assert env.cache.entries == {} and env.cache.reserved == 0 and env.spawned == []
+
+
+@with_env(fast_wait=0.1)
+async def test_one_member_prepares_one_chunk_at_a_time_and_different_members_in_parallel(env):
+    names = [f"{SESSION}/chunk_00{i}.mkv" for i in range(3)]
+    for i, n in enumerate(names):
+        env.put(n, clip("aac", i))
+    env.put(NAME, clip("aac", 9), root="/w")
+    running = {"now": {}, "max": {}}
+    real = server._vod_play_run_tool
+
+    async def counting(argv, *a, **k):
+        if argv[0] != "ffmpeg":
+            return await real(argv, *a, **k)
+        owner = current_owner.get()
+        running["now"][owner] = running["now"].get(owner, 0) + 1
+        running["max"][owner] = max(running["max"].get(owner, 0), running["now"][owner])
+        running["all"] = max(running.get("all", 0), sum(running["now"].values()))
+        try:
+            await asyncio.sleep(0.4)
+            return await real(argv, *a, **k)
+        finally:
+            running["now"][owner] -= 1
+
+    import contextvars
+    current_owner = contextvars.ContextVar("owner")
+    real_job = server._vod_play_job
+
+    async def tagged(job, *a):
+        current_owner.set(job["owner"])
+        return await real_job(job, *a)
+
+    with mock.patch.object(server, "_vod_play_run_tool", counting), mock.patch.object(server, "_vod_play_job", tagged):
+        for n in names:
+            assert (await env.play(n)).status in (200, 202)
+        assert (await env.play(NAME, user=OTHER)).status in (200, 202)
+        for n in names:
+            await env.wait_state({"ready"}, n)
+        await env.wait_state({"ready"}, NAME, user=OTHER)
+    assert running["max"][OWNER] == 1, running
+    assert running["all"] == 2, running          # two members, two slots: they did run side by side
+
+
+# -- item 5: a refusal because of the cap is not remembered -------------------------------------------
+
+@with_env
+async def test_raising_the_cap_helps_at_once_after_a_too_large_refusal(env):
+    data = clip()
+    env.put(NAME, data)
+    env.db.settings["vod_play_cache_mb"] = str((vod_play.output_limit(len(data)) - 1) / (1024 * 1024))
+    for _ in range(2):
+        r = await env.play()
+        assert r.status == 415 and "too large" in (await r.json())["error"]
+    assert env.spawned == [] and not server._vod_play_jobs          # no job, nothing remembered
+    st, body = await env.status()
+    assert body["state"] == "idle"
+    env.db.settings["vod_play_cache_mb"] = "50"
+    r = await env.play()
+    assert r.status == 200, await r.text()
+
+
+@with_env
+async def test_a_refusal_made_inside_the_job_is_not_remembered_either(env):
+    env.put(NAME, clip())
+    real_cap = server._vod_play_cap
+    calls = {"n": 0}
+
+    async def cap():
+        calls["n"] += 1
+        return 1000 if calls["n"] == 3 else await real_cap()        # prelude, obtain, then the job sees a lowered cap
+
+    with mock.patch.object(server, "_vod_play_cap", cap):
+        r = await env.play()
+    assert r.status == 415 and "too large" in (await r.json())["error"]
+    assert not server._vod_play_jobs and env.spawned == [] and env.cache.reserved == 0
+    r = await env.play()
+    assert r.status == 200, await r.text()
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

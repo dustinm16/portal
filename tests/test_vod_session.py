@@ -187,7 +187,7 @@ def test_durations_are_kept_beside_the_index_purged_with_their_chunk_and_owner_a
         assert again.get_duration(2, "idB", "S/d/chunk_000.mkv", 10, 20) is not None
         # reserving ahead never evicts
         again.entries["k"] = {"file": "k.ts", "size": 90, "used": 1.0, "owner": 2, "ident": "idB", "path": "p"}
-        assert again.try_reserve_free(10, 100) and not again.try_reserve_free(1, 100) and "k" in again.entries
+        assert again.try_reserve_free(10, 100) and not again.try_reserve_free(11, 100) and "k" in again.entries
 
 
 def test_a_ts_entry_survives_reconcile_and_an_unknown_kind_is_dropped():
@@ -347,7 +347,7 @@ async def test_the_cache_stays_under_a_cap_that_holds_two_segments_while_all_fou
             assert r.status == 200, (i, await r.text())
             Path(env.t, f"s{i}.ts").write_bytes(await r.read())
             assert probe_ts(os.path.join(env.t, f"s{i}.ts"))[0] == ["h264", "aac"]
-            assert env.cache.committed() <= cap and env.cache.disk_bytes() <= cap, (i, env.cache.disk_bytes(), cap)
+            assert env.cache.used_bytes() <= cap, (i, env.cache.used_bytes(), cap)      # the cap counts stored copies
     assert max(peaks) <= cap
     assert sum(os.path.getsize(os.path.join(env.t, f"s{i}.ts")) for i in range(4)) > cap, "the cap must really bind"
     ts = [e for e in env.cache.entries.values() if e["kind"] == "ts"]

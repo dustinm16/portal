@@ -253,6 +253,9 @@ def head_probe_argv(path: str) -> list:
             "-of", "json", "file:" + path]
 
 
+TOO_LARGE_REASON = "it is too large for the playback cache of this server"
+
+
 def download_only_message(why: str) -> str:
     return f"This chunk cannot be played in the browser ({why}). Download it instead."
 
@@ -420,9 +423,6 @@ class PlayCache:
 
     def used_bytes(self) -> int:
         return sum(e["size"] for e in self.entries.values())
-
-    def committed(self) -> int:
-        return self.used_bytes() + self.reserved
 
     def disk_bytes(self) -> int:
         """Bytes actually on disk in the folder (for tests and checks)."""
@@ -612,10 +612,12 @@ class PlayCache:
             _remove_path(os.path.join(self.root, e["file"]))
 
     def evict_to(self, cap: int) -> int:
-        """Evict least recently used entries until entries plus reservations fit in *cap*. Returns the count."""
+        """Evict least recently used entries until the stored copies fit in *cap*. Returns the count.
+        The cap counts stored playable copies only; what a running job holds while it works is bounded by
+        the free-space floor (see reserved), not by the cap."""
         n = 0
         for key in sorted(self.entries, key=lambda k: self.entries[k]["used"]):
-            if self.committed() <= cap:
+            if self.used_bytes() <= cap:
                 break
             self._drop(key)
             n += 1
@@ -706,38 +708,29 @@ class PlayCache:
         self.reserved = max(0, self.reserved - int(n))
         self._notify()
 
-    def try_reserve_free(self, n: int, cap: int) -> bool:
-        """Reserve *n* bytes only when they fit without evicting anything (a prefetch never pushes out a
+    def try_reserve_free(self, n: int, cap: int, out: Optional[int] = None) -> bool:
+        """Reserve *n* bytes of working space for a job whose finished copy will take up to *out* bytes
+        (default: n), only when that copy fits without evicting anything (a prefetch never pushes out a
         copy somebody may be playing right now)."""
-        if self.committed() + n > cap:
+        out = n if out is None else out
+        if out > cap or self.used_bytes() + out > cap:
             return False
         self.reserved += n
         return True
 
-    def try_reserve(self, n: int, cap: int) -> bool:
-        """Reserve *n* bytes, evicting least recently used entries to make room. False when it does not fit now."""
-        if n > cap:
+    def try_reserve(self, n: int, cap: int, out: Optional[int] = None) -> bool:
+        """Reserve *n* bytes of working space (what the job's pulled source and output take on disk while it
+        runs; the free-space check counts it). The cap is about the stored copies: room for the finished
+        copy of up to *out* bytes (default: n) is made by evicting least recently used copies. False only
+        when that copy alone is larger than the cap."""
+        out = n if out is None else out
+        if out > cap:
             return False
-        self.evict_to(cap - n)
-        if self.committed() + n > cap:
-            return False
+        self.evict_to(cap - out)
         self.reserved += n
         return True
 
-    async def reserve(self, n: int, cap: int, timeout: float) -> bool:
-        """Like try_reserve, but waits (up to *timeout*) for running jobs to finish and free their share."""
-        if n > cap:
-            return False
-        cond = self._condition()
-        deadline = time.monotonic() + timeout
-        async with cond:
-            while True:
-                if self.try_reserve(n, cap):
-                    return True
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    return False
-                try:
-                    await asyncio.wait_for(cond.wait(), min(left, 5.0))
-                except asyncio.TimeoutError:
-                    pass
+    async def reserve(self, n: int, cap: int, timeout: float, out: Optional[int] = None) -> bool:
+        """try_reserve, kept async for the callers that wait: working space is not capped any more, so it
+        never has to wait for a running job."""
+        return self.try_reserve(n, cap, out)

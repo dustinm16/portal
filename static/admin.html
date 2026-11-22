@@ -6909,7 +6909,7 @@
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Browser Playback Cache (MB)</label>
                         <input type="number" id="ret-vod-play-cache" value="${c.vod_play_cache_mb}" min="0" step="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
-                        <span style="font-size:0.7rem;color:var(--text-muted);">Disk the portal may use for the MP4 copies a streamer watches in My VODs (least recently used go first; a chunk needs about twice its size while it is prepared). It never grows while less than the free space above is left. 0 = playback off, the copies are removed and chunks can only be downloaded</span>
+                        <span style="font-size:0.7rem;color:var(--text-muted);">Disk the portal may use for the MP4 copies a streamer watches in My VODs (least recently used go first). A chunk is download only when its copy alone (about 1.2 times its size) is larger than this. While a chunk is prepared it also needs about 2.2 times its size of working space, which this number does not include: a job starts only while the free space above stays left, one chunk per member at a time. 0 = playback off, the copies are removed and chunks can only be downloaded</span>
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">VOD Orphan Folder Age (days)</label>

@@ -12,6 +12,7 @@ if len(_sys.argv) > 1 and _sys.argv[1] == "setup":
 del _sys
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import heapq
@@ -12963,6 +12964,19 @@ def _vod_play_semaphore() -> asyncio.Semaphore:
     return _vod_play_sem
 
 
+_vod_play_owner_locks: dict = {}                 # owner -> asyncio.Lock (one running job per member)
+
+
+@contextlib.asynccontextmanager
+async def _vod_play_slot(owner: int):
+    """A member's turn (one job at a time per member, so the working space of one member's jobs does not
+    add up) and then one of the VOD_PLAY_SLOTS places."""
+    lock = _vod_play_owner_locks.setdefault(owner, asyncio.Lock())
+    async with lock:
+        async with _vod_play_semaphore():
+            yield
+
+
 def _vod_play_setup(path: Optional[str] = None) -> Optional[str]:
     """Create the cache folder and read its index. Returns None, or why the folder cannot be used
     (then playback answers 503 and nothing in the folder is touched). Blocking: run in a thread."""
@@ -13094,6 +13108,9 @@ def _vod_play_prune_jobs() -> None:
     for k, lock in list(_vod_play_locks.items()):
         if not lock.locked() and not (k in _vod_play_jobs and _vod_play_jobs[k]["finished"] is None):
             _vod_play_locks.pop(k, None)
+    for k, lock in list(_vod_play_owner_locks.items()):
+        if not lock.locked() and not any(j["owner"] == k and j["finished"] is None for j in _vod_play_jobs.values()):
+            _vod_play_owner_locks.pop(k, None)
     for k, v in list(_vod_play_stats.items()):
         if now - v[2] > 600:
             _vod_play_stats.pop(k, None)
@@ -13285,26 +13302,27 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
     owner, path, key = job["owner"], job["path"], job["key"]
     kind = job.get("kind", "mp4")
     lock = _vod_play_locks.setdefault(_vod_play_job_key(owner, path, kind), asyncio.Lock())
-    reserve = vod_play.job_reserve(size, kind, job.get("duration"))
+    reserve = vod_play.job_reserve(size, kind, job.get("duration"))       # working space: pulled source + output
+    expected = vod_play.output_limit(size, kind, job.get("duration"))     # the stored copy: what the cap counts
     reserved = False
     work = None
     try:
         async with lock:                                   # one job per chunk, a newer version waits
-            async with _vod_play_semaphore():              # at most VOD_PLAY_SLOTS at the same time
+            async with _vod_play_slot(owner):              # one job per member, VOD_PLAY_SLOTS in all
                 cap = await _vod_play_cap()
                 message = _vod_play_off_message(cap)
                 if message:
                     raise _VodPlayRemoteError(503, message)
-                if reserve > cap:
-                    job["state"], job["reason"] = "unplayable", (
-                        "it is too large for the playback cache of this server")
+                if expected > cap:
+                    # only the finished copy has to fit the cap; this answer is not remembered (a raised cap helps at once)
+                    job["state"], job["reason"], job["capacity"] = "unplayable", vod_play.TOO_LARGE_REASON, True
                     return
                 job["state"] = "waiting"
                 if job.get("prefetch"):
                     # ahead of the play position: only with room to spare, never at the cost of a copy in use
-                    if not cache.try_reserve_free(reserve, cap):
+                    if not cache.try_reserve_free(reserve, cap, expected):
                         raise _VodPlayRemoteError(503, "No room to prepare it ahead")
-                elif not await cache.reserve(reserve, cap, VOD_PLAY_RESERVE_WAIT):
+                elif not await cache.reserve(reserve, cap, VOD_PLAY_RESERVE_WAIT, expected):
                     raise _VodPlayRemoteError(503, "The playback cache is busy; try again in a minute")
                 reserved = True
                 min_free = (await _vod_guard_limits())[0]
@@ -13380,6 +13398,9 @@ async def _vod_play_job(job: dict, storage: dict, size: int, mtime: int) -> None
         if work:
             vod_play._remove_path(work)
         job["finished"] = monotonic()
+        jobkey = _vod_play_job_key(owner, path, kind)
+        if job.get("capacity") and _vod_play_jobs.get(jobkey) is job:
+            _vod_play_jobs.pop(jobkey, None)             # a refusal because of the cap is not remembered
         job["done"].set()
 
 
@@ -13496,6 +13517,11 @@ async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, s
     cached = cache.get(key)
     if cached:
         return "file", cached
+    cap = await _vod_play_cap()
+    if cap > 0 and vod_play.output_limit(size, kind, duration) > cap:
+        # the finished copy alone is larger than the cap: refused now, from the known size, with no job and
+        # nothing remembered, so a raised cap helps on the very next request
+        return "unplayable", {"state": "unplayable", "reason": vod_play.TOO_LARGE_REASON, "capacity": True}
 
     job = _vod_play_jobs.get(jobkey)
     if job is not None and job["state"] in ("ready", "failed") and job["key"] != key:
@@ -13505,7 +13531,7 @@ async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, s
     if job is not None and job["state"] == "failed":
         job = None                                            # try again
     if job is not None and job["state"] == "unplayable":
-        if job["key"] == key:
+        if job["key"] == key and not job.get("capacity"):
             return "unplayable", job
         job = None
 
@@ -13637,7 +13663,7 @@ async def _vod_session_probe_head(owner: int, storage: dict, ident: str, path: s
     Raises _VodPlayRemoteError."""
     cache = _vod_play_cache
     cap = await _vod_play_cap()
-    if not await cache.reserve(vod_play.HEAD_BYTES, cap, 60):
+    if not await cache.reserve(vod_play.HEAD_BYTES, cap, 60, 0):
         raise _VodPlayRemoteError(503, "The playback cache is busy; try again in a minute")
     work = None
     try:
@@ -13691,6 +13717,9 @@ async def _vod_session_probe_job(probe: dict, storage: dict, todo: list) -> None
                 outcome, payload = await _vod_play_obtain(
                     owner, storage, ident, path, size, mtime, "ts",
                     VOD_PLAY_RESERVE_WAIT + VOD_PLAY_PULL_TIMEOUT)
+                if outcome == "unplayable" and payload.get("capacity"):
+                    # a refusal because of the cap is not a property of the chunk: nothing is remembered
+                    raise _VodPlayRemoteError(415, vod_play.download_only_message(payload["reason"]))
                 if outcome == "unplayable":
                     cache.set_duration(owner, ident, path, size, mtime, 1.0, False,
                                        payload.get("reason") or "unsupported format", save=False)
