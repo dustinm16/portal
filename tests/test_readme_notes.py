@@ -876,7 +876,7 @@ check("1.22.0: the close code, the CLI actor name and the setting stated are the
       and "(command line: server.py maintenance-off)" in (ROOT / "maintenance_cli.py").read_text()
       and _maint.GLOBAL_KEY == "maintenance_global" and "maintenance-off" in _srv_text)
 check("1.22.0: the static file versions stated are the ones the pages load",
-      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v2", "version 48", "`admin.js` 40", "`user-connections.js` 59"))
+      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v2", "`portal.js` v48", "`admin.js` v40", "`user-connections.js` v59"))
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "js" / "portal.js").read_text()
       and "/static/js/maintenance-admin.js?v=2" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "login.html").read_text())
@@ -922,8 +922,8 @@ _low122 = (_m122.group(1) if _m122 else "").lower()
 for _n in ("connection_user_prefs", "connections only", "not an administrator", "put /api/connections/{id}/prefs",
            "exactly the answer of a connection that does not exist", "at most 40 characters", "at most 10 tags",
            "at most once a minute per member and connection", "`use_count`", "when a share is revoked",
-           "when a share expires", "the 60 second sweeper", "`/` focuses it", "recently used", "breaking changes.** none",
-           "`conn-organise.js` 3", "`dashboard.js` 60", "`user-connections.js` 59", "`portal.css` 56",
+           "when a share expires", "the 60 second sweeper", "`/` focuses it", "recently used", "no route, field, setting or table of 1.21.0 was removed or renamed",
+           "`conn-organise.js` v3", "`dashboard.js` v60", "`user-connections.js` v59", "`portal.css` v56",
            "**not tested.**", "no browser", "fake dom"):
     check(f"1.22.0 states: {_n}", _n in _low122, _n)
 check("1.22.0: docs/API.md and api-docs.html document the prefs route and the prefs field",
@@ -946,7 +946,7 @@ for _n in ("connection health checks", "off by default", "`put /api/admin/connec
            "up after 2 successes in a row", "`connection_health_log`", "14 days", "`service.health_changed`",
            "no name and no host", "`get /api/connections/status`", "registered before `/api/connections/{id}`",
            "the same shape for owner and grantee", "only while the tab is visible", "`stage_health_target_ports`",
-           "`conn-health.js` 2", "`conn-health.css` 2", "tests/test_connection_health_migration.py", "rollback."):
+           "`conn-health.js` v2", "`conn-health.css` v2", "tests/test_connection_health_migration.py", "rollback."):
     check(f"1.22.0 health states: {_n}", _n in _low122h, _n)
 check("1.22.0 health: the numbers stated are the ones in the code",
       (_ch.PROBE_ROUND_CAP, _ch.PROBE_PARALLEL, _ch.PROBE_TIMEOUT, _ch.DOWN_AFTER, _ch.UP_AFTER, _ch.LOG_KEEP_DAYS, _ch.RECENT_DAYS,
@@ -960,6 +960,42 @@ check("1.22.0 health: docs/API.md and api-docs.html document both routes",
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("1.22.0 health: the status route is registered before the {id} route",
       (ROOT / "server.py").read_text().index('"/api/connections/status"') < (ROOT / "server.py").read_text().index('"/api/connections/{id}", http_get_user_connection'))
+# --- 1.22.0: the notes are one coherent section (the five lanes were merged) ---------------------------
+for _label in ("Breaking changes", "Database", "Static files", "Rollback", "Not tested"):
+    _count = len(re.findall(rf"^- \*\*{re.escape(_label)}\.\*\*", _sec22, re.M)) + len(re.findall(rf"^\*\*{re.escape(_label)}\*\*$", _sec22, re.M))
+    check(f"1.22.0 has exactly one '{_label}' bullet or group", _count == 1, str(_count))
+check("1.22.0 has a 'For administrators, in short' group before the feature groups",
+      "**For administrators, in short**" in _sec22
+      and _sec22.index("**For administrators, in short**") < _sec22.index("**Request IDs and the upstream error page**"))
+check("1.22.0 has no heading of its own (both section patterns stop at the next ###)", "\n### " not in _sec22 and "\n## " not in _sec22)
+check("1.22.0: the breaking-changes group names the HTML page, the blocked request-ID headers and use_count",
+      "instead of json on a block or a rate limit" in low22 and "`x-correlation-id`" in low22 and "`request-id`" in low22
+      and "`use_count` now counts minutes of use for proxied connections" in low22)
+check("1.22.0: a member's maintenance fields are ignored, never answered with a 403 (the code ignores them)",
+      "now gets 403" not in low22 and "ignored (not an error and not a 403" in low22
+      and "a member's maintenance fields are\n        # ignored" in _srv_text)
+check("1.22.0: the traceback of an unhandled error carries the request ID (no note says it does not)",
+      "neither does the traceback" not in low22 and "carries the request id the response gave" in low22
+      and "handle_error(request, 500, exc)" in _srv_text)
+check("1.22.0: every table, column and setting the Database bullet names is in the code",
+      all(x in (ROOT / "database.py").read_text() for x in (
+          "CREATE TABLE IF NOT EXISTS announcements", "CREATE TABLE IF NOT EXISTS block_refs",
+          "CREATE TABLE IF NOT EXISTS connection_user_prefs", "CREATE TABLE IF NOT EXISTS connection_health_log",
+          "idx_conn_prefs_conn", "idx_conn_health_conn", "ALTER TABLE services ADD COLUMN maintenance_until",
+          "ALTER TABLE user_connections ADD COLUMN maintenance_message"))
+      and all(f"`CREATE TABLE IF NOT EXISTS {t}`" in _sec22 for t in ("announcements", "block_refs", "connection_user_prefs", "connection_health_log"))
+      and (_ch.SETTING_ENABLED, _ch.SETTING_INTERVAL, _ch.SETTING_STAGE_PORTS) == (
+          "connection_health_enabled", "connection_health_interval", "stage_health_target_ports")
+      and all(f"`{k}`" in _sec22 for k in ("connection_health_enabled", "connection_health_interval", "stage_health_target_ports", "maintenance_global")))
+_static_bullet = next((b for b in _sec22.splitlines() if b.startswith("- **Static files.**")), "")
+_pages22 = {n: (ROOT / "static" / n).read_text(encoding="utf-8") for n in ("index.html", "admin.html", "login.html")}
+check("1.22.0: every script and style version the Static files bullet names is the one a page loads",
+      all(re.search(rf"{re.escape(f)}\?v={v}\b", "".join(_pages22.values()) + (ROOT / "static" / "js" / "portal.js").read_text()
+                    + _srv_text) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
+      and len(re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet)) >= 11)
+check("1.22.0: What You Get names request IDs and connection health checks",
+      "**Request IDs and friendly error pages.**" in text and "**Connection health checks.**" in text
+      and "**Organising the dashboard.**" in text)
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:

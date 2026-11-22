@@ -423,6 +423,9 @@
                     <strong>Tip:</strong> When adding a connection from the Dashboard, selecting a preset will show links to these guides and the software's official documentation directly in the form.
                 </div>
                 <div class="alert alert-info">
+                    <strong>Finding and filing connections:</strong> On the dashboard's My Connections tab, press <kbd>/</kbd> to filter by name, type, folder or tag, and <kbd>Enter</kbd> to open the first match. Each connection card has a pin, an <em>Open in</em> choice and a folder and tags dialog; your filing is yours alone, also for connections shared with you. If an administrator has switched on connection health checks, a small dot on a card shows whether its target answered.
+                </div>
+                <div class="alert alert-info">
                     <strong>Addresses Portal will not connect to:</strong> To protect the server and its network, user connections, relay destinations and VOD storage may not point at the Portal server itself (localhost, 127.x, ::1), cloud metadata addresses, link-local addresses, private networks (10.x, 172.16-31.x, 192.168.x) or the shared address range 100.64.0.0/10. This applies to the name you enter and to every address it resolves to, and it is checked again each time you connect. A connection to a device that only has such an address, for example a device on your home or office LAN or a Tailscale peer in 100.64.0.0/10, is refused with "Host not allowed". A name is refused when it resolves to such an address, even if it also has a public one, so split-horizon DNS (a name that points to a private address inside your network) is refused too. Use a public address or name for the target.
                 </div>
 
