@@ -760,6 +760,145 @@ async def test_the_zip_download_does_not_follow_links_out_of_the_owners_root(env
         assert zf.read(NAME) == clip()
 
 
+class _Slow:
+    """The SFTP client of a route with chosen calls changed: *hang* names calls that never answer (they take
+    the optional path test), *count* records every call by name and first argument."""
+
+    def __init__(self, inner, hang=(), only=None):
+        self._inner, self._hang, self._only = inner, set(hang), only
+        self.calls = []
+
+    def __getattr__(self, name):
+        real = getattr(self._inner, name)
+        if not callable(real):
+            return real
+
+        def call(*a, **k):
+            self.calls.append((name, a[0] if a else None))
+            if name in self._hang and (self._only is None or self._only in str(a[0] if a else "")):
+                async def never():
+                    await asyncio.sleep(3600)
+                return never()
+            return real(*a, **k)
+        return call
+
+
+def _route_link(env, hang=(), only=None, connect_hangs=False):
+    """Patch the route's connect: the route gets a _Slow client; returns (clients, conns)."""
+    real = server._connect_vod_sftp
+    clients, conns = [], []
+
+    async def connect(uid):
+        if connect_hangs:
+            await asyncio.sleep(3600)
+        conn, sftp, error = await real(uid)
+        if error:
+            return conn, sftp, error
+        conns.append(conn)
+        clients.append(_Slow(sftp, hang, only))
+        return conn, clients[-1], None
+    return mock.patch.object(server, "_connect_vod_sftp", connect), clients, conns
+
+
+@with_env
+async def test_delete_and_download_answer_502_within_their_deadline_and_close_the_connection(env):
+    env.put(NAME, clip())
+    h = {"X-U": str(OWNER)}
+
+    async def delete():
+        return await server.http_delete_vod(make_mocked_request(
+            "DELETE", "/api/vods/x", headers=h, match_info={"filename": NAME}))
+    patch, clients, conns = _route_link(env, hang=("remove",))
+    with patch, mock.patch.object(server, "VOD_ROUTE_DEADLINE", 0.5):
+        started = time.monotonic()
+        r = await delete()
+        assert r.status == 502 and time.monotonic() - started < 5, (r.status, time.monotonic() - started)
+    assert os.path.exists(env.remote.path("/v/" + NAME)), "the chunk is not deleted when the storage hung"
+    assert conns and await _closed(conns), "the connection was left open"
+    patch, clients, conns = _route_link(env, hang=("stat",))
+    with patch, mock.patch.object(server, "VOD_ROUTE_DEADLINE", 0.5):
+        started = time.monotonic()
+        r = await env.client.get("/api/vods/download/" + NAME, headers=h)
+        assert r.status == 502 and time.monotonic() - started < 5, (r.status, time.monotonic() - started)
+    assert conns and await _closed(conns)
+    patch, clients, conns = _route_link(env, connect_hangs=True)
+    with patch, mock.patch.object(server, "VOD_ROUTE_DEADLINE", 0.5):
+        started = time.monotonic()
+        assert (await delete()).status == 502 and time.monotonic() - started < 5
+        r = await env.client.get("/api/vods/download/" + NAME, headers=h)
+        assert r.status == 502
+        r = await env.client.post("/api/vods/download-archive", json={"files": [NAME]}, headers=h)
+        assert r.status == 502 and time.monotonic() - started < 10
+
+
+async def _closed(conns):
+    """True when every connection the route opened has been closed (the close finishes a moment later)."""
+    try:
+        await asyncio.wait_for(asyncio.gather(*[c.wait_closed() for c in conns]), 5)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+
+def _three_chunks(env):
+    names = [NAME, f"{SESSION}/chunk_001.mkv", f"{SESSION}/chunk_002.mkv"]
+    for n in names:
+        env.put(n, os.urandom(300_000))
+    return names
+
+
+@with_env
+async def test_the_zip_resolves_the_root_once_closes_the_connection_and_stops_when_the_client_is_gone(env):
+    names = _three_chunks(env)
+    h = {"X-U": str(OWNER)}
+    patch, clients, conns = _route_link(env)
+    with patch:
+        r = await env.client.post("/api/vods/download-archive", json={"files": names}, headers=h)
+        zf = zipfile.ZipFile(io.BytesIO(await r.read()))
+    assert zf.namelist() == names
+    assert [c for c in clients[0].calls if c[0] == "realpath" and c[1] == "/v"] == [("realpath", "/v")], \
+        "the root must be resolved once, not once per file"
+    assert len([c for c in clients[0].calls if c[0] == "lstat"]) == 3, "every file is still checked"
+    assert await _closed(conns), "the connection was left open"
+    # the client goes away while the first file is being sent: the others are never pulled
+    real_write = web.StreamResponse.write
+    writes = []
+
+    async def write(self, data):
+        if self.content_type == "application/zip":
+            writes.append(len(data))
+            if len(writes) >= 2:
+                raise ConnectionResetError("Cannot write to closing transport")
+        return await real_write(self, data)
+    patch, clients, conns = _route_link(env)
+    with patch, mock.patch.object(web.StreamResponse, "write", write):
+        try:
+            r = await env.client.post("/api/vods/download-archive", json={"files": names}, headers=h)
+            await r.read()
+        except Exception:
+            pass                                    # the client side sees a cut response
+    opened = [c for c in clients[0].calls if c[0] == "open"]
+    assert len(opened) == 1, f"the archive went on pulling files after the client was gone: {opened}"
+    assert await _closed(conns), "the connection was left open"
+
+
+@with_env
+async def test_the_zip_stops_at_the_first_storage_timeout_and_is_still_a_valid_archive(env):
+    names = _three_chunks(env)
+    h = {"X-U": str(OWNER)}
+    patch, clients, conns = _route_link(env, hang=("lstat",), only="chunk_001")
+    with patch, mock.patch.object(server, "VOD_SFTP_META_TIMEOUT", 0.3):
+        started = time.monotonic()
+        r = await env.client.post("/api/vods/download-archive", json={"files": names}, headers=h)
+        raw = await r.read()
+    assert r.status == 200
+    asked = [c[1] for c in clients[0].calls if c[0] == "lstat"]
+    assert asked == [f"/v/{names[0]}", f"/v/{names[1]}"], f"the archive went on after the timeout: {asked}"
+    assert zipfile.ZipFile(io.BytesIO(raw)).namelist() == [names[0]]
+    assert time.monotonic() - started < 5
+    assert await _closed(conns)
+
+
 def _setup_in_fresh_folder(prepare):
     """Run the real start-up of the cache on a folder that *prepare(folder)* has filled; returns
     (reason or None, cache, logged lines). The module's state is reset afterwards."""

@@ -2359,7 +2359,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Download a VOD file</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Streams the specified MKV file from remote storage. Only <code>.mkv</code> files are allowed. Supports subdirectory paths. Path traversal is blocked, and a file that is a symbolic link on the storage or lies behind a linked folder leading outside your VOD root is answered <code>404</code> and not read.</p>
+                        <p>Streams the specified MKV file from remote storage. Only <code>.mkv</code> files are allowed. Supports subdirectory paths. Path traversal is blocked, and a file that is a symbolic link on the storage or lies behind a linked folder leading outside your VOD root is answered <code>404</code> and not read. Connecting, the check and the size lookup together have 60 seconds; a storage that does not answer in that time gets <code>502</code>.</p>
                     </div>
                 </div>
 
@@ -2381,7 +2381,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 }</pre>
                         </div>
                         <h4>Response</h4>
-                        <p>Binary zip stream with <code>Content-Disposition: attachment</code> header.</p>
+                        <p>Binary zip stream with <code>Content-Disposition: attachment</code> header. Connecting and looking up the root have 60 seconds before the zip starts (<code>502</code> when the storage does not answer, <code>404</code> when the root does not exist). The archive stops at once when the client stops reading, and at the first storage timeout it is closed with the files that were complete.</p>
                     </div>
                 </div>
 
@@ -2392,7 +2392,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Delete a VOD file</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Deletes the specified MKV file from remote storage. Only <code>.mkv</code> files can be deleted. Supports subdirectory paths. A copy of the chunk being prepared for browser playback is cancelled and every cached copy of it is removed. A file that is a symbolic link on the storage, or lies behind a linked folder pointing outside your VOD root, answers <strong>404</strong> and nothing is removed.</p>
+                        <p>Deletes the specified MKV file from remote storage. Only <code>.mkv</code> files can be deleted. Supports subdirectory paths. A copy of the chunk being prepared for browser playback is cancelled and every cached copy of it is removed. A file that is a symbolic link on the storage, or lies behind a linked folder pointing outside your VOD root, answers <strong>404</strong> and nothing is removed. Connecting, the check and the removal together have 60 seconds; a storage that does not answer in that time gets <strong>502</strong>.</p>
                     </div>
                 </div>
 

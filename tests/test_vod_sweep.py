@@ -513,6 +513,46 @@ def test_numbers_taken_by_the_sweep_are_not_reused_by_a_recording_that_starts_me
     assert files == [f"{REMOTE}/chunk_004.mkv", f"{REMOTE}/chunk_005.mkv"], files
 
 
+def test_a_cancel_during_the_put_removes_the_hidden_part_file_and_goes_on_cancelling():
+    class Sftp:
+        def __init__(self):
+            self.files, self.removed = {}, []
+            self.in_put = asyncio.Event()
+
+        async def stat(self, p):
+            raise asyncssh.SFTPNoSuchFile("x")
+
+        async def put(self, local, remote):
+            self.files[remote] = b"half"          # the part file exists on the storage
+            self.in_put.set()
+            await asyncio.sleep(3600)
+
+        async def remove(self, p):
+            self.removed.append(p)
+            self.files.pop(p, None)
+
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodsweep_") as t:
+            a = Path(t) / "a"
+            a.write_bytes(b"1")
+            sftp = Sftp()
+            task = asyncio.create_task(server._vod_sweep_put(sftp, REMOTE, str(a), 1, 3))
+            await asyncio.wait_for(sftp.in_put.wait(), 10)
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, 10)
+                cancelled = False
+            except asyncio.CancelledError:
+                cancelled = True
+            server._vod_sweep_claims.clear()
+            return cancelled, dict(sftp.files), sftp.removed, a.exists()
+
+    cancelled, files, removed, local_kept = run(go())
+    assert cancelled, "the cancel must reach the caller"
+    assert files == {} and len(removed) == 1 and ".sweep_" in removed[0] and removed[0].endswith(".part"), (files, removed)
+    assert local_kept, "the local chunk stays for the next pass"
+
+
 def test_a_recording_that_starts_during_the_sweep_numbers_above_what_the_sweep_delivered_even_if_the_pass_ends_first():
     """The recorder lists the remote folder before the sweep renames its chunk, then its thread-pool hop
     stalls until the whole pass is over: the sweep's claim must outlive the pass."""

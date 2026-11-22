@@ -2814,7 +2814,7 @@ Stream-download a VOD file from remote storage. Only `.mkv` files allowed. Suppo
 
 **Response:** Binary file stream with `Content-Disposition: attachment` header.
 
-**Security:** Path traversal (`..`, absolute paths) is rejected. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and not read.
+**Security:** Path traversal (`..`, absolute paths) is rejected. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and not read. Connecting, the check and the size lookup together have 60 seconds (the proxy gives up at 100); a storage that does not answer in that time gets `502`.
 
 ---
 
@@ -2883,12 +2883,12 @@ Download multiple VOD files as a single zip archive streamed from SFTP. The zip 
 
 **Response:** Binary zip stream with `Content-Disposition: attachment; filename="archive_name.zip"` header. Archive name is derived from the common directory prefix of the selected files.
 
-**Security:** Path traversal (`..`, absolute paths) is rejected. Each file is also checked against the owner's VOD root once every link on the remote is resolved; a name that is a link leading out of the root is left out of the archive, the same as a file that cannot be read.
+**Security:** Path traversal (`..`, absolute paths) is rejected. Each file is also checked against the owner's VOD root once every link on the remote is resolved; a name that is a link leading out of the root is left out of the archive, the same as a file that cannot be read. Connecting and looking up the root have 60 seconds before the zip starts (`502` when the storage does not answer; `404` when the root does not exist). The archive stops at once when the client stops reading, and at the first storage timeout it is closed with the files that were complete.
 
 ---
 
 #### DELETE /api/vods/{filename}
-Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths. A copy of the chunk that is being prepared for browser playback is cancelled and every cached copy of it (MP4, segments, remembered lengths) is removed. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and nothing is removed (the link itself is left alone).
+Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths. A copy of the chunk that is being prepared for browser playback is cancelled and every cached copy of it (MP4, segments, remembered lengths) is removed. A file that is a symbolic link on the storage, or that lies behind a linked folder pointing outside your VOD root, is answered `404` and nothing is removed (the link itself is left alone). Connecting, the check and the removal together have 60 seconds; a storage that does not answer in that time gets `502` and the connection is closed.
 
 **Response:**
 ```json

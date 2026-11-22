@@ -7758,6 +7758,7 @@ async def http_live_page(request: web.Request) -> web.Response:
 VOD_SEGMENT_DURATION = 300  # seconds per chunk (5 minutes)
 VOD_SFTP_START_TIMEOUT = 10  # seconds for the SFTP subsystem to start on a connected, verified SSH session
 VOD_SFTP_META_TIMEOUT = 30  # seconds for one SFTP stat, mkdir or listdir: a remote that hangs must not hold a pass
+VOD_ROUTE_DEADLINE = 60.0  # seconds for everything a download, zip or delete request does before it answers or starts its response (the proxy gives up at 100)
 VOD_UPLOAD_TICK = 30        # seconds between two uploader passes (the uploader's own pass; the disk guard has its own task and tick)
 VOD_STOP_Q_WAIT = 20        # seconds ffmpeg gets to finish after "q" before the signal ladder starts
 
@@ -8545,6 +8546,7 @@ async def _vod_note_removed_folder(meta: dict, folder: str, size: int, why: str,
 
 VOD_SWEEP_PASS_CAP_BYTES = 4 * 1024 ** 3
 VOD_SWEEP_PAUSE = 1.0
+VOD_SWEEP_CLEANUP_TIMEOUT = 5.0   # seconds the removal of a part file may take when the sweep is cancelled
 # remote folder -> highest chunk number the sweep took, so a recording that starts meanwhile
 # for the same remote folder numbers above it. Kept for the life of the process (a few entries):
 # a recording may read it after the pass that took the number has ended.
@@ -8784,6 +8786,13 @@ async def _vod_sweep_put(sftp, remote_dir: str, local: str, size: int, top: int,
             logger.error(f"VOD sweep: upload of {os.path.basename(local)} failed ({e}), kept for the next pass")
             await _vod_remove_partial(sftp, temp)
             return None
+        except BaseException:
+            # a cancel at shutdown during the put must not leave a hidden .part on the member's storage
+            try:
+                await asyncio.wait_for(_vod_remove_partial(sftp, temp), VOD_SWEEP_CLEANUP_TIMEOUT)
+            except BaseException:  # the cleanup is best effort and bounded; the original exit goes on
+                pass
+            raise
     logger.error(f"VOD sweep: no free remote number for {os.path.basename(local)} in 50 tries")
     return None
 
@@ -12715,18 +12724,23 @@ async def http_download_vod(request: web.Request) -> web.Response:
     if not storage:
         return web.json_response({"error": "No VOD storage configured"}, status=404)
 
-    conn, sftp, error = await _connect_vod_sftp(token.user_id)
-    if error:
-        return web.json_response({"error": error}, status=502)
-
+    conn = None
     response_started = False
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
         try:
-            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
-        except _VodPlayRemoteError as e:
-            return web.json_response({"error": e.message}, status=e.status)
-        attrs = await sftp.stat(remote_path)
+            async with asyncio.timeout(VOD_ROUTE_DEADLINE):      # connect, check and size: before any byte is sent
+                conn, sftp, error = await _connect_vod_sftp(token.user_id)
+                if error:
+                    return web.json_response({"error": error}, status=502)
+                try:
+                    await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
+                except _VodPlayRemoteError as e:
+                    return web.json_response({"error": e.message}, status=e.status)
+                attrs = await sftp.stat(remote_path)
+        except asyncio.TimeoutError:
+            logger.error(f"VOD download for user {token.user_id}: the storage did not answer in time")
+            return web.json_response({"error": "The storage did not answer in time"}, status=502)
 
         response = web.StreamResponse()
         response.content_type = "video/x-matroska"
@@ -12757,7 +12771,8 @@ async def http_download_vod(request: web.Request) -> web.Response:
             return response
         return web.json_response({"error": "Download failed"}, status=502)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 async def http_download_vod_archive(request: web.Request) -> web.Response:
@@ -12791,10 +12806,40 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
     if not storage:
         return web.json_response({"error": "No VOD storage configured"}, status=404)
 
-    conn, sftp, error = await _connect_vod_sftp(token.user_id)
-    if error:
-        return web.json_response({"error": error}, status=502)
+    remote_root = storage["remote_path"].rstrip("/")
+    conn = None
+    try:
+        try:
+            async with asyncio.timeout(VOD_ROUTE_DEADLINE):      # connect and the root's own path: before any byte is sent
+                conn, sftp, error = await _connect_vod_sftp(token.user_id)
+                if error:
+                    return web.json_response({"error": error}, status=502)
+                # the root is resolved once for the whole archive; every file is still checked against it
+                real_root = await asyncio.wait_for(
+                    sftp.realpath(storage["remote_path"].rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
+        except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
+            return web.json_response({"error": "VOD not found"}, status=404)
+        except asyncio.TimeoutError:
+            logger.error(f"VOD archive for user {token.user_id}: the storage did not answer in time")
+            return web.json_response({"error": "The storage did not answer in time"}, status=502)
+        except (asyncssh.SFTPError, OSError) as e:
+            logger.error(f"VOD archive for user {token.user_id}: {e}")
+            return web.json_response({"error": "SFTP operation failed"}, status=502)
+        return await _vod_stream_archive(request, token, sftp, storage, files, remote_root, str(real_root))
+    finally:
+        if conn is not None:
+            conn.close()
 
+
+class _VodArchiveClientGone(Exception):
+    """The client stopped reading the archive: nothing more can be sent."""
+
+
+async def _vod_stream_archive(request, token, sftp, storage: dict, files: list, remote_root: str,
+                              real_root: str) -> web.StreamResponse:
+    """Stream the zip of *files* (already validated names) from the owner's storage. The caller closes the
+    SFTP connection. A client that stops reading ends the archive at once; so does the first storage
+    timeout (the archive is then closed with the entries that were complete)."""
     # Derive archive name from common prefix
     parts_list = [f.split("/") for f in files]
     if len(parts_list) > 1 and len(parts_list[0]) > 1 and all(p[0] == parts_list[0][0] for p in parts_list):
@@ -12812,7 +12857,11 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
     response.headers["Content-Disposition"] = f'attachment; filename="{archive_name}.zip"'
     await response.prepare(request)
 
-    remote_root = storage["remote_path"].rstrip("/")
+    async def send(data: bytes) -> None:
+        try:
+            await response.write(data)
+        except Exception as e:        # only the client side can fail here: a closed or reset connection
+            raise _VodArchiveClientGone() from e
 
     import struct
     import binascii
@@ -12826,7 +12875,7 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
         try:
             # checked per file and before its header is written: a link that leaves the owner's root is
             # skipped, and the first bytes of the response are not held back by checking every name first
-            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
+            await _vod_remote_confine(sftp, storage["remote_path"], remote_path, real_root)
             fname_bytes = filepath.encode("utf-8")
             local_header_offset = offset
 
@@ -12845,7 +12894,7 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
                 len(fname_bytes),   # filename length
                 0,                  # extra field length
             ) + fname_bytes
-            await response.write(header)
+            await send(header)
             offset += len(header)
 
             # Stream file data from SFTP, computing CRC as we go
@@ -12859,7 +12908,7 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
                         break
                     crc = binascii.crc32(chunk, crc) & 0xFFFFFFFF
                     total_size += len(chunk)
-                    await response.write(chunk)
+                    await send(chunk)
             offset += total_size
 
             # Data descriptor (with signature)
@@ -12869,11 +12918,18 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
                 total_size,       # compressed size (same as uncompressed for stored)
                 total_size,       # uncompressed size
             )
-            await response.write(desc)
+            await send(desc)
             offset += len(desc)
 
             entries.append((fname_bytes, crc, total_size, local_header_offset))
 
+        except _VodArchiveClientGone:
+            logger.info(f"VOD archive for user {token.user_id}: the client went away, the archive is stopped")
+            return response
+        except asyncio.TimeoutError:
+            logger.error(f"VOD archive for user {token.user_id}: the storage did not answer in time at "
+                         f"{filepath}, the archive is stopped")   # only the check before an entry waits: no entry is cut
+            break
         except _VodPlayRemoteError:
             logger.warning(f"Skipping VOD file in archive {filepath}: not a file inside the VOD root")
             continue
@@ -12881,50 +12937,53 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
             logger.warning(f"Skipping VOD file in archive {filepath}: {e}")
             continue
 
-    # Central directory
-    cd_offset = offset
-    cd_size = 0
-    for fname_bytes, crc, size, local_offset in entries:
-        cd_entry = struct.pack(
-            '<4sHHHHHHIIIHHHHHII',
-            b'PK\x01\x02',     # central directory signature
-            20,                 # version made by (2.0)
-            20,                 # version needed (2.0)
-            0x08,               # flags: data descriptor
-            0,                  # compression: stored
-            0,                  # mod time
-            0,                  # mod date
-            crc,                # crc32
-            size,               # compressed size
-            size,               # uncompressed size
-            len(fname_bytes),   # filename length
-            0,                  # extra field length
-            0,                  # file comment length
-            0,                  # disk number start
-            0,                  # internal file attributes
-            0,                  # external file attributes
-            local_offset,       # relative offset of local header
-        ) + fname_bytes
-        await response.write(cd_entry)
-        cd_size += len(cd_entry)
+    try:
+        # Central directory
+        cd_offset = offset
+        cd_size = 0
+        for fname_bytes, crc, size, local_offset in entries:
+            cd_entry = struct.pack(
+                '<4sHHHHHHIIIHHHHHII',
+                b'PK\x01\x02',     # central directory signature
+                20,                 # version made by (2.0)
+                20,                 # version needed (2.0)
+                0x08,               # flags: data descriptor
+                0,                  # compression: stored
+                0,                  # mod time
+                0,                  # mod date
+                crc,                # crc32
+                size,               # compressed size
+                size,               # uncompressed size
+                len(fname_bytes),   # filename length
+                0,                  # extra field length
+                0,                  # file comment length
+                0,                  # disk number start
+                0,                  # internal file attributes
+                0,                  # external file attributes
+                local_offset,       # relative offset of local header
+            ) + fname_bytes
+            await send(cd_entry)
+            cd_size += len(cd_entry)
 
-    # End of central directory record
-    entry_count = len(entries)
-    eocd = struct.pack(
-        '<4sHHHHIIH',
-        b'PK\x05\x06',     # EOCD signature
-        0,                  # disk number
-        0,                  # disk with central dir
-        entry_count,        # entries on this disk
-        entry_count,        # total entries
-        cd_size,            # size of central directory
-        cd_offset,          # offset of central directory
-        0,                  # comment length
-    )
-    await response.write(eocd)
+        # End of central directory record
+        entry_count = len(entries)
+        eocd = struct.pack(
+            '<4sHHHHIIH',
+            b'PK\x05\x06',     # EOCD signature
+            0,                  # disk number
+            0,                  # disk with central dir
+            entry_count,        # entries on this disk
+            entry_count,        # total entries
+            cd_size,            # size of central directory
+            cd_offset,          # offset of central directory
+            0,                  # comment length
+        )
+        await send(eocd)
+    except _VodArchiveClientGone:
+        logger.info(f"VOD archive for user {token.user_id}: the client went away, the archive is stopped")
+        return response
 
     await response.write_eof()
-    conn.close()
     return response
 
 
@@ -12946,24 +13005,28 @@ async def http_delete_vod(request: web.Request) -> web.Response:
     if not storage:
         return web.json_response({"error": "No VOD storage configured"}, status=404)
 
-    conn, sftp, error = await _connect_vod_sftp(token.user_id)
-    if error:
-        return web.json_response({"error": error}, status=502)
-
+    conn = None
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
-        # a copy of this chunk that is being prepared is dropped first, so nothing new is added while the
-        # remove is on its way, and again after it (a job that finished meanwhile left an entry)
-        try:
-            await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
-        except _VodPlayRemoteError as e:
-            return web.json_response({"error": e.message}, status=e.status)
-        cancelled = _vod_play_purge(owner=token.user_id, path=filename)
-        await sftp.remove(remote_path)
-        cancelled += _vod_play_purge(owner=token.user_id, path=filename)
-        if cancelled:
-            await asyncio.wait(cancelled, timeout=5)        # their work folders are gone when this returns
+        async with asyncio.timeout(VOD_ROUTE_DEADLINE):          # connect, check and remove: one deadline
+            conn, sftp, error = await _connect_vod_sftp(token.user_id)
+            if error:
+                return web.json_response({"error": error}, status=502)
+            # a copy of this chunk that is being prepared is dropped first, so nothing new is added while the
+            # remove is on its way, and again after it (a job that finished meanwhile left an entry)
+            try:
+                await _vod_remote_confine(sftp, storage["remote_path"], remote_path)
+            except _VodPlayRemoteError as e:
+                return web.json_response({"error": e.message}, status=e.status)
+            cancelled = _vod_play_purge(owner=token.user_id, path=filename)
+            await sftp.remove(remote_path)
+            cancelled += _vod_play_purge(owner=token.user_id, path=filename)
+            if cancelled:
+                await asyncio.wait(cancelled, timeout=5)        # their work folders are gone when this returns
         return web.json_response({"message": f"Deleted {filename}"})
+    except asyncio.TimeoutError:
+        logger.error(f"VOD delete for user {token.user_id}: the storage did not answer in time")
+        return web.json_response({"error": "The storage did not answer in time"}, status=502)
     except asyncssh.SFTPError as e:
         logger.error(f"VOD delete SFTP error for user {token.user_id}: {e}")
         return web.json_response({"error": "SFTP operation failed"}, status=502)
@@ -12971,7 +13034,8 @@ async def http_delete_vod(request: web.Request) -> web.Response:
         logger.error(f"VOD delete error for user {token.user_id}: {e}")
         return web.json_response({"error": "Delete operation failed"}, status=502)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 # =============================================================================
@@ -13222,16 +13286,18 @@ class _VodLink:
         self.conn = self.sftp = None
 
 
-async def _vod_remote_confine(sftp, root: str, remote: str) -> None:
+async def _vod_remote_confine(sftp, root: str, remote: str, real_root: Optional[str] = None) -> None:
     """Refuse a remote path that is not a regular file inside the owner's VOD root once every link is
     resolved (a link in the file name or in any folder on the way). Raises _VodPlayRemoteError(404) for
-    that; the other SFTP errors (an unreachable storage) pass through to the caller."""
+    that; the other SFTP errors (an unreachable storage) pass through to the caller. A caller that checks
+    many files passes the root's own resolved path as *real_root*, so it is looked up once."""
     try:
         attrs = await asyncio.wait_for(sftp.lstat(remote), VOD_SFTP_META_TIMEOUT)
         if attrs.permissions is not None and not _stat.S_ISREG(attrs.permissions):
             raise _VodPlayRemoteError(404, "VOD not found")
         real = await asyncio.wait_for(sftp.realpath(remote), VOD_SFTP_META_TIMEOUT)
-        real_root = await asyncio.wait_for(sftp.realpath(root.rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
+        if real_root is None:
+            real_root = await asyncio.wait_for(sftp.realpath(root.rstrip("/") or "/"), VOD_SFTP_META_TIMEOUT)
     except (asyncssh.SFTPNoSuchFile, asyncssh.SFTPNoSuchPath):
         raise _VodPlayRemoteError(404, "VOD not found")
     real, real_root = str(real).rstrip("/"), str(real_root).rstrip("/")
