@@ -384,10 +384,10 @@ async def test_a_segment_that_is_not_ready_in_time_answers_503_with_retry_after_
     real_pull = server._vod_play_pull
 
     async def slow_pull(*a, **k):
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(1.6)
         return await real_pull(*a, **k)
 
-    with mock.patch.object(server, "VOD_SESSION_SEG_WAIT", 0.01), mock.patch.object(server, "_vod_play_pull", slow_pull):
+    with mock.patch.object(server, "VOD_SESSION_SEG_WAIT", 1.0), mock.patch.object(server, "_vod_play_pull", slow_pull):
         r = await segment(env, "chunk_001.ts")
         assert r.status == 503 and r.headers.get("Retry-After")
         assert (await r.json())["state"] == "preparing"
@@ -683,6 +683,48 @@ async def test_a_chunk_that_changed_while_its_job_runs_gets_its_own_job_never_th
     path = os.path.join(env.t, "got.ts")
     Path(path).write_bytes(got)
     assert abs(probe_ts(path)[1] - 4.0) < 0.5, "the segment is the new version"
+
+
+@with_env
+async def test_one_deadline_covers_the_lookup_the_live_checks_and_the_wait_of_a_segment_request(env):
+    put_session(env, durations=[2.0, 3.0, 2.0])
+    assert (await playlist(env)).status == 200
+    server.active_recordings[7] = {"remote_session_dir": f"/v/{FOLDER}", "user_id": OWNER}
+    real_live = server._vod_play_is_live_newest
+    real_pull = server._vod_play_pull
+
+    async def slow_live(*a, **k):
+        await asyncio.sleep(0.9)                         # a slow storage: each live check takes its time
+        return await real_live(*a, **k)
+
+    async def slow_pull(*a, **k):
+        await asyncio.sleep(10)
+        return await real_pull(*a, **k)
+
+    with mock.patch.object(server, "VOD_SESSION_SEG_WAIT", 1.6), mock.patch.object(server, "_vod_play_is_live_newest", slow_live), \
+            mock.patch.object(server, "_vod_play_pull", slow_pull):
+        t0 = time.time()
+        r = await segment(env, "chunk_001.ts")
+        took = time.time() - t0
+    # route live check 0.9 + the live check of the job start 0.9 + a wait: without one deadline that is 1.8 + 1.6 s
+    assert r.status == 503 and r.headers.get("Retry-After"), r.status
+    assert took < 2.0, f"the request was held {took:.2f} s for a budget of 1.6 s"
+
+
+@with_env
+async def test_a_slow_listing_cannot_hold_the_playlist_request_past_its_deadline(env):
+    put_session(env, durations=[2.0, 3.0])
+    real = server._vod_session_listing
+
+    async def slow(*a, **k):
+        await asyncio.sleep(10)
+        return await real(*a, **k)
+
+    with mock.patch.object(server, "VOD_SESSION_PLAYLIST_DEADLINE", 0.8), mock.patch.object(server, "_vod_session_listing", slow):
+        t0 = time.time()
+        r = await env.client.get(f"/api/vods/session/{FOLDER}/index.m3u8", headers={"X-U": str(OWNER)})
+        took = time.time() - t0
+    assert r.status == 503 and r.headers.get("Retry-After") and took < 1.6, (r.status, took)
 
 
 @with_env

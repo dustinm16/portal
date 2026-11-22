@@ -12942,6 +12942,8 @@ VOD_PLAY_REMUX_TIMEOUT = 300
 VOD_PLAY_RESERVE_WAIT = 600
 VOD_PLAY_PROBE_MAX_BYTES = 1024 * 1024
 VOD_SESSION_SEG_WAIT = 55.0        # a segment request waits this long for its job, then answers 503 (proxy limit: 100 s)
+VOD_SESSION_PLAYLIST_DEADLINE = 20.0   # the playlist request (connect, folder listing) answers within this many seconds
+VOD_SESSION_WAIT_GRACE = 0.25      # the wait for a job ends this long before the request's deadline, to answer in time
 VOD_SESSION_PROBE_MAX = 4          # session duration probes running at the same time, all members together
 VOD_SESSION_PROBE_FAILED_KEEP = 30
 
@@ -13504,10 +13506,13 @@ async def http_play_vod(request: web.Request) -> web.StreamResponse:
 
 async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, size: int, mtime: int,
                            kind: str, wait: float, duration: Optional[float] = None,
-                           prefetch: bool = False, link: Optional[_VodLink] = None) -> tuple:
+                           prefetch: bool = False, link: Optional[_VodLink] = None,
+                           deadline: Optional[float] = None) -> tuple:
     """The one place that turns a chunk into a cached output of *kind* ("mp4": the single-chunk player,
     "ts": a segment of a session) or starts, joins and waits for the job that makes it. Both play
     routes use it, so the gate, the cache, the job table, the locks and the slot limit are the same.
+
+    *deadline* (a monotonic() time) caps the wait for the job, counted after the live check above has run.
 
     Returns (outcome, payload):
       "file"        the cached file's path
@@ -13577,6 +13582,8 @@ async def _vod_play_obtain(user_id: int, storage: dict, ident: str, path: str, s
         job["task"] = task
         _vod_play_tasks.add(task)
         task.add_done_callback(_vod_play_tasks.discard)
+    if deadline is not None:
+        wait = min(wait, deadline - monotonic())             # what the steps before it did not use up
     if wait <= 0:
         return "preparing", job
 
@@ -13775,13 +13782,21 @@ def _vod_session_prune_probes() -> None:
             _vod_session_probes.pop(k, None)
 
 
-async def _vod_session_playlist(user_id: int, storage: dict, folder: str) -> web.Response:
+async def _vod_session_playlist(user_id: int, storage: dict, folder: str,
+                                started: Optional[float] = None) -> web.Response:
     cache = _vod_play_cache
     ident = vod_play.storage_ident(storage)
+    started = monotonic() if started is None else started
     try:
-        chunks = await _vod_session_listing(user_id, storage, folder)
+        # connect and read the folder: held to the request's deadline, counted from its arrival
+        async with asyncio.timeout(max(0.05, started + VOD_SESSION_PLAYLIST_DEADLINE - monotonic())):
+            chunks = await _vod_session_listing(user_id, storage, folder)
     except _VodPlayRemoteError as e:
         return _vod_play_reply({"error": e.message}, e.status)
+    except TimeoutError:
+        logger.warning(f"VOD session playlist request for user {user_id} passed its deadline")
+        return _vod_play_reply({"error": "The VOD storage is slow to answer; try again in a few seconds"},
+                               503, retry_after=10)
     live = _vod_session_is_live(storage, folder)
     if live and chunks:
         chunks = chunks[:-1]                          # the newest one is still being written
@@ -13871,23 +13886,35 @@ def _vod_session_prefetch(user_id: int, storage: dict, ident: str, folder: str, 
 
 async def _vod_session_segment(user_id: int, storage: dict, folder: str, stem: str,
                                started: Optional[float] = None) -> web.Response:
-    """*started* is when the request came in: the whole answer (stat, live check, waiting for the job)
-    is held to VOD_SESSION_SEG_WAIT seconds, so a slow storage cannot push it past the proxy's limit."""
+    """*started* is when the request came in. One deadline (VOD_SESSION_SEG_WAIT from then) covers every
+    step: the connection, the size lookup, both live checks and the wait for the job, each capped at what
+    is left, so a slow storage cannot push the answer past the proxy's limit."""
     cache = _vod_play_cache
     started = monotonic() if started is None else started
+    deadline = started + VOD_SESSION_SEG_WAIT
     ident = vod_play.storage_ident(storage)
     path = f"{folder}/{stem}.mkv"
+    link = _VodLink(user_id)                           # one connection for the lookup and the live checks
     try:
-        size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident)
+        async with asyncio.timeout(max(0.05, deadline - monotonic())):
+            size, mtime = await _vod_play_remote_stat(user_id, storage, path, ident, link=link)
+            if _vod_session_is_live(storage, folder) and await _vod_play_is_live_newest(user_id, storage, path, link):
+                # left out of the playlist, so left out here too, even when an earlier copy is cached
+                return _vod_play_reply({"error": "This chunk is still being recorded", "state": "live"}, 409)
+            d = cache.get_duration(user_id, ident, path, size, mtime)
+            wait_end = deadline - VOD_SESSION_WAIT_GRACE
+            outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "ts",
+                                                      max(0.0, wait_end - monotonic()),
+                                                      duration=d["duration"] if d else None,
+                                                      link=link, deadline=wait_end)
     except _VodPlayRemoteError as e:
         return _vod_play_reply({"error": e.message}, e.status)
-    if _vod_session_is_live(storage, folder) and await _vod_play_is_live_newest(user_id, storage, path):
-        # left out of the playlist, so left out here too, even when an earlier copy is cached
-        return _vod_play_reply({"error": "This chunk is still being recorded", "state": "live"}, 409)
-    d = cache.get_duration(user_id, ident, path, size, mtime)
-    left = max(0.1, VOD_SESSION_SEG_WAIT - (monotonic() - started))
-    outcome, payload = await _vod_play_obtain(user_id, storage, ident, path, size, mtime, "ts",
-                                              left, duration=d["duration"] if d else None)
+    except TimeoutError:
+        logger.warning(f"VOD session segment request for user {user_id} passed its deadline")
+        return _vod_play_reply({"error": "The VOD storage is slow to answer; try again in a few seconds",
+                                "state": "busy"}, 503, retry_after=5)
+    finally:
+        link.close()
     if outcome == "file":
         _vod_session_prefetch(user_id, storage, ident, folder, stem)
         return _vod_play_ts_file(payload)
@@ -13921,7 +13948,7 @@ async def http_play_session(request: web.Request) -> web.StreamResponse:
         return refusal
     folder, kind, stem = parsed
     if kind == "playlist":
-        return await _vod_session_playlist(token.user_id, storage, folder)
+        return await _vod_session_playlist(token.user_id, storage, folder, started)
     return await _vod_session_segment(token.user_id, storage, folder, stem, started)
 
 
