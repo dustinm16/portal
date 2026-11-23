@@ -1111,7 +1111,7 @@ for name, needles in (
         ("a saved entry is a reference and holds no copy", ("a reference, not a copy", "no message text, author or channel name is stored")),
         ("what 'no longer available' shows", ("no longer available", '"available": false', "only its entry id", "anonymous post stays")),
         ("message ids are not reused and lookups match the kind and scope", ("autoincrement", "never reused", "stored channel or conversation id")),
-        ("the clean-up rule", ("periodic clean-up", "no pending reminder", "seven days")),
+        ("the clean-up rule", ("there is none for gone messages", "until its member removes it", "which message was deleted")),
         ("privacy: no frame, no audit, no count for administrators", ("no frame is sent", "no audit or log line", "not even a count")),
         ("the limits", ("500 saved entries", "100 waiting reminders", "366 days", "absolute utc instant")),
         ("the reminder tick and exactly-once firing", ("every 30 seconds", "partial index", "at most 50", "one database transaction", "across a restart")),
@@ -1128,7 +1128,7 @@ _db_saved = (ROOT / "database.py").read_text()
 check("1.23.0 (saved): the limits and the title the notes state are the ones in the code",
       "SAVED_MAX_ENTRIES = 500" in _srv_saved and "SAVED_MAX_PENDING = 100" in _srv_saved and "SAVED_HORIZON_DAYS = 366" in _srv_saved
       and "SAVED_TICK_SECONDS = 30" in _srv_saved and "SAVED_TICK_CAP = 50" in _srv_saved and "SAVED_TICK_PER_MEMBER = 10" in _srv_saved and "SAVED_FIRST_TICK_SECONDS = 5" in _srv_saved
-      and "SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400" in _srv_saved
+      and "SAVED_CLEANUP_GRACE_SECONDS" not in _srv_saved
       and 'SAVED_REMINDER_TITLE = "Reminder for a saved message"' in _db_saved)
 check("1.23.0 (saved): the table, its cascade and the partial index are what the notes say",
       "CREATE TABLE IF NOT EXISTS saved_messages" in _db_saved and "UNIQUE (user_id, kind, message_id)" in _db_saved

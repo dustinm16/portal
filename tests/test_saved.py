@@ -14,13 +14,14 @@ is replaced). No outbound network (tests/outbound_guard.py).
   falls back to the Saved view when the message is unreadable, caps a burst, never repeats (also on a
   second database connection to the same file = a restart), and a changed reminder is not fired
 * the push carries the fixed text and no message text, author or channel name
-* clean-up keeps a row that waits on a reminder and removes a gone message's row after the grace
+* no clean-up removes a row because its message is gone (that would tell a member who lost access which message was deleted)
 * the rows go with the user; the migration is idempotent
 
 Run: venv/bin/python tests/test_saved.py
 """
 
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -850,33 +851,32 @@ def test_a_notification_frame_goes_to_the_members_own_sockets_only():
     run(body)
 
 
-def test_clean_up_removes_gone_messages_after_the_grace_and_keeps_what_waits():
+def test_no_clean_up_tells_a_member_who_lost_access_whether_a_message_still_exists():
+    """A saved row is never removed because its message is gone: a member who lost access (removed from a
+    private channel, left a conversation) must not learn, through a row that vanishes, which of two
+    messages was deleted. The table stays bounded by the cap of 500 per member and goes with the member."""
     async def body(env):
         d = env.db
         ids = await base.users(d)
-        gen = await general(d)
         pvt = await base.private_channel(d, ids)
-        grace = server.SAVED_CLEANUP_GRACE_SECONDS
-        gone_plain = await d.create_chat_message(gen, ids["bob"], "bob", "1")
-        gone_wait = await d.create_chat_message(gen, ids["bob"], "bob", "2")
-        gone_fired = await d.create_chat_message(gen, ids["bob"], "bob", "3")
-        alive = await d.create_chat_message(gen, ids["bob"], "bob", "4")
-        unreadable = await d.create_chat_message(pvt, ids["alice"], "alice", "5")
-        a = await save(env, ids["carol"], "channel", gone_plain)
-        b = await pending(env, ids["carol"], "channel", gone_wait, NOW + 10 * grace // 7)
-        c = await pending(env, ids["carol"], "channel", gone_fired, NOW + 60)
-        e = await save(env, ids["carol"], "channel", alive)
-        f = await save(env, ids["bob"], "channel", unreadable)
+        kept = await d.create_chat_message(pvt, ids["alice"], "alice", "one")
+        deleted = await d.create_chat_message(pvt, ids["alice"], "alice", "two")
+        s_kept = await save(env, ids["bob"], "channel", kept)
+        s_deleted = await save(env, ids["bob"], "channel", deleted)
         await d.remove_channel_member(pvt, ids["bob"])
-        for mid in (gone_plain, gone_wait, gone_fired):
-            await d.delete_chat_message(mid)
-        assert await server._saved_tick_once(NOW + 61) == 1             # c fires (and says no longer available)
-        assert await d.cleanup_saved_messages(NOW + grace - 5, grace) == 0   # inside the grace
-        assert await d.cleanup_saved_messages(NOW + grace + 120, grace) == 2  # a (saved long ago) and c (fired long ago)
-        left = {r["id"] for r in await d.list_saved_messages(ids["carol"], None, 50)}
-        assert left == {b, e}                                            # b waits on its reminder; e is alive
-        assert {r["id"] for r in await d.list_saved_messages(ids["bob"], None, 50)} == {f}   # unreadable is kept
-        assert a and c
+        await d.delete_chat_message(deleted)
+        grace = 7 * 86400
+        # a clean-up pass long after the grace, if the code still has one
+        for name in ("cleanup_saved_messages",):
+            if hasattr(d, name):
+                await getattr(d, name)(NOW + 10 * grace, grace)
+        items = (await listing(env, ids["bob"]))["items"]
+        assert {i["id"] for i in items} == {s_kept, s_deleted}          # both stay, both look the same
+        assert all(set(i) == UNAVAILABLE_KEYS and not i["available"] for i in items)
+        for sid in (s_kept, s_deleted):                                  # and both can be removed
+            assert (await env.call("DELETE", ids["bob"], f"/api/saved/{sid}"))[0] == 200
+        assert not hasattr(d, "cleanup_saved_messages") and not hasattr(server, "SAVED_CLEANUP_GRACE_SECONDS")
+        assert "saved" not in inspect.getsource(server.PortalServer._data_cleanup_task).lower()
     run(body)
 
 

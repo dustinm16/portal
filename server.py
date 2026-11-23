@@ -24163,10 +24163,11 @@ async def http_put_channel_notify(request: web.Request) -> web.Response:
 # anonymous exactly as in the channel. Nothing about a member's entries goes to any other member, any
 # socket or any log; the routes are the member's own.
 #
-# A row whose message is gone is kept until nothing waits on it (no pending reminder, 7 days after it
-# fired or was saved) and then removed by the periodic clean-up (_data_cleanup_task); chat message ids
-# are AUTOINCREMENT, never reused, and every lookup also matches kind and the stored channel or
-# conversation id, so a row can never resolve to a different message.
+# A row is never removed because its message is gone: a clean-up that did would tell a member who lost
+# access which message was deleted. The member removes entries (DELETE), the table is capped at
+# SAVED_MAX_ENTRIES per member and goes with the member; chat message ids are AUTOINCREMENT, never
+# reused, and every lookup also matches kind and the stored channel or conversation id, so a row can
+# never resolve to a different message.
 #
 # Reminders: one tick (_saved_tick_once, every SAVED_TICK_SECONDS, a query on a partial index that is
 # empty when idle) fires at most SAVED_TICK_CAP due reminders, at most SAVED_TICK_PER_MEMBER of them one
@@ -24192,7 +24193,6 @@ SAVED_TICK_CAP = 50              # reminders fired per tick
 SAVED_TICK_PER_MEMBER = 10       # of them, at most this many for one member (their oldest)
 SAVED_UNAVAILABLE_TEXT = "That message is no longer available, so no reminder can be set for it"
 SAVED_MAX_REMINDER_NOTES = 200   # 'reminder' notifications kept per member; the oldest go first
-SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400
 _SAVED_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|\+00:00)$")
 
 
@@ -32120,12 +32120,6 @@ class PortalServer:
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] Notification cleanup failed: {e}")
-
-                # Saved messages whose message is gone and that nothing waits on
-                try:
-                    total += await db.cleanup_saved_messages(_saved_clock(), SAVED_CLEANUP_GRACE_SECONDS)
-                except Exception as e:
-                    logger.error(f"[Retention] Saved-message cleanup failed: {e}")
 
                 # Activity log
                 try:

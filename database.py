@@ -10083,24 +10083,6 @@ class Database:
         raw.commit()
         return out
 
-    async def cleanup_saved_messages(self, now: int, grace_seconds: int) -> int:
-        """Delete rows whose message is gone (deleted, pruned, aged out, author removed), once nothing
-        waits on them: no pending reminder, and `grace_seconds` since the reminder fired or the entry was
-        saved. A row the member merely cannot read now is kept (access may come back)."""
-        cursor = await self.conn.execute(
-            """DELETE FROM saved_messages
-               WHERE (remind_at IS NULL OR fired_at IS NOT NULL)
-                 AND COALESCE(fired_at, saved_at) < ?
-                 AND ((kind = 'channel' AND NOT EXISTS (
-                           SELECT 1 FROM chat_messages m
-                           WHERE m.id = saved_messages.message_id AND m.channel_id = saved_messages.scope_id))
-                   OR (kind = 'dm' AND NOT EXISTS (
-                           SELECT 1 FROM dm_messages m
-                           WHERE m.id = saved_messages.message_id AND m.conversation_id = saved_messages.scope_id)))""",
-            (now - grace_seconds,))
-        await self.conn.commit()
-        return cursor.rowcount
-
     async def cleanup_old_notifications(self, days: int = 30) -> int:
         """Delete notifications older than specified days. Returns count deleted."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
