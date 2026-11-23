@@ -1838,7 +1838,7 @@
                         <span class="endpoint-desc">Mark Interested in one occurrence</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>(1.23.0) One reminder follows 10 minutes before the start (an in-app notification and, for members with a device who want golive pushes, a Web Push: "<streamer> starts in 10 minutes" and nothing more). <code>DELETE</code> on the same path takes the mark back. A member who loses access before the start gets nothing. <code>409</code> at 200 marks.</p>
+                        <p>(1.23.0) One reminder follows 10 minutes before the start (an in-app notification and, for members with a device who want golive pushes, a Web Push: "<streamer> starts in 10 minutes" and nothing more). <code>DELETE</code> on the same path takes the mark back. A member who loses access before the start gets nothing. <code>409</code> at 200 marks. A <code>start</code> that is not a whole number from 1 to 4102444800 (1 January 2100) is <code>404</code> here and <code>400</code> on cancel and restore.</p>
                     </div>
                 </div>
 

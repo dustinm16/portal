@@ -32,6 +32,7 @@ GOLIVE_AFTER_SECONDS = 30 * 60       # ... to 30 minutes after it belongs to the
 LATE_GRACE_SECONDS = 15 * 60         # an occurrence that began less than this ago still counts down ("starting now")
 START_PAST_LIMIT_SECONDS = 15 * 60   # a new start may not be older than this
 START_FUTURE_LIMIT_DAYS = 730
+START_MAX = 4102444800               # 2100-01-01 UTC: an occurrence start named in a URL is never beyond this
 FEED_TOKEN_PREFIX = "sf_"
 FEED_TOKEN_RE = re.compile(r"^sf_[A-Za-z0-9_-]{43}$")
 LOCAL_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
@@ -110,8 +111,14 @@ def next_occurrences(entry: dict, now: int, cancelled=(), started=(), count: int
 
 
 def is_occurrence(entry: dict, start: int) -> bool:
-    """Whether `start` is one of the entry's own occurrences (not a made-up time)."""
-    return start in occurrences(entry, start, start, limit=2)
+    """Whether `start` is one of the entry's own occurrences (not a made-up time). A time the date arithmetic
+    cannot represent is no occurrence."""
+    if not isinstance(start, int) or isinstance(start, bool) or not 0 < start <= START_MAX:
+        return False
+    try:
+        return start in occurrences(entry, start, start, limit=2)
+    except (OverflowError, ValueError, OSError):
+        return False
 
 
 def occurrence_covering(entry: dict, now: int, cancelled=(), started=()):

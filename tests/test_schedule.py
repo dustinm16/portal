@@ -553,6 +553,25 @@ async def main():
         await w.db.conn.execute("DELETE FROM stream_rsvps WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
         await w.db.conn.execute("DELETE FROM stream_rsvp_sent WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
         await w.db.conn.commit()
+        # a start too large for the date arithmetic is a plain refusal on every route that takes one (it was a 500
+        # with a traceback), whatever the member or the owner sends
+        big = ["1000000000000000", "253402300000", "253402300799", "4102444801", str(2 ** 63 - 1), str(2 ** 63), "99999999999999999999",
+               "-5", "0", "abc", "1.5"]
+        codes = {}
+        for v in big:
+            for label, who, method, tail in (("rsvp", "m1", "POST", "rsvp"), ("unrsvp", "m1", "DELETE", "rsvp"),
+                                             ("cancel", "owner", "POST", "cancel"), ("restore", "owner", "DELETE", "cancel")):
+                st, _b = await w.call(method, who, f"/api/streams/{pub}/schedule/{eid}/{tail}/{v}")
+                codes[(label, v)] = st
+        bad_codes = {k: st for k, st in codes.items() if st not in (400, 404)
+                     and not (k[0] == "unrsvp" and st == 200)}
+        check("an out-of-range or malformed start is 400 or 404 on RSVP, taking back, cancel and restore (never 500)",
+              not bad_codes, str(bad_codes))
+        entry_row = await w.db.schedule_get(eid)
+        check("... the occurrence test itself answers False for them and raises nothing",
+              all(not ss.is_occurrence(entry_row, int(v)) for v in big if v.lstrip("-").isdigit()))
+        check("... and the owner and the member keep working after them",
+              (await w.call("GET", "m1", f"/api/streams/{pub}/schedule"))[0] == 200)
         # moving the time drops the marks of the occurrences to come
         w.clock.now = utc(2026, 12, 10, 12)
         FRI5 = FRI4 + 7 * 86400

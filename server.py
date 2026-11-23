@@ -8125,7 +8125,7 @@ def _schedule_start_from_path(request: web.Request):
         start = int(request.match_info.get("start", ""))
     except ValueError:
         return None
-    return start if 0 < start <= _SQLITE_INT_MAX else None
+    return start if 0 < start <= stream_schedule.START_MAX else None
 
 
 async def http_schedule_cancel(request: web.Request) -> web.Response:
