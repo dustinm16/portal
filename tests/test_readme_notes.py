@@ -1119,7 +1119,7 @@ for name, needles in (
         ("web push", ("fixed `reminder` kind", "never message text", "no portal tab open")),
         ("the phone reach: a visible button instead of a long press", ("does not fire a context menu on a long press", "message actions", "no inline handler")),
         ("the migration", ("`if not exists`", "`saved_messages`", "idx_saved_messages_due", "the 1.22.0 tree was started twice")),
-        ("what is not tested", ("no browser drew the pages in the tests, and no phone", "no real push service", "no calendar", "no cloudflare"))):
+        ("what is not tested", ("desktop chromium only, and no phone", "no real push service", "no calendar", "no cloudflare"))):
     check(f"1.23.0 (saved) states: {name}", all(n in _low23s or n in _sec23s for n in needles), str(needles))
 check("1.23.0 (saved) Not tested paragraph is present", bool(_nt23s.strip()))
 check("1.23.0 (saved) notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec23s))
@@ -1149,6 +1149,15 @@ check("1.23.0 (saved): the notes say a reminder for a direct message opens the S
       and "no per-message jump for direct messages" in _low23s and "not the message in context" in _low74)
 check("1.23.0 (saved): the notes say reminders have no per-kind push switch",
       "no per-kind push switch" in _low23s and "no per-kind push switch" in _low74)
+
+# --- 1.23.0 pictures ------------------------------------------------------------------------------
+_pics23 = ("watch-schedule", "streams-upcoming", "schedule-editor", "calendar-link", "chat-message-menu", "saved-view")
+_shots_src = (ROOT / "tools" / "make_screenshots.py").read_text()
+check("1.23.0: every new picture exists as a PNG, is shown in the Screenshots section and has a shot in tools/make_screenshots.py",
+      all((ROOT / "docs" / "screenshots" / f"{n}.png").is_file() and f"docs/screenshots/{n}.png" in text.split("## Screenshots", 1)[1]
+          and f'@shot("{n}")' in _shots_src for n in _pics23), str(_pics23))
+check("1.23.0: the notes no longer say that no pictures or no browser were involved, and state the desktop-only limit",
+      "no pictures for the readme" not in low23 and "desktop chromium only" in low23)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

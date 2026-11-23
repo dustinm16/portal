@@ -76,6 +76,18 @@ gets for /search/ while the search service is not running (nothing is dialled). 
 at the already blocked documentation address 198.51.100.77 gets; the reference is read from that page and typed into
 the administrator's Reference lookup. Unblock is never pressed.
 
+Pictures of 1.23.0 (watch-schedule, streams-upcoming, schedule-editor, calendar-link, chat-message-menu, saved-view)
+need no extra setup. Each makes its data through the portal's own routes inside its picture, once per run: the
+schedule entries of the demo streams (sam's offline stream gets a weekly slot, river and jordan one slot each,
+alex two slots of his own stream, and alex marks river's slot Interested), alex's calendar link (the picture is
+taken after a reload, so it shows the state the portal keeps, "You have a calendar link", and no token or address
+at all), and three saved messages of alex (one of them a message he posts and deletes through the chat's own
+frames, so the Saved view shows it as no longer available; one with a reminder tomorrow at 9:00). Times are made
+from the real clock when the picture is taken, so the dates in the pictures are the dates of that day. The new
+shots are defined last, so a full run takes them after the older pictures, which therefore carry no schedule.
+Every one of them is checked for the host name, user name and home directory of this machine and for the
+temporary directory of the staged instance before it is written.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -313,7 +325,7 @@ GENERAL = [
     ("river", "Yes please! I can trade basil.", {"reply": 9}),
     ("alex", "Deal. I will bring them to the meetup.", {}),
     ("sam", "Speaking of the meetup, the date is set for the 14th at the community hall.", {}),
-    ("casey", "I can bring the projector for the slideshow.", {"react": [(TADA, ["sam", "alex", "river"])]}),
+    ("casey", "Newcomer question from my neighbour.", {"react": [(TADA, ["sam", "alex", "river"])]}),
     ("jordan", "Great. I will make a short slide about how to join the portal for newcomers.", {}),
     ("sam", "Perfect, keep it simple: invite code, username, done.", {}),
     ("river", "Does the invite code change every day?", {}),
@@ -2028,6 +2040,193 @@ def _admin_announcements(s):
         page.wait_for_timeout(400)
         assert_clean(s, page, "admin-announcements")
         s.save("admin-announcements", page.locator("#announcements-card"))
+
+
+# -- 1.23.0: stream schedule, calendar link, saved messages ----------------------
+
+def schedule_local(delta_seconds: int, tz: str) -> str:
+    """A wall-clock start `delta_seconds` from now in zone `tz`, rounded up to the half hour, as the schedule routes take it."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    t = datetime.now(timezone.utc) + timedelta(seconds=delta_seconds)
+    t = t.replace(second=0, microsecond=0) + timedelta(minutes=(30 - t.minute % 30) % 30)
+    return t.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%dT%H:%M")
+
+
+def next_weekday_local(weekday: int, hour: int, tz: str) -> str:
+    """The next `weekday` (Monday 0) at `hour`:00 wall-clock time in `tz`, at least a day away."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    z = ZoneInfo(tz)
+    t = datetime.now(timezone.utc).astimezone(z).replace(hour=hour, minute=0, second=0, microsecond=0, tzinfo=None) + timedelta(days=1)
+    while t.weekday() != weekday:
+        t += timedelta(days=1)
+    return t.strftime("%Y-%m-%dT%H:%M")
+
+
+def seeded_schedule(s) -> dict:
+    """Schedule entries of the demo streams, through the real routes, once per run: a weekly slot for sam's
+    (offline) stream, river's and jordan's slots, two slots of alex's own stream, and alex's Interested mark on
+    river's slot. Returns the ids the pictures need."""
+    if getattr(s, "_schedule", None):
+        return s._schedule
+    gid = s.info["golive"]
+    alex_stream = s.info["streams"]["public"]
+    out: dict = {"sam": gid["sam"], "alex": alex_stream}
+    plan = [
+        ("sam", gid["sam"], {"title": "Monthly questions about the portal", "start": schedule_local(27 * 3600, "America/New_York"),
+                              "tz": "America/New_York", "duration_min": 60, "recurrence": "weekly"}),
+        ("river", gid["river"], {"title": "Saturday sketch hour", "start": next_weekday_local(5, 18, "Europe/London"),
+                                  "tz": "Europe/London", "duration_min": 90, "recurrence": "weekly"}),
+        ("jordan", gid["jordan"], {"title": "Capacitor swap on a console", "start": schedule_local(50 * 3600, "Europe/Berlin"),
+                                    "tz": "Europe/Berlin", "duration_min": 120, "recurrence": None}),
+        ("alex", alex_stream, {"title": "Friday game night", "start": next_weekday_local(4, 21, "Europe/Berlin"),
+                                "tz": "Europe/Berlin", "duration_min": 180, "recurrence": "weekly"}),
+        ("alex", alex_stream, {"title": "Chess endgames, one-off special", "start": schedule_local(5 * 86400, "Europe/Berlin"),
+                                "tz": "Europe/Berlin", "duration_min": 90, "recurrence": None}),
+    ]
+    for owner, stream_id, body in plan:
+        page = api_page(s, s.context(owner))
+        api_ok(page, "POST", f"/api/streams/{stream_id}/schedule", body)
+        page.close()
+    alex_page = api_page(s, s.context("alex"))
+    upcoming = api_ok(alex_page, "GET", "/api/streams/schedule/upcoming?limit=20")["occurrences"]
+    river = next((o for o in upcoming if o["stream_id"] == gid["river"]), None)
+    if river is None:
+        raise Fail("river's slot is not in alex's upcoming list")
+    api_ok(alex_page, "POST", f"/api/streams/{river['stream_id']}/schedule/{river['entry_id']}/rsvp/{river['start']}")
+    alex_page.close()
+    s._schedule = out
+    return out
+
+
+@shot("watch-schedule")
+def _watch_schedule(s):
+    # the offline watch page of sam's stream as alex: the next slot, its countdown and the Interested toggle
+    ids = seeded_schedule(s)
+    page = s.open(s.context("alex"), f"/watch/{ids['sam']}", ".schedule-countdown", settle=1800)
+    page.wait_for_selector(".schedule-interested", timeout=15000)
+    assert_clean(s, page, "watch-schedule")
+    s.save("watch-schedule", page)
+
+
+@shot("streams-upcoming")
+def _streams_upcoming(s):
+    seeded_schedule(s)
+    page = s.open(s.context("alex"), "/streams", ".schedule-strip .schedule-card", settle=1800)
+    assert_clean(s, page, "streams-upcoming")
+    # the top of the page only: the search box and the Upcoming strip (the cards below it are the older streams picture)
+    s.write_bytes("streams-upcoming", page.screenshot(clip={"x": 0, "y": 0, "width": 1280, "height": 372}))
+
+
+@shot("schedule-editor")
+def _schedule_editor(s):
+    seeded_schedule(s)
+    ctx = s.context("alex", viewport={"width": 1280, "height": 2400})
+    page = s.open(ctx, "/", ".stat-card")
+    page.evaluate("switchTab('my-streams')")
+    page.wait_for_selector(".stream-card", timeout=15000)
+    page.wait_for_timeout(800)
+    page.locator(".stream-card", has_text="Friday game night").get_by_role("button", name="Manage").first.click()
+    page.wait_for_selector("#stream-details-modal .info-section", state="visible")
+    page.evaluate("""() => document.querySelectorAll('#stream-details-modal .modal-content, #stream-details-modal .modal-body')
+        .forEach(el => { el.style.maxHeight = 'none'; el.style.overflow = 'visible'; })""")
+    page.wait_for_selector("#stream-schedule-mount .schedule-form", timeout=15000)
+    page.wait_for_timeout(800)
+    assert_clean(s, page, "schedule-editor", "#stream-schedule-mount")
+    s.save("schedule-editor", page.locator("#stream-schedule-mount").locator("xpath=.."))
+
+
+@shot("calendar-link")
+def _calendar_link(s):
+    # the member's own link, made through the real route; the block is shown after a reload, which is the state
+    # the portal keeps (the address cannot be shown again), so no token appears in the picture
+    ctx = s.context("alex", viewport={"width": 1280, "height": 1300})
+    pre = api_page(s, ctx)
+    api_ok(pre, "POST", "/api/me/schedule-feed")
+    pre.close()
+    page = s.open(ctx, "/", ".stat-card")
+    page.evaluate("showProfileModal()")
+    page.wait_for_selector("#calendar-feed-settings .schedule-feed-warning", state="visible", timeout=15000)
+    page.get_by_role("heading", name="Calendar link for stream schedules").evaluate("el => el.scrollIntoView({block: 'start'})")
+    page.wait_for_timeout(600)
+    text = page.locator("#calendar-feed-settings").inner_text()
+    if "sf_" in text or "http" in text:
+        raise Fail("the calendar link block shows an address")
+    assert_clean(s, page, "calendar-link", "#calendar-feed-settings")
+    head = page.get_by_role("heading", name="Calendar link for stream schedules").bounding_box()
+    body = page.locator("#calendar-feed-settings").bounding_box()
+    pad = 24
+    clip = {"x": body["x"] - pad, "y": head["y"] - pad, "width": body["width"] + 2 * pad,
+            "height": body["y"] + body["height"] - head["y"] + 2 * pad}
+    s.write_bytes("calendar-link", page.screenshot(clip=clip))
+
+
+def saved_demo(s) -> dict:
+    """Three saved messages of alex, once per run: the one saved first is a message he posts himself and deletes
+    afterwards (the real delete frame), so the list shows it as no longer available; the second has a reminder
+    tomorrow at 9:00; the third is plain. The newest saved comes first in the list. Messages of the seeded talk
+    (the general channel) are referred to by their text."""
+    if getattr(s, "_saved", None):
+        return s._saved
+    from datetime import datetime, timedelta, timezone
+    page = chat_page(s, "alex")
+    mine = "Draft slide order for the meetup: invite code, username, done"
+    page.fill("#chat-input", mine)
+    page.evaluate("sendMessage()")
+    page.wait_for_selector(f".message:has-text('{mine}')", timeout=15000)
+    gone_id = int(page.locator(f".message:has-text('{mine}')").last.get_attribute("data-message-id"))
+
+    def message_id(text: str) -> int:
+        return int(page.locator(f".message:has-text('{text}')").first.get_attribute("data-message-id"))
+    remind_id = message_id("Newcomer question from my neighbour")
+    plain_id = message_id("No rush, we will post notes afterwards")
+    for mid in (gone_id, remind_id, plain_id):
+        api_ok(page, "POST", "/api/saved", {"kind": "channel", "message_id": mid})
+    listing = api_ok(page, "GET", "/api/saved?limit=30")["items"]
+    entry = next(i for i in listing if i.get("message_id") == remind_id)
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    api_ok(page, "PUT", f"/api/saved/{entry['id']}/remind", {"remind_at": tomorrow.strftime("%Y-%m-%dT%H:%M:%SZ")})
+    page.evaluate("(id) => ws.send(JSON.stringify({type: 'delete', message_id: id}))", gone_id)
+    page.wait_for_function(f"() => !document.querySelector('.message[data-message-id=\"{gone_id}\"]')", timeout=15000)
+    page.wait_for_timeout(500)
+    page.close()
+    s._saved = {"gone": gone_id, "remind": remind_id, "plain": plain_id}
+    return s._saved
+
+
+@shot("chat-message-menu")
+def _chat_message_menu(s):
+    # the message menu with Save message and Remind me..., on a message next to one alex already saved
+    ids = saved_demo(s)
+    page = chat_page(s, "alex")
+    page.wait_for_selector(f".message[data-message-id='{ids['plain']}'] .saved-badge", timeout=15000)
+    page.evaluate(f"""() => document.querySelector('.message[data-message-id="{ids['plain']}"]').scrollIntoView({{block: 'center'}})""")
+    page.wait_for_timeout(500)
+    target = page.locator(".message", has_text="I will join if I can get the kids to bed").first
+    target.scroll_into_view_if_needed()
+    page.evaluate("window.scrollTo(0, 0)")
+    target.click(button="right", position={"x": 640, "y": 14})
+    page.wait_for_selector("#message-context-menu.show", timeout=5000)
+    page.wait_for_timeout(500)
+    assert_clean(s, page, "chat-message-menu")
+    s.save("chat-message-menu", page)
+
+
+@shot("saved-view")
+def _saved_view(s):
+    saved_demo(s)
+    page = chat_page(s, "alex")
+    page.click("#saved-open-btn")
+    page.wait_for_selector(".saved-panel .saved-list > *", timeout=15000)
+    page.wait_for_function("() => document.querySelectorAll('.saved-panel .saved-list > *').length >= 3", timeout=15000)
+    page.wait_for_timeout(700)
+    text = page.locator(".saved-panel").inner_text()
+    if "No longer available" not in text or "Reminder" not in text:
+        raise Fail("the Saved view does not show a reminder and a no longer available entry")
+    assert_clean(s, page, "saved-view", ".saved-panel")
+    s.save("saved-view", page)
+
 
 
 class _Terminated(BaseException):

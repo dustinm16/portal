@@ -246,6 +246,12 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 ![Chat search](docs/screenshots/chat-search.png)
 *Search operators — `from:casey has:link` with link badges on the results*
 
+![Message menu with Save message and Remind me](docs/screenshots/chat-message-menu.png)
+*Message menu (1.23.0) — Save message and Remind me... next to Reply, React and Copy Text; the two messages above it carry the small Saved marker that only you see*
+
+![Saved view](docs/screenshots/saved-view.png)
+*Saved view (1.23.0) — a saved message with Jump to message, Remind me and Remove, one with a reminder set for tomorrow 9:00, and one that is no longer available (deleted: only the time it was saved is left)*
+
 ![Direct Messages](docs/screenshots/dms.png)
 *Direct Messages — private 1:1 and group conversations with encryption at rest*
 
@@ -286,6 +292,20 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 
 ![Watch page with stream chat](docs/screenshots/watch-chat.png)
 *The watch page of a live stream: the game next to the title, the viewer count, the Streamer and Mod badges in the chat and a pinned message banner above it*
+
+![Offline watch page with the countdown](docs/screenshots/watch-schedule.png)
+*The offline watch page of a stream with a schedule (1.23.0) — the next slot, a countdown and the Interested toggle*
+
+![Upcoming strip on the Streams page](docs/screenshots/streams-upcoming.png)
+*The Upcoming strip on the Streams page (1.23.0) — the next slots of the streams you may watch; one slot is marked Interested ("reminder set"), and your own stream shows only how many are interested*
+
+<img src="docs/screenshots/schedule-editor.png" alt="Schedule editor" width="560">
+
+*The owner's schedule editor in the stream settings (1.23.0) — a weekly slot and a one-off slot with Cancel this one and Delete the whole entry, and the form to add a slot in your own time zone*
+
+<img src="docs/screenshots/calendar-link.png" alt="Calendar link in User settings" width="360">
+
+*The calendar link in User settings (1.23.0) — Regenerate and Revoke, and the warning that the link is a secret. The address is shown once when it is made and cannot be shown again, so this picture shows the state afterwards*
 
 ![Go-live cards in chat](docs/screenshots/chat-golive.png)
 *Go-live cards in the announce channel, the Live now strip above the messages, and live streams in the channel list*
@@ -892,11 +912,11 @@ None for existing clients and nothing stops working. The behaviour changes an up
 - **Rollback.** Going back to 1.22.0 runs on the migrated database and ignores the seven tables. Stream schedule: 1.22.0's database layer (its `database.py`, run from a checkout of the 1.22.0 commit) opens a migrated database, leaves the new tables as they are, and deleting a member or a stream under it removes their schedule rows through the foreign keys; the integrity check was ok. Schedules, marks and calendar links are kept and become active again with a later upgrade; while 1.22.0 runs, no reminder is sent and no feed is served. Saved messages: the 1.22.0 tree was started twice on a copy of a staged database that holds saved entries (healthy and clean both times, `/health` 200, schema unchanged by the second start); the saved entries and waiting reminders stay stored, no reminder fires while 1.22.0 runs, and one that came due fires at the first ticks after a later upgrade. Notifications of type `reminder` that were already created show in 1.22.0 as ordinary notifications: one that names a message still jumps to it, the others open nothing. The 1.22.0 server process was not started on a database that holds schedule rows; only its database layer was opened on one.
 - **Not tested.**
   - **Stream schedule.** Proven by tests on a real database and server with fakes only: the push delivery (a recorder replaces the push service), the clock (tests move it; the staged smoke check uses the real clock and the real 30 second tick), the sign-in (a stand-in replaces the credential check in the in-process tests; the smoke check uses real logins). No phone received a push, no calendar application (Apple Calendar, Google Calendar, Thunderbird) read the feed, and nothing ran behind Cloudflare. The .ics file is checked by a parser written for the test, not by a calendar client.
-  - **Saved messages.** The chat page was exercised under Node against a small fake DOM (separate classic scripts sharing only the global object, in two time zones, one of them across a clock change): the real `datetime-local` picker, the context-menu event from the keyboard, a long press on Android and a tap on the **...** button on iOS and Android were not seen.
+  - **Saved messages.** The chat page was exercised under Node against a small fake DOM (separate classic scripts sharing only the global object, in two time zones, one of them across a clock change), and a headless Chromium on a staged demo instance drew the message menu and the Saved view (the pictures in Screenshots, desktop size only). Not seen: the real `datetime-local` picker, the context-menu event from the keyboard, a long press on Android and a tap on the **...** button on iOS and Android.
   - **No real push service and no Cloudflare.** The push path was tested with a fake sender and with the staged loopback sink; delivery to a phone, a lock-screen notification and its tap were not seen, and nothing was tried through Cloudflare.
   - **No calendar and no daylight-saving edge beyond the tested ones.** "Tomorrow 9:00" was checked in Europe/Berlin across the March clock change and in America/New_York; other zones, a 9:00 that does not exist, and a device whose clock is wrong were not tried. A client that sends a time with another offset is refused by design.
   - **Not tried at scale.** The clean-up and the tick were run on small databases; the partial index and one-query idle tick are asserted with `EXPLAIN QUERY PLAN` and a query counter, not timed on a 250 MB database.
-  - **No browser drew the pages in the tests, and no phone.** How the countdown, the strip, the editor, the Saved view, the focus ring, the full-screen layout and the 44 px targets look and feel on a phone was not seen.
+  - **Desktop Chromium only, and no phone.** The tests draw nothing. The pictures in Screenshots were taken once with a headless Chromium at desktop size on a staged demo instance with made-up data: they show that the countdown, the Interested toggle, the Upcoming strip, the schedule editor, the calendar link block, the message menu and the Saved view render. The schedule editor's form is plain (labels and fields run together, default field colours); it was not styled in this release. Not seen: any other browser (Firefox, Safari), a phone or tablet, the focus ring, the full-screen layout and the 44 px targets on a phone, and a calendar application reading the feed.
 
 ### Upgrade notes for 1.22.0
 
