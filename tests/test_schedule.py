@@ -775,6 +775,83 @@ async def main():
         server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = keep
         server._feed_buckets.clear()
 
+        # ------------------------------------------------------------ a zone the host can no longer load
+        # (a tzdata update removed the name): the entry has no upcoming occurrence anywhere it is read, and
+        # nothing else of anybody's stops working
+        zs, _zc = await w.stream("z")
+        zbase = (w.clock.now // 60) * 60 + 7200
+        zloc = datetime.fromtimestamp(zbase, timezone.utc).strftime("%Y-%m-%dT%H:%M")
+        zbody = {"title": "Zone show", "start": zloc, "tz": "UTC", "duration_min": 60}
+        z_bad = await w.entry(zs, {**zbody, "recurrence": "weekly"})
+        z_good = await w.entry(zs, zbody)
+        await w.call("PUT", "m1", f"/api/streams/{zs}/follow")
+        for who, e in (("m1", z_bad), ("m2", z_bad), ("m1", z_good), ("m2", z_good)):      # the broken entry's marks come first
+            st, _ = await w.call("POST", who, f"/api/streams/{zs}/schedule/{e}/rsvp/{zbase}")
+            assert st == 200, st
+        await w.db.conn.execute("UPDATE stream_schedule SET tz = 'Mars/Olympus' WHERE id = ?", (z_bad,))
+        await w.db.conn.commit()
+        zlog = io.StringIO()
+        zhandler = logging.StreamHandler(zlog)
+        server.logger.addHandler(zhandler)
+        try:
+            st, b = await w.call("GET", "m1", "/api/streams/schedule/upcoming?limit=50")
+            ids_up = {o["entry_id"] for o in (b or {}).get("occurrences", [])}
+            check("an entry whose zone cannot be loaded does not break the upcoming list (200): it is skipped, the rest is there",
+                  st == 200 and z_good in ids_up and z_bad not in ids_up, f"{st} {str(b)[:200]}")
+            st, b = await w.call("GET", "m1", f"/api/streams/{zs}/schedule")
+            check("... nor the stream's schedule, which still counts down to the other entry",
+                  st == 200 and [o["entry_id"] for o in b["next"]] == [z_good], f"{st} {str(b)[:200]}")
+            st, b = await w.call("GET", "owner", f"/api/streams/{zs}/schedule")
+            mine = {e["id"]: e for e in (b or {}).get("entries", [])}
+            check("the owner's view is 200 and shows the entry with no occurrences and 'time zone no longer available'",
+                  st == 200 and mine[z_bad]["next"] == [] and mine[z_bad].get("problem") == "time zone no longer available"
+                  and mine[z_good]["next"] and "problem" not in mine[z_good], f"{st} {str(mine)[:300]}")
+            st, body, _h = await w.raw("GET", None, f"/api/streams/schedule/feed/{token3}.ics")
+            check("the calendar feed is 200 with the working entry and without the broken one (no VEVENT, no VTIMEZONE)",
+                  st == 200 and b"schedule-%d@" % z_good in body and b"schedule-%d@" % z_bad not in body
+                  and b"Mars/Olympus" not in body, f"{st} {body[:200]!r}")
+            st, _ = await w.call("POST", "m1", f"/api/streams/{zs}/schedule/{z_bad}/rsvp/{zbase + 604800}")
+            check("a mark on the broken entry is refused (400), not a server error", st == 400, str(st))
+            st, _ = await w.call("POST", "owner", f"/api/streams/{zs}/schedule/{z_bad}/cancel/{zbase}")
+            check("so is a cancel (400)", st == 400, str(st))
+            st, b = await w.call("PUT", "owner", f"/api/streams/{zs}/schedule/{z_bad}", json={"start": zloc})
+            check("a change of the start without a new zone says why (400)", st == 400 and "time zone" in b["error"], f"{st} {b}")
+            st, b = await w.call("PUT", "owner", f"/api/streams/{zs}/schedule/{z_bad}", json={"title": "Renamed"})
+            check("a change of the title alone works (200)", st == 200, f"{st} {b}")
+            try:
+                sent = await w.tick(zbase - 590)
+            except Exception as e:                         # the old code aborts the whole pass here
+                sent = repr(e)
+            check("the reminder pass goes on past the broken entry: both members get the other entry's reminder",
+                  sent == 2 and len([n for n in await w.notes("m1")]) >= 1, str(sent))
+            left = await (await w.db.conn.execute(
+                "SELECT COUNT(*) AS n, SUM(reminded_at IS NULL) AS unsent FROM stream_rsvps WHERE entry_id = ?", (z_bad,))).fetchone()
+            check("the broken entry's marks are skipped, not dropped and not claimed (they work again when the zone does)",
+                  left["n"] == 2 and left["unsent"] == 2, f"{tuple(left)}")
+            try:
+                await server._schedule_note_go_live({"id": zs})
+                went = "ok"
+            except Exception as e:
+                went = repr(e)
+            started = await w.db.schedule_started_map([z_good, z_bad], zbase - 86400)
+            check("a go-live in the slot is not stopped by it: the working entry's slot is marked started",
+                  went == "ok" and zbase in started[z_good] and not started[z_bad], f"{went} {started}")
+            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}" in l]
+            check("it is logged once for the entry, however many reads there were that day", len(lines) == 1, str(lines))
+            w.clock.now += 86400
+            await w.call("GET", "m1", "/api/streams/schedule/upcoming")
+            await w.call("GET", "m1", "/api/streams/schedule/upcoming")
+            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}" in l]
+            check("... and once more the next day", len(lines) == 2, str(lines))
+        finally:
+            server.logger.removeHandler(zhandler)
+        st, b = await w.call("PUT", "owner", f"/api/streams/{zs}/schedule/{z_bad}", json={"tz": "Europe/Paris"})
+        fixed = {e["id"]: e for e in (b or {}).get("entries", [])}
+        check("the owner fixes it by choosing a zone: no problem is shown and it is generated again",
+              st == 200 and "problem" not in fixed[z_bad] and fixed[z_bad]["tz"] == "Europe/Paris", f"{st} {str(b)[:300]}")
+        await w.call("DELETE", "owner", f"/api/streams/{zs}/schedule/{z_bad}")
+        await w.call("DELETE", "owner", f"/api/streams/{zs}/schedule/{z_good}")
+
         # ------------------------------------------------------------ logs
         stream_ = io.StringIO()
         handler = logging.StreamHandler(stream_)

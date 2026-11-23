@@ -207,6 +207,7 @@
             }
             (data.entries || []).forEach(function (e) {
                 var item = el('div', { class: 'schedule-entry', style: { marginBottom: '0.6rem' } }, [el('div', { text: describeEntry(e) })]);
+                if (e.problem) item.appendChild(el('div', { class: 'schedule-problem', style: { marginLeft: '1rem', color: 'var(--danger, #c0392b)' }, text: String(e.problem) + ' - choose another zone' }));
                 (e.next || []).slice(0, 2).forEach(function (n) {
                     item.appendChild(el('div', { style: { marginLeft: '1rem' } }, [
                         el('span', { text: whenText(n.start) + ' - ' + n.interested_count + ' interested ' }),

@@ -160,6 +160,15 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   answers = [{ status: 200, data: {} }, owner];
   await buttonWith(ed, 'Delete the whole entry').click();
   check('owner: Delete removes the entry', take()[0].url === '/api/streams/7/schedule/3');
+  answers = [{ status: 200, data: { entries: [
+    { id: 4, title: 'Lost zone', start: '2026-12-04T21:00', tz: 'Mars/Olympus', duration_min: 60, recurrence: null, next: [], cancelled: [], problem: 'time zone no longer available' },
+    { id: 5, title: 'Fine', start: '2026-12-05T21:00', tz: 'Europe/Berlin', duration_min: 60, recurrence: null, next: [], cancelled: [] }], suggestion: null, limits: { title: 100 } } }];
+  const ed2 = new N('DIV');
+  await SS.mountOwner(ed2, 7, () => {});
+  take();
+  check('owner: an entry whose zone the host lost says "time zone no longer available", once, and the other entry does not',
+    ed2.textContent.split('time zone no longer available').length === 2 && ed2.textContent.indexOf('Lost zone') >= 0
+    && ed2.textContent.indexOf('Fine') >= 0, ed2.textContent);
 
   // ---- the calendar link
   answers = [{ status: 200, data: { active: false } }];

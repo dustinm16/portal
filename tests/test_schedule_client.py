@@ -33,8 +33,8 @@ check("the script never assigns innerHTML or outerHTML, and never evals",
 check("no inline handler is made", "onclick" not in JS.lower() and "setAttribute('on" not in JS)
 check("no emoji or emoji-like symbol characters", all(ord(ch) < 0x2190 or ch in "\u2013\u2014\u2018\u2019\u201c\u201d" for ch in JS),
       str({ch for ch in JS if ord(ch) >= 0x2190}))
-for page, mark in (("watch.html", "stream-schedule.js?v=2"), ("streams.html", "stream-schedule.js?v=2"), ("index.html", "stream-schedule.js?v=2")):
-    check(f"{page} loads stream-schedule.js at v2", mark in (STATIC / page).read_text(encoding="utf-8"))
+for page, mark in (("watch.html", "stream-schedule.js?v=3"), ("streams.html", "stream-schedule.js?v=3"), ("index.html", "stream-schedule.js?v=3")):
+    check(f"{page} loads stream-schedule.js at v3", mark in (STATIC / page).read_text(encoding="utf-8"))
 check("the Streams page has the Upcoming strip element and the user settings the calendar link element",
       'id="schedule-upcoming"' in (STATIC / "streams.html").read_text() and 'id="calendar-feed-settings"' in (STATIC / "index.html").read_text())
 check("the offline page draws once and mounts the countdown for the next occurrence",

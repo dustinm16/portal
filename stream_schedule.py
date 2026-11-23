@@ -16,7 +16,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from zoneinfo import ZoneInfo, available_timezones
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 TITLE_MAX = 100
 DURATION_DEFAULT = 60
@@ -48,6 +48,16 @@ def _zones() -> frozenset:
 
 def valid_tz(name) -> bool:
     return isinstance(name, str) and name in _zones() and len(name) <= 64
+
+
+def zone_available(tz) -> bool:
+    """Whether the host can load the zone now. A name that was valid when an entry was stored can stop being
+    loadable (a tzdata update removed it); such an entry has no occurrences until its owner picks another zone."""
+    try:
+        ZoneInfo(tz)
+        return True
+    except (ZoneInfoNotFoundError, ValueError, OSError, TypeError):
+        return False
 
 
 def parse_local(text: str) -> datetime:
@@ -88,14 +98,17 @@ def occurrence_index(entry: dict, start: int):
         for n in (guess, guess - 1, guess + 1):
             if n >= 0 and occurrence_start(entry, n) == start:
                 return n
-    except (OverflowError, ValueError, OSError):
+    except (OverflowError, ValueError, OSError, ZoneInfoNotFoundError):
         pass
     return None
 
 
 def occurrences(entry: dict, after: int, until: int, limit: int = 200) -> list:
     """UTC starts of the entry's occurrences with after <= start <= until, oldest first.
-    A one-off entry has one; a weekly entry one per week at the same wall-clock time."""
+    A one-off entry has one; a weekly entry one per week at the same wall-clock time. An entry whose
+    zone the host cannot load has none."""
+    if not zone_available(entry["tz"]):
+        return []
     first = occurrence_start(entry, 0)
     if not entry.get("weekly"):
         return [first] if after <= first <= until else []
@@ -196,6 +209,8 @@ def validate_entry(data: dict, now: int, existing: dict = None):
     if existing is not None and not clean:
         return None, "Nothing to change"
     merged = {**(existing or {}), **clean}
+    if ("local_start" in clean or "tz" in clean) and not zone_available(merged["tz"]):
+        return None, "The time zone of this entry is no longer available; choose another one"
     if "local_start" in clean or "tz" in clean:
         start = local_to_utc(parse_local(merged["local_start"]), merged["tz"])
         # A new start may not be in the past; an edit that leaves the start alone (a zone or a title change on a

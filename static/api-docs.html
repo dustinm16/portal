@@ -1816,7 +1816,7 @@
                         <span class="endpoint-desc">A stream's schedule</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>(1.23.0) Next occurrences for anyone who may watch the stream (a stream they may not watch answers the same <code>404</code> as an unknown one); for the owner also the entries in full, counts of interested members and the title offered at the last go-live (<code>suggestion</code>, never applied by the server).</p>
+                        <p>(1.23.0) Next occurrences for anyone who may watch the stream (a stream they may not watch answers the same <code>404</code> as an unknown one); for the owner also the entries in full, counts of interested members and the title offered at the last go-live (<code>suggestion</code>, never applied by the server). An entry whose time zone the host can no longer load has <code>problem: "time zone no longer available"</code> and no <code>next</code>; it is left out of every other list, of the feed and of the reminders until its owner sends a new <code>tz</code> (a <code>PUT</code> of the start alone is <code>400</code>).</p>
                     </div>
                 </div>
 

@@ -7932,6 +7932,27 @@ def _schedule_streamer(row: dict) -> str:
     return row.get("owner_nickname") or row.get("owner_username") or "Someone"
 
 
+_SCHEDULE_ZONE_PROBLEM = "time zone no longer available"
+_schedule_zone_logged: dict = {}      # entry id -> the day (epoch // 86400) it was last logged
+_SCHEDULE_ZONE_LOGGED_MAX = 2000
+
+
+def _schedule_zone_ok(row: dict, now: int) -> bool:
+    """Whether the host can still load the entry's time zone (a tzdata update can remove a name an entry was
+    stored with). An entry that cannot is treated as having no upcoming occurrence wherever it is read, and is
+    logged at most once per entry per day."""
+    if stream_schedule.zone_available(row.get("tz")):
+        return True
+    day = now // 86400
+    if _schedule_zone_logged.get(row["id"]) != day:
+        if len(_schedule_zone_logged) >= _SCHEDULE_ZONE_LOGGED_MAX:
+            _schedule_zone_logged.clear()
+        _schedule_zone_logged[row["id"]] = day
+        logger.warning(f"Schedule entry {row['id']}: its time zone cannot be loaded on this host; "
+                       "the entry has no upcoming occurrence until its owner chooses another zone")
+    return False
+
+
 def _schedule_item(row: dict, start: int, interested: bool, count=None) -> dict:
     item = {"entry_id": row["id"], "stream_id": row["stream_id"], "stream_name": row["stream_name"],
             "streamer": _schedule_streamer(row), "title": row["title"], "start": start,
@@ -7944,6 +7965,7 @@ def _schedule_item(row: dict, start: int, interested: bool, count=None) -> dict:
 
 async def _schedule_items(rows: list, user_id: int, now: int, horizon_days: int, per_entry: int) -> list:
     """Upcoming occurrences of the given (already visible) rows, with the caller's own marks."""
+    rows = [r for r in rows if _schedule_zone_ok(r, now)]
     if not rows:
         return []
     ids = [r["id"] for r in rows]
@@ -8014,11 +8036,13 @@ async def _schedule_owner_view(stream: dict, now: int) -> dict:
     counts = await db.rsvp_counts(ids, now - 3600)
     out = []
     for e in entries:
-        nxt = stream_schedule.next_occurrences(e, now, cancelled[e["id"]], started[e["id"]], count=3)
+        zone_ok = _schedule_zone_ok(e, now)
+        nxt = stream_schedule.next_occurrences(e, now, cancelled[e["id"]], started[e["id"]], count=3) if zone_ok else []
         out.append({"id": e["id"], "title": e["title"], "start": e["local_start"], "tz": e["tz"],
                     "duration_min": e["duration_min"], "recurrence": "weekly" if e["weekly"] else None,
                     "next": [{"start": s, "interested_count": counts.get((e["id"], s), 0)} for s in nxt],
-                    "cancelled": sorted(c for c in cancelled[e["id"]] if c >= now - 86400)})
+                    "cancelled": sorted(c for c in cancelled[e["id"]] if c >= now - 86400),
+                    **({} if zone_ok else {"problem": _SCHEDULE_ZONE_PROBLEM})})
     suggestion = await db.schedule_pending_suggestion(stream["id"], now - _SCHEDULE_SUGGESTION_AGE)
     if suggestion and suggestion["suggestion"] == stream.get("name"):
         suggestion = None
@@ -8243,6 +8267,8 @@ async def schedule_reminder_pass() -> int:
                     cancelled[eid] = (await db.schedule_cancelled_map([eid]))[eid]
                     started[eid] = (await db.schedule_started_map([eid], now - 86400))[eid]
             entry = entries[eid]
+            if entry and not _schedule_zone_ok(entry, now):
+                continue                                    # no occurrence can be computed: skipped, not dropped
             if not entry or not stream_schedule.is_occurrence(entry, row["occ_start"]) \
                     or row["occ_start"] in cancelled[eid]:
                 await db.rsvp_drop(row["id"])               # moved, cancelled or gone: nothing stale
@@ -8294,6 +8320,8 @@ async def _schedule_note_go_live(stream: dict) -> None:
     started = await db.schedule_started_map(ids, now - 86400)
     best = None
     for e in entries:
+        if not _schedule_zone_ok(e, now):
+            continue
         occ = stream_schedule.occurrence_covering(e, now, cancelled[e["id"]], started[e["id"]])
         if occ is not None and (best is None or abs(occ - now) < abs(best[1] - now)):
             best = (e, occ)
@@ -8364,6 +8392,7 @@ async def http_schedule_feed(request: web.Request) -> web.Response:
     role = _schedule_role(user)
     banned = await db.get_banned_stream_ids(user["id"])
     rows = [r for r in await db.schedule_feed_candidates(user["id"]) if _schedule_may_watch(r, user["id"], role, banned)]
+    rows = [r for r in rows if _schedule_zone_ok(r, now)]
     cancelled = await db.schedule_cancelled_map([r["id"] for r in rows])
     items = []
     for r in rows:
