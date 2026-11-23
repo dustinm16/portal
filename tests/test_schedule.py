@@ -385,6 +385,12 @@ async def main():
         check("the member who lost access, and the banned one, get no reminder and no push",
               (len(await w.notes("m1")), len(await w.notes("m2"))) == (n_before[0], n_before[1])
               and len(await w.notes("admin")) == n_before[2] + 1 and len(w.pusher.sent) == sent_before, str(w.pusher.sent))
+        adm = (await w.notes("admin"))[0]
+        adm_data = json.loads(adm["data"]) if isinstance(adm["data"], str) else adm["data"]
+        check("the stored reminder for a stream that is not public names no streamer in the stored notification "
+              "and still links to the stream by id",
+              adm["title"] == "A stream you are interested in starts in 10 minutes" and not adm["message"]
+              and "Anna" not in json.dumps(adm) and adm_data == {"stream_id": pub}, str(adm))
         rows = await (await w.db.conn.execute("SELECT user_id FROM stream_rsvps WHERE occ_start = ?", (FRI2,))).fetchall()
         check("their marks were dropped", {r["user_id"] for r in rows} == {ids["admin"]}, str([tuple(r) for r in rows]))
         await w.call("PUT", "owner", f"/api/streams/{pub}", json={"is_public": True})

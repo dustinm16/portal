@@ -8209,15 +8209,16 @@ async def http_schedule_unrsvp(request: web.Request) -> web.Response:
 
 async def _schedule_send_reminder(stream: dict, user_id: int) -> None:
     """The in-app notification and, for a member who wants it and is away, the Web Push. The words are
-    "<streamer> starts in 10 minutes" and nothing else: no slot title, no stream title. Push follows the existing
-    rules: a streamer is named in a push only for a public stream, and the golive switch of push covers it."""
+    "<streamer> starts in 10 minutes" and nothing else: no slot title, no stream title. The streamer is named only
+    for a public stream, in the stored notification (and so the desktop alert) and in the push alike; any other
+    stream gets "A stream you are interested in starts in 10 minutes". The golive switch of push covers the push."""
     streamer = stream.get("owner_nickname") or stream.get("owner_username") or "Someone"
     sid = int(stream["id"])
-    await send_notification(user_id, "stream_reminder", f"{streamer} starts in 10 minutes", "", {"stream_id": sid})
+    title = (f"{streamer} starts in 10 minutes" if stream.get("is_public")
+             else "A stream you are interested in starts in 10 minutes")
+    await send_notification(user_id, "stream_reminder", title, "", {"stream_id": sid})
 
     async def build(uid):
-        title = (f"{streamer} starts in 10 minutes" if stream.get("is_public")
-                 else "A stream you are interested in starts in 10 minutes")
         return {"title": title, "body": "", "url": f"/watch/{sid}", "ref": f"remind-{sid}", "urgency": "high"}
     await _push_dispatch([user_id], "golive", build)
 
