@@ -78,6 +78,8 @@ class Env(base.Env):
         tok = base.Tok(int(uid))
         if request.headers.get("X-Test-Kind"):
             tok.token_id = request.headers["X-Test-Kind"] + "-1"
+        if request.headers.get("X-Test-Scopes"):
+            tok.scopes = request.headers["X-Test-Scopes"].split(",")
         return tok
 
     async def call(self, method, user_id, path, headers=None, **kw):
@@ -190,6 +192,30 @@ def test_missing_and_unreadable_messages_answer_alike_and_bad_input_is_refused()
             assert st == 403, kind
         async with env.http.get(env.url("/api/saved")) as r:
             assert r.status == 401
+    run(body)
+
+
+def test_a_narrowly_scoped_token_that_is_no_api_key_or_stream_key_is_refused_on_every_route():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        m = await d.create_chat_message(gen, ids["bob"], "bob", "x")
+        sid = await save(env, ids["bob"], "channel", m)
+        narrow = {"X-Test-Scopes": "services:read"}          # token id "t<uid>": neither "apikey-" nor "streamkey-"
+        when = {"remind_at": iso(NOW + 3600)}
+        for method, path, kw in (("GET", "/api/saved", {}), ("GET", "/api/saved/marks", {}),
+                                 ("POST", "/api/saved", {"json": {"kind": "channel", "message_id": m}}),
+                                 ("DELETE", f"/api/saved/{sid}", {}),
+                                 ("PUT", f"/api/saved/{sid}/remind", {"json": when})):
+            st, _ = await env.call(method, ids["bob"], path, headers=narrow, **kw)
+            assert st == 403, (method, path, st)
+        # the refusals changed nothing: the entry is there and has no reminder
+        row = await d.get_saved_message(ids["bob"], sid)
+        assert row and row["remind_at"] is None
+        # the same member's full-scope token is served
+        assert (await env.call("GET", ids["bob"], "/api/saved"))[0] == 200
+        assert (await env.call("GET", ids["bob"], "/api/saved/marks"))[0] == 200
     run(body)
 
 
