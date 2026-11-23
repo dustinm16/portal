@@ -8224,9 +8224,9 @@ async def _schedule_send_reminder(stream: dict, user_id: int) -> None:
 
 async def schedule_reminder_pass() -> int:
     """One tick: the unsent marks whose occurrence starts within 10 minutes. For each: the entry must still
-    generate that occurrence (not moved, cancelled or started), the member must still be allowed to watch the
-    stream (else the mark is dropped and nothing is sent), then the mark is claimed and only then is anything
-    sent, so a restart cannot send it twice. Returns the number sent."""
+    generate that occurrence (not moved, cancelled or started); the mark is claimed; only then is the stream
+    read fresh and the member's right to watch it checked (else the mark is dropped and nothing is sent); then
+    it is sent. The claim comes first so a restart cannot send it twice. Returns the number sent."""
     global _schedule_last_prune
     now = int(_schedule_now())
     due = await db.rsvp_due(now, now + stream_schedule.REMINDER_LEAD_SECONDS)
@@ -8252,14 +8252,18 @@ async def schedule_reminder_pass() -> int:
             if uid not in users:
                 users[uid] = await db.get_user_by_id(uid)
             user = users[uid]
-            banned = await db.is_user_banned_from_stream(entry["stream_id"], uid) if user else False
-            # the stream is read fresh for every row, right before the access check: one made private while the
-            # pass runs is judged as private, and the push title is built from this read too
-            stream = await db.get_user_stream(entry["stream_id"]) if user else None
-            if not stream or not _stream_read_allowed(stream, uid, _schedule_role(user), False, banned):
-                await db.rsvp_drop(row["id"])               # lost access since the mark: dropped, nothing sent
+            if not user:
+                await db.rsvp_drop(row["id"])               # the member is gone: dropped, nothing sent
                 continue
             if not await db.rsvp_claim(uid, eid, row["occ_start"], now):
+                continue
+            # claimed: from here on this is the only sender of this reminder. The stream is read now, after the
+            # claim, and judged now, so what is sent is built from what is true at this moment: one made private
+            # since the due list was read (or since the previous member's reminder) is judged as private
+            banned = await db.is_user_banned_from_stream(entry["stream_id"], uid)
+            stream = await db.get_user_stream(entry["stream_id"])
+            if not stream or not _stream_read_allowed(stream, uid, _schedule_role(user), False, banned):
+                await db.rsvp_drop(row["id"])               # lost access since the mark: dropped, nothing sent
                 continue
             try:
                 await _schedule_send_reminder(stream, uid)

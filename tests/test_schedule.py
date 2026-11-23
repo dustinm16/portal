@@ -553,6 +553,48 @@ async def main():
         await w.db.conn.execute("DELETE FROM stream_rsvps WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
         await w.db.conn.execute("DELETE FROM stream_rsvp_sent WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
         await w.db.conn.commit()
+        # two members are due on one occurrence and the stream becomes private as the second one's mark is being
+        # claimed (after the due list, the entry checks and a read of the stream made before the claim would
+        # have been done): the claim comes first and the stream is read and judged after it, so the second member
+        # gets no notification and no push, and nothing they hold names the streamer
+        await w.subscribe("m2")
+        await w.db.rsvp_add(ids["m1"], eid, FRI6, FRI6 - 700, 200, False)
+        await w.db.rsvp_add(ids["m2"], eid, FRI6, FRI6 - 700, 200, False)
+        n1, n2, p0 = len(await w.notes("m1")), len(await w.notes("m2")), len(w.pusher.sent)
+        real_claim, claims = w.db.rsvp_claim, []
+
+        async def private_at_second_claim(*a, **kw):
+            claims.append(a[0])
+            if len(claims) == 2:
+                await w.db.update_user_stream(pub, is_public=0)
+            return await real_claim(*a, **kw)
+        w.db.rsvp_claim = private_at_second_claim
+        try:
+            sent_now = await w.tick(FRI6 - 590)
+        finally:
+            del w.db.rsvp_claim
+        await w.drain()
+        await w.db.update_user_stream(pub, is_public=1)
+        pushed = w.pusher.sent[p0:]
+        check("two due marks, the stream goes private between them: only the first member is reminded",
+              claims == [ids["m1"], ids["m2"]] and sent_now == 1 and len(await w.notes("m1")) == n1 + 1
+              and len(await w.notes("m2")) == n2, f"{claims} {sent_now}")
+        check("... the second member gets no push either, and no push or notification of theirs names the streamer",
+              [u for u, _p, _u in pushed] == [ids["m1"]]
+              and "Anna" not in json.dumps([x[1] for x in pushed if x[0] == ids["m2"]])
+              and "Anna" not in json.dumps(await w.notes("m2")), str(pushed))
+        left = await (await w.db.conn.execute("SELECT COUNT(*) AS n FROM stream_rsvps WHERE user_id = ? AND entry_id = ? AND occ_start = ?",
+                                              (ids["m2"], eid, FRI6))).fetchone()
+        sentmark = await (await w.db.conn.execute("SELECT COUNT(*) AS n FROM stream_rsvp_sent WHERE user_id = ? AND entry_id = ? AND occ_start = ?",
+                                                  (ids["m2"], eid, FRI6))).fetchone()
+        check("... the second member's mark is dropped and the reminder is not owed again", left["n"] == 0 and sentmark["n"] == 1,
+              f"{left['n']} {sentmark['n']}")
+        c1 = len(await w.notes("m1"))
+        check("... another tick sends nothing more", await w.tick(FRI6 - 580) == 0 and len(await w.notes("m1")) == c1)
+        await w.db.conn.execute("DELETE FROM stream_rsvps WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
+        await w.db.conn.execute("DELETE FROM stream_rsvp_sent WHERE entry_id = ? AND occ_start = ?", (eid, FRI6))
+        await w.db.conn.commit()
+
         # a start too large for the date arithmetic is a plain refusal on every route that takes one (it was a 500
         # with a traceback), whatever the member or the owner sends
         big = ["1000000000000000", "253402300000", "253402300799", "4102444801", str(2 ** 63 - 1), str(2 ** 63), "99999999999999999999",
