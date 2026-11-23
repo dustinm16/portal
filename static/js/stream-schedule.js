@@ -345,16 +345,26 @@
     // ---- the calendar feed block of the user settings
     async function mountFeed(container) {
         if (!container) return;
+        var isActive = false, shownUrl = null;
         async function load() {
             var r = await api('GET', '/api/me/schedule-feed');
-            draw(r.ok && r.data.active, null);
+            isActive = !!(r.ok && r.data.active);
+            draw(null, false);
         }
-        function draw(active, url) {
+        /* the address is shown once; it does not stay on the page when the settings dialog is closed */
+        var modal = container.closest ? container.closest('.modal') : null;
+        if (modal && typeof MutationObserver === 'function') {
+            new MutationObserver(function () {
+                if (shownUrl !== null && modal.style.display === 'none') draw(null, false);
+            }).observe(modal, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
+        function draw(url, confirming) {
+            shownUrl = url || null;
             clear(container);
             container.appendChild(el('p', { text: 'A calendar link lets a calendar app show the schedules of the streams you follow, ' +
                 'are interested in or own. It works without signing in, only for your own feed, and only reads.' }));
             if (url) {
-                var field = el('input', { type: 'text', value: url, readonly: 'readonly', style: { width: '100%' } });
+                var field = el('input', { type: 'text', value: url, readonly: 'readonly', 'aria-label': 'Your calendar link', style: { width: '100%' } });
                 container.appendChild(el('div', {}, [
                     el('div', { text: 'Your calendar link (shown once, copy it now):' }), field,
                     el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Copy', on: { click: async function () {
@@ -362,18 +372,28 @@
                     } } })
                 ]));
             } else {
-                container.appendChild(el('p', { text: active ? 'You have a calendar link. It cannot be shown again; regenerate it to get a new one.' : 'You have no calendar link.' }));
+                container.appendChild(el('p', { text: isActive ? 'You have a calendar link. It cannot be shown again; regenerate it to get a new one.' : 'You have no calendar link.' }));
             }
-            var make = el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: active ? 'Regenerate' : 'Create link', on: { click: async function () {
+            async function make() {
                 var r = await api('POST', '/api/me/schedule-feed');
-                if (!r.ok) { toast(errorOf(r, 'Could not make the link'), 'error'); return; }
-                draw(true, r.data.url);
-            } } });
-            container.appendChild(make);
-            if (active) container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Revoke', on: { click: async function () {
-                var r = await api('DELETE', '/api/me/schedule-feed');
-                if (r.ok) draw(false, null); else toast(errorOf(r, 'Could not revoke the link'), 'error');
-            } } }));
+                if (!r.ok) { toast(errorOf(r, 'Could not make the link'), 'error'); draw(url, false); return; }
+                isActive = true;
+                draw(r.data.url, false);
+            }
+            if (confirming) {
+                /* a new link ends the old one: the calendar applications that use it stop updating */
+                container.appendChild(el('p', { class: 'schedule-feed-confirm', role: 'alert', text: 'Regenerating ends the link you have now. A calendar application that uses it stops updating until you give it the new link.' }));
+                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Yes, regenerate', on: { click: make } }));
+                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Keep the current link', on: { click: function () { draw(url, false); } } }));
+            } else {
+                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: isActive ? 'Regenerate' : 'Create link', on: { click: function () {
+                    if (isActive) draw(url, true); else return make();
+                } } }));
+                if (isActive) container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Revoke', on: { click: async function () {
+                    var r = await api('DELETE', '/api/me/schedule-feed');
+                    if (r.ok) { isActive = false; draw(null, false); } else toast(errorOf(r, 'Could not revoke the link'), 'error');
+                } } }));
+            }
             container.appendChild(el('p', { class: 'schedule-feed-warning', text: FEED_WARNING, style: { fontSize: '0.8125rem' } }));
         }
         await load();

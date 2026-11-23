@@ -34,6 +34,7 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   let answers = [];
   const timers = [];
   const cleared = [];
+  const observers = [];
   const body = new N('BODY');
   const ctx = {
     document: { readyState: 'complete', head: new N('HEAD'), body, getElementById: () => null, createElement: t => new N(t),
@@ -41,6 +42,7 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
     location: { protocol: 'https:', host: 'portal.test', pathname: '/watch/7', href: 'https://portal.test/watch/7' },
     localStorage: { getItem: () => null, setItem() {} }, navigator: {},
     Date: FakeDate,
+    MutationObserver: class { constructor(cb) { this.cb = cb; observers.push(this); } observe(node, opts) { this.node = node; this.opts = opts; } },
     setTimeout: () => 0, setInterval: (f) => { timers.push(f); return timers.length; }, clearTimeout() {}, clearInterval: (id) => { cleared.push(id); },
     console,
     fetch: async (url, init) => {
@@ -277,6 +279,8 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   // ---- the calendar link
   answers = [{ status: 200, data: { active: false } }];
   const feed = new N('DIV');
+  const modal = new N('DIV'); modal.style = { display: 'flex' };
+  feed.closest = (sel) => sel === '.modal' ? modal : null;
   await SS.mountFeed(feed);
   check('feed: with no link the button says Create link', !!buttonWith(feed, 'Create link') && !buttonWith(feed, 'Revoke'));
   check('feed: the warning about proxy logs is next to the buttons', /proxies/.test(feed.textContent) && /log an address/.test(feed.textContent) && /regenerate/i.test(feed.textContent));
@@ -284,8 +288,30 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   answers = [{ status: 200, data: { active: true, url: secret } }];
   take();
   await buttonWith(feed, 'Create link').click();
-  check('feed: Create POSTs and shows the address once, with Regenerate and Revoke', take()[0].method === 'POST'
+  check('feed: Create POSTs at once (nothing to confirm) and shows the address once, with Regenerate and Revoke', take()[0].method === 'POST'
     && feed.find(n => n.tagName === 'INPUT')[0].value === secret && !!buttonWith(feed, 'Regenerate') && !!buttonWith(feed, 'Revoke') && /proxies/.test(feed.textContent));
+  // Regenerate asks first: it ends the link calendar applications use
+  await buttonWith(feed, 'Regenerate').click();
+  check('feed: Regenerate sends nothing yet and asks, saying what it breaks',
+    take().length === 0 && /ends the link you have now/.test(feed.textContent) && /stops updating/.test(feed.textContent)
+    && !!buttonWith(feed, 'Yes, regenerate') && !!buttonWith(feed, 'Keep the current link') && !buttonWith(feed, 'Regenerate'));
+  await buttonWith(feed, 'Keep the current link').click();
+  check('feed: keeping the current link sends nothing and shows the page as before', take().length === 0 && !!buttonWith(feed, 'Regenerate')
+    && feed.find(n => n.tagName === 'INPUT')[0].value === secret && !/ends the link you have now/.test(feed.textContent));
+  await buttonWith(feed, 'Regenerate').click();
+  const secret2 = 'https://portal.test/api/streams/schedule/feed/sf_SECOND.ics';
+  answers = [{ status: 200, data: { active: true, url: secret2 } }];
+  await buttonWith(feed, 'Yes, regenerate').click();
+  c = take();
+  check('feed: confirming POSTs and shows the new address', c.length === 1 && c[0].method === 'POST' && feed.find(n => n.tagName === 'INPUT')[0].value === secret2);
+  // closing the settings dialog takes the address off the page
+  check('feed: the block watches the dialog it is in', observers.length === 1 && observers[0].node === modal);
+  observers[0].cb([]);
+  check('feed: an open dialog keeps the address', feed.find(n => n.tagName === 'INPUT').length === 1);
+  modal.style.display = 'none';
+  observers[0].cb([]);
+  check('feed: when the dialog closes the address is gone from the page and the text says it cannot be shown again',
+    feed.find(n => n.tagName === 'INPUT').length === 0 && feed.textContent.indexOf('SECOND') < 0 && /cannot be shown again/.test(feed.textContent) && !!buttonWith(feed, 'Regenerate'), feed.textContent);
   answers = [{ status: 200, data: { active: false } }];
   await buttonWith(feed, 'Revoke').click();
   check('feed: Revoke DELETEs and forgets the address', take()[0].method === 'DELETE' && feed.find(n => n.tagName === 'INPUT').length === 0 && feed.textContent.indexOf('SECRET') < 0);
