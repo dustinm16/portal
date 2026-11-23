@@ -297,6 +297,13 @@ def zone_transitions(tz: str, start_epoch: int, end_epoch: int) -> list:
 
 
 def vtimezone(tz: str, first_year: int, last_year: int) -> list:
+    """The VTIMEZONE lines of a zone (see _vtimezone_lines), kept per (zone, first year, last year): the
+    transitions are scanned once for a range, not once per feed fetch. A copy, so a caller may change it."""
+    return list(_vtimezone_lines(tz, first_year, last_year))
+
+
+@lru_cache(maxsize=256)
+def _vtimezone_lines(tz: str, first_year: int, last_year: int) -> tuple:
     """The VTIMEZONE lines of a zone: one observance for the offset at the start of the range and one per
     transition up to the end of it. Every observance is explicit (a single DTSTART, no RRULE), so a client
     needs no rule parser and the offsets are exactly the ones zoneinfo gives."""
@@ -317,7 +324,7 @@ def vtimezone(tz: str, first_year: int, last_year: int) -> list:
         onset = datetime.fromtimestamp(when + off_from, timezone.utc).replace(tzinfo=None)   # local time before the change
         block("DAYLIGHT" if is_dst else "STANDARD", onset, off_from, off_to, name)
     lines.append("END:VTIMEZONE")
-    return lines
+    return tuple(lines)
 
 
 def build_calendar(items: list, host: str, now: int, name: str = "Stream schedule") -> str:

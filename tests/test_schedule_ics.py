@@ -257,6 +257,29 @@ check("several cancelled weeks, the gap one among them, are each at their own wa
 out = ss.build_calendar([{**gap, "cancelled": [gap_start + 60, 5]}], "h", now)
 check("a cancelled time that is none of the entry's occurrences leaves no EXDATE", _exdates(out) == [], str(_exdates(out)))
 
+# ---------------------------------------------------------------- the VTIMEZONE block is built once per (zone, years)
+calls = []
+_real_transitions = ss.zone_transitions
+ss.zone_transitions = lambda *a, **kw: (calls.append(a), _real_transitions(*a, **kw))[1]
+try:
+    many = [{**gap, "id": 30 + i, "tz": z, "cancelled": []} for i, z in enumerate(
+        ("Europe/Paris", "America/Chicago", "Australia/Sydney", "Asia/Kolkata", "Europe/Lisbon"))]
+    first_text = ss.build_calendar(many, "h", now)
+    n_first = len(calls)
+    second_text = ss.build_calendar(many, "h", now + 5)
+    check("the first feed scans each zone once", n_first == 5, str(n_first))
+    check("a second feed for the same zones and years scans none", len(calls) == n_first, str(len(calls)))
+    check("... and both feeds hold the same VTIMEZONE blocks",
+          first_text.split("BEGIN:VEVENT")[0] == second_text.split("BEGIN:VEVENT")[0], "")
+    block = ss.vtimezone("Europe/Paris", 2027, 2035)
+    block.append("JUNK")
+    check("a caller changing the returned list does not change the cached block",
+          "JUNK" not in ss.vtimezone("Europe/Paris", 2027, 2035) and len(calls) == n_first, str(len(calls)))
+    ss.vtimezone("Europe/Paris", 2020, 2021)
+    check("another range of the same zone is its own entry", len(calls) == n_first + 1, str(len(calls)))
+finally:
+    ss.zone_transitions = _real_transitions
+
 if failed:
     print(f"\ntest_schedule_ics: {len(failed)} FAILED: " + "; ".join(failed))
     sys.exit(1)
