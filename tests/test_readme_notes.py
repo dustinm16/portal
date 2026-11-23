@@ -1106,7 +1106,7 @@ _srv_saved = (ROOT / "server.py").read_text()
 _db_saved = (ROOT / "database.py").read_text()
 check("1.23.0 (saved): the limits and the title the notes state are the ones in the code",
       "SAVED_MAX_ENTRIES = 500" in _srv_saved and "SAVED_MAX_PENDING = 100" in _srv_saved and "SAVED_HORIZON_DAYS = 366" in _srv_saved
-      and "SAVED_TICK_SECONDS = 30" in _srv_saved and "SAVED_TICK_CAP = 50" in _srv_saved and "SAVED_FIRST_TICK_SECONDS = 5" in _srv_saved
+      and "SAVED_TICK_SECONDS = 30" in _srv_saved and "SAVED_TICK_CAP = 50" in _srv_saved and "SAVED_TICK_PER_MEMBER = 10" in _srv_saved and "SAVED_FIRST_TICK_SECONDS = 5" in _srv_saved
       and "SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400" in _srv_saved
       and 'SAVED_REMINDER_TITLE = "Reminder for a saved message"' in _db_saved)
 check("1.23.0 (saved): the table, its cascade and the partial index are what the notes say",

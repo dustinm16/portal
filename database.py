@@ -33,6 +33,17 @@ RECORDING_FILE_EXTENSION = ".cast"
 # The one fixed title of a reminder notification and its push: it names no message, author or channel
 SAVED_REMINDER_TITLE = "Reminder for a saved message"
 
+# The reminder tick's one query (Database.due_saved_reminders): the due rows come from the partial index
+# idx_saved_messages_due; each member's are numbered oldest first and only the first N of a member are
+# kept (a very large N keeps them all), then the oldest of all go first within the limit.
+DUE_SAVED_SQL = """SELECT id, user_id, kind, scope_id, message_id, saved_at, remind_at FROM (
+        SELECT id, user_id, kind, scope_id, message_id, saved_at, remind_at,
+               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY remind_at, id) AS rn
+        FROM saved_messages
+        WHERE remind_at IS NOT NULL AND fired_at IS NULL AND remind_at <= ?)
+    WHERE rn <= ?
+    ORDER BY remind_at, id LIMIT ?"""
+
 
 class PurgeStopped(Exception):
     """A purge ended at a batch boundary because it was asked to stop (see Database._purge_messages)."""
@@ -10015,12 +10026,13 @@ class Database:
             return "ok"
         return "full" if await self.get_saved_message(user_id, saved_id) else "missing"
 
-    async def due_saved_reminders(self, now: int, limit: int) -> list[dict]:
-        """Rows whose reminder is due and not yet fired, oldest due first (the partial index)."""
+    async def due_saved_reminders(self, now: int, limit: int, per_member: Optional[int] = None) -> list[dict]:
+        """Rows whose reminder is due and not yet fired, oldest due first (the partial index), at most
+        `limit` in all and, with `per_member`, at most that many of one member's (their oldest): one
+        member with many due reminders cannot use the whole tick. The rest stay pending for the next
+        tick. Members have at most 100 waiting reminders each, so the window reads a bounded set."""
         cursor = await self.conn.execute(
-            """SELECT id, user_id, kind, scope_id, message_id, saved_at, remind_at FROM saved_messages
-               WHERE remind_at IS NOT NULL AND fired_at IS NULL AND remind_at <= ?
-               ORDER BY remind_at LIMIT ?""", (now, limit))
+            DUE_SAVED_SQL, (now, int(per_member) if per_member else 1 << 62, limit))
         return [dict(r) for r in await cursor.fetchall()]
 
     async def fire_saved_reminders(self, items: list, now: int,

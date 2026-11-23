@@ -24169,9 +24169,12 @@ async def http_put_channel_notify(request: web.Request) -> web.Response:
 # conversation id, so a row can never resolve to a different message.
 #
 # Reminders: one tick (_saved_tick_once, every SAVED_TICK_SECONDS, a query on a partial index that is
-# empty when idle) fires at most SAVED_TICK_CAP due reminders. Each is marked fired and its notification
+# empty when idle) fires at most SAVED_TICK_CAP due reminders, at most SAVED_TICK_PER_MEMBER of them one
+# member's (their oldest first), so one member with many due reminders cannot use the whole tick; the
+# others fire in the following ticks, none is lost and none fires twice. Each is marked fired and its notification
 # written in ONE transaction (db.fire_saved_reminders), so it never repeats, also across a restart; what
-# came due while the portal was down fires from the first tick after the start, SAVED_TICK_CAP per tick.
+# came due while the portal was down fires from the first tick after the start, SAVED_TICK_CAP per tick
+# (SAVED_TICK_PER_MEMBER per member).
 # A member keeps at most SAVED_MAX_REMINDER_NOTES 'reminder' notifications (the oldest are deleted in that
 # same transaction), so re-arming reminders cannot grow the notifications table without bound.
 # The in-app frame and the push go out after that commit (at most once; a crash between loses the push,
@@ -24186,6 +24189,7 @@ SAVED_PAGE_MAX = 50
 SAVED_TICK_SECONDS = 30
 SAVED_FIRST_TICK_SECONDS = 5
 SAVED_TICK_CAP = 50              # reminders fired per tick
+SAVED_TICK_PER_MEMBER = 10       # of them, at most this many for one member (their oldest)
 SAVED_UNAVAILABLE_TEXT = "That message is no longer available, so no reminder can be set for it"
 SAVED_MAX_REMINDER_NOTES = 200   # 'reminder' notifications kept per member; the oldest go first
 SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400
@@ -24505,10 +24509,11 @@ async def _saved_push(uid: int, saved_id: int, url: str) -> int:
 
 
 async def _saved_tick_once(now: Optional[int] = None) -> int:
-    """Fire the reminders that are due (at most SAVED_TICK_CAP). Returns how many fired. Cheap when
+    """Fire the reminders that are due (at most SAVED_TICK_CAP, and at most SAVED_TICK_PER_MEMBER of
+    one member, their oldest; the rest fire in the following ticks). Returns how many fired. Cheap when
     idle: one indexed query. Never raises into the task loop except for cancellation."""
     now = _saved_clock() if now is None else now
-    due = await db.due_saved_reminders(now, SAVED_TICK_CAP)
+    due = await db.due_saved_reminders(now, SAVED_TICK_CAP, SAVED_TICK_PER_MEMBER)
     if not due:
         return 0
     roles: dict = {}

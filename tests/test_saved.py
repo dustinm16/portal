@@ -595,6 +595,56 @@ def test_a_burst_is_capped_per_tick_and_a_restart_does_not_repeat_anything():
     run(body)
 
 
+def test_one_member_with_many_due_reminders_does_not_use_the_whole_tick():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        assert server.SAVED_TICK_PER_MEMBER == 10
+        a_rows, b_rows = [], []
+        for i in range(15):                                  # carol's are the oldest, and many
+            m = await d.create_chat_message(gen, ids["bob"], "bob", f"a{i}")
+            a_rows.append(await pending(env, ids["carol"], "channel", m, NOW + 10 + i))
+        for i in range(3):                                   # bob's come due later
+            m = await d.create_chat_message(gen, ids["alice"], "alice", f"b{i}")
+            b_rows.append(await pending(env, ids["bob"], "channel", m, NOW + 100 + i))
+        old = server.SAVED_TICK_CAP
+        server.SAVED_TICK_CAP = 12                           # the global cap: 10 + 3 would be 13
+
+        def seen(rows):
+            return [json.loads(n["data"])["saved_id"] for n in rows]
+        try:
+            assert await server._saved_tick_once(NOW + 1000) == 12
+            first_a = seen(await notes(d, ids["carol"]))
+            first_b = seen(await notes(d, ids["bob"]))
+            assert first_a == a_rows[:10], first_a                       # oldest first, at most 10
+            assert first_b == b_rows[:2], first_b                        # the rest of the global cap
+            assert await server._saved_tick_once(NOW + 1001) == 6        # carol 5 left, bob 1 left
+            server.SAVED_TICK_CAP = 50
+            while await server._saved_tick_once(NOW + 1003):
+                pass
+            all_a, all_b = seen(await notes(d, ids["carol"])), seen(await notes(d, ids["bob"]))
+            assert sorted(all_a) == sorted(a_rows) and sorted(all_b) == sorted(b_rows)   # nothing lost
+            assert len(all_a) == len(set(all_a)) and len(all_b) == len(set(all_b))        # nothing twice
+            assert await server._saved_tick_once(NOW + 1004) == 0
+        finally:
+            server.SAVED_TICK_CAP = old
+        # with the normal cap: 15 due for one member take two ticks, three for the other fire at once
+        d2rows = []
+        for i in range(15):
+            m = await d.create_chat_message(gen, ids["bob"], "bob", f"c{i}")
+            d2rows.append(await pending(env, ids["carol"], "channel", m, NOW + 2000 + i))
+        for i in range(3):
+            m = await d.create_chat_message(gen, ids["alice"], "alice", f"d{i}")
+            await pending(env, ids["bob"], "channel", m, NOW + 2100 + i)
+        n_a, n_b = len(await notes(d, ids["carol"])), len(await notes(d, ids["bob"]))
+        assert await server._saved_tick_once(NOW + 3000) == 13
+        assert len(await notes(d, ids["carol"])) - n_a == 10 and len(await notes(d, ids["bob"])) - n_b == 3
+        assert await server._saved_tick_once(NOW + 3001) == 5
+        assert await server._saved_tick_once(NOW + 3002) == 0
+    run(body)
+
+
 def test_re_armed_reminders_keep_a_bounded_number_of_notifications_per_member():
     async def body(env):
         d = env.db
@@ -657,12 +707,14 @@ def test_a_reminder_changed_or_removed_after_it_was_read_is_not_fired():
 def test_the_tick_query_uses_the_partial_index_and_an_idle_tick_reads_one_query():
     async def body(env):
         d = env.db
-        plan = await d.conn.execute(
-            "EXPLAIN QUERY PLAN SELECT id, user_id, kind, scope_id, message_id, saved_at, remind_at FROM saved_messages "
-            "WHERE remind_at IS NOT NULL AND fired_at IS NULL AND remind_at <= ? ORDER BY remind_at LIMIT ?",
-            (NOW, 50))
+        import database
+        plan = await d.conn.execute("EXPLAIN QUERY PLAN " + database.DUE_SAVED_SQL, (NOW, 10, 50))
         text = " ".join(str(tuple(r)) for r in await plan.fetchall())
-        assert "idx_saved_messages_due" in text and "SCAN" not in text.replace("SCAN saved_messages USING", ""), text
+        # the table is read through the partial index only (the SCANs left are of the window's own subqueries)
+        assert "SEARCH saved_messages USING INDEX idx_saved_messages_due" in text and "SCAN saved_messages" not in text, text
+        # and this is the query the method runs
+        src = (ROOT / "database.py").read_text().split("async def due_saved_reminders", 1)[1].split("async def fire_saved_reminders", 1)[0]
+        assert "DUE_SAVED_SQL" in src
         # nothing due: the tick makes the one query and nothing else
         calls = []
         real = d._connection
