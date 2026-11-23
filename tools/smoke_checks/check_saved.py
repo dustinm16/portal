@@ -258,6 +258,9 @@ async def run(ctx):
             ok("and not a word of it in that entry", sid in items and needle not in json.dumps(items[sid]) and pre not in json.dumps(items[sid]))
             st3, _b3 = await api("member", "POST", "/api/saved", json={"kind": "channel", "message_id": data["m_second"]})
             ok("a new save of a message there is refused", st3 == 404, st3)
+            st4, b4 = await api("member", "PUT", f"/api/saved/{sid}/remind", json={"remind_at": iso_in(60)})
+            ok("a reminder for that entry is refused with one fixed answer that does not say why",
+               st4 == 409 and needle not in json.dumps(b4) and "private" not in json.dumps(b4).lower(), f"{st4} {b4}")
 
             st, b = await api("owner", "POST", "/api/saved", json={"kind": "channel", "message_id": data["m_third"]})
             sid3 = b["saved"]["id"]
