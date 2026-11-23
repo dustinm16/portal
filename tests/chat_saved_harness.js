@@ -137,6 +137,7 @@ async function fakeApi(method, path, body) {
 const jumps = [], dms = [], toasts = [], menusHidden = [];
 let view = 'channel';
 const FIXED_NOW = new Date(2026, 2, 28, 12, 0, 0);   // Saturday 28 March 2026, 12:00 local time
+let clock = FIXED_NOW;                                // what the module sees as now (moved by the refresh checks)
 
 (async () => {
   const ctx = {
@@ -188,7 +189,7 @@ const FIXED_NOW = new Date(2026, 2, 28, 12, 0, 0);   // Saturday 28 March 2026, 
   const row101 = msgRow(101, 'one'), row102 = msgRow(102, 'two');
   container.append(row101, row102);
   await CS.init({
-    api: fakeApi, now: () => FIXED_NOW, currentKind: () => view,
+    api: fakeApi, now: () => clock, currentKind: () => view,
     jumpToMessage: (c, m) => jumps.push([c, m]), openDm: c => dms.push(c),
     hideMenus: () => menusHidden.push(1), toast: (t, ty) => toasts.push([t, ty]), doc,
   });
@@ -333,6 +334,40 @@ const FIXED_NOW = new Date(2026, 2, 28, 12, 0, 0);   // Saturday 28 March 2026, 
   check('Enter on Save or Remove acts like a click', apiLog.some(a => a.method === 'DELETE' && a.path === '/api/saved/11'), JSON.stringify(apiLog));
   menu.dispatch('keydown', { key: 'Escape', target: saveItem });
   check('Escape closes the menu and returns to the message', menusHidden.length >= 1 && active === row101);
+
+  // ---- returning to the tab refreshes the marks at most once a minute, unless something was saved or removed
+  const marksGets = () => apiLog.filter(a => a.path === '/api/saved/marks').length;
+  const settle = () => new Promise(r => setImmediate(r));
+  clock = new Date(FIXED_NOW.getTime() + 1000);
+  await CS.loadMarks();                                   // a load stamps the time
+  let g = marksGets();
+  doc.dispatch('visibilitychange', {}); doc.dispatch('visibilitychange', {}); await settle();
+  check('two returns to the tab right after a load ask for no marks', marksGets() === g, marksGets() - g);
+  clock = new Date(FIXED_NOW.getTime() + 1000 + 59000);
+  doc.dispatch('visibilitychange', {}); await settle();
+  check('a return 59 seconds after the last load still asks for nothing', marksGets() === g, marksGets() - g);
+  clock = new Date(FIXED_NOW.getTime() + 1000 + 61000);
+  doc.dispatch('visibilitychange', {}); doc.dispatch('visibilitychange', {}); await settle();
+  check('a return after a minute asks once, and the second return right after it does not', marksGets() === g + 1, marksGets() - g);
+  g = marksGets();
+  CS.prepareMenu(150);
+  await saveItem.click(); await settle();
+  g = marksGets();
+  doc.dispatch('visibilitychange', {}); await settle();
+  check('a return after a save asks again at once', marksGets() === g + 1, marksGets() - g);
+  doc.dispatch('visibilitychange', {}); await settle();
+  check('and only once', marksGets() === g + 1);
+  CS.prepareMenu(150);
+  await saveItem.click(); await settle();                 // now it says Remove from Saved
+  g = marksGets();
+  doc.dispatch('visibilitychange', {}); await settle();
+  check('a return after a removal asks again at once', marksGets() === g + 1, marksGets() - g);
+  doc.hidden = true;
+  clock = new Date(FIXED_NOW.getTime() + 1000 + 400000);
+  doc.dispatch('visibilitychange', {}); await settle();
+  check('going to the background asks for nothing', marksGets() === g + 1);
+  doc.hidden = false;
+  clock = FIXED_NOW;
 
   // ---- portal.js and chat-saved.js together
   check('portal.js sets window.Portal', ctx.Portal && typeof ctx.Portal.fetch === 'function');

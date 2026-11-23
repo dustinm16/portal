@@ -23,9 +23,11 @@
     var MENU_REMIND_ID = 'remind-menu-item';
     var OPEN_BUTTON_ID = 'saved-open-btn';
     var DEFAULT_HORIZON_DAYS = 366;
+    var MARKS_REFRESH_MS = 60 * 1000;     /* returning to the tab refreshes the marks at most this often */
     var state = {
         cfg: null, doc: null, marks: new Map(), limits: null, menuMsg: null,
-        panel: null, remind: null, opener: null, observer: null, items: new Map(), nextBefore: null
+        panel: null, remind: null, opener: null, observer: null, items: new Map(), nextBefore: null,
+        marksAt: 0, marksStale: false
     };
 
     /* ---------------------------------------------------------------- time (pure) */
@@ -157,7 +159,11 @@
         Array.prototype.forEach.call(c.querySelectorAll('.message[data-message-id]'), decorate);
     }
 
+    /* Always asks. The time is stamped when the request goes out, so a refused or failed answer (the route
+     * has a rate limit) is not asked again at once either. */
     function loadMarks() {
+        state.marksAt = now().getTime();
+        state.marksStale = false;
         return api('GET', '/api/saved/marks').then(function (res) {
             if (res.status !== 200 || !res.data) return;
             state.marks = new Map();
@@ -165,6 +171,16 @@
             if (res.data.limits) state.limits = res.data.limits;
             decorateAll();
         }).catch(function () { /* the marker is a convenience */ });
+    }
+
+    /* Coming back to the tab: the marks are asked for at most once per MARKS_REFRESH_MS, unless the member
+     * saved or removed something since (then the next return asks, so the marker follows the server). */
+    function refreshMarks() {
+        var t = now().getTime();
+        if (!state.marksStale && state.marksAt && t >= state.marksAt && t - state.marksAt < MARKS_REFRESH_MS) {
+            return Promise.resolve();
+        }
+        return loadMarks();
     }
 
     /* ---------------------------------------------------------------- save, remove, remind from a message */
@@ -180,6 +196,7 @@
             if (res.status === 200 || res.status === 201) {
                 var s = res.data.saved;
                 state.marks.set(markKey(msg.kind, msg.id), s.id);
+                state.marksStale = true;
                 decorateAll();
                 return s;
             }
@@ -195,6 +212,7 @@
                 return false;
             }
             state.marks.forEach(function (v, k) { if (v === savedId) state.marks.delete(k); });
+            state.marksStale = true;
             decorateAll();
             return true;
         }).catch(function () { toast('Could not remove it.', 'error'); return false; });
@@ -521,13 +539,13 @@
         }
         var menu = d.getElementById('message-context-menu');
         if (menu) menu.addEventListener('keydown', onMenuKeydown);
-        d.addEventListener('visibilitychange', function () { if (!d.hidden) loadMarks(); });
+        d.addEventListener('visibilitychange', function () { if (!d.hidden) refreshMarks(); });
         return loadMarks();
     }
 
     var apiOut = {
         init: init, open: openPanel, close: function () { closePanel(false); }, prepareMenu: prepareMenu,
-        decorateAll: decorateAll, loadMarks: loadMarks,
+        decorateAll: decorateAll, loadMarks: loadMarks, refreshMarks: refreshMarks,
         utcIso: utcIso, remindChoices: remindChoices, parseLocalInput: parseLocalInput,
         whenProblem: whenProblem, formatWhen: formatWhen, localInputValue: localInputValue,
         _state: state

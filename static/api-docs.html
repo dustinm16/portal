@@ -3375,7 +3375,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                         <span class="endpoint-desc">Which messages you saved</span>
                     </div>
                     <div class="endpoint-body">
-                        <p><code>{"marks": [{"id", "kind", "message_id"}], "limits": {"max_saved": 500, "max_reminders": 100, "reminder_horizon_days": 366}}</code>: what the chat page needs to mark saved messages for you alone. Only entries that resolve now are listed, never one the list shows as no longer available.</p>
+                        <p><code>{"marks": [{"id", "kind", "message_id"}], "limits": {"max_saved": 500, "max_reminders": 100, "reminder_horizon_days": 366}}</code>: what the chat page needs to mark saved messages for you alone. Only entries that resolve now are listed, never one the list shows as no longer available. Counts toward the same chat history budget as the list (<code>429</code> with <code>Retry-After</code> when it is used up); the chat page asks at most once a minute unless you saved or removed something.</p>
                     </div>
                 </div>
 

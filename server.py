@@ -24386,6 +24386,12 @@ async def http_get_saved_marks(request: web.Request) -> web.Response:
     token, refusal = await _saved_auth(request)
     if refusal is not None:
         return refusal
+    # Up to SAVED_MAX_ENTRIES rows are resolved with an access check each: the history budget, shared
+    # with the list and the chat history (the one limiter path, so the 429 carries its reference)
+    wait = _history_rate_wait(token.user_id)
+    if wait:
+        return await _limited(request, "chat_history", "Too many history requests",
+                              user_id=token.user_id, headers={"Retry-After": str(wait)})
     user = await db.get_user_by_id(token.user_id)
     rows = await db.list_saved_messages(token.user_id, None, SAVED_MAX_ENTRIES)
     views = await _saved_resolve(token.user_id, _user_role_of(user), rows, full=False)

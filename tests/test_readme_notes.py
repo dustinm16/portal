@@ -1118,8 +1118,8 @@ check("1.23.0 (saved): What You Get has a Saved Messages part, API.md and api-do
       and "/api/saved/marks" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/marks" in (ROOT / "static" / "api-docs.html").read_text()
       and "/api/saved/:id/remind" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/{id}/remind" in (ROOT / "static" / "api-docs.html").read_text())
 check("1.23.0 (saved): the static versions the notes name are the ones loaded",
-      "`chat-saved.js` is new (v1" in _sec23s and "`portal.js` is now v52" in _sec23s
-      and re.search(r"chat-saved\.js\?v=1\b", (ROOT / "static" / "chat.html").read_text()) is not None
+      "`chat-saved.js` is new (v2" in _sec23s and "`portal.js` is now v52" in _sec23s
+      and re.search(r"chat-saved\.js\?v=2\b", (ROOT / "static" / "chat.html").read_text()) is not None
       and all("portal.js?v=52" in (ROOT / "static" / n).read_text() for n in ("chat.html", "index.html", "admin.html")))
 
 if failures:

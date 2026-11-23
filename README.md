@@ -902,7 +902,7 @@ Saved messages and remind-me-later in the chat. These notes cover that feature; 
 **Static files**
 
 - **Stream schedule.** `stream-schedule.js` is new at version 2 (watch, streams and dashboard pages; it is new in this release, and version 2 is the one that hides the Interested button once the start has passed); `push.js` is version 5 (every page that loads it; the go-live switch in User settings is now labelled "Streams you follow going live, and reminders for streams you are interested in"); `streams.js` is version 50.
-- **Saved messages and reminders.** `chat-saved.js` is new (v1, loaded by `chat.html`) and `portal.js` is now v52 on every page that loads it.
+- **Saved messages and reminders.** `chat-saved.js` is new (v2, loaded by `chat.html`; v2 refreshes the saved markers at most once a minute when you return to the tab) and `portal.js` is now v52 on every page that loads it.
 
 **Rollback**
 

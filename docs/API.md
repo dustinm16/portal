@@ -2015,7 +2015,7 @@ A member's private list of messages to come back to, with an optional "remind me
 | Route | What it does |
 |---|---|
 | `GET /api/saved?limit=30&before_id=` | The caller's entries, newest saved first, each resolved now. `limit` 1 to 50 (default 30); `before_id` is the `next_before_id` of the previous page. Counts toward the chat history budget (30 a minute). |
-| `GET /api/saved/marks` | `{"marks": [{"id", "kind", "message_id"}], "limits"}`: what the chat page needs to mark saved messages; only entries that resolve now, never one the list shows as no longer available. |
+| `GET /api/saved/marks` | `{"marks": [{"id", "kind", "message_id"}], "limits"}`: what the chat page needs to mark saved messages; only entries that resolve now, never one the list shows as no longer available. Counts toward the same history budget (`429` with `Retry-After` when it is used up); the chat page asks at most once a minute unless the member saved or removed something. |
 | `POST /api/saved` | Body `{"kind": "channel" \| "dm", "message_id": 123}`. `201` and `{"saved": {"id", "kind", "message_id", "saved_at", "remind_at", "reminded"}}`; `200` with the same shape when it was already saved. |
 | `DELETE /api/saved/:id` | Removes one of the caller's entries, also one that is no longer available. |
 | `PUT /api/saved/:id/remind` | Body `{"remind_at": "2026-11-24T08:00:00Z"}` sets the reminder, `{"remind_at": null}` clears it. Answer `{"id", "remind_at", "reminded"}`. `409` when 100 reminders already wait, or when the message of the entry is no longer available (setting only; see Reminders below). |

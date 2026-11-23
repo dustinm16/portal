@@ -219,6 +219,33 @@ def test_a_narrowly_scoped_token_that_is_no_api_key_or_stream_key_is_refused_on_
     run(body)
 
 
+def test_the_marks_route_counts_toward_the_history_budget_like_the_list():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        m = await d.create_chat_message(gen, ids["bob"], "bob", "x")
+        await save(env, ids["carol"], "channel", m)
+        limit = server.HISTORY_RATE_LIMIT
+        for i in range(limit):
+            st, _ = await env.call("GET", ids["carol"], "/api/saved/marks")
+            assert st == 200, (i, st)
+        async with env.http.get(env.url("/api/saved/marks"), headers={"X-Test-User": str(ids["carol"])}) as r:
+            assert r.status == 429 and int(r.headers["Retry-After"]) >= 1
+            body_ = await r.json()
+            assert "Too many" in body_["error"]                              # the shared limiter's answer
+        # the list shares the same budget and another member has their own
+        assert (await env.call("GET", ids["carol"], "/api/saved"))[0] == 429
+        assert (await env.call("GET", ids["bob"], "/api/saved/marks"))[0] == 200
+        # a mix of both routes spends one budget
+        server._history_hits.clear()
+        for i in range(limit // 2):
+            assert (await env.call("GET", ids["carol"], "/api/saved/marks"))[0] == 200
+            assert (await env.call("GET", ids["carol"], "/api/saved"))[0] == 200
+        assert (await env.call("GET", ids["carol"], "/api/saved/marks"))[0] == 429
+    run(body)
+
+
 def test_caps_on_entries_and_pending_reminders():
     async def body(env):
         d = env.db
