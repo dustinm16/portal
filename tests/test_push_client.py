@@ -41,7 +41,7 @@ check("no proxied or third-party page gets the manifest", all(
 for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
     text = (STATIC / f"{page}.html").read_text()
     check(f"{page}.html loads push.js (so a sign-out there names this browser's device)",
-          re.search(r'src="/static/js/push\.js\?v=4"', text) is not None)
+          re.search(r'src="/static/js/push\.js\?v=5"', text) is not None)
 for page in sorted(STATIC.glob("*.html")):
     text = page.read_text()
     if 'href="/logout"' in text:

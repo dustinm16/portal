@@ -847,7 +847,7 @@ Not tested: the rule and its cache were exercised with the portal's own handlers
 
 - **Nothing has to be done before upgrading, and nothing is switched on or blocked by default.** No setting, `.env` entry or command changes. No stream has a schedule until its owner adds one, and no member has a calendar link until they make one.
 - **One new background task** sends the reminders. Every 30 seconds it runs one query on an indexed column and does nothing else while no reminder is due. It is stopped at shutdown.
-- **Web Push.** A reminder push uses the existing push path and its rules (push switched on, a registered device, no open chat tab) and is covered by the member's existing "Streams you follow going live" switch; there is no new push switch. The reminder says "<streamer> starts in 10 minutes" and nothing more: no slot title, no stream title. A push names the streamer only for a public stream (the rule of the go-live push); for a stream that is not public it says "A stream you are interested in starts in 10 minutes".
+- **Web Push.** A reminder push uses the existing push path and its rules (push switched on, a registered device, no open chat tab) and is covered by the member's existing go-live switch, whose label now reads "Streams you follow going live, and reminders for streams you are interested in"; there is no new push switch. The reminder says "<streamer> starts in 10 minutes" and nothing more: no slot title, no stream title. A push names the streamer only for a public stream (the rule of the go-live push); for a stream that is not public it says "A stream you are interested in starts in 10 minutes".
 - **The calendar link is a secret in a URL.** Proxies and servers between a calendar application and the portal (Cloudflare included) can log a URL. The portal replaces the token with `[REDACTED]` in its own access log and request-ID lines; User settings says the same next to Regenerate and Revoke.
 
 **Who may do and see what**
@@ -901,7 +901,7 @@ Saved messages and remind-me-later in the chat. These notes cover that feature; 
 
 **Static files**
 
-- **Stream schedule.** `stream-schedule.js` is new at version 1 (watch, streams and dashboard pages); `streams.js` is version 50.
+- **Stream schedule.** `stream-schedule.js` is new at version 2 (watch, streams and dashboard pages; it is new in this release, and version 2 is the one that hides the Interested button once the start has passed); `push.js` is version 5 (every page that loads it; the go-live switch in User settings is now labelled "Streams you follow going live, and reminders for streams you are interested in"); `streams.js` is version 50.
 - **Saved messages and reminders.** `chat-saved.js` is new (v1, loaded by `chat.html`) and `portal.js` is now v52 on every page that loads it.
 
 **Rollback**

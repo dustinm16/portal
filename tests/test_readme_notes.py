@@ -483,7 +483,7 @@ check("the old 'enable desktop alerts' star sentence is gone from the chat part"
 # Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
 MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
 # ... and in 1.23.0 (saved messages lane): an older release's notes keep the version of their day
-MOVED_ON_1_23 = {"portal.js": 52}
+MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -1057,8 +1057,8 @@ check("1.23.0: the numbers stated are the ones in the code",
       and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
-      "`stream-schedule.js` is new at version 1" in _sec23 and "`streams.js` is version 50" in _sec23
-      and "/static/js/stream-schedule.js?v=1" in (ROOT / "static" / "watch.html").read_text()
+      "`stream-schedule.js` is new at version 2" in _sec23 and "`streams.js` is version 50" in _sec23
+      and "/static/js/stream-schedule.js?v=2" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/streams.js?v=50" in (ROOT / "static" / "index.html").read_text())
 _api23 = (ROOT / "docs" / "API.md").read_text()
 _docs23 = (ROOT / "static" / "api-docs.html").read_text()

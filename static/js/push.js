@@ -271,7 +271,7 @@
     var KINDS = [
         ['dm', 'Direct messages'],
         ['mention', 'Mentions (not in channels you muted)'],
-        ['golive', 'Streams you follow going live']
+        ['golive', 'Streams you follow going live, and reminders for streams you are interested in']
     ];
 
     function el(tag, text, cls) {

@@ -114,9 +114,16 @@
             countdown
         ]);
         var memberMayMark = user && stream.user_id !== user.id;
-        if (memberMayMark) box.appendChild(el('div', { style: { marginTop: '0.5rem' } }, [interestedButton(item)]));
+        var markRow = null;
+        if (memberMayMark) {
+            markRow = el('div', { class: 'schedule-mark', style: { marginTop: '0.5rem' } }, [interestedButton(item)]);
+            box.appendChild(markRow);
+        }
         function tick() {
-            countdown.textContent = countdownText(item.start - (Date.now() + skew) / 1000);
+            var left = item.start - (Date.now() + skew) / 1000;
+            countdown.textContent = countdownText(left);
+            /* the route refuses a mark once the start has passed, so the toggle goes with it */
+            if (markRow && left <= 0) { markRow.style.display = 'none'; markRow = null; }
             if (container.isConnected === false) { clearInterval(timer); }
         }
         container.appendChild(box);

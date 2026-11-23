@@ -5,6 +5,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const results = [];
+const setTimeout_real = setTimeout;
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
 
 class N {
@@ -86,6 +87,23 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
     check(`watch: ${label} sees the countdown and no toggle`, !!m && h.textContent.indexOf('Next stream') >= 0 && !buttonWith(h, 'Interested'));
     m.stop();
   }
+  // once the start has passed the route refuses a mark, so the toggle is hidden (at once, or when the countdown reaches zero)
+  answers = [{ status: 200, data: { now: nowSec, next: [{ ...item, start: nowSec - 5 }] } }];
+  const late = new N('DIV');
+  const lateM = await SS.mountWatch(late, stream, { id: 5 });
+  const lateRow = late.find(n => n.className === 'schedule-mark')[0];
+  check('watch: an occurrence that began a moment ago shows "Starting now" and no toggle',
+    late.textContent.indexOf('Starting now') >= 0 && !!lateRow && lateRow.style.display === 'none', late.textContent);
+  lateM.stop();
+  answers = [{ status: 200, data: { now: nowSec, next: [{ ...item, start: nowSec + 1 }] } }];
+  const soon = new N('DIV');
+  const soonM = await SS.mountWatch(soon, stream, { id: 5 });
+  const soonRow = soon.find(n => n.className === 'schedule-mark')[0];
+  check('watch: with a second to go the toggle is still there', !!soonRow && soonRow.style.display !== 'none');
+  await new Promise(r => setTimeout_real(r, 1300));
+  timers[timers.length - 1]();
+  check('watch: when the countdown reaches zero the toggle goes', soonRow.style.display === 'none' && soon.textContent.indexOf('Starting now') >= 0, soon.textContent);
+  soonM.stop();
   answers = [{ status: 404, data: {} }];
   const none = new N('DIV');
   check('watch: a stream the member may not see shows nothing', (await SS.mountWatch(none, stream, { id: 5 })) === null && none.children.length === 0);
