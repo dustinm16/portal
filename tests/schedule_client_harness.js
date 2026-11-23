@@ -6,6 +6,11 @@ const fs = require('fs');
 const vm = require('vm');
 const results = [];
 const setTimeout_real = setTimeout;
+let clockShift = 0;     // the page's clock runs this many ms ahead of the real one (moved by the re-read checks)
+class FakeDate extends Date {
+  constructor(...a) { if (a.length === 0) super(Date.now() + clockShift); else super(...a); }
+  static now() { return Date.now() + clockShift; }
+}
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
 
 class N {
@@ -28,13 +33,15 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   const calls = [];
   let answers = [];
   const timers = [];
+  const cleared = [];
   const body = new N('BODY');
   const ctx = {
     document: { readyState: 'complete', head: new N('HEAD'), body, getElementById: () => null, createElement: t => new N(t),
                 addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] },
     location: { protocol: 'https:', host: 'portal.test', pathname: '/watch/7', href: 'https://portal.test/watch/7' },
     localStorage: { getItem: () => null, setItem() {} }, navigator: {},
-    setTimeout: () => 0, setInterval: (f) => { timers.push(f); return timers.length; }, clearTimeout() {}, clearInterval() {},
+    Date: FakeDate,
+    setTimeout: () => 0, setInterval: (f) => { timers.push(f); return timers.length; }, clearTimeout() {}, clearInterval: (id) => { cleared.push(id); },
     console,
     fetch: async (url, init) => {
       calls.push({ url, method: init && init.method, body: init && init.body ? JSON.parse(init.body) : null });
@@ -101,9 +108,62 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   const soonRow = soon.find(n => n.className === 'schedule-mark')[0];
   check('watch: with a second to go the toggle is still there', !!soonRow && soonRow.style.display !== 'none');
   await new Promise(r => setTimeout_real(r, 1300));
-  timers[timers.length - 1]();
-  check('watch: when the countdown reaches zero the toggle goes', soonRow.style.display === 'none' && soon.textContent.indexOf('Starting now') >= 0, soon.textContent);
+  const settle = () => new Promise(r => setImmediate(r));
+  const soonTick = timers[timers.length - 1];
+  take();
+  answers = [{ status: 200, data: { now: nowSec + 2, next: [{ ...item, title: 'Next week', start: nowSec + 3 * 3600 }] } }];
+  soonTick();
+  check('watch: when the countdown reaches zero the toggle goes at once', soonRow.style.display === 'none' && soon.textContent.indexOf('Starting now') >= 0, soon.textContent);
+  await settle();
+  c = take();
+  check('watch: and the schedule is read again, once, and the next occurrence replaces the old one with a toggle',
+    c.length === 1 && c[0].url === '/api/streams/7/schedule' && soon.textContent.indexOf('Next week') >= 0 && soon.textContent.indexOf('Starting now') < 0
+    && /^[23]:\d\d:\d\d$/.test(soon.find(n => n.className === 'schedule-countdown')[0].textContent)
+    && soon.find(n => n.className === 'schedule-mark').length === 1 && soon.find(n => n.className === 'schedule-mark')[0].style.display !== 'none'
+    && soon.find(n => n.className === 'schedule-title').length === 1, JSON.stringify(c) + soon.textContent);
+  soonTick(); soonTick(); await settle();
+  check('watch: further ticks read nothing', take().length === 0);
   soonM.stop();
+  check('watch: stop() clears the interval', cleared.length >= 1);
+
+  // the server keeps an occurrence for 15 minutes after its start: the read at zero returns it again, and the next reads are the 5 minute ones
+  answers = [{ status: 200, data: { now: nowSec, next: [{ ...item, start: nowSec + 1, title: 'Began' }, { ...item, start: nowSec + 7 * 86400, title: 'Later' }] } }];
+  const grace = new N('DIV');
+  const graceM = await SS.mountWatch(grace, stream, { id: 5 });
+  const graceTick = timers[timers.length - 1];
+  take();
+  clockShift = 2000;                                      // the start has passed
+  answers = [{ status: 200, data: { now: nowSec + 2, next: [{ ...item, start: nowSec + 1, title: 'Began' }] } }];
+  graceTick(); await settle();
+  check('watch: at zero it reads once even when the server still lists the same start (starting now)', take().length === 1 && grace.textContent.indexOf('Starting now') >= 0);
+  graceTick(); graceTick(); await settle();
+  check('watch: and does not read again every second while it is still listed', take().length === 0);
+  clockShift = 2000 + 4 * 60 * 1000;
+  graceTick(); await settle();
+  check('watch: four minutes after the last read it reads nothing', take().length === 0);
+  clockShift = 2000 + 5 * 60 * 1000 + 1000;
+  answers = [{ status: 200, data: { now: nowSec + 5 * 60 + 3, next: [{ ...item, start: nowSec + 7 * 86400, title: 'Later' }] } }];
+  graceTick(); await settle();
+  c = take();
+  check('watch: five minutes after the last read it reads again and moves to the next occurrence', c.length === 1 && grace.textContent.indexOf('Later') >= 0 && grace.textContent.indexOf('Starting now') < 0, grace.textContent);
+
+  // not while the tab is hidden; a limit answer leaves the page as it is; an empty schedule hides the box
+  clockShift = 2000 + 11 * 60 * 1000;
+  ctx.document.hidden = true;
+  graceTick(); await settle();
+  check('watch: a hidden tab reads nothing', take().length === 0);
+  ctx.document.hidden = false;
+  answers = [{ status: 429, data: { error: 'Too many requests' } }];
+  graceTick(); await settle();
+  check('watch: a refused read leaves what is on the page', take().length === 1 && grace.textContent.indexOf('Later') >= 0 && grace.style.display !== 'none' && grace.children[0].style.display !== 'none');
+  clockShift = 2000 + 17 * 60 * 1000;
+  answers = [{ status: 200, data: { now: nowSec + 17 * 60, next: [] } }];
+  graceTick(); await settle();
+  check('watch: a schedule with nothing to come empties and hides the box', grace.children[0].style.display === 'none' && grace.textContent === '', grace.textContent);
+  graceM.stop();
+  clockShift = 0;
+  take();
+
   answers = [{ status: 404, data: {} }];
   const none = new N('DIV');
   check('watch: a stream the member may not see shows nothing', (await SS.mountWatch(none, stream, { id: 5 })) === null && none.children.length === 0);
@@ -125,6 +185,39 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   const empty = new N('DIV');
   await SS.mountUpcoming(empty);
   check('strip: hidden when nothing is scheduled', empty.style.display === 'none');
+
+  // the strip is read again when its first start passes (once) and every 5 minutes while the tab is shown
+  const occ = (start, title) => ({ entry_id: 3, stream_id: 7, stream_name: 's', streamer: 'Anna', title, start, recurring: false, interested: false });
+  answers = [{ status: 200, data: { occurrences: [occ(nowSec + 100, 'First'), occ(nowSec + 3600, 'Second')] } }];
+  const strip2 = new N('DIV');
+  take();
+  await SS.mountUpcoming(strip2);
+  const stripTick = timers[timers.length - 1], stripId = timers.length;
+  take();
+  stripTick(); await settle();
+  check('strip: a tick right after the read reads nothing', take().length === 0);
+  clockShift = 101 * 1000;
+  answers = [{ status: 200, data: { occurrences: [occ(nowSec + 3600, 'Second'), occ(nowSec + 7200, 'Third')] } }];
+  stripTick(); await settle();
+  check('strip: when the first start has passed it is read again and the strip follows', take().length === 1 && strip2.textContent.indexOf('First') < 0 && strip2.textContent.indexOf('Third') >= 0);
+  stripTick(); stripTick(); await settle();
+  check('strip: and the next ticks read nothing', take().length === 0);
+  clockShift = 101 * 1000 + 4 * 60 * 1000;
+  stripTick(); await settle();
+  check('strip: four minutes after the last read, nothing', take().length === 0);
+  ctx.document.hidden = true; clockShift = 101 * 1000 + 6 * 60 * 1000;
+  stripTick(); await settle();
+  check('strip: a hidden tab reads nothing', take().length === 0);
+  ctx.document.hidden = false;
+  answers = [{ status: 429, data: { error: 'Too many requests' } }];
+  stripTick(); await settle();
+  check('strip: five minutes later it reads, and a refused read leaves the strip as it is', take().length === 1 && strip2.textContent.indexOf('Third') >= 0 && strip2.style.display !== 'none');
+  answers = [{ status: 200, data: { occurrences: [occ(nowSec + 7200, 'Third')] } }];
+  const before = timers.length;
+  await SS.mountUpcoming(strip2);
+  check('strip: mounting again stops the old timer and starts one', cleared.indexOf(stripId) >= 0 && timers.length === before + 1);
+  clockShift = 0;
+  take();
 
   // ---- the owner's editor
   const owner = { status: 200, data: { entries: [{ id: 3, title: 'Show', start: '2026-12-04T21:00', tz: 'Europe/Berlin', duration_min: 60, recurrence: 'weekly',

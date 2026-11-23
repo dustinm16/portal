@@ -99,61 +99,143 @@
         return btn;
     }
 
+    /* The schedule is read again when a countdown reaches zero (once per start) and at most every REREAD_MS while
+     * the tab is shown: the server keeps an occurrence that began less than 15 minutes ago in its list ("starting
+     * now") and drops it after that, and an owner may add, move or cancel entries meanwhile. */
+    var REREAD_MS = 5 * 60 * 1000;
+
+    function tabShown() {
+        return !(document.hidden === true || document.visibilityState === 'hidden');
+    }
+
     // ---- the watch page, offline
+    async function readNext(stream) {
+        var r = await api('GET', '/api/streams/' + Number(stream.id) + '/schedule');
+        if (!r.ok) return { failed: true, status: r.status };
+        var next = r.data.next || [];
+        if (!next.length) return { none: true };
+        return { item: next[0], skew: (r.data.now || 0) * 1000 - Date.now() };
+    }
+
     async function mountWatch(container, stream, user) {
         if (!container || !stream) return null;
-        var r = await api('GET', '/api/streams/' + Number(stream.id) + '/schedule');
-        if (!r.ok || !r.data.next || !r.data.next.length) return null;
-        var item = r.data.next[0];
-        var skew = (r.data.now || 0) * 1000 - Date.now();
-        var countdown = el('div', { class: 'schedule-countdown', style: { fontSize: '1.4rem', fontVariantNumeric: 'tabular-nums' } });
-        var box = el('div', { class: 'schedule-box', style: { marginTop: '1rem', textAlign: 'center' } }, [
-            el('div', { class: 'schedule-label', text: 'Next stream' }),
-            el('div', { class: 'schedule-title', text: item.title, style: { fontWeight: '600' } }),
-            el('div', { class: 'schedule-when', text: whenText(item.start) }),
-            countdown
-        ]);
+        var first = await readNext(stream);
+        if (!first.item) return null;
+        var item = first.item, skew = first.skew;
+        var box = el('div', { class: 'schedule-box', style: { marginTop: '1rem', textAlign: 'center' } });
         var memberMayMark = user && stream.user_id !== user.id;
-        var markRow = null;
-        if (memberMayMark) {
-            markRow = el('div', { class: 'schedule-mark', style: { marginTop: '0.5rem' } }, [interestedButton(item)]);
-            box.appendChild(markRow);
+        var countdown = null, markRow = null;
+        var lastRead = Date.now(), zeroFor = null, reading = false, stopped = false, timer = null;
+
+        function secondsLeft() { return item.start - (Date.now() + skew) / 1000; }
+
+        function draw() {
+            clear(box);
+            countdown = el('div', { class: 'schedule-countdown', style: { fontSize: '1.4rem', fontVariantNumeric: 'tabular-nums' } });
+            [el('div', { class: 'schedule-label', text: 'Next stream' }),
+             el('div', { class: 'schedule-title', text: item.title, style: { fontWeight: '600' } }),
+             el('div', { class: 'schedule-when', text: whenText(item.start) }),
+             countdown].forEach(function (n) { box.appendChild(n); });
+            markRow = null;
+            if (memberMayMark) {
+                markRow = el('div', { class: 'schedule-mark', style: { marginTop: '0.5rem' } }, [interestedButton(item)]);
+                box.appendChild(markRow);
+            }
+            /* a start that has already passed was just read: do not read it again for this one */
+            zeroFor = secondsLeft() <= 0 ? item.start : null;
         }
-        function tick() {
-            var left = item.start - (Date.now() + skew) / 1000;
-            countdown.textContent = countdownText(left);
-            /* the route refuses a mark once the start has passed, so the toggle goes with it */
-            if (markRow && left <= 0) { markRow.style.display = 'none'; markRow = null; }
-            if (container.isConnected === false) { clearInterval(timer); }
+
+        async function reread() {
+            if (reading || stopped) return;
+            reading = true;
+            lastRead = Date.now();
+            try {
+                var r = await readNext(stream);
+                if (stopped) return;
+                if (r.item) { item = r.item; skew = r.skew; box.style.display = ''; draw(); tick(true); }
+                else if (r.none || r.status === 404) { item = null; clear(box); box.style.display = 'none'; markRow = null; countdown = null; }
+                /* any other failure (a limit, the network): what is on the page stays until the next read */
+            } finally { reading = false; }
         }
+
+        function tick(noRead) {
+            if (container.isConnected === false) { stop(); return; }
+            var left = null;
+            if (item && countdown) {
+                left = secondsLeft();
+                countdown.textContent = countdownText(left);
+                /* the route refuses a mark once the start has passed, so the toggle goes with it */
+                if (markRow && left <= 0) { markRow.style.display = 'none'; markRow = null; }
+            }
+            if (noRead === true || !tabShown()) return;
+            var due = Date.now() - lastRead >= REREAD_MS;
+            if (item && left !== null && left <= 0 && zeroFor !== item.start) { zeroFor = item.start; due = true; }
+            if (due) reread();
+        }
+
+        function stop() { stopped = true; if (timer !== null) { clearInterval(timer); timer = null; } }
+
+        draw();
         container.appendChild(box);
-        tick();
-        var timer = setInterval(tick, 1000);
-        return { box: box, item: item, stop: function () { clearInterval(timer); } };
+        tick(true);
+        timer = setInterval(tick, 1000);
+        return { box: box, get item() { return item; }, stop: stop };
     }
 
     // ---- the Upcoming strip
     async function mountUpcoming(container) {
         if (!container) return;
-        var r = await api('GET', '/api/streams/schedule/upcoming?limit=12');
-        clear(container);
-        var list = (r.ok && r.data.occurrences) || [];
-        container.style.display = list.length ? '' : 'none';
-        if (!list.length) return;
-        container.appendChild(el('h3', { text: 'Upcoming', style: { margin: '0 0 0.5rem' } }));
-        var row = el('div', { class: 'schedule-strip', style: { display: 'flex', gap: '0.75rem', overflowX: 'auto' } });
-        list.forEach(function (item) {
-            var card = el('div', { class: 'schedule-card', style: { minWidth: '14rem', padding: '0.6rem', border: '1px solid var(--card-border)', borderRadius: '8px' } }, [
-                el('div', { text: item.title, style: { fontWeight: '600' } }),
-                el('div', { text: item.streamer + (item.recurring ? ' - weekly' : '') }),
-                el('div', { text: whenText(item.start) }),
-                el('a', { class: 'btn btn-sm btn-secondary', href: '/watch/' + Number(item.stream_id), text: 'Open the stream', style: { marginTop: '0.4rem' } })
-            ]);
-            if (item.interested_count === undefined) card.appendChild(el('div', { style: { marginTop: '0.4rem' } }, [interestedButton(item)]));
-            else card.appendChild(el('div', { text: item.interested_count + ' interested', style: { marginTop: '0.4rem' } }));
-            row.appendChild(card);
-        });
-        container.appendChild(row);
+        if (container.scheduleStrip) container.scheduleStrip.stop();
+        var drawn = false, lastRead = 0, zeroFor = null, reading = false, stopped = false, earliest = null, timer = null;
+
+        async function load() {
+            reading = true;
+            lastRead = Date.now();
+            try {
+                var r = await api('GET', '/api/streams/schedule/upcoming?limit=12');
+                if (stopped) return;
+                /* a failed read after a good one leaves the strip as it is */
+                if (!r.ok && drawn) return;
+                drawn = true;
+                draw((r.ok && r.data.occurrences) || []);
+            } finally { reading = false; }
+        }
+
+        function draw(list) {
+            clear(container);
+            container.style.display = list.length ? '' : 'none';
+            earliest = list.length ? Math.min.apply(null, list.map(function (i) { return i.start; })) : null;
+            zeroFor = earliest !== null && earliest * 1000 <= Date.now() ? earliest : null;
+            if (!list.length) return;
+            container.appendChild(el('h3', { text: 'Upcoming', style: { margin: '0 0 0.5rem' } }));
+            var row = el('div', { class: 'schedule-strip', style: { display: 'flex', gap: '0.75rem', overflowX: 'auto' } });
+            list.forEach(function (item) {
+                var card = el('div', { class: 'schedule-card', style: { minWidth: '14rem', padding: '0.6rem', border: '1px solid var(--card-border)', borderRadius: '8px' } }, [
+                    el('div', { text: item.title, style: { fontWeight: '600' } }),
+                    el('div', { text: item.streamer + (item.recurring ? ' - weekly' : '') }),
+                    el('div', { text: whenText(item.start) }),
+                    el('a', { class: 'btn btn-sm btn-secondary', href: '/watch/' + Number(item.stream_id), text: 'Open the stream', style: { marginTop: '0.4rem' } })
+                ]);
+                if (item.interested_count === undefined) card.appendChild(el('div', { style: { marginTop: '0.4rem' } }, [interestedButton(item)]));
+                else card.appendChild(el('div', { text: item.interested_count + ' interested', style: { marginTop: '0.4rem' } }));
+                row.appendChild(card);
+            });
+            container.appendChild(row);
+        }
+
+        function tick() {
+            if (container.isConnected === false) { stop(); return; }
+            if (reading || stopped || !tabShown()) return;
+            var due = Date.now() - lastRead >= REREAD_MS;
+            if (earliest !== null && earliest * 1000 <= Date.now() && zeroFor !== earliest) { zeroFor = earliest; due = true; }
+            if (due) load();
+        }
+
+        function stop() { stopped = true; if (timer !== null) { clearInterval(timer); timer = null; } }
+
+        container.scheduleStrip = { stop: stop };
+        await load();
+        if (!stopped) timer = setInterval(tick, 15000);
     }
 
     // ---- the owner's editor
