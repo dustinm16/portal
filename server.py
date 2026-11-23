@@ -24500,6 +24500,25 @@ async def http_delete_saved(request: web.Request) -> web.Response:
     return _saved_reply({"status": "removed"})
 
 
+async def http_delete_saved_unavailable(request: web.Request) -> web.Response:
+    """DELETE /api/saved/unavailable: remove every one of the caller's own entries that resolves to "no longer
+    available" now, those with a waiting reminder too. Answers a count and nothing else (the member can count
+    the same entries in their own Saved view)."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    # Up to SAVED_MAX_ENTRIES rows are resolved with an access check each, as for the marks: the history budget
+    wait = _history_rate_wait(token.user_id)
+    if wait:
+        return await _limited(request, "chat_history", "Too many history requests",
+                              user_id=token.user_id, headers={"Retry-After": str(wait)})
+    user = await db.get_user_by_id(token.user_id)
+    rows = await db.list_saved_messages(token.user_id, None, SAVED_MAX_ENTRIES)
+    views = await _saved_resolve(token.user_id, _user_role_of(user), rows, full=False)
+    removed = await db.delete_saved_messages(token.user_id, [r["id"] for r in rows if not views.get(r["id"])])
+    return _saved_reply({"removed": removed})
+
+
 async def http_put_saved_remind(request: web.Request) -> web.Response:
     """PUT /api/saved/{id}/remind {remind_at: "2026-11-24T08:00:00Z" | null}: set or clear the reminder
     of one of the caller's own entries. The client sends an absolute UTC instant; it must be in the
@@ -31624,6 +31643,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/saved", http_get_saved)
     app.router.add_post("/api/saved", http_post_saved)
     app.router.add_get("/api/saved/marks", http_get_saved_marks)
+    app.router.add_delete("/api/saved/unavailable", http_delete_saved_unavailable)   # before {id}
     app.router.add_delete("/api/saved/{id}", http_delete_saved)
     app.router.add_put("/api/saved/{id}/remind", http_put_saved_remind)
 

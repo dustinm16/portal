@@ -3403,6 +3403,17 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/saved/unavailable</span>
+                        <span class="endpoint-desc">Remove every entry that is no longer available</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Removes every one of your own entries that cannot be read now, those with a waiting reminder included. Answers <code>{"removed": 3}</code>, a count and nothing about the messages. Same credential rule as the other saved routes; it counts toward the chat history budget (<code>429</code> with <code>Retry-After</code>).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-put">PUT</span>
                         <span class="endpoint-path">/api/saved/{id}/remind</span>
                         <span class="endpoint-desc">Set or clear a reminder</span>

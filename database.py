@@ -9992,6 +9992,20 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def delete_saved_messages(self, user_id: int, saved_ids) -> int:
+        """Remove the caller's own entries among `saved_ids` (reminders included, they are columns of the row), in one
+        transaction. Returns how many rows went."""
+        ids = list(saved_ids)
+        removed = 0
+        for k in range(0, len(ids), 400):
+            chunk = ids[k:k + 400]
+            cursor = await self.conn.execute(
+                f"DELETE FROM saved_messages WHERE user_id = ? AND id IN ({','.join('?' * len(chunk))})",
+                [user_id] + chunk)
+            removed += cursor.rowcount
+        await self.conn.commit()
+        return removed
+
     async def get_saved_message(self, user_id: int, saved_id: int) -> Optional[dict]:
         cursor = await self.conn.execute(
             "SELECT * FROM saved_messages WHERE id = ? AND user_id = ?", (saved_id, user_id))

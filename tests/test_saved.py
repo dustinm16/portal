@@ -63,6 +63,7 @@ class Env(base.Env):
                 ("GET", "/api/saved", server.http_get_saved),
                 ("POST", "/api/saved", server.http_post_saved),
                 ("GET", "/api/saved/marks", server.http_get_saved_marks),
+                ("DELETE", "/api/saved/unavailable", server.http_delete_saved_unavailable),
                 ("DELETE", "/api/saved/{id}", server.http_delete_saved),
                 ("PUT", "/api/saved/{id}/remind", server.http_put_saved_remind)):
             app.router.add_route(method, path, handler)
@@ -207,7 +208,7 @@ def test_a_narrowly_scoped_token_that_is_no_api_key_or_stream_key_is_refused_on_
         when = {"remind_at": iso(NOW + 3600)}
         for method, path, kw in (("GET", "/api/saved", {}), ("GET", "/api/saved/marks", {}),
                                  ("POST", "/api/saved", {"json": {"kind": "channel", "message_id": m}}),
-                                 ("DELETE", f"/api/saved/{sid}", {}),
+                                 ("DELETE", f"/api/saved/{sid}", {}), ("DELETE", "/api/saved/unavailable", {}),
                                  ("PUT", f"/api/saved/{sid}/remind", {"json": when})):
             st, _ = await env.call(method, ids["bob"], path, headers=narrow, **kw)
             assert st == 403, (method, path, st)
@@ -928,6 +929,53 @@ def test_the_rows_go_with_the_user_and_the_migration_is_idempotent():
         assert (await cur.fetchone())["n"] == 0
         await d2.close()
     run(body)
+
+
+def test_remove_unavailable_removes_only_the_callers_entries_that_no_longer_resolve():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        pvt = await base.private_channel(d, ids)
+        ok = await save(env, ids["bob"], "channel", await d.create_chat_message(gen, ids["alice"], "alice", "fine"))
+        gone_msg = await d.create_chat_message(gen, ids["alice"], "alice", SECRET + " gone")
+        gone = await save(env, ids["bob"], "channel", gone_msg)
+        waiting = await pending(env, ids["bob"], "channel", await d.create_chat_message(gen, ids["alice"], "alice", "w"), NOW + 600)
+        hidden = await save(env, ids["bob"], "channel", await d.create_chat_message(pvt, ids["alice"], "alice", SECRET + " hidden"))
+        other = await save(env, ids["carol"], "channel", gone_msg)           # another member's entry for the same message
+        await d.delete_chat_message(gone_msg)
+        await d.delete_chat_message((await d.get_saved_message(ids["bob"], waiting))["message_id"])
+        await d.remove_channel_member(pvt, ids["bob"])
+        before = [i["id"] for i in (await listing(env, ids["bob"]))["items"]]
+        st, b = await env.call("DELETE", ids["bob"], "/api/saved/unavailable")
+        assert st == 200 and b == {"removed": 3}, (st, b)                      # a count and nothing else
+        assert sorted(before) == sorted([ok, gone, waiting, hidden])
+        assert [i["id"] for i in (await listing(env, ids["bob"]))["items"]] == [ok]
+        assert await d.get_saved_message(ids["bob"], waiting) is None          # one with a pending reminder goes too
+        assert await d.get_saved_message(ids["carol"], other) is not None      # another member's entry is not touched
+        st, b = await env.call("DELETE", ids["bob"], "/api/saved/unavailable")
+        assert st == 200 and b == {"removed": 0}                               # nothing left to remove
+        # an entry whose access came back is not removed
+        await d.add_channel_member(pvt, ids["bob"], role="member", added_by=ids["boss"])
+        keep = await save(env, ids["bob"], "channel", await d.create_chat_message(pvt, ids["alice"], "alice", "x"))
+        assert (await env.call("DELETE", ids["bob"], "/api/saved/unavailable"))[1] == {"removed": 0}
+        assert await d.get_saved_message(ids["bob"], keep) is not None
+        # the route is not mistaken for an entry id, and a stream key or an API key is refused like the other routes
+        assert (await env.call("DELETE", ids["bob"], "/api/saved/unavailable", headers={"X-Test-Kind": "apikey"}))[0] == 403
+        assert (await env.call("DELETE", ids["bob"], "/api/saved/unavailable", headers={"X-Test-Kind": "streamkey"}))[0] == 403
+        assert (await env.call("DELETE", ids["bob"], "/api/saved/unavailable", headers={"X-Test-Scopes": "services:read"}))[0] == 403
+        # it resolves up to 500 entries, so it spends the history budget like the list and the marks
+        server._history_hits.clear()
+        for _ in range(server.HISTORY_RATE_LIMIT):
+            assert (await env.call("DELETE", ids["bob"], "/api/saved/unavailable"))[0] == 200
+        async with env.http.delete(env.url("/api/saved/unavailable"), headers={"X-Test-User": str(ids["bob"])}) as r:
+            assert r.status == 429 and int(r.headers["Retry-After"]) >= 1
+    run(body)
+
+
+def test_remove_unavailable_is_registered_before_the_entry_id_route():
+    src = (ROOT / "server.py").read_text()
+    assert src.index('"/api/saved/unavailable", http_delete_saved_unavailable') < src.index('"/api/saved/{id}", http_delete_saved)')
 
 
 def test_the_saved_routes_write_no_audit_or_log_line_about_a_member_s_entries():

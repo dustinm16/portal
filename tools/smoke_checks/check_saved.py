@@ -282,6 +282,20 @@ async def run(ctx):
                needle not in json.dumps(rows) and needle not in json.dumps(notes_rows) and len(rows) == 3, str(rows)[:200])
             ok("a socket of another member got no frame about any of it",
                not any("saved" in json.dumps(e).lower() or "remind" in json.dumps(e).lower() for e in frames_seen), str(frames_seen)[:300])
+
+            # ---- remove what is no longer available, in one action of the member's own
+            st, b = await api("member", "GET", "/api/saved")
+            gone_ids = sorted(i["id"] for i in (b or {}).get("items", []) if not i["available"])
+            kept_ids = sorted(i["id"] for i in (b or {}).get("items", []) if i["available"])
+            st, b = await api("member", "DELETE", "/api/saved/unavailable")
+            ok("DELETE /api/saved/unavailable answers only the number of entries it removed",
+               st == 200 and b == {"removed": len(gone_ids)} and sid in gone_ids, f"{st} {b} {gone_ids}")
+            st, b = await api("member", "GET", "/api/saved")
+            left = sorted(i["id"] for i in (b or {}).get("items", []))
+            ok("the member keeps the entries that can still be read and the unavailable ones are gone", left == kept_ids and sid_dm in left, f"{left} {kept_ids}")
+            st, b = await api("owner", "DELETE", "/api/saved/unavailable")
+            ok("another member's unavailable entry is removed by that member's own call only",
+               st == 200 and b == {"removed": 1}, f"{st} {b}")
     finally:
         try:
             await stack.aclose()
