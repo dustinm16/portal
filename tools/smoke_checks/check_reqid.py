@@ -5,7 +5,8 @@ On the staged instance, over real TLS:
   - an X-Request-ID sent by the client is never echoed, and its text never reaches the server log
   - a line the server logs for a request carries that request's ID
   - /search/ with the search service not running answers with the page (service name and ID, Retry-After)
-    or, for JSON, with request_id, and the server log has one 'Upstream error' line under that ID
+    or, for JSON, with request_id; with search switched off (503) the log has the one throttled INFO line and no
+    'Upstream error' line, with search failing (502/504) one 'Upstream error' line under that ID
 
 A down HTTP proxy connection cannot be made on a stage (the host policy refuses loopback targets), so that
 path is proven by tests/test_reqid.py only. The user is made with a random suffix and the checks assert on
@@ -91,9 +92,19 @@ async def run(ctx):
                ID_RE.match(rid) and "Search" in page and f">{rid}<" in page and bool(retry), f"{status} {rid!r} {retry!r}")
         ctx.ok("reqid: the page has the countdown script from a static file and no upstream address",
                "/static/js/upstream-error.js?v=2" in page and "127.0.0.1" not in page and "onclick" not in page)
-        ctx.ok("reqid: the error is in the server log once under that ID, with a reason",
-               await _log_has(ctx, f"[req={rid}] Upstream error {status} for service 'Search'")
-               and ctx.server_log().count(f"[req={rid}]") == 1)
+        # Search switched off is a state, not a failure: the server answers quietly (no 'Upstream error' line)
+        # and logs one INFO line at most every 10 minutes for the whole process. This request may or may not be
+        # the one that logged it, so assert on what must hold either way.
+        if status == 503:
+            ctx.ok("reqid: search switched off is logged quietly (one INFO line per 10 minutes, never an error per request)",
+                   await _log_has(ctx, "Search was asked for while the search service is not enabled or not running")
+                   and f"Upstream error {status} for service 'Search'" not in ctx.server_log()
+                   and all("Search was asked for" in ln and "[ERROR]" not in ln
+                           for ln in ctx.server_log().splitlines() if f"[req={rid}]" in ln))
+        else:
+            ctx.ok("reqid: the error is in the server log once under that ID, with a reason",
+                   await _log_has(ctx, f"[req={rid}] Upstream error {status} for service 'Search'")
+                   and ctx.server_log().count(f"[req={rid}]") == 1)
         async with user.get(f"{base}/search/?format=json") as r:
             data = await r.json(content_type=None)
             ctx.ok("reqid: the JSON answer carries request_id equal to the header",
