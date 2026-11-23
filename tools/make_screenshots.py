@@ -2122,7 +2122,8 @@ def _streams_upcoming(s):
 @shot("schedule-editor")
 def _schedule_editor(s):
     seeded_schedule(s)
-    ctx = s.context("alex", viewport={"width": 1280, "height": 2400})
+    # taller than the stream settings picture: the Schedule section is far down the window and its form is long
+    ctx = s.context("alex", viewport={"width": 1280, "height": 3600})
     page = s.open(ctx, "/", ".stat-card")
     page.evaluate("switchTab('my-streams')")
     page.wait_for_selector(".stream-card", timeout=15000)
