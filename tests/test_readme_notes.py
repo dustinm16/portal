@@ -1066,12 +1066,33 @@ check("1.23.0: every schedule route is in the API reference and on the API page"
       all(r in _api23 and r in _docs23 for r in ("/api/streams/schedule/upcoming", "/api/streams/{id}/schedule", "/rsvp/{start}",
                                                   "/api/streams/schedule/feed/{token}.ics", "/api/me/schedule-feed")))
 check("1.23.0: the README feature section mentions the schedule", "**Schedule.**" in text)
-_db23 = _sec23.split("**Database**", 1)[1].split("**", 1)[0] if "**Database**" in _sec23 else ""
-_tables23 = re.search(r"\*\*Stream schedule\.\*\* (\w+) tables are created", _sec23[_sec23.index("**Database**"):] if "**Database**" in _sec23 else "")
-check("1.23.0: the Database bullet counts six schedule tables and names every one, the sent marks included",
-      _tables23 is not None and _tables23.group(1) == "Six"
-      and all(f"`{t}`" in _sec23 for t in ("stream_schedule", "stream_schedule_cancelled", "stream_schedule_started", "stream_rsvps",
-                                           "stream_rsvp_sent", "schedule_feed_tokens")), str(_tables23))
+_db_bullets23 = [b for b in re.findall(r"^- \*\*Database\.\*\* (.*)$", _sec23, re.M)]
+_db23 = _db_bullets23[0] if len(_db_bullets23) == 1 else ""
+_tables23 = re.search(r"^(\w+) tables are created", _db23)
+_created23 = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", (ROOT / "database.py").read_text()))
+_new23 = {"stream_schedule", "stream_schedule_cancelled", "stream_schedule_started", "stream_rsvps", "stream_rsvp_sent",
+          "schedule_feed_tokens", "saved_messages"}
+check("1.23.0: one Database bullet counts seven tables, names every one the code creates (the sent marks and saved_messages included)",
+      len(_db_bullets23) == 1 and _tables23 is not None and _tables23.group(1) == "Seven" and _new23 <= _created23
+      and all(f"`{t}`" in _db23 for t in _new23) and "one table and two indexes" not in low23, str(_tables23))
+check("1.23.0: the Database bullet names every index the code creates for the new tables",
+      all(i in _db23 for i in re.findall(r"CREATE INDEX IF NOT EXISTS (idx_(?:stream_schedule|stream_rsvps|stream_rsvp_sent|saved_messages)\w*)",
+                                         (ROOT / "database.py").read_text())))
+_groups23 = [m_.group(0) for m_ in re.finditer(r"^\*\*(For administrators, in short|Breaking changes|Database, static files, rollback and what was not tested)\*\*$", _sec23, re.M)]
+check("1.23.0: one admin summary, one Breaking changes group and one closing group, in that order",
+      _groups23 == ["**For administrators, in short**", "**Breaking changes**", "**Database, static files, rollback and what was not tested**"], str(_groups23))
+check("1.23.0: exactly one Static files, one Rollback and one Not tested bullet",
+      all(len(re.findall(rf"^- \*\*{n}\.\*\*", _sec23, re.M)) == 1 for n in ("Static files", "Rollback", "Not tested")))
+_brk23 = _sec23.split("**Breaking changes**", 1)[1].split("**Database, static files", 1)[0] if "**Breaking changes**" in _sec23 else ""
+check("1.23.0: Breaking changes names both new notification types and the label change",
+      "`stream_reminder`" in _brk23 and "`reminder`" in _brk23 and "new label" in _brk23)
+check("1.23.0: one wording for the push condition (no portal tab open), never an open chat tab",
+      "no open chat tab" not in low23 and low23.count("no portal tab open") >= 1)
+check("1.23.0: the notes no longer say the release adds one table, one background task or that no pictures were made",
+      "adds one table" not in low23 and "one new background task" not in low23 and "no pictures for the readme" not in low23)
+check("1.23.0: the plain statements an administrator needs: who sees an entry, the token in proxy logs, what a reminder says, what no longer available means",
+      all(n in low23 for n in ("who sees a schedule entry", "proxies and servers between", "can log a url", "revoke", "what a reminder says",
+                               "saved entries are references", "no longer available")))
 check("1.23.0: the notes say the claim comes first and the stream is read and checked after it",
       "right after the claim the stream is read again" in low23 and "no streamer name" in low23)
 check("1.23.0: the notes say the feed's 429 carries a reference and the start values are bounded",
@@ -1085,7 +1106,7 @@ m23s = re.search(r"### Upgrade notes for 1\.23\.0\n(.*?)(?=\n### Upgrade notes f
 _sec23s = m23s.group(1) if m23s else ""
 check("README has an 'Upgrade notes for 1.23.0' section directly before the 1.22.0 one", bool(m23s))
 _low23s = _sec23s.lower()
-_nt23s = _sec23s.split("**Not tested**")[-1] if "**Not tested**" in _sec23s else ""
+_nt23s = _sec23s.split("- **Not tested.**")[-1] if "- **Not tested.**" in _sec23s else ""
 for name, needles in (
         ("a saved entry is a reference and holds no copy", ("a reference, not a copy", "no message text, author or channel name is stored")),
         ("what 'no longer available' shows", ("no longer available", '"available": false', "only its entry id", "anonymous post stays")),
@@ -1097,8 +1118,8 @@ for name, needles in (
         ("the fixed notification text and the Saved view fallback", ("reminder for a saved message", "/chat?saved=1", "ids only")),
         ("web push", ("fixed `reminder` kind", "never message text", "no portal tab open")),
         ("the phone reach: a visible button instead of a long press", ("does not fire a context menu on a long press", "message actions", "no inline handler")),
-        ("the migration", ("create table if not exists saved_messages", "idx_saved_messages_due", "1.22.0 starts on the migrated database")),
-        ("what is not tested", ("no browser and no phone", "no real push service", "no calendar", "no cloudflare"))):
+        ("the migration", ("`if not exists`", "`saved_messages`", "idx_saved_messages_due", "the 1.22.0 tree was started twice")),
+        ("what is not tested", ("no browser drew the pages in the tests, and no phone", "no real push service", "no calendar", "no cloudflare"))):
     check(f"1.23.0 (saved) states: {name}", all(n in _low23s or n in _sec23s for n in needles), str(needles))
 check("1.23.0 (saved) Not tested paragraph is present", bool(_nt23s.strip()))
 check("1.23.0 (saved) notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec23s))

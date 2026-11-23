@@ -1805,7 +1805,7 @@
                         <span class="endpoint-desc">Next scheduled occurrences the member may watch</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>(1.23.0) <code>{"now", "occurrences": [{"entry_id", "stream_id", "stream_name", "streamer", "title", "start" (UTC epoch seconds), "duration_min", "recurring", "interested" (the caller's own mark), "live"}]}</code>, soonest first, within 14 days, <code>?limit=</code> 1 to 50. Only streams the caller may watch (the watch rule, asked again on every read); the owner of a stream gets <code>interested_count</code>, a number and never names. Registered before <code>/api/streams/{id}</code>.</p>
+                        <p>(1.23.0) <code>{"now", "occurrences": [{"entry_id", "stream_id", "stream_name", "streamer", "title", "start" (UTC epoch seconds), "duration_min", "recurring", "interested" (the caller's own mark), "live"}]}</code>, soonest first, within 14 days, <code>?limit=</code> clamped to 1 to 50 (not a whole number: <code>400</code>). Only streams the caller may watch (the watch rule, asked again on every read); the owner of a stream gets <code>interested_count</code>, a number and never names. Registered before <code>/api/streams/{id}</code>.</p>
                     </div>
                 </div>
 
