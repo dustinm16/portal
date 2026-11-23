@@ -180,6 +180,7 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   await SS.mountUpcoming(strip);
   check('strip: one card per occurrence with a link to the watch page', strip.find(n => n.tagName === 'A').map(a => a.attrs.href).join() === '/watch/7,/watch/8');
   check('strip: the link to the stream is a theme button', strip.find(n => n.tagName === 'A').every(a => /(^| )btn( |$)/.test(a.className) && /btn-secondary/.test(a.className)));
+  check('strip: the link to the stream is not underlined', strip.find(n => n.tagName === 'A').every(a => a.style.textDecoration === 'none'));
   check('strip: the member\'s own state shows; the owner of a stream sees a count and no toggle',
     strip.find(n => n.tagName === 'BUTTON').length === 1 && strip.textContent.indexOf('4 interested') >= 0
     && strip.find(n => n.tagName === 'BUTTON')[0].getAttribute('aria-pressed') === 'true');

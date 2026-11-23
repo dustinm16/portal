@@ -214,7 +214,7 @@
                     el('div', { text: item.title, style: { fontWeight: '600' } }),
                     el('div', { text: item.streamer + (item.recurring ? ' - weekly' : '') }),
                     el('div', { text: whenText(item.start) }),
-                    el('a', { class: 'btn btn-sm btn-secondary', href: '/watch/' + Number(item.stream_id), text: 'Open the stream', style: { marginTop: '0.4rem' } })
+                    el('a', { class: 'btn btn-sm btn-secondary', href: '/watch/' + Number(item.stream_id), text: 'Open the stream', style: { marginTop: '0.4rem', textDecoration: 'none' } })
                 ]);
                 if (item.interested_count === undefined) card.appendChild(el('div', { style: { marginTop: '0.4rem' } }, [interestedButton(item)]));
                 else card.appendChild(el('div', { text: item.interested_count + ' interested', style: { marginTop: '0.4rem' } }));
