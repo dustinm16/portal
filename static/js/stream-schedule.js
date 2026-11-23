@@ -414,25 +414,30 @@
                 isActive = true;
                 draw(r.data.url, false);
             }
+            async function revoke() {
+                var r = await api('DELETE', '/api/me/schedule-feed');
+                if (r.ok) { isActive = false; draw(null, false); } else { toast(errorOf(r, 'Could not revoke the link'), 'error'); draw(url, false); }
+            }
             if (confirming) {
-                /* a new link ends the old one: the calendar applications that use it stop updating */
-                container.appendChild(el('p', { class: 'schedule-feed-confirm', role: 'alert', text: 'Regenerating ends the link you have now. A calendar application that uses it stops updating until you give it the new link.' }));
+                /* a new link ends the old one, and Revoke ends it without a new one: the calendar applications that use it
+                 * stop updating */
+                var revoking = confirming === 'revoke';
+                container.appendChild(el('p', { class: 'schedule-feed-confirm', role: 'alert', text: revoking
+                    ? 'Revoking ends the link you have now. A calendar application that uses it stops updating, and there is no link until you create a new one.'
+                    : 'Regenerating ends the link you have now. A calendar application that uses it stops updating until you give it the new link.' }));
                 /* the click that opened the question, or a second click of the same double click or double tap, is not the
                  * answer: a confirm within CONFIRM_DELAY_MS of the question appearing, or with detail > 1, does nothing */
                 var askedAt = Date.now();
-                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Yes, regenerate', on: { click: function (e) {
+                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: revoking ? 'Yes, revoke' : 'Yes, regenerate', on: { click: function (e) {
                     if ((e && e.detail > 1) || Date.now() - askedAt < CONFIRM_DELAY_MS) return;
-                    return make();
+                    return revoking ? revoke() : make();
                 } } }));
                 container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Keep the current link', on: { click: function () { draw(url, false); } } }));
             } else {
                 container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: isActive ? 'Regenerate' : 'Create link', on: { click: function () {
-                    if (isActive) draw(url, true); else return make();
+                    if (isActive) draw(url, 'regenerate'); else return make();
                 } } }));
-                if (isActive) container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Revoke', on: { click: async function () {
-                    var r = await api('DELETE', '/api/me/schedule-feed');
-                    if (r.ok) { isActive = false; draw(null, false); } else toast(errorOf(r, 'Could not revoke the link'), 'error');
-                } } }));
+                if (isActive) container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Revoke', on: { click: function () { draw(url, 'revoke'); } } }));
             }
             container.appendChild(el('p', { class: 'schedule-feed-warning', text: FEED_WARNING, style: { fontSize: '0.8125rem' } }));
         }

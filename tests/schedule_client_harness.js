@@ -374,9 +374,28 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   observers[0].cb([]);
   check('feed: when the dialog closes the address is gone from the page and the text says it cannot be shown again',
     feed.find(n => n.tagName === 'INPUT').length === 0 && feed.textContent.indexOf('SECOND') < 0 && /cannot be shown again/.test(feed.textContent) && !!buttonWith(feed, 'Regenerate'), feed.textContent);
-  answers = [{ status: 200, data: { active: false } }];
+  // Revoke ends the link like Regenerate does, so it asks first in the same way
   await buttonWith(feed, 'Revoke').click();
-  check('feed: Revoke DELETEs and forgets the address', take()[0].method === 'DELETE' && feed.find(n => n.tagName === 'INPUT').length === 0 && feed.textContent.indexOf('SECRET') < 0);
+  check('feed: Revoke asks first (nothing is sent), says it ends the link, and shows Yes, revoke and Keep the current link on their own row',
+    take().length === 0 && /Revoking ends the link/.test(feed.textContent) && !!buttonWith(feed, 'Yes, revoke') && !!buttonWith(feed, 'Keep the current link')
+    && !buttonWith(feed, 'Revoke') && !buttonWith(feed, 'Regenerate') && feed.find(n => n.className === 'schedule-feed-confirm').length === 1);
+  await buttonWith(feed, 'Yes, revoke').click();
+  check('feed: a revoke confirm right after the question opened sends nothing and keeps the question', take().length === 0 && !!buttonWith(feed, 'Yes, revoke'));
+  clockShift += 500;
+  await buttonWith(feed, 'Yes, revoke').click();
+  check('feed: a revoke confirm 500 ms after the question opened still sends nothing', take().length === 0 && !!buttonWith(feed, 'Yes, revoke'));
+  clockShift += 2000;
+  await press(buttonWith(feed, 'Yes, revoke'), 2);
+  check('feed: the second click of a double click (detail 2) on Yes, revoke sends nothing even after the interval', take().length === 0 && !!buttonWith(feed, 'Yes, revoke'));
+  clockShift = 0;
+  await buttonWith(feed, 'Keep the current link').click();
+  check('feed: Keep the current link after a revoke question sends nothing and shows the page as before', take().length === 0 && !!buttonWith(feed, 'Revoke') && !!buttonWith(feed, 'Regenerate') && !buttonWith(feed, 'Yes, revoke'));
+  await buttonWith(feed, 'Revoke').click();
+  clockShift += 700;
+  answers = [{ status: 200, data: { active: false } }];
+  await buttonWith(feed, 'Yes, revoke').click();
+  clockShift = 0;
+  check('feed: confirming Revoke DELETEs and forgets the address', take()[0].method === 'DELETE' && feed.find(n => n.tagName === 'INPUT').length === 0 && feed.textContent.indexOf('SECRET') < 0 && !!buttonWith(feed, 'Create link') && !buttonWith(feed, 'Revoke'));
 
   console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

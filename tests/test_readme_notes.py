@@ -1057,9 +1057,11 @@ check("1.23.0: the numbers stated are the ones in the code",
       and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
-      "`stream-schedule.js` is new at version 7" in _sec23 and "`streams.js` is version 51" in _sec23
-      and "/static/js/stream-schedule.js?v=7" in (ROOT / "static" / "watch.html").read_text()
+      "`stream-schedule.js` is new at version 8" in _sec23 and "`streams.js` is version 51" in _sec23
+      and "/static/js/stream-schedule.js?v=8" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/streams.js?v=51" in (ROOT / "static" / "index.html").read_text())
+check("1.23.0: the notes say Revoke on the calendar link asks first and the code has the question",
+      "Regenerate and Revoke ask first" in _sec23 and "Yes, revoke" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
 check("1.23.0: the notes say the editor's Delete the whole entry asks first and the code has the question",
       "Delete the whole entry asks first" in _sec23 and "Yes, delete the entry" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
 _api23 = (ROOT / "docs" / "API.md").read_text()
