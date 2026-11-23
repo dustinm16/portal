@@ -24186,6 +24186,7 @@ SAVED_PAGE_MAX = 50
 SAVED_TICK_SECONDS = 30
 SAVED_FIRST_TICK_SECONDS = 5
 SAVED_TICK_CAP = 50              # reminders fired per tick
+SAVED_UNAVAILABLE_TEXT = "That message is no longer available, so no reminder can be set for it"
 SAVED_MAX_REMINDER_NOTES = 200   # 'reminder' notifications kept per member; the oldest go first
 SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400
 _SAVED_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|\+00:00)$")
@@ -24475,6 +24476,17 @@ async def http_put_saved_remind(request: web.Request) -> web.Response:
             return _saved_reply({"error": str(e)}, 400)
     if sid is None:
         return _saved_reply({"error": "Saved message not found"}, 404)
+    if when is not None:
+        # A reminder for a message that cannot be read now would only open "no longer available". One
+        # fixed answer whatever the reason (deleted, aged out, access lost): it says nothing about
+        # why. Clearing a reminder stays possible for such an entry.
+        row = await db.get_saved_message(token.user_id, sid)
+        if row is None:
+            return _saved_reply({"error": "Saved message not found"}, 404)
+        user = await db.get_user_by_id(token.user_id)
+        view = (await _saved_resolve(token.user_id, _user_role_of(user), [row], full=False)).get(sid)
+        if view is None:
+            return _saved_reply({"error": SAVED_UNAVAILABLE_TEXT}, 409)
     result = await db.set_saved_reminder(token.user_id, sid, when, SAVED_MAX_PENDING)
     if result == "missing":
         return _saved_reply({"error": "Saved message not found"}, 404)

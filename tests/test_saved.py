@@ -278,6 +278,39 @@ def test_reminder_times_are_absolute_utc_future_and_within_the_horizon():
     run(body)
 
 
+def test_a_reminder_cannot_be_set_for_a_message_that_is_no_longer_available_and_the_answer_does_not_say_why():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        pvt = await base.private_channel(d, ids)
+        gone = await d.create_chat_message(gen, ids["bob"], "bob", SECRET + " gone")
+        s_gone = await save(env, ids["carol"], "channel", gone)
+        hidden = await d.create_chat_message(pvt, ids["alice"], "alice", SECRET + " hidden")
+        s_hidden = await save(env, ids["bob"], "channel", hidden)
+        s_ok = await save(env, ids["carol"], "channel", await d.create_chat_message(gen, ids["bob"], "bob", "fine"))
+        # a reminder that is already waiting when the message goes away
+        s_wait = await pending(env, ids["carol"], "channel", await d.create_chat_message(gen, ids["bob"], "bob", "w"), NOW + 600)
+        await d.delete_chat_message(gone)                       # reason one: the message is gone
+        await d.remove_channel_member(pvt, ids["bob"])          # reason two: the member lost access
+        when = {"remind_at": iso(NOW + 3600)}
+        a = await env.call("PUT", ids["carol"], f"/api/saved/{s_gone}/remind", json=when)
+        b = await env.call("PUT", ids["bob"], f"/api/saved/{s_hidden}/remind", json=when)
+        assert a[0] == 409 and a == b, (a, b)                    # the same status and the same body
+        assert SECRET not in json.dumps(a) and "gone" not in json.dumps(a).replace("no longer", "")
+        for sid, uid in ((s_gone, ids["carol"]), (s_hidden, ids["bob"])):
+            assert (await d.get_saved_message(uid, sid))["remind_at"] is None     # nothing was set
+        # a readable entry still takes a reminder; another member's entry is still a 404
+        assert (await env.call("PUT", ids["carol"], f"/api/saved/{s_ok}/remind", json=when))[0] == 200
+        assert (await env.call("PUT", ids["bob"], f"/api/saved/{s_ok}/remind", json=when))[0] == 404
+        # a bad time is still a 400 first, and clearing a waiting reminder of a gone message still works
+        assert (await env.call("PUT", ids["carol"], f"/api/saved/{s_gone}/remind", json={"remind_at": "soon"}))[0] == 400
+        await d.delete_chat_message((await d.get_saved_message(ids["carol"], s_wait))["message_id"])
+        st, body_ = await env.call("PUT", ids["carol"], f"/api/saved/{s_wait}/remind", json={"remind_at": None})
+        assert st == 200 and body_["remind_at"] is None
+    run(body)
+
+
 def test_the_list_is_resolved_live_and_an_unavailable_entry_shows_nothing_else():
     async def body(env):
         d = env.db
