@@ -126,6 +126,7 @@ let listPages = [];
 let nextSavedId = 50;
 let marksStatus = 429;     // the first load of the marks is refused (a limit), the later ones answer
 let entryStatus = 200;
+let purgeStatus = 200;
 const entryAt = {};        // before_id -> the one entry the single-entry read answers with
 const apiLog = [];
 async function fakeApi(method, path, body) {
@@ -135,6 +136,7 @@ async function fakeApi(method, path, body) {
   if (method === 'GET' && one) return entryStatus !== 200 ? { status: entryStatus, data: { error: 'Too many history requests' } } : { status: 200, data: { items: entryAt[+one[1]] ? [entryAt[+one[1]]] : [] } };
   if (method === 'GET' && path.startsWith('/api/saved?')) return { status: 200, data: listPages.shift() || { items: [], has_more: false } };
   if (method === 'POST' && path === '/api/saved') return { status: 201, data: { saved: { id: ++nextSavedId, kind: body.kind, message_id: body.message_id } } };
+  if (method === 'DELETE' && path === '/api/saved/unavailable') return purgeStatus === 200 ? { status: 200, data: { removed: 2 } } : { status: purgeStatus, data: { error: 'Too many history requests' } };
   if (method === 'DELETE') return { status: 200, data: { status: 'removed' } };
   if (method === 'PUT') return body.remind_at === 'bad' ? { status: 400, data: { error: 'nope' } }
     : { status: 200, data: { id: +path.split('/')[3], remind_at: body.remind_at, reminded: false } };
@@ -341,11 +343,44 @@ let clock = FIXED_NOW;                                // what the module sees as
   check('Load more is offered and asks for the next page by the cursor', more.style.display === '' && (await more.click(), await new Promise(r => setImmediate(r)), apiLog[apiLog.length - 1].path === '/api/saved?limit=30&before_id=23'));
   check('the second page is appended and the button goes', panel.list.children.length === 4 && panel.more.style.display === 'none'
         && /Reminder sent/.test(panel.list.children[3].textContent));
-  items[0].all('button').find(b => b.getAttribute('data-action') === 'jump').click();
+  // ---- Remove unavailable entries: shown only while a listed entry is unavailable, asks first, then removes and reloads
+  const purgeBtn = panel.dlg.querySelector('[data-action="purge"]');
+  const purgeYes = panel.dlg.querySelector('[data-action="purge-yes"]'), purgeNo = panel.dlg.querySelector('[data-action="purge-no"]');
+  const shown = n => n.style.display !== 'none';
+  check('the Saved view with unavailable entries offers "Remove unavailable entries", and no question yet',
+        purgeBtn && purgeBtn.textContent === 'Remove unavailable entries' && shown(purgeBtn) && !shown(purgeYes) && !shown(purgeNo) && !shown(panel.dlg.querySelector('.saved-purge-text')));
+  apiLog.length = 0;
+  await purgeBtn.click();
+  check('pressing it asks first (nothing is sent) and says it also removes entries not shown yet',
+        apiLog.length === 0 && shown(purgeYes) && shown(purgeNo) && !shown(purgeBtn) && /not shown yet/.test(panel.dlg.querySelector('.saved-purge-text').textContent) && shown(panel.dlg.querySelector('.saved-purge-text')));
+  await purgeNo.click();
+  check('Keep them sends nothing and puts the button back', apiLog.length === 0 && shown(purgeBtn) && !shown(purgeYes) && !shown(panel.dlg.querySelector('.saved-purge-text')));
+  purgeStatus = 429;
+  await purgeBtn.click(); await purgeYes.click(); await new Promise(r => setImmediate(r));
+  check('a refused removal says why, keeps the list and shows the button again',
+        apiLog.length === 1 && apiLog[0].method === 'DELETE' && panel.list.children.length === 4 && shown(purgeBtn) && toasts.some(t => /Too many history requests/.test(t[0]) && t[1] === 'error'), JSON.stringify(apiLog));
+  purgeStatus = 200;
+  listPages = [{ items: [{ id: 21, available: true, kind: 'channel', channel_id: 3, channel_name: 'lobby', message_id: 301, saved_at: '2026-03-20T10:00:00Z', remind_at: null, reminded: false,
+                           message: { username: 'ann', text: 'still here', created_at: '2026-03-19T09:00:00Z' } }], has_more: false }];
+  apiLog.length = 0; toasts.length = 0;
+  await purgeBtn.click(); await purgeYes.click(); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+  check('confirming sends DELETE /api/saved/unavailable, says how many went and reloads the list from the top',
+        apiLog.length === 2 && apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/unavailable' && apiLog[1].method === 'GET' && apiLog[1].path === '/api/saved?limit=30'
+        && toasts.some(t => t[0] === 'Removed 2 unavailable entries' && t[1] === 'success') && panel.list.children.length === 1 && /still here/.test(panel.list.textContent), JSON.stringify(apiLog));
+  check('with no unavailable entry listed the button is gone', !shown(purgeBtn) && !shown(purgeYes) && !shown(purgeNo));
+  listPages = [{ items: [{ id: 21, available: true, kind: 'channel', channel_id: 3, channel_name: 'lobby', message_id: 301, saved_at: '2026-03-20T10:00:00Z',
+                           remind_at: '2026-04-01T07:00:00Z', reminded: false,
+                           message: { username: 'ann', text: '<img src=x onerror=alert(1)> hello', created_at: '2026-03-19T09:00:00Z', anonymous: false } }], has_more: false }];
+  CS.close();
+  openBtn.click(); await new Promise(r => setImmediate(r));
+  const panelJ = CS._state.panel;
+  check('a view of available entries only has no such button', !shown(panelJ.dlg.querySelector('[data-action="purge"]')));
+  panelJ.list.children[0].all('button').find(b => b.getAttribute('data-action') === 'jump').click();
   check('Jump uses the page jump-to-message with the ids and closes the view', jumps.length === 1 && jumps[0][0] === 3 && jumps[0][1] === 301 && CS._state.panel === null);
+  const listReads = apiLog.filter(a => a.path === '/api/saved?limit=30').length;
   openBtn.click(); await new Promise(r => setImmediate(r));
   listPages.length = 0;
-  check('a reopened view asks again (nothing is cached)', apiLog.filter(a => a.path === '/api/saved?limit=30').length === 2);
+  check('a reopened view asks again (nothing is cached)', apiLog.filter(a => a.path === '/api/saved?limit=30').length === listReads + 1);
 
   // a DM entry jumps by opening the conversation
   CS._state.panel.list.textContent = '';
@@ -362,11 +397,14 @@ let clock = FIXED_NOW;                                // what the module sees as
   listPages = [{ items: [{ id: 31, available: false, saved_at: '2026-03-18T10:00:00Z', remind_at: null, reminded: false }], has_more: false }];
   openBtn.click(); await new Promise(r => setImmediate(r));
   const gone = CS._state.panel.list.children[0];
+  const purge31 = CS._state.panel.dlg.querySelector('[data-action="purge"]');
+  check('a view whose only entry is unavailable offers the removal button', purge31 && purge31.style.display !== 'none');
   apiLog.length = 0;
   await gone.all('button').find(b => b.getAttribute('data-action') === 'remove').click(); await new Promise(r => setImmediate(r));
   check('Remove deletes the entry by id and takes it out of the list, and the empty text appears',
         apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/31' && CS._state.panel.list.children.length === 0
         && /Nothing saved yet/.test(CS._state.panel.status.textContent));
+  check('removing the last unavailable entry by hand takes the button away', purge31.style.display === 'none');
 
   // ---- keyboard
   active = openBtn;

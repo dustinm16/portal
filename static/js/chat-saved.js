@@ -387,6 +387,7 @@
                 state.items.delete(item.id);
                 if (li.parentNode) li.parentNode.removeChild(li);
                 if (state.panel && !state.panel.list.children.length) showEmpty();
+                syncPurge();
             });
         }, { 'data-action': 'remove' }));
         li.append(body, actions);
@@ -406,6 +407,51 @@
         p.status.textContent = 'Nothing saved yet. Choose Save message in the menu of a message (right-click, the menu key on a focused message, or the ... button on a touch screen).';
     }
 
+    /* "Remove unavailable entries" is offered only while a listed entry is unavailable. It removes every such entry
+     * of the member on the server, also those further down the list that are not loaded yet. */
+    function hasUnavailable() {
+        var found = false;
+        state.items.forEach(function (v) { if (!v.item.available) found = true; });
+        return found;
+    }
+
+    function setPurgeConfirm(on) {
+        var p = state.panel;
+        if (!p) return;
+        p.confirmText.style.display = on ? '' : 'none';
+        p.purgeYes.style.display = on ? '' : 'none';
+        p.purgeNo.style.display = on ? '' : 'none';
+        p.purge.style.display = !on && hasUnavailable() ? '' : 'none';
+        if (on && p.purgeNo.focus) p.purgeNo.focus();
+    }
+
+    function syncPurge() {
+        var p = state.panel;
+        if (!p) return;
+        var asking = p.purgeYes.style.display !== 'none';
+        if (!hasUnavailable()) { setPurgeConfirm(false); return; }
+        if (!asking) p.purge.style.display = '';
+    }
+
+    function purgeUnavailable() {
+        var p = state.panel;
+        if (!p) return Promise.resolve();
+        p.purgeYes.disabled = true;
+        return api('DELETE', '/api/saved/unavailable').then(function (res) {
+            p.purgeYes.disabled = false;
+            if (state.panel !== p) return;
+            setPurgeConfirm(false);
+            if (res.status !== 200) { toast(errorText(res, 'The unavailable entries could not be removed.'), 'error'); return; }
+            var n = res.data && res.data.removed;
+            toast(n === 1 ? 'Removed 1 unavailable entry' : 'Removed ' + (n || 0) + ' unavailable entries', 'success');
+            return loadPage(true);
+        }).catch(function () {
+            p.purgeYes.disabled = false;
+            setPurgeConfirm(false);
+            toast('The unavailable entries could not be removed.', 'error');
+        });
+    }
+
     function loadPage(first) {
         var p = state.panel;
         if (!p) return Promise.resolve();
@@ -422,6 +468,7 @@
             p.more.style.display = state.nextBefore ? '' : 'none';
             p.status.textContent = '';
             if (!p.list.children.length) showEmpty();
+            syncPurge();
         }).catch(function () {
             if (state.panel === p) p.status.textContent = 'The saved messages could not be loaded.';
         });
@@ -440,12 +487,20 @@
         var list = el('div', '', 'saved-list', { role: 'list' });
         var more = button('Load more', 'btn-secondary', function () { loadPage(false); }, { 'data-action': 'more' });
         more.style.display = 'none';
-        dlg.append(head, note, status, list, more);
+        var purge = button('Remove unavailable entries', 'btn-secondary', function () { setPurgeConfirm(true); }, { 'data-action': 'purge' });
+        var confirmText = el('p', 'Remove every entry that is no longer available, with its reminder? That includes unavailable entries further down the list that are not shown yet. It cannot be undone.', 'saved-meta saved-purge-text', { role: 'alert' });
+        var purgeYes = button('Remove them', 'btn-danger', purgeUnavailable, { 'data-action': 'purge-yes' });
+        var purgeNo = button('Keep them', 'btn-secondary', function () { setPurgeConfirm(false); }, { 'data-action': 'purge-no' });
+        [purge, confirmText, purgeYes, purgeNo].forEach(function (n) { n.style.display = 'none'; });
+        var purgeRow = el('div', '', 'saved-actions saved-purge');
+        purgeRow.append(purge, purgeYes, purgeNo);
+        dlg.append(head, note, status, purgeRow, confirmText, list, more);
         overlay.appendChild(dlg);
         overlay.addEventListener('click', function (e) { if (e.target === overlay) closePanel(false); });
         doc().body.appendChild(overlay);
         state.opener = doc().activeElement;
-        state.panel = { node: overlay, dlg: dlg, list: list, status: status, more: more, title: title };
+        state.panel = { node: overlay, dlg: dlg, list: list, status: status, more: more, title: title,
+                        purge: purge, purgeYes: purgeYes, purgeNo: purgeNo, confirmText: confirmText };
         if (title.focus) title.focus();
         loadPage(true);
         return state.panel;
