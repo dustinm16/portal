@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Open Relay Portal is a free, open-source, self-hosted alternative to Discord, Slack, Twitch, and Apache Guacamole. Encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH and VNC. Built with Python. Encrypted at rest. Your server, your data.">
-    <meta name="keywords" content="self-hosted chat, open source streaming, encrypted chat server, self-hosted streaming platform, private chat server, WebRTC voice chat, RTMP streaming server, remote access gateway, SSH browser, VNC browser, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, self-hosted Discord, self-hosted Twitch, Rocket.Chat alternative, Matrix Element alternative, Mattermost alternative, Jitsi alternative, Mumble alternative, Apache Guacamole alternative, Rustdesk alternative, Parsec alternative, Owncast alternative, PeerTube alternative, Nginx RTMP alternative, Restream alternative, MeshCentral alternative">
+    <meta name="description" content="A privacy-first, self-hosted streaming and community platform: live streams with VODs, chat, voice and moderation, plus the tools to run it. Open source.">
+    <meta name="keywords" content="self-hosted chat, open source streaming, self-hosted chat server, self-hosted streaming platform, private chat server, WebRTC voice chat, RTMP streaming server, remote access gateway, SSH browser, VNC browser, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, self-hosted Discord, self-hosted Twitch, Rocket.Chat alternative, Matrix Element alternative, Mattermost alternative, Jitsi alternative, Mumble alternative, Apache Guacamole alternative, Rustdesk alternative, Parsec alternative, Owncast alternative, PeerTube alternative, Nginx RTMP alternative, Restream alternative, MeshCentral alternative">
     <meta name="author" content="Open Relay Portal">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/about">
@@ -12,8 +12,8 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://{{HOSTNAME}}/about">
-    <meta property="og:title" content="Open Relay Portal — Free, Open-Source Self-Hosted Communication & Infrastructure Gateway">
-    <meta property="og:description" content="Self-hosted alternative to Discord, Slack, Twitch, and Apache Guacamole. Encrypted chat, RTMPS live streaming, WebRTC voice chat, automatic VOD recording, and 75+ remote connection types. Your server, your data, your rules.">
+    <meta property="og:title" content="About Open Relay Portal — a Privacy-First, Self-Hosted Streaming and Community Platform">
+    <meta property="og:description" content="Live streaming with VODs, chat, voice and moderation for your community on your own server, plus browser SSH, VNC and file tools. Open source (AGPL-3.0).">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,15 +22,15 @@
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Open Relay Portal — Free, Open-Source Self-Hosted Communication & Infrastructure Gateway">
-    <meta name="twitter:description" content="Self-hosted alternative to Discord, Twitch, and Apache Guacamole. Encrypted chat, live streaming, voice chat, and 75+ remote connection types. Open source. Your server, your data.">
+    <meta name="twitter:title" content="About Open Relay Portal — Privacy-First Self-Hosted Streaming & Community">
+    <meta name="twitter:description" content="Live streams with VODs, chat, voice and moderation on a server you run, plus the tools to run it. Open source.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <!-- Additional SEO -->
     <meta name="theme-color" content="#1a1a2e">
     <meta name="application-name" content="Open Relay Portal">
 
-    <title>Open Relay Portal — Free, Open-Source Self-Hosted Communication & Infrastructure Gateway</title>
+    <title>About Open Relay Portal — Privacy-First Self-Hosted Streaming & Community Platform</title>
 
     <!-- JSON-LD Structured Data: SoftwareApplication -->
     <script type="application/ld+json">
@@ -39,11 +39,11 @@
         "@type": "SoftwareApplication",
         "name": "Open Relay Portal",
         "alternateName": ["ORP", "Open Relay"],
-        "alternativeHeadline": "Self-hosted open-source alternative to Discord, Slack, Twitch, Owncast, TeamViewer, and Apache Guacamole",
-        "description": "A free, open-source, self-hosted communication and infrastructure gateway. An alternative to Discord, Slack, Twitch, Owncast, TeamViewer, and Apache Guacamole. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH and VNC.",
+        "alternativeHeadline": "Privacy-first, self-hosted streaming and community platform",
+        "description": "A free, open-source, privacy-first, self-hosted streaming and community platform. Live streams with automatic VOD recording and a schedule, chat with channels and DMs, WebRTC voice, notifications and moderation, plus 75+ remote connection types (SSH, VNC and more) to run the server and your other machines.",
         "url": "https://{{HOSTNAME}}/about",
         "applicationCategory": "CommunicationApplication",
-        "applicationSubCategory": ["Chat Application", "Streaming Platform", "Remote Access Gateway"],
+        "applicationSubCategory": ["Streaming Platform", "Chat Application", "Community Platform", "Remote Access Tools"],
         "operatingSystem": "Linux",
         "softwareRequirements": "Python 3.11+",
         "programmingLanguage": "Python",
@@ -57,13 +57,15 @@
             "availability": "https://schema.org/InStock"
         },
         "featureList": [
-            "Encrypted chat with channels, DMs, reactions, and threads",
-            "RTMPS live streaming with HLS playback",
-            "Automatic VOD recording to SFTP storage",
+            "RTMPS live streaming with HLS playback; streams are private unless made public",
+            "Automatic VOD recording to your own SFTP storage",
+            "Stream schedule, follows and go-live notifications",
+            "Chat with channels, DMs, reactions, and threads",
             "WebRTC voice chat with VAD and push-to-talk",
-            "75+ remote connection types (SSH, VNC, databases)",
-            "Self-hosted on your own infrastructure",
-            "End-to-end encrypted messages at rest",
+            "Moderation tools, auto-moderation and an audit log",
+            "75+ remote connection types (SSH, VNC, databases) to run the server",
+            "Self-hosted on your own infrastructure, with no analytics or tracking code",
+            "Chat messages encrypted at rest (not end-to-end)",
             "Two-factor authentication (TOTP)",
             "Role-based access control",
             "Machine-bound encryption keys",
@@ -97,7 +99,7 @@
         "name": "Open Relay Portal",
         "alternateName": "ORP",
         "url": "https://{{HOSTNAME}}",
-        "description": "Free, open-source, self-hosted communication and infrastructure gateway with encrypted chat, live streaming, and 75+ remote connection types."
+        "description": "Free, open-source, privacy-first, self-hosted streaming and community platform with live streams, chat, voice and moderation, and 75+ remote connection types."
     }
     </script>
 
@@ -112,7 +114,7 @@
                 "name": "What is Open Relay Portal?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Open Relay Portal is a free, open-source, self-hosted web gateway that brings together encrypted chat, voice calls, live streaming with VOD recording, and remote infrastructure access (SSH, VNC, and 72+ more connection types) in a single platform. It runs on your own server, giving you full control over your data."
+                    "text": "Open Relay Portal is a free, open-source, privacy-first, self-hosted streaming and community platform. It brings together live streaming with VOD recording and a schedule, chat, voice calls, notifications and moderation, and also gives you the tools to run it: remote access (SSH, VNC, and 72+ more connection types) and file management. It runs on your own server, so your data stays on hardware you choose."
                 }
             },
             {
@@ -120,7 +122,7 @@
                 "name": "Does it replace chat platforms?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, polls, user blocking, spoiler tags, per-channel permissions (public/private, open/read-only), auto-moderation, audit logging, WebRTC voice chat (channels and DMs), user presence with idle detection, and syntax-highlighted code blocks — all self-hosted on your own infrastructure. Messages are encrypted at rest and you own all your data."
+                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, polls, user blocking, spoiler tags, per-channel permissions (public/private, open/read-only), auto-moderation, audit logging, WebRTC voice chat (channels and DMs), user presence with idle detection, and syntax-highlighted code blocks — all self-hosted on your own infrastructure. Messages are encrypted at rest on your server; the chat is not end-to-end encrypted, so the server and its administrator can read it."
                 }
             },
             {
@@ -128,7 +130,7 @@
                 "name": "Does it replace streaming platforms?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal supports RTMPS live streaming with HLS playback, automatic VOD recording to your own SFTP storage, dynamic thumbnails, viewer counts, stream chat, quality selection, and multi-platform relay to Twitch/YouTube/Kick. Webhooks notify external services of stream events in real-time. It works with OBS, Streamlabs, and any RTMP-compatible encoder. You keep full control — no platform fees, no content restrictions."
+                    "text": "Yes. Open Relay Portal supports RTMPS live streaming with HLS playback, automatic VOD recording to your own SFTP storage, dynamic thumbnails, viewer counts, stream chat, quality selection, and multi-platform relay to Twitch/YouTube/Kick. Webhooks notify external services of stream events in real-time. It works with OBS, Streamlabs, and any RTMP-compatible encoder. You keep full control: no platform fees, and you set the rules."
                 }
             },
             {
@@ -144,7 +146,7 @@
                 "name": "How is Open Relay Portal encrypted?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Open Relay Portal uses Fernet encryption for chat messages and DMs at rest, machine-bound encryption keys derived from hardware IDs so cloned servers cannot decrypt data, Argon2id password hashing, HTTPS with HSTS, and TLS 1.2+ for all connections. Connection configs and stream keys are also encrypted at rest."
+                    "text": "Open Relay Portal uses Fernet encryption for chat messages and DMs at rest, machine-bound encryption keys derived from hardware IDs so cloned servers cannot decrypt data, Argon2id password hashing, HTTPS with HSTS, and TLS 1.2+ for the web interface. Connection configs and stream keys are also encrypted at rest. Chat is not end-to-end encrypted: the server and its administrator can read it. Voice audio is encrypted between participants and sent directly between their browsers."
                 }
             },
             {
@@ -468,11 +470,11 @@
 
             <main class="docs-content">
                 <h1>About Open Relay Portal</h1>
-                <p>A complete guide to using Open Relay Portal &mdash; your secure, self-hosted gateway for remote infrastructure access, live streaming, and community communication.</p>
+                <p>A complete guide to using Open Relay Portal &mdash; a privacy-first, self-hosted streaming and community platform, with the tools to run it.</p>
 
                 <!-- Overview -->
                 <h2 id="overview">Overview</h2>
-                <p>Open Relay Portal is a secure, authenticated web gateway for managing home and cloud infrastructure remotely. It consolidates remote access, process management, live streaming, and team communication into a single web interface accessible from any browser.</p>
+                <p>Open Relay Portal is a privacy-first, self-hosted streaming and community platform. It runs on a server you control and gives your community live streams with recordings and a schedule, chat, voice and notifications, with moderation tools. The same server also gives you the tools to run it: browser-based remote access (SSH, VNC and more), file management and a proxy for your other services. Chat, the dashboard and the admin pages need a sign-in; the sign-in, About, Guides, API docs and live pages, and a stream whose owner allows unauthenticated access, do not. Chat is encrypted at rest but not end-to-end, so the server&rsquo;s administrator can read it.</p>
 
                 <p style="margin: 1rem 0;">
                     <a href="https://github.com/dustinm16/portal" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 0.5rem; color: var(--accent-blue); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--card-border); border-radius: 8px; font-size: 0.9rem; transition: background 0.2s;">
@@ -484,31 +486,31 @@
                 <div class="feature-grid">
                     <div class="feature-card">
                         <h4>
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                            Remote Access
-                        </h4>
-                        <p>Connect to SSH, VNC, SPICE, and Proxmox servers through your browser. HTTP/HTTPS connections open in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and TLS enforcement. A default Web Browser connection is created for all users. No client software needed.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                             Live Streaming
                         </h4>
-                        <p>Broadcast live via RTMPS or plain RTMP (with temporary tokens) from OBS or any encoder. Community members can watch streams with HLS playback.</p>
+                        <p>Broadcast live via RTMPS or plain RTMP (with temporary tokens) from OBS or any encoder. Members watch with HLS playback, streams are recorded as VODs to your own storage, and a stream is private unless you make it public.</p>
                     </div>
                     <div class="feature-card">
                         <h4>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
                             Community Chat
                         </h4>
-                        <p>Real-time encrypted messaging with channels, emoji, markdown, @mentions, replies, and image sharing.</p>
+                        <p>Real-time messaging with channels, voice rooms, emoji, markdown, @mentions, replies, image sharing and moderation tools. Messages are encrypted at rest on your server.</p>
                     </div>
                     <div class="feature-card">
                         <h4>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
                             Secure by Default
                         </h4>
-                        <p>HTTPS-only with HSTS, encrypted chat, Argon2id passwords, TOTP 2FA, and role-based access control.</p>
+                        <p>HTTPS-only with HSTS, chat encrypted at rest, Argon2id passwords, TOTP 2FA, role-based access control, and no analytics or tracking code.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                            Remote Access (the tools to run it)
+                        </h4>
+                        <p>Connect to SSH, VNC, SPICE, and Proxmox servers through your browser. HTTP/HTTPS connections open in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and TLS enforcement. A default Web Browser connection is created for all users. No client software needed.</p>
                     </div>
                 </div>
 
@@ -891,7 +893,7 @@
 
                 <h3>DM Features</h3>
                 <ul>
-                    <li><strong>Encrypted at Rest</strong> &mdash; All DM messages are encrypted with Fernet, same as channel messages. Content is never stored in plaintext.</li>
+                    <li><strong>Encrypted at Rest</strong> &mdash; All DM message bodies are encrypted with Fernet, same as channel messages. The search index keeps the words of messages so they can be searched.</li>
                     <li><strong>Real-Time Delivery</strong> &mdash; Messages arrive instantly via WebSocket. No polling or page refresh needed.</li>
                     <li><strong>Reactions</strong> &mdash; React to messages with emoji, just like in channels.</li>
                     <li><strong>Replies</strong> &mdash; Reply to a specific message to maintain context in a conversation.</li>
@@ -907,7 +909,7 @@
                 <p>Group DMs support 2 to 10 participants. All members can add new participants to an existing group. The conversation name defaults to a comma-separated list of member names but can be renamed by any participant.</p>
 
                 <div class="alert alert-info">
-                    <strong>Privacy:</strong> DM conversations are visible only to their participants. Admins cannot read DM content &mdash; messages are encrypted at rest and decrypted only for participants.
+                    <strong>Privacy:</strong> The portal shows a DM conversation only to its participants; it does not show it to an administrator either. Messages are encrypted at rest, but the server decrypts them to deliver them, so whoever has root on the host (an administrator is effectively that) can read them. DMs are not end-to-end encrypted.
                 </div>
 
                 <!-- Message Search -->
@@ -1377,12 +1379,12 @@
                     <li><strong>HSTS</strong> &mdash; HTTP Strict Transport Security with 1-year max-age, includeSubDomains, and preload.</li>
                     <li><strong>WSS Only</strong> &mdash; All WebSocket connections use TLS encryption.</li>
                     <li><strong>TLS 1.2+</strong> &mdash; Only strong cipher suites are permitted.</li>
-                    <li><strong>Voice Encryption</strong> &mdash; Voice chat audio is encrypted end-to-end via WebRTC DTLS-SRTP. No audio is stored or processed server-side.</li>
+                    <li><strong>Voice Encryption</strong> &mdash; Voice chat audio is encrypted between participants with WebRTC DTLS-SRTP and goes directly between their browsers. No audio is stored or processed server-side; if you configure a TURN relay it carries the still-encrypted audio.</li>
                 </ul>
 
                 <h3>Data Protection</h3>
                 <ul>
-                    <li><strong>Chat Encryption</strong> &mdash; Messages are encrypted at rest using Fernet symmetric encryption.</li>
+                    <li><strong>Chat Encryption</strong> &mdash; Message bodies are encrypted at rest using Fernet symmetric encryption; the search index keeps their words so they can be searched.</li>
                     <li><strong>Password Hashing</strong> &mdash; All passwords are hashed with Argon2id (memory-hard, timing-safe).</li>
                     <li><strong>API Key Storage</strong> &mdash; API keys are stored as hashed values. Only the prefix is kept for lookup.</li>
                     <li><strong>SSH Private Keys</strong> &mdash; Never stored server-side. Returned once at creation time only.</li>

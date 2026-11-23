@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Open Relay Portal REST API documentation. Endpoints for authentication, user connections, streaming, chat, services, and administration. Open-source self-hosted infrastructure gateway with full API access.">
+    <meta name="description" content="REST API reference for Open Relay Portal, a privacy-first self-hosted streaming and community platform: authentication, streams, chat and administration.">
     <meta name="keywords" content="open relay portal API, REST API documentation, self-hosted API, streaming API, chat API, connection management API, open source gateway API, aiohttp REST API, self-hosted API gateway, Guacamole REST API, self-hosted WebSocket server, open source WebSocket API">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/api-docs">
@@ -11,8 +11,8 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://{{HOSTNAME}}/api-docs">
-    <meta property="og:title" content="API Documentation — Open Relay Portal">
-    <meta property="og:description" content="REST API docs for Open Relay Portal — authentication, connections, streaming, chat, and more. Open-source self-hosted gateway.">
+    <meta property="og:title" content="API Documentation — Open Relay Portal | Privacy-First Self-Hosted Streaming & Community Platform">
+    <meta property="og:description" content="REST API docs for Open Relay Portal, a privacy-first, self-hosted streaming and community platform: authentication, streams, chat and administration.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -21,11 +21,11 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="API Documentation — Open Relay Portal">
-    <meta name="twitter:description" content="REST API docs for the open-source self-hosted gateway with streaming, chat, and 75+ connection types.">
+    <meta name="twitter:description" content="REST API docs for the privacy-first, self-hosted streaming and community platform: streams, chat, connections and administration.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <meta name="theme-color" content="#1a1a2e">
-    <title>API Documentation — Open Relay Portal | REST API Reference</title>
+    <title>API Documentation — Open Relay Portal | Self-Hosted Streaming & Community Platform</title>
 
     <!-- JSON-LD Structured Data: TechArticle -->
     <script type="application/ld+json">
@@ -33,7 +33,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "headline": "Open Relay Portal REST API Documentation",
-        "description": "Complete REST API reference for Open Relay Portal — authentication, user connections, streaming, chat, services, and administration endpoints.",
+        "description": "Complete REST API reference for Open Relay Portal, a privacy-first, self-hosted streaming and community platform: authentication, streaming, chat, user connections, services, and administration endpoints.",
         "url": "https://{{HOSTNAME}}/api-docs",
         "author": {
             "@type": "Organization",
@@ -438,11 +438,11 @@
 
             <main class="docs-content">
                 <h1>API Documentation</h1>
-                <p>Complete reference for the Open Relay Portal REST API and WebSocket interfaces.</p>
+                <p>Complete reference for the REST API and WebSocket interfaces of Open Relay Portal, a privacy-first, self-hosted streaming and community platform.</p>
 
                 <!-- Introduction -->
                 <h2 id="introduction">Introduction</h2>
-                <p>Open Relay Portal provides a unified API for managing remote access to your infrastructure. All API endpoints return JSON responses and require authentication unless otherwise noted.</p>
+                <p>Open Relay Portal provides one API for streams, chat, notifications, connections and administration. All API endpoints return JSON responses and require authentication unless otherwise noted.</p>
 
                 <div class="alert alert-info">
                     <strong>Base URL:</strong> All API endpoints are relative to your Open Relay Portal installation (e.g., <code>https://portal.example.com</code>)

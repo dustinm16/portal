@@ -1163,6 +1163,106 @@ check("1.23.0: every new picture exists as a PNG, is shown in the Screenshots se
 check("1.23.0: the notes no longer say that no pictures or no browser were involved, and state the desktop-only limit",
       "no pictures for the readme" not in low23 and "desktop chromium only" in low23)
 
+# --- 1.23.1: wording and metadata only (privacy-first streaming and community platform) ---------------
+import asyncio as _asyncio23a  # noqa: E402
+import json as _json23a  # noqa: E402
+import struct as _struct23a  # noqa: E402
+import types as _types23a  # noqa: E402
+
+_EMOJI = "[\U0001F000-\U0001FFFF\u2600-\u27BF]"
+m231 = re.search(r"### Upgrade notes for 1\.23\.1\n(.*?)(?=\n### Upgrade notes for 1\.23\.0)", text, re.S)
+_sec231 = m231.group(1) if m231 else ""
+_low231 = _sec231.lower()
+check("1.23.1 notes sit directly before the 1.23.0 notes and after the 1.18.0 notes",
+      bool(m231) and text.index("### Upgrade notes for 1.23.1") > text.index("### Upgrade notes for 1.18.0"))
+check("1.23.1 states: wording and metadata only, nothing to do, nothing to undo, no database change",
+      all(n in _low231 for n in ("wording and page metadata only", "no change in behaviour", "no database change",
+                                 "nothing has to be done", "needs nothing undone")), str(_low231[:200]))
+check("1.23.1 states what a self-hoster sees: page titles and descriptions, the manifest, the share image, robots.txt and sitemap.xml unchanged",
+      all(n in _low231 for n in ("page titles and descriptions", "web app manifest", "static/og-image.png", "`robots.txt` and `sitemap.xml` are unchanged")))
+check("1.23.1 notes say the old end-to-end and nothing-loaded-from-other-hosts wording is corrected",
+      "end-to-end" in _low231 and "other hosts" in _low231 and "readable by the server" in _low231)
+check("README carries no emoji", not re.search(_EMOJI, text))
+
+_first = text.split("\n## ", 1)[0]
+check("README opens with the tagline, a Privacy by design list and the demo link in the first screen",
+      "**A privacy-first, self-hosted streaming and community platform.**" in _first and "### Privacy by design" in _first
+      and "https://portal.dddvm.xyz" in _first)
+check("README has a contents list that links to the sections", "## Contents" in text and "(#what-you-get)" in text and "(#security)" in text)
+check("README does not claim zero third-party dependencies, even-if-compelled protection or end-to-end voice",
+      "zero third-party dependencies" not in text.lower() and "even if compelled" not in text
+      and "end-to-end encrypted voice" not in text.lower() and "zero-knowledge voice" not in text.lower())
+check("README says plainly that chat is not end-to-end encrypted and that an administrator is effectively root",
+      "nothing is **end-to-end encrypted**" in text and "effectively root" in _first)
+check("README lists what is fetched from other hosts: jsDelivr, the STUN default, GitHub, the Cloudflare list, link previews, push services",
+      all(n in text for n in ("cdn.jsdelivr.net", "STUN_SERVER", "GitHub releases API", "Cloudflare address list", "link-preview", "push service")))
+_get = text.split("## What You Get", 1)[1].split("\n## ", 1)[0]
+check("What You Get puts streaming and chat before the remote access, file and service tools",
+      _get.index("### Live Streaming") < _get.index("### Chat\n") < _get.index("### Voice Chat")
+      < _get.index("### Running the Server: Remote Access, Files, Services and Administration") < _get.index("### Remote Access\n") < _get.index("### File Management"))
+check("the journalists and activists audience promises no protection",
+      "does not hide who you are from the server's operator" in text and "can't be censored or monitored" not in text)
+
+# the evidence behind the privacy statements
+import config as _config23a  # noqa: E402
+_srv_src = (ROOT / "server.py").read_text(encoding="utf-8")
+check("code backs the README: the STUN default is Google's, the CSP allows jsDelivr, hls.js loads from jsDelivr on the public live page",
+      "stun.l.google.com" in _config23a.Config.STUN_SERVER and "https://cdn.jsdelivr.net" in _srv_src
+      and "cdn.jsdelivr.net/npm/hls.js" in (ROOT / "static" / "live.html").read_text(encoding="utf-8"))
+_db_src231 = (ROOT / "database.py").read_text(encoding="utf-8")
+check("code backs the README: the search index is filled with the plaintext words of a message, and the README says so",
+      'f"INSERT INTO {fts_table}(message) VALUES (?)", (plaintext or "",)' in _db_src231
+      and "search index keeps the words of messages in readable form" in text and "cannot be read is not made" in _low231)
+check("code backs the README: the daily update check runs only while an update.available hook exists",
+      "def _alert_update_loop" in _srv_src and 'get_enabled_outgoing_webhooks_for_event("update.available")' in _srv_src)
+
+# the pages a search engine or a link preview sees
+_pg231 = {n: (ROOT / "static" / n).read_text(encoding="utf-8")
+          for n in ("login.html", "about.html", "live.html", "guides.html", "api-docs.html")}
+for _n, _t in _pg231.items():
+    _d = re.search(r'<meta name="description" content="([^"]*)">', _t).group(1)
+    _tags = {k: re.search(rf'<meta (?:name|property)="{k}" content="([^"]*)">', _t) for k in ("og:title", "og:description", "twitter:title", "twitter:description")}
+    _ttl = re.search(r"<title>([^<]*)</title>", _t).group(1)
+    check(f"{_n}: description leads with the new positioning and fits a search result",
+          "privacy-first" in _d.lower() and len(_d) <= 160, f"{len(_d)} {_d}")
+    check(f"{_n}: title, og and twitter tags are present and none uses the old tagline",
+          all(_tags.values()) and "self-hosted" in _ttl.lower()
+          and not any(w in (_ttl + _d + "".join(m.group(1) for m in _tags.values() if m)).lower()
+                      for w in ("infrastructure gateway", "encrypted communication")))
+    check(f"{_n}: og descriptions fit a link preview", all(len(m.group(1)) <= 165 for m in _tags.values() if m))
+    check(f"{_n}: canonical and og:url keep the host name placeholder", _t.count("{{HOSTNAME}}") >= 3)
+    check(f"{_n}: no emoji in the head (the metadata)", not re.search(_EMOJI, _t.split("</head>", 1)[0]))
+    _ld = re.findall(r'<script type="application/ld\+json">(.*?)</script>', _t, re.S)
+    check(f"{_n}: every JSON-LD block parses and none says infrastructure gateway or claims end-to-end",
+          all(_json23a.loads(b.replace("{{HOSTNAME}}", "x")) is not None for b in _ld)
+          and not any("infrastructure gateway" in b.lower() or re.search(r"(?<!not )end-to-end", b.lower()) for b in _ld))
+check("about.html describes a privacy-first streaming and community platform in its JSON-LD and its first paragraph",
+      "privacy-first, self-hosted streaming and community platform" in _pg231["about.html"].lower()
+      and "<h1>About Open Relay Portal</h1>" in _pg231["about.html"] and "stream mod" in _pg231["about.html"].lower())
+check("about.html and the sign-in page no longer call chat or DMs end-to-end and say who can read a DM",
+      "End-to-end encrypted messages" not in _pg231["about.html"] and "Admins cannot read DM content" not in _pg231["about.html"]
+      and "not end-to-end" in _pg231["about.html"])
+check("the sign-in page subtitle states the new positioning in all three places",
+      _pg231["login.html"].count("Sign in to your community") == 3 and "Sign in to access your services" not in _pg231["login.html"])
+check("the guides no longer call a proxied connection end-to-end", "Ensures end-to-end encryption" not in _pg231["guides.html"]
+      and "maintaining end-to-end" not in _pg231["guides.html"])
+
+_man = _json23a.loads(_asyncio23a.run(_server.http_web_manifest(None)).text)
+check("the web app manifest describes the platform and keeps its name", _man["name"] == "Open Relay Portal"
+      and "streaming and community platform" in _man["description"].lower())
+_req = _types23a.SimpleNamespace(host="portal.example.test")
+_sm = _asyncio23a.run(_server.http_sitemap_xml(_req)).text
+check("the sitemap lists the five public pages and nothing else",
+      sorted(re.findall(r"<loc>https://[^/]+/([^<]*)</loc>", _sm)) == ["about", "api-docs", "guides", "live", "login"])
+_rb = _asyncio23a.run(_server.http_robots_txt(_req)).text
+check("robots.txt still disallows the signed-in areas and the API and allows nothing new",
+      all(f"Disallow: {p}" in _rb for p in ("/api/", "/ws/", "/admin", "/chat", "/watch", "/static/uploads/"))
+      and not any(ln.startswith("Allow:") for ln in _rb.splitlines()))
+_png = (ROOT / "static" / "og-image.png").read_bytes()
+check("the share image is a 1200x630 PNG", _png[:8] == b"\x89PNG\r\n\x1a\n" and _struct23a.unpack(">II", _png[16:24]) == (1200, 630))
+_all_docs = "".join((ROOT / n).read_text(encoding="utf-8") for n in ("ARCHITECTURE.md", "docs/ARCHITECTURE.md"))
+check("the architecture documents open with the new positioning", _all_docs.count("privacy-first, self-hosted streaming and community platform") == 2)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

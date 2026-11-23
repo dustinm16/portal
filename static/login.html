@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- SEARCH_ENGINE_VERIFICATION -->
-    <meta name="description" content="Open Relay Portal — a free, open-source, self-hosted alternative to Discord, Twitch, and TeamViewer. Encrypted chat, live streaming with VODs, WebRTC voice chat, and 75+ remote connection types. Your server, your data.">
-    <meta name="keywords" content="self-hosted chat, open source streaming, encrypted chat, self-hosted streaming platform, private chat server, WebRTC voice chat, remote access gateway, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, self-hosted Discord, self-hosted Twitch, Rocket.Chat alternative, Jitsi alternative, Guacamole alternative, Apache Guacamole alternative, Rustdesk alternative, Parsec alternative, OBS streaming server, Owncast alternative, PeerTube alternative">
+    <meta name="description" content="A privacy-first, self-hosted streaming and community platform: live streams with VODs, chat, voice and notifications on a server you run.">
+    <meta name="keywords" content="self-hosted chat, open source streaming, community chat, self-hosted streaming platform, private chat server, WebRTC voice chat, remote access gateway, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, self-hosted Discord, self-hosted Twitch, Rocket.Chat alternative, Jitsi alternative, Guacamole alternative, Apache Guacamole alternative, Rustdesk alternative, Parsec alternative, OBS streaming server, Owncast alternative, PeerTube alternative">
     <meta name="author" content="Open Relay Portal">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/">
@@ -13,8 +13,8 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://{{HOSTNAME}}/">
-    <meta property="og:title" content="Open Relay Portal — Self-Hosted Encrypted Communication & Infrastructure Gateway">
-    <meta property="og:description" content="Free, open-source alternative to Discord, Twitch, and TeamViewer. Encrypted chat, live streaming, voice chat, and 75+ remote connection types. Self-hosted. Your server, your data.">
+    <meta property="og:title" content="Open Relay Portal — Privacy-First, Self-Hosted Streaming and Community Platform">
+    <meta property="og:description" content="Live streams with VODs and a schedule, chat, voice and notifications on a server you run. Open source, with no analytics or tracking code.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -23,8 +23,8 @@
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Open Relay Portal — Self-Hosted Encrypted Communication & Infrastructure Gateway">
-    <meta name="twitter:description" content="Free, open-source alternative to Discord, Twitch, and TeamViewer. Encrypted chat, live streaming, voice chat, and 75+ remote connection types. Self-hosted. Your server, your data.">
+    <meta name="twitter:title" content="Open Relay Portal — Privacy-First Self-Hosted Streaming & Community">
+    <meta name="twitter:description" content="Live streams with VODs, chat, voice and notifications on a server you run. Open source, with no analytics or tracking code.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <!-- Additional SEO -->
@@ -34,7 +34,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
-    <title>Open Relay Portal — Self-Hosted Encrypted Communication & Live Streaming</title>
+    <title>Open Relay Portal — Privacy-First Self-Hosted Streaming & Community Platform</title>
 
     <!-- JSON-LD Structured Data -->
     <script type="application/ld+json">
@@ -44,7 +44,7 @@
         "name": "Open Relay Portal",
         "alternateName": ["ORP", "Open Relay"],
         "alternativeHeadline": "Self-hosted alternative to Discord, Twitch, TeamViewer, and Apache Guacamole",
-        "description": "A free, open-source, self-hosted communication and infrastructure gateway. Encrypted chat, live streaming, voice chat, and 75+ remote connection types. An alternative to Discord, Slack, Twitch, Owncast, TeamViewer, and Apache Guacamole.",
+        "description": "A free, open-source, privacy-first, self-hosted streaming and community platform: live streams with VODs, chat, voice and notifications on a server you run, plus browser SSH, VNC and file tools.",
         "url": "https://{{HOSTNAME}}",
         "applicationCategory": "CommunicationApplication",
         "operatingSystem": "Linux",
@@ -288,7 +288,7 @@
                     </svg>
                 </div>
                 <h1 id="form-title">Welcome Back</h1>
-                <p id="form-subtitle">Sign in to access your services</p>
+                <p id="form-subtitle">Sign in to your community's streams and chat</p>
             </div>
 
             <div id="message-container" aria-live="polite"></div>
@@ -563,7 +563,7 @@
                 requestAnimationFrame(() => loginForm.classList.remove('form-fade-enter'));
             });
             formTitle.textContent = 'Welcome Back';
-            formSubtitle.textContent = 'Sign in to access your services';
+            formSubtitle.textContent = 'Sign in to your community\'s streams and chat';
             messageContainer.innerHTML = '';
             // Reset register form state
             registerForm.reset();
@@ -781,7 +781,7 @@
                         registerForm.classList.add('hidden');
                         loginForm.classList.remove('hidden');
                         formTitle.textContent = 'Welcome Back';
-                        formSubtitle.textContent = 'Sign in to access your services';
+                        formSubtitle.textContent = 'Sign in to your community\'s streams and chat';
                         awaiting2FA = false;
                         document.getElementById('totp-group').classList.add('hidden');
                         document.getElementById('totp-code').value = '';

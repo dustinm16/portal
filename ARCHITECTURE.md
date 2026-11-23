@@ -2,7 +2,7 @@
 
 ## Overview
 
-Open Relay Portal is a secure, authenticated gateway for home infrastructure that provides:
+Open Relay Portal is a privacy-first, self-hosted streaming and community platform. It also acts as an authenticated gateway for the infrastructure around it, and provides:
 
 1. **Unified Services** - Both proxy routes to external backends AND managed server processes (MediaMTX, TURN, etc.)
 2. **User Connections** - Personal authenticated access to external resources (SSH, VNC, Proxmox, etc.)

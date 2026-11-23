@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Setup guides for 75+ connection types on Open Relay Portal — a self-hosted alternative to Apache Guacamole and TeamViewer. SSH, VNC, databases, home automation, media servers, and more with step-by-step tutorials.">
+    <meta name="description" content="Setup guides for 75+ connection types in Open Relay Portal, a privacy-first self-hosted streaming and community platform: SSH, VNC, databases and more.">
     <meta name="keywords" content="SSH connection guide, VNC setup guide, self-hosted remote access, database connection tutorial, Proxmox connection, Home Assistant setup, Plex remote access, Jellyfin setup, self-hosted infrastructure, open relay portal guides, remote connection types, Apache Guacamole alternative, Rustdesk alternative, TeamViewer alternative, Parsec alternative, MeshCentral alternative, remote desktop browser, SSH web client, VNC web client, browser SSH terminal, Proxmox web console, self-hosted remote access">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/guides">
@@ -11,8 +11,8 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://{{HOSTNAME}}/guides">
-    <meta property="og:title" content="Connection Setup Guides — Open Relay Portal | 75+ Remote Connection Types">
-    <meta property="og:description" content="Step-by-step guides for connecting SSH, VNC, databases, Proxmox, Home Assistant, media servers, and 65+ more service types. A self-hosted alternative to Apache Guacamole and TeamViewer.">
+    <meta property="og:title" content="Connection Setup Guides — Open Relay Portal | The Tools to Run Your Self-Hosted Community Server">
+    <meta property="og:description" content="Step-by-step guides for connecting SSH, VNC, databases, Proxmox, Home Assistant, media servers and 65+ more service types through Open Relay Portal.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,11 +22,11 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="75+ Connection Guides — Open Relay Portal">
-    <meta name="twitter:description" content="Setup guides for SSH, VNC, databases, home automation, media servers, and more. Self-hosted alternative to Apache Guacamole and TeamViewer.">
+    <meta name="twitter:description" content="Setup guides for SSH, VNC, databases, home automation, media servers and more, for the privacy-first self-hosted Open Relay Portal.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <meta name="theme-color" content="#1a1a2e">
-    <title>Connection Setup Guides — Open Relay Portal | SSH, VNC & 72+ More Types</title>
+    <title>Connection Setup Guides — Open Relay Portal | Self-Hosted Streaming & Community Platform</title>
 
     <!-- JSON-LD Structured Data: BreadcrumbList -->
     <script type="application/ld+json">
@@ -56,7 +56,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "headline": "Connection Setup Guides for 75+ Remote Service Types",
-        "description": "Step-by-step setup guides for SSH, VNC, databases, home automation, media servers, and more on Open Relay Portal.",
+        "description": "Step-by-step setup guides for SSH, VNC, databases, home automation, media servers, and more, for the tools that run a privacy-first, self-hosted streaming and community platform.",
         "url": "https://{{HOSTNAME}}/guides",
         "author": {
             "@type": "Organization",
@@ -2177,7 +2177,7 @@
 
             <section id="guide-https">
                 <h3>HTTPS Service</h3>
-                <p>Generic HTTPS connection for any TLS-encrypted web service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal proxies requests while maintaining end-to-end encryption to the target.</p>
+                <p>Generic HTTPS connection for any TLS-encrypted web service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal proxies requests over TLS to the target; Portal itself decrypts and re-encrypts the traffic, so it is not end-to-end between your browser and the target.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>https</code></td></tr>
                     <tr><th>Default Port</th><td><code>443</code></td></tr>
@@ -2198,7 +2198,7 @@
                 </ol>
                 <h4>Security Considerations</h4>
                 <ul>
-                    <li>Ensures end-to-end encryption from browser through Portal to the target</li>
+                    <li>Traffic is encrypted on each leg (browser to Portal, Portal to the target), but Portal decrypts it in between</li>
                     <li>Verify the target's TLS certificate is valid</li>
                     <li>Use this type for any service that supports HTTPS</li>
                 </ul>
@@ -2549,7 +2549,7 @@
                 <ul>
                     <li>Double encryption: WebSocket TLS + tunnel encryption</li>
                     <li>Use for highly sensitive services</li>
-                    <li>All traffic is encrypted end-to-end</li>
+                    <li>All traffic is encrypted in transit</li>
                 </ul>
             </section>
 

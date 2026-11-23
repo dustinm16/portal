@@ -3224,7 +3224,8 @@ async def http_service_worker(request: web.Request) -> web.Response:
 async def http_web_manifest(request: web.Request) -> web.Response:
     """GET /manifest.webmanifest: static, public, nothing private or per-site."""
     manifest = {
-        "name": "Open Relay Portal", "short_name": "Portal", "description": "Open Relay Portal",
+        "name": "Open Relay Portal", "short_name": "Portal",
+        "description": "Privacy-first, self-hosted streaming and community platform",
         "start_url": "/", "scope": "/", "display": "standalone",
         "background_color": "#0f172a", "theme_color": "#0f172a",
         "icons": [{"src": f"/static/icons/{name}", "sizes": f"{size}x{size}", "type": "image/png",
