@@ -1066,6 +1066,19 @@ check("1.23.0: every schedule route is in the API reference and on the API page"
       all(r in _api23 and r in _docs23 for r in ("/api/streams/schedule/upcoming", "/api/streams/{id}/schedule", "/rsvp/{start}",
                                                   "/api/streams/schedule/feed/{token}.ics", "/api/me/schedule-feed")))
 check("1.23.0: the README feature section mentions the schedule", "**Schedule.**" in text)
+_db23 = _sec23.split("**Database**", 1)[1].split("**", 1)[0] if "**Database**" in _sec23 else ""
+_tables23 = re.search(r"\*\*Stream schedule\.\*\* (\w+) tables are created", _sec23[_sec23.index("**Database**"):] if "**Database**" in _sec23 else "")
+check("1.23.0: the Database bullet counts six schedule tables and names every one, the sent marks included",
+      _tables23 is not None and _tables23.group(1) == "Six"
+      and all(f"`{t}`" in _sec23 for t in ("stream_schedule", "stream_schedule_cancelled", "stream_schedule_started", "stream_rsvps",
+                                           "stream_rsvp_sent", "schedule_feed_tokens")), str(_tables23))
+check("1.23.0: the notes say the claim comes first and the stream is read and checked after it",
+      "right after the claim the stream is read again" in low23 and "no streamer name" in low23)
+check("1.23.0: the notes say the feed's 429 carries a reference and the start values are bounded",
+      "schedule_feed_token" in _sec23 and "neither the token nor its hash is stored" in low23 and "4102444800" in _sec23)
+check("1.23.0: the push settings label that covers stream reminders is the one the notes quote",
+      "reminders for streams you are interested in" in _sec23
+      and "'Streams you follow going live, and reminders for streams you are interested in'" in (ROOT / "static" / "js" / "push.js").read_text())
 
 # --- 1.23.0 notes: saved messages and reminders (the "saved" lane) -----------------------------------
 m23s = re.search(r"### Upgrade notes for 1\.23\.0\n(.*?)(?=\n### Upgrade notes for 1\.22\.0)", text, re.S)
