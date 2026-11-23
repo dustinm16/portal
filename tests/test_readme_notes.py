@@ -1122,6 +1122,13 @@ check("1.23.0 (saved): the static versions the notes name are the ones loaded",
       and re.search(r"chat-saved\.js\?v=3\b", (ROOT / "static" / "chat.html").read_text()) is not None
       and all("portal.js?v=52" in (ROOT / "static" / n).read_text() for n in ("chat.html", "index.html", "admin.html")))
 
+_low74 = text.split("### Saved Messages and Reminders", 1)[1].split("\n###", 1)[0].lower()
+check("1.23.0 (saved): the notes say a reminder for a direct message opens the Saved view and then the conversation, not the message in context",
+      "a reminder for a direct message opens the saved view" in _low23s and "not the message in context" in _low23s
+      and "no per-message jump for direct messages" in _low23s and "not the message in context" in _low74)
+check("1.23.0 (saved): the notes say reminders have no per-kind push switch",
+      "no per-kind push switch" in _low23s and "no per-kind push switch" in _low74)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
