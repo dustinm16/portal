@@ -1819,6 +1819,14 @@
         .message.saved-message { box-shadow: inset 3px 0 0 var(--accent-blue, #3b82f6); }
         .saved-badge { font-size: 0.7rem; color: var(--accent-blue, #3b82f6); border: 1px solid currentColor; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.4rem; }
         #chat-messages:focus-visible, .message:focus-visible { outline: 2px solid var(--accent-blue, #3b82f6); outline-offset: -2px; }
+        /* The per-message actions button (made by chat-saved.js): only where there is no hover or the pointer is
+           coarse, a phone or a tablet, because the message menu cannot be opened by a long press everywhere.
+           The margins keep the message header at its height. */
+        .msg-actions-btn { display: none; margin-left: auto; background: none; color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; font: inherit; line-height: 1; cursor: pointer; }
+        .msg-actions-btn:focus-visible { outline: 2px solid var(--accent-blue, #3b82f6); outline-offset: 1px; }
+        @media (hover: none), (pointer: coarse) {
+            .msg-actions-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; margin-top: -14px; margin-bottom: -14px; }
+        }
         .context-menu-item:focus-visible { outline: 2px solid var(--accent-blue, #3b82f6); outline-offset: -2px; background: rgba(255,255,255,0.1); }
         .saved-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.55); display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; }
         .saved-overlay-remind { z-index: 2100; align-items: center; }
@@ -3289,7 +3297,7 @@
     <script src="/static/js/voice.js?v=15"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
     <script src="/static/js/chat-retention.js?v=3"></script>
-    <script src="/static/js/chat-saved.js?v=2"></script>
+    <script src="/static/js/chat-saved.js?v=3"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {

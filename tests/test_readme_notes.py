@@ -1096,7 +1096,7 @@ for name, needles in (
         ("the reminder tick and exactly-once firing", ("every 30 seconds", "partial index", "at most 50", "one database transaction", "across a restart")),
         ("the fixed notification text and the Saved view fallback", ("reminder for a saved message", "/chat?saved=1", "ids only")),
         ("web push", ("fixed `reminder` kind", "never message text", "no portal tab open")),
-        ("the phone long-press gap", ("contextmenu", "open follow-up")),
+        ("the phone reach: a visible button instead of a long press", ("does not fire a context menu on a long press", "message actions", "no inline handler")),
         ("the migration", ("create table if not exists saved_messages", "idx_saved_messages_due", "1.22.0 starts on the migrated database")),
         ("what is not tested", ("no browser and no phone", "no real push service", "no calendar", "no cloudflare"))):
     check(f"1.23.0 (saved) states: {name}", all(n in _low23s or n in _sec23s for n in needles), str(needles))
@@ -1118,8 +1118,8 @@ check("1.23.0 (saved): What You Get has a Saved Messages part, API.md and api-do
       and "/api/saved/marks" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/marks" in (ROOT / "static" / "api-docs.html").read_text()
       and "/api/saved/:id/remind" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/{id}/remind" in (ROOT / "static" / "api-docs.html").read_text())
 check("1.23.0 (saved): the static versions the notes name are the ones loaded",
-      "`chat-saved.js` is new (v2" in _sec23s and "`portal.js` is now v52" in _sec23s
-      and re.search(r"chat-saved\.js\?v=2\b", (ROOT / "static" / "chat.html").read_text()) is not None
+      "`chat-saved.js` is new (v3" in _sec23s and "`portal.js` is now v52" in _sec23s
+      and re.search(r"chat-saved\.js\?v=3\b", (ROOT / "static" / "chat.html").read_text()) is not None
       and all("portal.js?v=52" in (ROOT / "static" / n).read_text() for n in ("chat.html", "index.html", "admin.html")))
 
 if failures:

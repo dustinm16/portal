@@ -135,8 +135,23 @@
     }
 
     /* ---------------------------------------------------------------- the marker */
+    /* A small visible button on every message, for a touch screen: the message menu (reply, react, copy,
+     * Save, Remind and the rest) opens only on a right click or the menu key, and iOS Safari does not fire
+     * a context menu on a long press. The style sheet shows it only where there is no hover or the pointer
+     * is coarse; the click opens the same menu (see onMessagesClick). */
+    function addActionsButton(row) {
+        if (!row.querySelector || row.classList.contains('system')) return;
+        if (!(parseInt(row.dataset.messageId, 10) > 0) || row.querySelector('.msg-actions-btn')) return;
+        var b = el('button', '...', 'msg-actions-btn', {
+            type: 'button', 'aria-label': 'Message actions', 'aria-haspopup': 'menu',
+            title: 'Message actions: reply, react, copy, save, remind me'
+        });
+        (row.querySelector('.message-header') || row).appendChild(b);
+    }
+
     function decorate(row) {
         if (!row || !row.dataset || !state.cfg) return;
+        addActionsButton(row);
         var id = parseInt(row.dataset.messageId, 10);
         var saved = id > 0 && state.marks.has(markKey(state.cfg.currentKind(), id));
         var has = row.classList.contains('saved-message');
@@ -359,7 +374,7 @@
     function showEmpty() {
         var p = state.panel;
         if (!p) return;
-        p.status.textContent = 'Nothing saved yet. Choose Save message in the menu of a message (right-click, or the menu key on a focused message).';
+        p.status.textContent = 'Nothing saved yet. Choose Save message in the menu of a message (right-click, the menu key on a focused message, or the ... button on a touch screen).';
     }
 
     function loadPage(first) {
@@ -449,15 +464,18 @@
         if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
     }
 
-    function openMenuAt(row) {
-        var rect = row.getBoundingClientRect();
+    /* The menu the page opens on a context-menu event for `row`, here from the keyboard or the actions
+     * button. `anchor` (the button) sets where it opens and where focus returns when it closes. */
+    function openMenuAt(row, anchor) {
+        var rect = (anchor || row).getBoundingClientRect();
         var ev = new root.MouseEvent('contextmenu', {
-            bubbles: true, cancelable: true, clientX: Math.round(rect.left + 24), clientY: Math.round(rect.top + 16)
+            bubbles: true, cancelable: true,
+            clientX: Math.round(rect.left + (anchor ? 0 : 24)), clientY: Math.round(rect.top + (anchor ? (rect.height || 0) : 16))
         });
         row.dispatchEvent(ev);
         var menu = doc().getElementById('message-context-menu');
         if (menu && menu.classList.contains('show')) {
-            state.menuReturn = row;
+            state.menuReturn = anchor || row;
             var items = menuItems(menu);
             if (items.length) items[0].focus();
         }
@@ -488,6 +506,16 @@
             e.preventDefault();
             openMenuAt(row);
         }
+    }
+
+    /* The button's own click. It must not reach the page's click handler, which closes the menus. */
+    function onMessagesClick(e) {
+        var btn = e.target && e.target.closest ? e.target.closest('.msg-actions-btn') : null;
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var row = btn.closest('.message[data-message-id]');
+        if (row) openMenuAt(row, btn);
     }
 
     function onMenuKeydown(e) {
@@ -526,6 +554,7 @@
             if (!container.getAttribute('tabindex')) container.setAttribute('tabindex', '0');
             container.setAttribute('aria-label', 'Messages');
             container.addEventListener('keydown', onMessagesKeydown);
+            container.addEventListener('click', onMessagesClick);
             if (typeof root.MutationObserver === 'function') {
                 state.observer = new root.MutationObserver(function (records) {
                     records.forEach(function (r) {

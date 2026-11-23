@@ -77,11 +77,12 @@ class N {
   querySelectorAll(sel) { return this.all(sel); }
   querySelector(sel) { return this.all(sel)[0] || null; }
   dispatch(type, ev) {
-    const e = Object.assign({ type, target: this, key: '', shiftKey: false, defaultPrevented: false,
-                              preventDefault() { this.defaultPrevented = true; } }, ev);
+    const e = Object.assign({ type, target: this, key: '', shiftKey: false, defaultPrevented: false, stopped: false,
+                              preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; } }, ev);
     for (let x = this; x; x = x.parentNode) {
       e.currentTarget = x;
       for (const f of (x.listeners[type] || [])) f(e);
+      if (e.stopped) break;
     }
     if (type === 'keydown' && this !== doc) for (const f of (doc.listeners.keydown || [])) { e.currentTarget = doc; f(e); }
     return e;
@@ -334,6 +335,35 @@ let clock = FIXED_NOW;                                // what the module sees as
   check('Enter on Save or Remove acts like a click', apiLog.some(a => a.method === 'DELETE' && a.path === '/api/saved/11'), JSON.stringify(apiLog));
   menu.dispatch('keydown', { key: 'Escape', target: saveItem });
   check('Escape closes the menu and returns to the message', menusHidden.length >= 1 && active === row101);
+
+  // ---- touch: a visible per-message button opens the same menu as the context-menu key
+  let docClicks = 0;
+  doc.body.addEventListener('click', () => { docClicks++; });     // stands for the page's click handler that closes the menus
+  const btn101 = row101.querySelector('.msg-actions-btn'), btn102 = row102.querySelector('.msg-actions-btn');
+  check('every message has one actions button, in its header', btn101 && btn102 && btn101.parentNode === row101.querySelector('.message-header')
+        && row101.all('.msg-actions-btn').length === 1);
+  CS.decorateAll(); CS.decorateAll();
+  check('decorating again adds no second button', row101.all('.msg-actions-btn').length === 1 && row102.all('.msg-actions-btn').length === 1);
+  check('the button is a labelled real button with a menu popup, no inline handler and no symbol character',
+        btn102.tagName === 'BUTTON' && btn102.getAttribute('type') === 'button' && /Message actions/.test(btn102.getAttribute('aria-label'))
+        && btn102.getAttribute('aria-haspopup') === 'menu' && !('onclick' in btn102.attrs) && /^[.]+$/.test(btn102.textContent));
+  const sysRow = msgRow(990, 'joined', 'system'), newRow = msgRow(991, 'late');
+  container.append(sysRow, newRow);
+  check('a message added later gets the button (observer), a system line does not',
+        newRow.querySelector('.msg-actions-btn') !== null && sysRow.querySelector('.msg-actions-btn') === null);
+  let tapEvent = null;
+  row102.addEventListener('contextmenu', e => { tapEvent = e; e.preventDefault(); menu.classList.add('show'); });
+  menu.classList.remove('show'); active = null; docClicks = 0;
+  btn102.click();
+  check('tapping the button opens the message menu for that message (a contextmenu event on its row)',
+        tapEvent && tapEvent.type === 'contextmenu' && tapEvent.target === row102 && tapEvent.clientX > 0 && menu.classList.contains('show'));
+  check('the tap does not reach the page click handler that would close the menu again', docClicks === 0);
+  check('focus moves to the first menu item', active === replyItem);
+  menu.dispatch('keydown', { key: 'Escape', target: replyItem });
+  check('Escape in the menu puts focus back on the button', active === btn102);
+  docClicks = 0;
+  row102.dispatch('click', { target: row102 });
+  check('a click elsewhere on the message still reaches the page', docClicks === 1);
 
   // ---- returning to the tab refreshes the marks at most once a minute, unless something was saved or removed
   const marksGets = () => apiLog.filter(a => a.path === '/api/saved/marks').length;

@@ -59,6 +59,12 @@ _css = CHAT[CHAT.index("/* Saved messages: the member's own marker"):CHAT.index(
 check("the Saved view fills the screen and its buttons reach 44 px on a phone",
       "@media (max-width: 640px), (hover: none)" in _css and re.search(r"min-height:\s*44px", _css) is not None
       and "width: 100%" in _css)
+check("the per-message actions button is hidden by default, shown only without hover or with a coarse pointer, at 44 px, with a focus ring",
+      re.search(r"\.msg-actions-btn \{ display: none;", _css) is not None
+      and re.search(r"@media \(hover: none\), \(pointer: coarse\) \{\s*\.msg-actions-btn \{[^}]*display: inline-flex;[^}]*min-width: 44px; min-height: 44px", _css) is not None
+      and ".msg-actions-btn:focus-visible" in _css)
+check("the button is made by the module as a DOM node, never from a string, with no inline handler",
+      "'msg-actions-btn'" in CODE and "createElement" in CODE and 'class="msg-actions-btn' not in CHAT and "onclick" not in CODE)
 check("a focused message and the menu items show a focus ring", "message:focus-visible" in _css and "context-menu-item:focus-visible" in _css)
 
 node = shutil.which("node")
