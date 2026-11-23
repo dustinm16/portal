@@ -199,7 +199,7 @@ index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
 check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0 and again in 1.23.0)",
-      stated == {"48"} and real_v == "50", f"stated {stated}, index.html {real_v}")
+      stated == {"48"} and real_v == "51", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
@@ -620,7 +620,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "50")}  # stated in 1.20.0, loaded since 1.22.0 and 1.23.0
+_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "51")}  # stated in 1.20.0, loaded since 1.22.0 and 1.23.0
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -1057,9 +1057,9 @@ check("1.23.0: the numbers stated are the ones in the code",
       and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
-      "`stream-schedule.js` is new at version 4" in _sec23 and "`streams.js` is version 50" in _sec23
+      "`stream-schedule.js` is new at version 4" in _sec23 and "`streams.js` is version 51" in _sec23
       and "/static/js/stream-schedule.js?v=4" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/streams.js?v=50" in (ROOT / "static" / "index.html").read_text())
+      and "/static/js/streams.js?v=51" in (ROOT / "static" / "index.html").read_text())
 _api23 = (ROOT / "docs" / "API.md").read_text()
 _docs23 = (ROOT / "static" / "api-docs.html").read_text()
 check("1.23.0: every schedule route is in the API reference and on the API page",

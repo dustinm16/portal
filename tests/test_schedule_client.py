@@ -48,7 +48,13 @@ _docs = (STATIC / "api-docs.html").read_text(encoding="utf-8")
 _mine = _docs[_docs.index("/api/streams/schedule/upcoming</span>") - 400:_docs.index("/api/streams/live</span>") - 300]
 check("the new endpoint blocks of the API page carry no inline onclick (they use data-endpoint-toggle)",
       "onclick" not in _mine and _mine.count("data-endpoint-toggle") == 5, str(_mine.count("data-endpoint-toggle")))
-check("the stream settings mount the owner's editor", "StreamSchedule.mountOwner(" in (STATIC / "js" / "streams.js").read_text())
+_streams_js = (STATIC / "js" / "streams.js").read_text()
+check("the stream settings mount the owner's editor", "StreamSchedule.mountOwner(" in _streams_js)
+_mount = _streams_js[_streams_js.index("StreamSchedule.mountOwner("):]
+_mount = _mount[:_mount.index("loadUserStreams();")]
+check("the stream settings pass a done callback that sets the name field and the heading and reloads the list",
+      "(name) =>" in _mount and "'stream-name-input'" in _mount and ".value = name" in _mount
+      and "'stream-details-title'" in _mount and ".textContent = name" in _mount, _mount)
 
 node = shutil.which("node")
 if not node:

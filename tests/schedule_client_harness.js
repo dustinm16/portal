@@ -133,15 +133,15 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   take();
   answers = [owner];
   const ed = new N('DIV');
-  let applied = 0;
-  await SS.mountOwner(ed, 7, () => { applied++; });
+  let applied = [];
+  await SS.mountOwner(ed, 7, (t) => { applied.push(t); });
   check('owner: the suggestion is offered, with a button, not applied', ed.textContent.indexOf('Friday show') >= 0 && !!buttonWith(ed, 'Use this title') && take().length === 1);
   check('owner: a count of interested members is shown and no names', ed.textContent.indexOf('2 interested') >= 0);
   answers = [{ status: 200, data: {} }, { status: 200, data: {} }, owner];
   await buttonWith(ed, 'Use this title').click();
   c = take();
   check('owner: Use this title PUTs the name, then clears the suggestion', c[0].method === 'PUT' && c[0].url === '/api/streams/7' && c[0].body.name === 'Friday show'
-    && c[1].method === 'DELETE' && c[1].url === '/api/streams/7/schedule/suggestion' && applied === 1, JSON.stringify(c));
+    && c[1].method === 'DELETE' && c[1].url === '/api/streams/7/schedule/suggestion' && applied.length === 1 && applied[0] === 'Friday show', JSON.stringify(c) + JSON.stringify(applied));
   answers = [{ status: 200, data: {} }, owner];
   await buttonWith(ed, 'Cancel this one').click();
   c = take();

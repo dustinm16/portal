@@ -453,7 +453,16 @@ async function showStreamDetails(streamId) {
         loadRelayDestinations(streamId);
         loadStreamMods(streamId);
         bindStreamModSearch(streamId);
-        if (window.StreamSchedule) window.StreamSchedule.mountOwner(document.getElementById('stream-schedule-mount'), streamId);
+        // "Use this title" renames the stream on the server: the name field, the heading and the grid follow, or
+        // Save under the name field would put the old name back
+        if (window.StreamSchedule) window.StreamSchedule.mountOwner(document.getElementById('stream-schedule-mount'), streamId, (name) => {
+            if (!name) return;
+            const nameInput = document.getElementById('stream-name-input');
+            if (nameInput) nameInput.value = name;
+            const heading = document.getElementById('stream-details-title');
+            if (heading) heading.textContent = name;
+            loadUserStreams();
+        });
 
         // Bind copy buttons programmatically to avoid inlining secrets in onclick attributes
         const copyValues = {

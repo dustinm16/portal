@@ -5,7 +5,7 @@
  *
  *   StreamSchedule.mountWatch(el, stream, user)    countdown + Interested for the next occurrence
  *   StreamSchedule.mountUpcoming(el)               the Upcoming strip
- *   StreamSchedule.mountOwner(el, streamId, done)  the owner's editor (done(): called after the title is applied)
+ *   StreamSchedule.mountOwner(el, streamId, done)  the owner's editor (done(title): called after the title is applied)
  *   StreamSchedule.mountFeed(el)                   the calendar link: create, regenerate, revoke
  *
  * Every piece of text that came from the server goes in through textContent; nothing here assigns innerHTML and no
@@ -197,7 +197,7 @@
                         if (!u.ok) { toast(errorOf(u, 'The title could not be changed'), 'error'); return; }
                         await api('DELETE', base + '/suggestion');
                         toast('Title changed', 'success');
-                        if (done) done();
+                        if (done) done(s.title);
                         await load();
                     } } }),
                     el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Dismiss', on: { click: function () {
