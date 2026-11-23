@@ -159,7 +159,9 @@
             row.classList.add('saved-message');
             var header = row.querySelector ? row.querySelector('.message-header') : null;
             if (header && !header.querySelector('.saved-badge')) {
-                header.appendChild(el('span', 'Saved', 'saved-badge', { title: 'Saved by you; only you see this' }));
+                /* before the actions button, which stays last in the header */
+                header.insertBefore(el('span', 'Saved', 'saved-badge', { title: 'Saved by you; only you see this' }),
+                                    header.querySelector('.msg-actions-btn'));
             }
         } else if (!saved && has) {
             row.classList.remove('saved-message');
@@ -244,13 +246,32 @@
         return saveMessage(msg).then(function (s) { if (s) toast('Saved. Only you can see it.', 'success'); });
     }
 
+    /* The marks carry no reminder time and there is no route for one entry, so the entry is read through the list:
+     * the single entry at or below its id (ids are the list's cursor) is the entry itself, or another one when it is
+     * gone. Null when it cannot be read (a limit, the network): the dialog then opens without its current time. */
+    function readEntry(savedId) {
+        return api('GET', '/api/saved?limit=1&before_id=' + (savedId + 1)).then(function (res) {
+            var it = res.status === 200 && res.data && res.data.items && res.data.items[0];
+            return it && it.id === savedId ? it : null;
+        }).catch(function () { return null; });
+    }
+
     function remindCurrent() {
         var msg = state.menuMsg;
         if (state.cfg.hideMenus) state.cfg.hideMenus();
         if (!msg || !(msg.id > 0)) { toast('That message is not ready yet.', 'error'); return Promise.resolve(); }
         var existing = state.marks.get(markKey(msg.kind, msg.id));
-        var ready = existing ? Promise.resolve({ id: existing }) : saveMessage(msg);
-        return ready.then(function (s) { if (s) openRemind(s.id, null, null); });
+        if (existing) {
+            return readEntry(existing).then(function (it) {
+                openRemind(existing, it && it.remind_at && !it.reminded ? it.remind_at : null, null);
+            });
+        }
+        /* it stays saved if the dialog is cancelled, so the member is told it was saved */
+        return saveMessage(msg).then(function (s) {
+            if (!s) return;
+            toast('Saved. Only you can see it.', 'success');
+            openRemind(s.id, null, null);
+        });
     }
 
     /* ---------------------------------------------------------------- the reminder dialog */
@@ -306,12 +327,20 @@
         }, { 'data-choice': 'custom' });
         var row = el('div', '', 'saved-remind-custom');
         row.append(label, input, set);
+        var current = null;
+        if (currentIso) {
+            /* the reminder that is set now: its time is shown and offered in the picker, and it can be cleared */
+            current = el('p', 'Current reminder: ' + formatWhen(currentIso), 'saved-meta saved-current');
+            var cur = new Date(currentIso);
+            if (!isNaN(cur.getTime())) input.value = localInputValue(cur);
+        }
         var foot = el('div', '', 'saved-actions');
         if (currentIso) {
             foot.appendChild(button('Clear reminder', 'btn-secondary', function () { setReminder(savedId, null, onDone, err); }, { 'data-choice': 'clear' }));
         }
         foot.appendChild(button('Cancel', 'btn-secondary', closeRemind, { 'data-choice': 'cancel' }));
-        dlg.append(title, choices, row, err, foot);
+        if (current) dlg.append(title, current, choices, row, err, foot);
+        else dlg.append(title, choices, row, err, foot);
         overlay.appendChild(dlg);
         overlay.addEventListener('click', function (e) { if (e.target === overlay) closeRemind(); });
         doc().body.appendChild(overlay);
@@ -569,6 +598,9 @@
         var menu = d.getElementById('message-context-menu');
         if (menu) menu.addEventListener('keydown', onMenuKeydown);
         d.addEventListener('visibilitychange', function () { if (!d.hidden) refreshMarks(); });
+        /* the actions button does not depend on the marks: rows already on the page get it even when the marks
+         * cannot be loaded (a limit, the network) */
+        decorateAll();
         return loadMarks();
     }
 

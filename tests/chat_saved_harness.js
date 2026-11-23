@@ -124,10 +124,15 @@ const calls = [];
 let marksPayload = { marks: [{ id: 11, kind: 'channel', message_id: 101 }], limits: { reminder_horizon_days: 366, max_saved: 500 } };
 let listPages = [];
 let nextSavedId = 50;
+let marksStatus = 429;     // the first load of the marks is refused (a limit), the later ones answer
+let entryStatus = 200;
+const entryAt = {};        // before_id -> the one entry the single-entry read answers with
 const apiLog = [];
 async function fakeApi(method, path, body) {
   apiLog.push({ method, path, body });
-  if (method === 'GET' && path === '/api/saved/marks') return { status: 200, data: marksPayload };
+  if (method === 'GET' && path === '/api/saved/marks') return marksStatus === 200 ? { status: 200, data: marksPayload } : { status: marksStatus, data: { error: 'Too many history requests' } };
+  const one = /^\/api\/saved\?limit=1&before_id=(\d+)$/.exec(path);
+  if (method === 'GET' && one) return entryStatus !== 200 ? { status: entryStatus, data: { error: 'Too many history requests' } } : { status: 200, data: { items: entryAt[+one[1]] ? [entryAt[+one[1]]] : [] } };
   if (method === 'GET' && path.startsWith('/api/saved?')) return { status: 200, data: listPages.shift() || { items: [], has_more: false } };
   if (method === 'POST' && path === '/api/saved') return { status: 201, data: { saved: { id: ++nextSavedId, kind: body.kind, message_id: body.message_id } } };
   if (method === 'DELETE') return { status: 200, data: { status: 'removed' } };
@@ -194,10 +199,16 @@ let clock = FIXED_NOW;                                // what the module sees as
     jumpToMessage: (c, m) => jumps.push([c, m]), openDm: c => dms.push(c),
     hideMenus: () => menusHidden.push(1), toast: (t, ty) => toasts.push([t, ty]), doc,
   });
-  check('the marks come from one GET and rows of a saved message get the marker', row101.classList.contains('saved-message')
+  check('the marks load is asked for once at start, and a refused one still gives every message its actions button',
+        apiLog.filter(a => a.path === '/api/saved/marks').length === 1 && row101.querySelector('.msg-actions-btn') !== null
+        && row102.querySelector('.msg-actions-btn') !== null && !row101.classList.contains('saved-message'));
+  marksStatus = 200;
+  await CS.loadMarks();
+  const header101 = row101.querySelector('.message-header');
+  check('the marks come from one GET and rows of a saved message get the marker, before the actions button', row101.classList.contains('saved-message')
         && row101.querySelector('.saved-badge') && row101.querySelector('.saved-badge').textContent === 'Saved'
-        && !row102.classList.contains('saved-message') && apiLog.filter(a => a.path === '/api/saved/marks').length === 1);
-  check('the page container is reachable by keyboard and labelled', container.getAttribute('tabindex') === '0' && container.getAttribute('aria-label') === 'Messages');
+        && !row102.classList.contains('saved-message') && apiLog.filter(a => a.path === '/api/saved/marks').length === 2
+        && header101.children.indexOf(row101.querySelector('.saved-badge')) < header101.children.indexOf(row101.querySelector('.msg-actions-btn')));
   const row103 = msgRow(103, 'three');
   marksPayload.marks.push({ id: 13, kind: 'channel', message_id: 103 });
   await CS.loadMarks();
@@ -252,6 +263,54 @@ let clock = FIXED_NOW;                                // what the module sees as
   const put2 = apiLog.find(a => a.method === 'PUT');
   const want2 = CS.utcIso(new Date(2026, 3, 2, 18, 15));
   check(tz + ': a chosen date and time is sent as its UTC instant', put2 && put2.body.remind_at === want2, JSON.stringify(put2) + ' want ' + want2);
+
+  // ---- Remind me on a message that is saved already: its current reminder is read, shown and can be cleared
+  const toastsBefore = () => toasts.filter(t => /^Saved\./.test(t[0])).length;
+  async function remindOn(id) {
+    apiLog.length = 0;
+    CS.prepareMenu(id);
+    await remindItem.click(); await new Promise(r => setImmediate(r));
+    const d = doc.body.children.find(c => c.className.includes('saved-overlay-remind'));
+    return d;
+  }
+  const closeDlg = () => { const d = doc.body.children.find(c => c.className.includes('saved-overlay-remind')); if (d) d.querySelector('[data-choice="cancel"]').click(); };
+  closeDlg();
+  entryAt[14] = { id: 13, remind_at: '2026-04-01T07:00:00Z', reminded: false, available: true };      // message 103 is saved as entry 13
+  const savedToasts0 = toastsBefore();
+  let rd = await remindOn(103);
+  check('Remind me on a saved message with a reminder reads that entry (one list read of one entry), saves nothing and says nothing was saved',
+        apiLog.length === 1 && apiLog[0].path === '/api/saved?limit=1&before_id=14' && toastsBefore() === savedToasts0, JSON.stringify(apiLog));
+  check('the dialog shows the current reminder, offers it in the picker and has a Clear reminder button',
+        rd && /Current reminder: /.test(rd.textContent) && rd.textContent.indexOf(CS.formatWhen('2026-04-01T07:00:00Z')) >= 0
+        && rd.querySelector('input').value === CS.localInputValue(new Date('2026-04-01T07:00:00Z')) && rd.querySelector('[data-choice="clear"]') !== null);
+  apiLog.length = 0;
+  await rd.querySelector('[data-choice="clear"]').click(); await new Promise(r => setImmediate(r));
+  check('Clear reminder PUTs null for that entry and closes the dialog', apiLog.length === 1 && apiLog[0].method === 'PUT' && apiLog[0].path === '/api/saved/13/remind'
+        && apiLog[0].body.remind_at === null && !doc.body.children.some(c => c.className.includes('saved-overlay-remind')) && toasts.some(t => t[0] === 'Reminder cleared'));
+  entryAt[14] = { id: 13, remind_at: null, reminded: false, available: true };
+  rd = await remindOn(103);
+  check('a saved message with no reminder opens the dialog without a current time and without Clear', rd && !/Current reminder/.test(rd.textContent) && rd.querySelector('[data-choice="clear"]') === null && rd.querySelector('input').value === '');
+  closeDlg();
+  entryAt[14] = { id: 13, remind_at: '2026-03-01T07:00:00Z', reminded: true, available: true };
+  rd = await remindOn(103);
+  check('a reminder that already fired is not offered as a current one', rd && rd.querySelector('[data-choice="clear"]') === null && !/Current reminder/.test(rd.textContent));
+  closeDlg();
+  entryAt[14] = { id: 12, remind_at: '2026-04-01T07:00:00Z', reminded: false };                              // the entry is gone: the read gives another one
+  rd = await remindOn(103);
+  check('another entry answering the read is never taken for this one', rd && rd.querySelector('[data-choice="clear"]') === null);
+  closeDlg();
+  entryAt[14] = { id: 13, remind_at: '2026-04-01T07:00:00Z', reminded: false, available: true };
+  entryStatus = 429;
+  rd = await remindOn(103);
+  check('when the read is refused the dialog still opens, without the current time', rd && rd.querySelector('[data-choice="custom"]') !== null && rd.querySelector('[data-choice="clear"]') === null);
+  closeDlg();
+  entryStatus = 200;
+  // an unsaved message: Saved is said once, the dialog opens, and cancelling keeps it saved
+  const before = toastsBefore();
+  rd = await remindOn(160);
+  check('Remind me on an unsaved message says Saved once and opens the dialog', rd && toastsBefore() === before + 1 && apiLog[0].method === 'POST');
+  closeDlg();
+  check('cancelling the dialog leaves the message saved', CS._state.marks.has('channel:160'));
 
   // ---- the Saved view
   listPages = [{ items: [

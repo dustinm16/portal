@@ -3297,7 +3297,7 @@
     <script src="/static/js/voice.js?v=15"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
     <script src="/static/js/chat-retention.js?v=3"></script>
-    <script src="/static/js/chat-saved.js?v=3"></script>
+    <script src="/static/js/chat-saved.js?v=4"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -5206,7 +5206,8 @@
                 const indicator = document.createElement('span');
                 indicator.className = 'edited-indicator';
                 indicator.textContent = '(edited)';
-                header.appendChild(indicator);
+                // before the message actions button (chat-saved.js), which stays last in the header
+                header.insertBefore(indicator, header.querySelector('.msg-actions-btn'));
             }
         }
 
@@ -5356,7 +5357,7 @@
                     pin.className = 'pin-icon';
                     pin.title = 'Pinned';
                     pin.textContent = '📌';
-                    header.appendChild(pin);
+                    header.insertBefore(pin, header.querySelector('.msg-actions-btn'));
                 }
             }
             appendSystemMessage(`${data.pinned_by} pinned a message`);

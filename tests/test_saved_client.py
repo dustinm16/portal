@@ -67,6 +67,10 @@ check("the per-message actions button is hidden by default, shown only without h
       and ".msg-actions-btn:focus-visible" in _css)
 check("the button is made by the module as a DOM node, never from a string, with no inline handler",
       "'msg-actions-btn'" in CODE and "createElement" in CODE and 'class="msg-actions-btn' not in CHAT and "onclick" not in CODE)
+check("the (edited) marker and the pin icon a handler adds later go before the actions button, not after it",
+      "header.insertBefore(indicator, header.querySelector('.msg-actions-btn'))" in CHAT
+      and "header.insertBefore(pin, header.querySelector('.msg-actions-btn'))" in CHAT
+      and "header.appendChild(indicator)" not in CHAT and "header.appendChild(pin)" not in CHAT)
 check("a focused message and the menu items show a focus ring", "message:focus-visible" in _css and "context-menu-item:focus-visible" in _css)
 
 node = shutil.which("node")
