@@ -42,7 +42,7 @@ const ids = {};
 ['conn-filter', 'conn-filter-clear', 'conn-tag-chips', 'conn-recent', 'conn-recent-grid', 'inline-connections-grid',
  'conn-filter-none', 'conn-organise-modal', 'conn-organise-form', 'conn-organise-name', 'conn-organise-folder',
  'conn-organise-tags', 'conn-organise-folders', 'conn-organise-error', 'conn-organise-cancel', 'conn-organise-backdrop',
- 'svc-filter', 'svc-filter-clear'].forEach(i => { const e = new El(i.includes('filter') && !i.includes('clear') && !i.includes('none') ? 'input' : 'div'); e.id = i; ids[i] = e; });
+ 'svc-filter', 'svc-filter-clear', 'svc-filter-none'].forEach(i => { const e = new El(i.includes('filter') && !i.includes('clear') && !i.includes('none') ? 'input' : 'div'); e.id = i; ids[i] = e; });
 const docListeners = {};
 const body = new El('body');
 global.document = {
@@ -181,6 +181,90 @@ async function await_() {
     check('a refused save keeps the dialog open and says why', ids['conn-organise-modal'].style.display === 'flex' && ids['conn-organise-error'].textContent.includes('not allowed'));
     ids['conn-organise-cancel'].click();
 
+    // ---- keyboard and focus (1.22.0 review): fresh list, a working save again
+    global.Portal.api = async (url, opt) => { calls.push({ url, opt }); const b = JSON.parse(opt.body); const cur = (global.__conns.find(c => url.includes('/' + c.id + '/')) || {}).prefs || {}; return { prefs: Object.assign({}, cur, b) }; };
+    const conns2 = [
+        { id: 'a1', name: 'Alpha', type: 'ssh', host: '10.0.0.1', port: 22, prefs: P('', ['x'], {}) },
+        { id: 'b1', name: 'Beta', type: 'http', host: null, port: null, shared: true, owner_username: 'zed', prefs: P('', [], { last_opened_at: '2030-01-03T00:00:00Z' }) },
+    ];
+    global.__conns = conns2;
+    O.show(conns2, 7);
+    const alpha = () => cards().find(c => c.getAttribute('data-conn-id') === 'a1');
+    const ctl = (card, act) => card.find(n => n.getAttribute('data-act') === act)[0];
+    const sameControl = (act, id) => document.activeElement && grid.contains(document.activeElement)
+        && document.activeElement.getAttribute('data-act') === act && document.activeElement.closest('.connection-card').getAttribute('data-conn-id') === id;
+    check('a card with no host and no port prints neither "undefined" nor "null"',
+        !grid.textContent.includes('undefined') && !grid.textContent.includes('null') && !ids['conn-recent-grid'].textContent.includes('undefined') && !ids['conn-recent-grid'].textContent.includes('null'));
+
+    // (a) Enter with nothing to match, and during an input-method composition
+    input.value = ''; input.dispatch('input', {});
+    const before = opened.length;
+    input.dispatch('keydown', { key: 'Enter' });
+    check('Enter in an empty connections filter opens nothing', opened.length === before, JSON.stringify(opened.slice(before)));
+    input.value = 'alp'; input.dispatch('input', {});
+    input.dispatch('keydown', { key: 'Enter', isComposing: true });
+    input.dispatch('keydown', { key: 'Enter', keyCode: 229 });
+    check('Enter that confirms an input-method composition opens nothing', opened.length === before, JSON.stringify(opened.slice(before)));
+    input.dispatch('keydown', { key: 'Enter' });
+    check('a plain Enter with a filter still opens the first match', opened.length === before + 1 && opened[before][0] === 'a1');
+    input.value = ''; input.dispatch('input', {});
+
+    // (c) Recently used is hidden while a filter or a tag is active
+    check('Recently used shows with no filter', ids['conn-recent'].hidden === false);
+    input.value = 'alp'; input.dispatch('input', {});
+    check('Recently used is hidden while a word filter is active', ids['conn-recent'].hidden === true);
+    input.value = ''; input.dispatch('input', {});
+    check('and shows again when the filter is cleared', ids['conn-recent'].hidden === false);
+
+    // (b) focus returns to the same control of the same card after the grid is redrawn
+    let old = ctl(alpha(), 'pin'); old.focus(); old.click();
+    await new Promise(r => setTimeout(r, 10));
+    check('after a pin the focus is on the pin button of the same card (a new node)', sameControl('pin', 'a1') && document.activeElement !== old);
+    old = ctl(alpha(), 'open-mode'); old.focus(); old.value = 'same'; bubble(old, 'change');
+    await new Promise(r => setTimeout(r, 10));
+    check('after an open-mode change the focus is on that select of the same card', sameControl('open-mode', 'a1') && document.activeElement !== old);
+    old = alpha().find(n => n.getAttribute('data-tag') === 'x')[0]; old.focus(); old.click();
+    check('after a tag chip on a card the focus is on that chip of the same card',
+        document.activeElement !== old && document.activeElement.getAttribute('data-tag') === 'x' && grid.contains(document.activeElement)
+        && document.activeElement.closest('.connection-card').getAttribute('data-conn-id') === 'a1');
+    check('Recently used is hidden while a tag is active', ids['conn-recent'].hidden === true);
+    old = ids['conn-tag-chips'].children[0]; old.focus(); old.click();
+    check('after a chip in the tag bar the focus is on that chip', document.activeElement !== old && ids['conn-tag-chips'].contains(document.activeElement) && document.activeElement.getAttribute('data-tag') === 'x');
+    check('Recently used is back once no tag is active', ids['conn-recent'].hidden === false);
+    old = ctl(ids['conn-recent-grid'].children[0], 'pin'); old.focus(); old.click();
+    await new Promise(r => setTimeout(r, 10));
+    check('a control in the Recently used row keeps the focus in that row',
+        ids['conn-recent-grid'].contains(document.activeElement) && document.activeElement.getAttribute('data-act') === 'pin' && document.activeElement !== old);
+
+    // the dialog: Save puts the focus back on the button that opened it
+    const orgBtn = ctl(alpha(), 'organise'); orgBtn.focus(); orgBtn.click();
+    ids['conn-organise-folder'].value = 'Box';
+    ids['conn-organise-form'].dispatch('submit', {});
+    await new Promise(r => setTimeout(r, 10));
+    check('after Save in the dialog the focus is on the Folder and tags button of the same card', ids['conn-organise-modal'].style.display === 'none' && sameControl('organise', 'a1'),
+        String(document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('data-act')));
+
+    // (d) Tab stays inside the dialog
+    const modal = ids['conn-organise-modal'];
+    ids['conn-organise-folder'].tagName = 'INPUT'; ids['conn-organise-tags'].tagName = 'INPUT'; ids['conn-organise-cancel'].tagName = 'BUTTON';
+    const saveBtn = new El('button'); saveBtn.type = 'submit';
+    const closedBtn = new El('button'); closedBtn.disabled = true;
+    [ids['conn-organise-backdrop'], ids['conn-organise-folder'], ids['conn-organise-tags'], ids['conn-organise-cancel'], closedBtn, saveBtn].forEach(n => modal.appendChild(n));
+    ctl(alpha(), 'organise').click();
+    const tabKey = (shift) => { const ev = { key: 'Tab', shiftKey: !!shift, preventDefault() { ev.p = true; } }; modal.dispatch('keydown', ev); return ev; };
+    saveBtn.focus();
+    let ev = tabKey(false);
+    check('Tab on the last control of the dialog goes to the first', ev.p === true && document.activeElement === ids['conn-organise-folder']);
+    ev = tabKey(true);
+    check('Shift+Tab on the first control goes to the last (a disabled button is skipped)', ev.p === true && document.activeElement === saveBtn);
+    ids['conn-organise-tags'].focus();
+    ev = tabKey(false);
+    check('Tab in the middle is left to the browser', !ev.p && document.activeElement === ids['conn-organise-tags']);
+    document.activeElement = new El('a');
+    ev = tabKey(false);
+    check('Tab with the focus outside the dialog brings it in', ev.p === true && document.activeElement === ids['conn-organise-folder']);
+    ids['conn-organise-cancel'].click();
+
     // Services tab: the text filter looks at the name and plugin only; Enter clicks the first card left
     const mkCard = (name, plugin, buttons) => {
         const c = new El('div'); c.className = 'service-card'; c.clicked = 0;
@@ -204,6 +288,20 @@ async function await_() {
     check('button labels are not searched ("logs" matches no card)', pal2.className.includes('conn-hidden') && web.className.includes('conn-hidden'));
     sinput.value = 'game'; sinput.dispatch('input', {});
     check('the plugin name is searched', !pal2.className.includes('conn-hidden') && web.className.includes('conn-hidden'));
+    sinput.value = 'zzz'; sinput.dispatch('input', {});
+    check('the Services tab says nothing matches when the filter hides every card', ids['svc-filter-none'].hidden === false);
+    sinput.value = 'pal'; sinput.dispatch('input', {});
+    check('and not while a card is shown', ids['svc-filter-none'].hidden === true);
+    sinput.value = ''; sinput.dispatch('input', {});
+    check('nor with an empty filter', ids['svc-filter-none'].hidden === true);
+    pal2.clicked = 0; web.clicked = 0;
+    sinput.dispatch('keydown', { key: 'Enter' });
+    check('Enter in an empty services filter clicks no card', pal2.clicked === 0 && web.clicked === 0);
+    sinput.value = 'pal'; sinput.dispatch('input', {});
+    sinput.dispatch('keydown', { key: 'Enter', isComposing: true });
+    sinput.dispatch('keydown', { key: 'Enter', keyCode: 229 });
+    check('Enter that confirms an input-method composition clicks no card', pal2.clicked === 0);
+    sinput.value = 'game'; sinput.dispatch('input', {});
     tab.id = 'tab-services';
     document.activeElement = null;
     slash({ key: '/', target: { tagName: 'BODY' }, preventDefault() {} });

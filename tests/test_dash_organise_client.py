@@ -33,7 +33,7 @@ def check(name, ok, detail=""):
 
 for ident in ("conn-filter", "conn-filter-clear", "conn-tag-chips", "conn-recent", "conn-recent-grid",
               "conn-organise-modal", "conn-organise-form", "conn-organise-folder", "conn-organise-tags",
-              "conn-organise-cancel", "conn-organise-backdrop", "inline-connections-grid", "svc-filter"):
+              "conn-organise-cancel", "conn-organise-backdrop", "inline-connections-grid", "svc-filter", "svc-filter-none"):
     check(f"index.html has #{ident}", f'id="{ident}"' in INDEX)
 check("index.html loads conn-organise.js before dashboard.js",
       INDEX.find("conn-organise.js?v=") != -1 and INDEX.find("conn-organise.js?v=") < INDEX.find("dashboard.js?v="))

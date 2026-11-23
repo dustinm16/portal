@@ -157,7 +157,7 @@
 
     // ------------------------------------------------------------------ page part
 
-    var state = { conns: [], words: [], tags: [], userKey: 'anon', dialogFor: null, opener: null };
+    var state = { conns: [], words: [], tags: [], userKey: 'anon', dialogFor: null, opener: null, openerKey: null };
 
     function $(id) { return document.getElementById(id); }
 
@@ -360,6 +360,56 @@
         return null;
     }
 
+    // ---- keyboard focus across a redraw
+    // render() throws every card away, so a control that has the focus is described before and found again after.
+
+    function descend(node, pred, out) {
+        out = out || [];
+        var kids = (node && node.childNodes) || [];
+        for (var i = 0; i < kids.length; i++) {
+            if (pred(kids[i])) out.push(kids[i]);
+            descend(kids[i], pred, out);
+        }
+        return out;
+    }
+
+    function isControl(n) { return !!(n && n.getAttribute && (n.getAttribute('data-act') || n.getAttribute('data-tag'))); }
+
+    /** Where the focus is, as {where: chips|recent|grid, id, act, tag}, or null when it is not on one of our controls. */
+    function focusKey(node) {
+        if (!node || !isControl(node)) return null;
+        var key = { act: node.getAttribute('data-act'), tag: node.getAttribute('data-tag') };
+        var chips = $('conn-tag-chips'), recent = $('conn-recent-grid'), grid = $('inline-connections-grid');
+        if (chips && chips.contains(node)) { key.where = 'chips'; return key; }
+        var card = node.closest ? node.closest('.connection-card') : null;
+        if (!card) return null;
+        key.id = card.getAttribute('data-conn-id');
+        key.where = recent && recent.contains(node) ? 'recent' : grid && grid.contains(node) ? 'grid' : null;
+        return key.where ? key : null;
+    }
+
+    /** Puts the focus back on the control `key` describes, if it is still on the page. */
+    function restoreFocus(key) {
+        if (!key) return false;
+        function same(n) {
+            return key.tag ? n.getAttribute('data-tag') === key.tag && !n.getAttribute('data-act') : n.getAttribute('data-act') === key.act;
+        }
+        function inside(box) {
+            if (!box) return null;
+            if (key.where === 'chips') return descend(box, function (n) { return isControl(n) && same(n); })[0] || null;
+            var card = descend(box, function (n) { return n.getAttribute && n.getAttribute('data-conn-id') === key.id; })[0];
+            return card ? descend(card, function (n) { return isControl(n) && same(n); })[0] || null : null;
+        }
+        var target = null;
+        if (key.where === 'chips') target = inside($('conn-tag-chips'));
+        else {
+            if (key.where === 'recent') target = inside($('conn-recent-grid'));
+            if (!target) target = inside($('inline-connections-grid'));   // the same card in the folders
+        }
+        if (target && target.focus) { target.focus(); return true; }
+        return false;
+    }
+
     function onGridClick(e) {
         var target = e.target.closest ? e.target.closest('button') : null;
         if (!target) return;
@@ -412,7 +462,8 @@
         var wrap = $('conn-recent'), grid = $('conn-recent-grid');
         if (!wrap || !grid) return;
         grid.textContent = '';
-        var items = recentItems(state.conns, RECENT_COUNT);
+        // while a filter or a tag is active the folders below are the answer: a second copy of a card above them only confuses
+        var items = state.words.length || state.tags.length ? [] : recentItems(state.conns, RECENT_COUNT);
         wrap.hidden = items.length === 0;
         items.forEach(function (c) { grid.appendChild(buildCard(c, true)); });
     }
@@ -460,11 +511,13 @@
     }
 
     function render() {
+        var key = focusKey(document.activeElement);
         renderChips();
         renderRecent();
         renderFolders();
         var clear = $('conn-filter-clear');
         if (clear) clear.hidden = !(state.words.length || state.tags.length);
+        restoreFocus(key);
     }
 
     // ---- dialog
@@ -483,6 +536,7 @@
         if (!modal) return;
         state.dialogFor = conn;
         state.opener = opener || null;
+        state.openerKey = focusKey(opener);
         var p = prefsOf(conn);
         $('conn-organise-name').textContent = conn.name;
         $('conn-organise-folder').value = p.folder;
@@ -502,10 +556,13 @@
     function closeDialog() {
         var modal = $('conn-organise-modal');
         if (modal) modal.style.display = 'none';
-        var back = state.opener;
+        var back = state.opener, backKey = state.openerKey;
         state.dialogFor = null;
         state.opener = null;
+        state.openerKey = null;
+        // the opener is gone when the grid was redrawn since (a save moves the card): find its twin
         if (back && document.body.contains(back)) back.focus();
+        else restoreFocus(backKey);
     }
 
     async function saveDialog(e) {
@@ -520,8 +577,8 @@
                 body: JSON.stringify(fields)
             });
             conn.prefs = res.prefs;
-            closeDialog();
             render();
+            closeDialog();
         } catch (err) {
             $('conn-organise-error').textContent = err.message || 'Could not save';
         }
@@ -537,8 +594,9 @@
     function applyServiceFilter() {
         var input = $('svc-filter');
         var words = queryWords(input ? input.value : '');
-        var first = null;
+        var first = null, total = 0;
         document.querySelectorAll('#services-grid .service-card').forEach(function (card) {
+            total++;
             // the name and the plugin only: the button labels and the status text would make
             // "log" or "stop" match every card
             var nameEl = card.querySelector('.service-name'), plugEl = card.querySelector('.service-plugin');
@@ -549,7 +607,23 @@
         });
         var clear = $('svc-filter-clear');
         if (clear) clear.hidden = !words.length;
+        var none = $('svc-filter-none');
+        if (none) none.hidden = !(total && !first);
         return first;
+    }
+
+    /** Tab and Shift+Tab stay inside the open dialog: from the last control to the first and back. */
+    function trapTab(modal, e) {
+        var items = descend(modal, function (n) {
+            var tag = String(n.tagName || '').toUpperCase();
+            if (tag !== 'INPUT' && tag !== 'BUTTON' && tag !== 'SELECT' && tag !== 'TEXTAREA') return false;
+            return !n.disabled && !n.hidden && n.type !== 'hidden' && n.getAttribute('tabindex') !== '-1';
+        });
+        if (!items.length) return;
+        var first = items[0], last = items[items.length - 1], now = document.activeElement;
+        if (!now || !modal.contains(now)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && now === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && now === last) { e.preventDefault(); first.focus(); }
     }
 
     function wire() {
@@ -558,7 +632,9 @@
             input.addEventListener('input', function () { state.words = queryWords(input.value); render(); });
             input.addEventListener('keydown', function (e) {
                 if (e.key === 'Enter') {
+                    if (e.isComposing || e.keyCode === 229) return;   // Enter that confirms an input-method composition
                     e.preventDefault();
+                    if (!state.words.length && !state.tags.length) return;   // nothing typed: no "first match" to open
                     var first = orderedMatches(state.conns, state.words, state.tags)[0];
                     if (first) openConn(first);
                 } else if (e.key === 'Escape' && input.value) {
@@ -588,7 +664,12 @@
         if (sinput) {
             sinput.addEventListener('input', applyServiceFilter);
             sinput.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter') { e.preventDefault(); var f = applyServiceFilter(); if (f) f.click(); }
+                if (e.key === 'Enter') {
+                    if (e.isComposing || e.keyCode === 229) return;
+                    e.preventDefault();
+                    var f = applyServiceFilter();
+                    if (f && queryWords(sinput.value).length) f.click();
+                }
                 else if (e.key === 'Escape' && sinput.value) { sinput.value = ''; applyServiceFilter(); }
             });
         }
@@ -602,7 +683,10 @@
         var back = $('conn-organise-backdrop');
         if (back) back.addEventListener('click', closeDialog);
         var modal = $('conn-organise-modal');
-        if (modal) modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeDialog(); } });
+        if (modal) modal.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') { e.stopPropagation(); closeDialog(); }
+            else if (e.key === 'Tab') trapTab(modal, e);
+        });
 
         document.addEventListener('keydown', function (e) {
             if (!isSlashShortcut(e, dialogIsOpen())) return;
