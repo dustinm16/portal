@@ -53,7 +53,7 @@ from multidict import CIMultiDict
 
 from config import Config, ALLOWED_SHELLS
 from session_devices import parse_user_agent, public_session_id, matches_public_id
-from database import db, SearchIndexBusy, PurgeStopped, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
+from database import db, SAVED_REMINDER_TITLE, SearchIndexBusy, PurgeStopped, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
 from auth import (
     AuthError,
     TokenPayload,
@@ -24139,6 +24139,387 @@ async def http_put_channel_notify(request: web.Request) -> web.Response:
     return web.json_response({"channel_id": cid, **_notify_pref_public(entry)})
 
 
+# ---------------------------------------------------------------------------
+# Saved messages and remind-me-later
+#
+# A saved entry is a REFERENCE (member, kind, channel or conversation id, message id, three epoch
+# times). No text, author or channel name is stored. Everything shown is resolved at read time through
+# the one read gate (_can_read_channel; is_dm_participant for a DM), exactly as reading the message
+# now, so an entry for a message the member can no longer read (removed from a private channel, DM
+# left, stream chat closed, message deleted, pruned or aged out) lists as "available": false with the
+# saved time and nothing else. An anonymous post goes through _enrich_channel_messages, so it stays
+# anonymous exactly as in the channel. Nothing about a member's entries goes to any other member, any
+# socket or any log; the routes are the member's own.
+#
+# A row whose message is gone is kept until nothing waits on it (no pending reminder, 7 days after it
+# fired or was saved) and then removed by the periodic clean-up (_data_cleanup_task); chat message ids
+# are AUTOINCREMENT, never reused, and every lookup also matches kind and the stored channel or
+# conversation id, so a row can never resolve to a different message.
+#
+# Reminders: one tick (_saved_tick_once, every SAVED_TICK_SECONDS, a query on a partial index that is
+# empty when idle) fires at most SAVED_TICK_CAP due reminders. Each is marked fired and its notification
+# written in ONE transaction (db.fire_saved_reminders), so it never repeats, also across a restart; what
+# came due while the portal was down fires from the first tick after the start, SAVED_TICK_CAP per tick.
+# A member keeps at most SAVED_MAX_REMINDER_NOTES 'reminder' notifications (the oldest are deleted in that
+# same transaction), so re-arming reminders cannot grow the notifications table without bound.
+# The in-app frame and the push go out after that commit (at most once; a crash between loses the push,
+# never repeats it). Title and body are fixed; the data holds ids only.
+# ---------------------------------------------------------------------------
+
+SAVED_MAX_ENTRIES = 500          # saved entries per member
+SAVED_MAX_PENDING = 100          # reminders waiting to fire, per member
+SAVED_HORIZON_DAYS = 366         # a reminder may be at most this far ahead
+SAVED_PAGE_DEFAULT = 30
+SAVED_PAGE_MAX = 50
+SAVED_TICK_SECONDS = 30
+SAVED_FIRST_TICK_SECONDS = 5
+SAVED_TICK_CAP = 50              # reminders fired per tick
+SAVED_MAX_REMINDER_NOTES = 200   # 'reminder' notifications kept per member; the oldest go first
+SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400
+_SAVED_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|\+00:00)$")
+
+
+def _saved_clock() -> int:
+    return int(time())
+
+
+def _saved_tick_interval() -> float:
+    if Config.STAGE_MODE:
+        try:
+            return max(1.0, float(os.getenv("PORTAL_SAVED_TICK_SECONDS", "") or SAVED_TICK_SECONDS))
+        except ValueError:
+            pass
+    return float(SAVED_TICK_SECONDS)
+
+
+def _saved_iso(epoch) -> Optional[str]:
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _saved_limits() -> dict:
+    return {"max_saved": SAVED_MAX_ENTRIES, "max_reminders": SAVED_MAX_PENDING,
+            "reminder_horizon_days": SAVED_HORIZON_DAYS}
+
+
+def _saved_reply(payload: dict, status: int = 200) -> web.Response:
+    return web.json_response(payload, status=status, headers=HISTORY_NO_STORE)
+
+
+async def _saved_auth(request: web.Request):
+    """(token, None) or (None, response): a browser session or a full-access token. A stream key or a
+    scoped API key cannot read a member's saved list, and a token in the URL would land in logs."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    tid = str(token.token_id or "")
+    if tid.startswith(("apikey-", "streamkey-")) or request.get(_AUTH_VIA_QUERY_TOKEN) \
+            or not has_full_user_scope(token):
+        return None, web.json_response(
+            {"error": "Saved messages are for a signed-in member; API keys and stream keys cannot use them"},
+            status=403, headers=HISTORY_NO_STORE)
+    return token, None
+
+
+def _parse_saved_time(value, now: int) -> int:
+    """An absolute UTC instant as the client sends it ("2026-11-24T08:00:00Z") -> epoch seconds. Raises
+    ValueError with the text for the member: no offset, a past time and one beyond the horizon are refused."""
+    if not isinstance(value, str) or not _SAVED_TIME_RE.match(value):
+        raise ValueError("remind_at must be a UTC time like 2026-11-24T08:00:00Z")
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("remind_at must be a UTC time like 2026-11-24T08:00:00Z")
+    epoch = int(when.timestamp())
+    if epoch <= now:
+        raise ValueError("The reminder time must be in the future")
+    if epoch > now + SAVED_HORIZON_DAYS * 86400:
+        raise ValueError(f"The reminder time can be at most {SAVED_HORIZON_DAYS} days ahead")
+    return epoch
+
+
+_SAVED_REUSE_SLACK_SECONDS = 120
+
+
+def _saved_epoch(stamp) -> Optional[float]:
+    """Seconds since the epoch of a stored message time: ISO with an offset (chat) or the older
+    "YYYY-MM-DD HH:MM:SS" in UTC. None when it cannot be read."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp()
+
+
+def _saved_is_that_message(created_at, saved_at: int) -> bool:
+    """False for a message created after the entry was saved: an entry can only name a message that
+    existed when it was saved, so a later one is a different message that got the same id (never
+    expected, since the ids are AUTOINCREMENT; this keeps it true on a database restored or rebuilt
+    by hand). A time that cannot be read is not trusted."""
+    made = _saved_epoch(created_at)
+    return made is not None and made <= saved_at + _SAVED_REUSE_SLACK_SECONDS
+
+
+async def _saved_resolve(user_id: int, role: str, rows: list, *, full: bool = True) -> dict:
+    """Resolve saved rows live for one member: {saved id: view or None}. None means "no longer
+    available" for any reason (not readable now, gone, wrong channel, not the saved message). With
+    full=False the view is just True and nothing is decrypted (the reminder tick and the marks need only
+    the verdict). Channel messages are masked and enriched by the same function as history, one channel
+    at a time."""
+    out = {r["id"]: None for r in rows}
+    by_channel: dict = {}
+    by_dm: dict = {}
+    for r in rows:
+        (by_channel if r["kind"] == "channel" else by_dm).setdefault(r["scope_id"], []).append(r)
+    for cid, group in by_channel.items():
+        channel = await db.get_chat_channel(cid)
+        if not await _can_read_channel(channel, user_id, role):
+            continue
+        if not full:
+            stamps = await db.message_stamps("channel", cid, [r["message_id"] for r in group])
+            for r in group:
+                if r["message_id"] in stamps and _saved_is_that_message(stamps[r["message_id"]], r["saved_at"]):
+                    out[r["id"]] = True
+            continue
+        found = {m["id"]: m for m in await db.get_chat_messages_by_ids([r["message_id"] for r in group], cid)}
+        found = {i: m for i, m in found.items()
+                 if any(r["message_id"] == i and _saved_is_that_message(m.get("created_at"), r["saved_at"]) for r in group)}
+        await _enrich_channel_messages(list(found.values()), user_id, role, cid)
+        for r in group:
+            m = found.get(r["message_id"])
+            if m is None:
+                continue
+            out[r["id"]] = {
+                "kind": "channel", "channel_id": cid, "channel_name": channel.get("name"),
+                "message_id": m["id"],
+                "message": {"username": m.get("username"), "avatar": m.get("avatar") or {},
+                            "text": m.get("message") or "", "created_at": m.get("created_at"),
+                            "message_type": m.get("message_type") or "message",
+                            "anonymous": bool(m.get("anonymous"))}}
+    for conv_id, group in by_dm.items():
+        if not await db.is_dm_participant(conv_id, user_id):
+            continue
+        if not full:
+            stamps = await db.message_stamps("dm", conv_id, [r["message_id"] for r in group])
+            for r in group:
+                if r["message_id"] in stamps and _saved_is_that_message(stamps[r["message_id"]], r["saved_at"]):
+                    out[r["id"]] = True
+            continue
+        for r in group:
+            m = await db.get_dm_message(r["message_id"])
+            if not m or m.get("conversation_id") != conv_id or not _saved_is_that_message(m.get("created_at"), r["saved_at"]):
+                continue
+            out[r["id"]] = {
+                "kind": "dm", "conversation_id": conv_id, "message_id": m["id"],
+                "message": {"username": m.get("username"), "avatar": {}, "text": m.get("message") or "",
+                            "created_at": m.get("created_at"),
+                            "message_type": m.get("message_type") or "message", "anonymous": False}}
+    return out
+
+
+def _saved_item(row: dict, view) -> dict:
+    """What the list sends for one row. An unavailable entry carries no kind, no id of a channel,
+    conversation or message and no author: only its own id, the saved time and its reminder state."""
+    item = {"id": row["id"], "saved_at": _saved_iso(row["saved_at"]),
+            "remind_at": _saved_iso(row["remind_at"]), "reminded": row["fired_at"] is not None,
+            "available": view is not None}
+    if view is not None:
+        item.update(view)
+    return item
+
+
+async def http_get_saved(request: web.Request) -> web.Response:
+    """GET /api/saved?before_id=&limit=: the caller's saved entries, newest first, each resolved now
+    (see the section comment). before_id is the id of the last entry of the previous page."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    try:
+        before_id = request.query.get("before_id")
+        before_id = int(before_id) if before_id not in (None, "") else None
+        limit = request.query.get("limit")
+        limit = min(max(int(limit), 1), SAVED_PAGE_MAX) if limit not in (None, "") else SAVED_PAGE_DEFAULT
+        if before_id is not None and not 1 <= before_id <= HISTORY_ID_MAX:
+            raise ValueError("range")
+    except (ValueError, TypeError, OverflowError):
+        return _saved_reply({"error": "before_id and limit must be numbers"}, 400)
+    wait = _history_rate_wait(token.user_id)
+    if wait:
+        return await _limited(request, "chat_history", "Too many history requests",
+                              user_id=token.user_id, headers={"Retry-After": str(wait)})
+    user = await db.get_user_by_id(token.user_id)
+    role = _user_role_of(user)
+    rows = await db.list_saved_messages(token.user_id, before_id, limit + 1)
+    more = len(rows) > limit
+    rows = rows[:limit]
+    views = await _saved_resolve(token.user_id, role, rows)
+    return _saved_reply({"items": [_saved_item(r, views.get(r["id"])) for r in rows], "has_more": more,
+                         "next_before_id": rows[-1]["id"] if rows and more else None,
+                         "limits": _saved_limits(), "now": _saved_iso(_saved_clock())})
+
+
+async def http_get_saved_marks(request: web.Request) -> web.Response:
+    """GET /api/saved/marks: (id, kind, message id) of the caller's entries that can be read now, for the
+    marker in the chat."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    user = await db.get_user_by_id(token.user_id)
+    rows = await db.list_saved_messages(token.user_id, None, SAVED_MAX_ENTRIES)
+    views = await _saved_resolve(token.user_id, _user_role_of(user), rows, full=False)
+    # Only entries that resolve now are marked: what the list hides as "no longer available" is not
+    # named here either (no kind, no message id)
+    return _saved_reply({"marks": [{"id": r["id"], "kind": r["kind"], "message_id": r["message_id"]}
+                                   for r in rows if views.get(r["id"])],
+                         "limits": _saved_limits()})
+
+
+async def http_post_saved(request: web.Request) -> web.Response:
+    """POST /api/saved {kind: "channel"|"dm", message_id}: save a message the caller can read now.
+    A message that does not exist and one the caller may not read answer alike (404)."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    try:
+        body = await request.json()
+    except Exception:
+        return _saved_reply({"error": "Invalid JSON"}, 400)
+    kind = body.get("kind") if isinstance(body, dict) else None
+    mid = body.get("message_id") if isinstance(body, dict) else None
+    if kind not in ("channel", "dm") or isinstance(mid, bool) or not isinstance(mid, int) \
+            or not 1 <= mid <= HISTORY_ID_MAX:
+        return _saved_reply({"error": "Send kind (channel or dm) and a message_id"}, 400)
+
+    def not_found():
+        return _saved_reply({"error": "Message not found"}, 404)
+    user = await db.get_user_by_id(token.user_id)
+    role = _user_role_of(user)
+    if kind == "channel":
+        msg = await db.get_chat_message(mid)
+        if not msg or not msg.get("channel_id"):
+            return not_found()
+        scope = msg["channel_id"]
+        if not await _can_read_channel(await db.get_chat_channel(scope), token.user_id, role):
+            return not_found()
+    else:
+        msg = await db.get_dm_message(mid)
+        if not msg or not await db.is_dm_participant(msg["conversation_id"], token.user_id):
+            return not_found()
+        scope = msg["conversation_id"]
+    status, row = await db.add_saved_message(token.user_id, kind, scope, mid, _saved_clock(),
+                                             SAVED_MAX_ENTRIES)
+    if status == "full":
+        return _saved_reply({"error": f"You can save up to {SAVED_MAX_ENTRIES} messages; remove one first"}, 409)
+    return _saved_reply({"saved": {"id": row["id"], "kind": kind, "message_id": mid,
+                                   "saved_at": _saved_iso(row["saved_at"]),
+                                   "remind_at": _saved_iso(row["remind_at"]),
+                                   "reminded": row["fired_at"] is not None}},
+                        201 if status == "saved" else 200)
+
+
+def _saved_route_id(request: web.Request) -> Optional[int]:
+    try:
+        sid = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return None
+    return sid if 1 <= sid <= HISTORY_ID_MAX else None
+
+
+async def http_delete_saved(request: web.Request) -> web.Response:
+    """DELETE /api/saved/{id}: remove one of the caller's own entries (also one that is no longer available)."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    sid = _saved_route_id(request)
+    if sid is None or not await db.delete_saved_message(token.user_id, sid):
+        return _saved_reply({"error": "Saved message not found"}, 404)
+    return _saved_reply({"status": "removed"})
+
+
+async def http_put_saved_remind(request: web.Request) -> web.Response:
+    """PUT /api/saved/{id}/remind {remind_at: "2026-11-24T08:00:00Z" | null}: set or clear the reminder
+    of one of the caller's own entries. The client sends an absolute UTC instant; it must be in the
+    future and within SAVED_HORIZON_DAYS; at most SAVED_MAX_PENDING reminders wait at once."""
+    token, refusal = await _saved_auth(request)
+    if refusal is not None:
+        return refusal
+    sid = _saved_route_id(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return _saved_reply({"error": "Invalid JSON"}, 400)
+    if not isinstance(body, dict) or "remind_at" not in body:
+        return _saved_reply({"error": "Send remind_at (a UTC time) or null to clear"}, 400)
+    when = None
+    if body["remind_at"] is not None:
+        try:
+            when = _parse_saved_time(body["remind_at"], _saved_clock())
+        except ValueError as e:
+            return _saved_reply({"error": str(e)}, 400)
+    if sid is None:
+        return _saved_reply({"error": "Saved message not found"}, 404)
+    result = await db.set_saved_reminder(token.user_id, sid, when, SAVED_MAX_PENDING)
+    if result == "missing":
+        return _saved_reply({"error": "Saved message not found"}, 404)
+    if result == "full":
+        return _saved_reply({"error": f"You can have {SAVED_MAX_PENDING} reminders waiting; clear one first"}, 409)
+    row = await db.get_saved_message(token.user_id, sid)
+    return _saved_reply({"id": sid, "remind_at": _saved_iso(row["remind_at"]),
+                         "reminded": row["fired_at"] is not None})
+
+
+async def _saved_push(uid: int, saved_id: int, url: str) -> int:
+    async def build(_uid):
+        return {"title": SAVED_REMINDER_TITLE, "body": "Open the portal to see it.",
+                "url": url, "ref": f"reminder-{int(saved_id)}", "urgency": "normal"}
+    return await _push_dispatch([uid], "reminder", build)
+
+
+async def _saved_tick_once(now: Optional[int] = None) -> int:
+    """Fire the reminders that are due (at most SAVED_TICK_CAP). Returns how many fired. Cheap when
+    idle: one indexed query. Never raises into the task loop except for cancellation."""
+    now = _saved_clock() if now is None else now
+    due = await db.due_saved_reminders(now, SAVED_TICK_CAP)
+    if not due:
+        return 0
+    roles: dict = {}
+    items = []
+    targets: dict = {}
+    for row in due:
+        uid = row["user_id"]
+        if uid not in roles:
+            user = await db.get_user_by_id(uid)
+            roles[uid] = _user_role_of(user) if user else None
+        if roles[uid] is None:
+            continue                  # the member is gone; the row goes with the user
+        view = (await _saved_resolve(uid, roles[uid], [row], full=False)).get(row["id"])
+        if view and row["kind"] == "channel":
+            data = {"channel_id": row["scope_id"], "message_id": row["message_id"], "saved_id": row["id"]}
+            url = f"/chat?channel_id={int(row['scope_id'])}&message_id={int(row['message_id'])}"
+        else:
+            data = {"saved": 1, "saved_id": row["id"]}
+            url = "/chat?saved=1"
+        items.append((row["id"], uid, row["remind_at"], data))
+        targets[row["id"]] = url
+    fired = await db.fire_saved_reminders(items, now, SAVED_MAX_REMINDER_NOTES)
+    datas = {i[0]: i[3] for i in items}
+    for saved_id, uid, note_id in fired:
+        try:
+            await _push_notification_frame(uid, note_id, "reminder", SAVED_REMINDER_TITLE, "",
+                                           datas[saved_id])
+            await _saved_push(uid, saved_id, targets[saved_id])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Reminder delivery failed: {type(e).__name__}")
+    return len(fired)
+
+
 async def _broadcast_stream_info(stream: dict) -> int:
     """Tell the sockets in a live stream's chat room its new name and game (a `stream_info`
     frame: stream id, name, game). Sent only to a socket whose member may read the room
@@ -31165,6 +31546,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/chat/channels/{id}/messages", http_get_channel_messages)
     app.router.add_get("/api/chat/channels/{id}/notify", http_get_channel_notify)
     app.router.add_put("/api/chat/channels/{id}/notify", http_put_channel_notify)
+    app.router.add_get("/api/saved", http_get_saved)
+    app.router.add_post("/api/saved", http_post_saved)
+    app.router.add_get("/api/saved/marks", http_get_saved_marks)
+    app.router.add_delete("/api/saved/{id}", http_delete_saved)
+    app.router.add_put("/api/saved/{id}/remind", http_put_saved_remind)
 
     # Custom Emotes
     app.router.add_get("/api/emotes", http_list_emotes)
@@ -31277,6 +31663,8 @@ class PortalServer:
         self._shutdown_event = asyncio.Event()
         self._vod_recovery_task = None
         self._search_backfill_task = None
+        self._saved_task = None
+        self._schedule_task = None
 
     def _start_vod_recovery(self) -> None:
         """Start a recovery pass over the VOD staging folder unless one is already running."""
@@ -31460,6 +31848,10 @@ class PortalServer:
         # Stream schedule reminders: one indexed query per tick, nothing else while idle; held so stop() ends it
         self._schedule_task = asyncio.create_task(self._schedule_reminder_task())
 
+        # Saved-message reminders: one tick, an indexed query that finds nothing when idle (runs in
+        # staged mode too; it only reads and writes the database and pushes to the loopback sink)
+        self._saved_task = asyncio.create_task(self._saved_reminder_task())
+
         # Connection health checks: one task, a no-op while the setting is off (the default); in
         # staged mode it probes only the loopback test targets the harness names (connection_health.py)
         _health_monitor.start()
@@ -31603,6 +31995,24 @@ class PortalServer:
             except Exception as e:
                 logger.error(f"Schedule reminder pass error: {type(e).__name__}: {e}")
 
+    async def _saved_reminder_task(self) -> None:
+        """Every SAVED_TICK_SECONDS: _saved_tick_once(). The first tick comes a few seconds after the start,
+        so reminders that came due while the portal was down fire then, SAVED_TICK_CAP at a time."""
+        try:
+            await asyncio.sleep(SAVED_FIRST_TICK_SECONDS if not Config.STAGE_MODE else 1)
+            while True:
+                try:
+                    n = await _saved_tick_once()
+                    if n:
+                        logger.info(f"Fired {n} saved-message reminder(s)")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Saved-message reminder tick error: {type(e).__name__}: {e}")
+                await asyncio.sleep(_saved_tick_interval())
+        except asyncio.CancelledError:
+            return
+
     async def _data_cleanup_task(self) -> None:
         """Unified data retention cleanup — interval configurable via settings."""
         # Files of messages a prune or cleanup deleted before the last stop or kill go now, not at the
@@ -31675,6 +32085,12 @@ class PortalServer:
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] Notification cleanup failed: {e}")
+
+                # Saved messages whose message is gone and that nothing waits on
+                try:
+                    total += await db.cleanup_saved_messages(_saved_clock(), SAVED_CLEANUP_GRACE_SECONDS)
+                except Exception as e:
+                    logger.error(f"[Retention] Saved-message cleanup failed: {e}")
 
                 # Activity log
                 try:
@@ -31918,6 +32334,12 @@ class PortalServer:
         # A running prune starts winding down now (it ends at its next batch boundary), so that happens
         # while the open connections drain instead of after it
         _ask_prunes_to_stop()
+
+        # The reminder tick ends before the pusher and the database go
+        task, self._saved_task = self._saved_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()

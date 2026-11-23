@@ -1,0 +1,360 @@
+// Runs static/js/chat-saved.js (and static/js/portal.js beside it) under Node against a small fake DOM.
+// The scripts are run one after the other with vm.runInContext in one context, so they share only the
+// global object (window), exactly as separate classic scripts in a page do. Used by tests/test_saved_client.py.
+// The time-zone checks run with the zone given in the TZ variable (the Python test runs this twice).
+// usage: node chat_saved_harness.js <chat-saved.js> <portal.js>
+// prints one line per check: RESULT {"name":..., "ok":..., "detail":...}
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+
+const results = [];
+function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
+
+// ---------------------------------------------------------------- a small fake DOM
+let active = null;
+function matchOne(n, sel) {
+  // one compound selector: tag, .class, [attr], [attr="v"], :not(.class)
+  const rest = sel.trim();
+  const re = /(^[a-z][a-z0-9]*)|(\.[\w-]+)|(\[[\w-]+(?:="[^"]*")?\])|(:not\(\.[\w-]+\))/gi;
+  let m, used = '';
+  while ((m = re.exec(rest))) {
+    used += m[0];
+    const t = m[0];
+    if (m[1]) { if (n.tagName.toLowerCase() !== t.toLowerCase()) return false; }
+    else if (m[2]) { if (!n.classList.contains(t.slice(1))) return false; }
+    else if (m[3]) {
+      const mm = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(t);
+      const name = mm[1];
+      let v = n.getAttribute(name);
+      if (v === null && name.startsWith('data-')) {
+        const k = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        v = n.dataset[k] === undefined ? null : n.dataset[k];
+      }
+      if (v === null) return false;
+      if (mm[2] !== undefined && v !== mm[2]) return false;
+    } else if (m[4]) { if (n.classList.contains(t.slice(6, -1))) return false; }
+  }
+  return used === rest;
+}
+function matches(n, selector) { return selector.split(',').some(s => matchOne(n, s)); }
+
+class N {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase(); this.children = []; this.attrs = {}; this.listeners = {};
+    this.parentNode = null; this.style = {}; this.dataset = {}; this.value = ''; this.disabled = false; this._cls = '';
+    this._text = '';
+    const self = this;
+    this.classList = {
+      contains: c => self._cls.split(/\s+/).includes(c),
+      add: c => { if (!self.classList.contains(c)) self._cls = (self._cls + ' ' + c).trim(); },
+      remove: c => { self._cls = self._cls.split(/\s+/).filter(x => x && x !== c).join(' '); },
+    };
+  }
+  get className() { return this._cls; }
+  set className(v) { this._cls = String(v); }
+  set innerHTML(v) { throw new Error('innerHTML was used: ' + String(v).slice(0, 40)); }
+  get innerHTML() { return ''; }
+  set textContent(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v); }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+  get firstChild() { return this.children[0] || null; }
+  appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); this._notify(c); return c; }
+  append(...cs) { cs.forEach(c => this.appendChild(c)); }
+  insertBefore(c, ref) { c.parentNode = this; const i = ref ? this.children.indexOf(ref) : -1; if (i < 0) this.children.push(c); else this.children.splice(i, 0, c); this._notify(c); return c; }
+  removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); c.parentNode = null; return c; }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  _notify(c) { if (this.observer) this.observer.cb([{ addedNodes: [c] }]); }
+  setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') idMap[v] = this; }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+  focus() { active = this; }
+  click() { return this.dispatch('click', {}); }
+  scrollIntoView() {}
+  getBoundingClientRect() { return { left: 10, top: 20 }; }
+  contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
+  closest(sel) { for (let x = this; x; x = x.parentNode) if (x.tagName && matches(x, sel)) return x; return null; }
+  all(sel) { const out = []; const walk = n => n.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+  querySelectorAll(sel) { return this.all(sel); }
+  querySelector(sel) { return this.all(sel)[0] || null; }
+  dispatch(type, ev) {
+    const e = Object.assign({ type, target: this, key: '', shiftKey: false, defaultPrevented: false,
+                              preventDefault() { this.defaultPrevented = true; } }, ev);
+    for (let x = this; x; x = x.parentNode) {
+      e.currentTarget = x;
+      for (const f of (x.listeners[type] || [])) f(e);
+    }
+    if (type === 'keydown' && this !== doc) for (const f of (doc.listeners.keydown || [])) { e.currentTarget = doc; f(e); }
+    return e;
+  }
+  dispatchEvent(ev) { const e = this.dispatch(ev.type, ev); this.lastEvent = e; return !e.defaultPrevented; }
+}
+const idMap = {};
+const doc = new N('#document');
+doc.hidden = false;
+doc.body = new N('body');
+Object.defineProperty(doc, 'activeElement', { get: () => active });
+doc.createElement = t => new N(t);
+doc.getElementById = id => idMap[id] || null;
+doc.readyState = 'complete';
+doc.head = new N('head');
+
+function mk(tag, id, cls) { const n = new N(tag); if (id) n.setAttribute('id', id); if (cls) n.className = cls; return n; }
+function msgRow(id, text, extra) {
+  const row = mk('div', null, 'message' + (extra ? ' ' + extra : ''));
+  row.dataset.messageId = String(id);
+  const header = mk('div', null, 'message-header');
+  row.appendChild(header);
+  const t = mk('div', null, 'message-text'); t.textContent = text; row.appendChild(t);
+  return row;
+}
+
+// ---------------------------------------------------------------- the page
+const container = mk('div', 'chat-messages');
+const menu = mk('div', 'message-context-menu', 'context-menu');
+const saveItem = mk('div', 'saved-menu-item', 'context-menu-item');
+const remindItem = mk('div', 'remind-menu-item', 'context-menu-item');
+const replyItem = mk('div', null, 'context-menu-item');
+const hiddenItem = mk('div', null, 'context-menu-item'); hiddenItem.style.display = 'none';
+menu.append(replyItem, saveItem, remindItem, hiddenItem);
+const openBtn = mk('button', 'saved-open-btn');
+[container, menu, openBtn].forEach(n => doc.body.appendChild(n));
+
+const calls = [];
+let marksPayload = { marks: [{ id: 11, kind: 'channel', message_id: 101 }], limits: { reminder_horizon_days: 366, max_saved: 500 } };
+let listPages = [];
+let nextSavedId = 50;
+const apiLog = [];
+async function fakeApi(method, path, body) {
+  apiLog.push({ method, path, body });
+  if (method === 'GET' && path === '/api/saved/marks') return { status: 200, data: marksPayload };
+  if (method === 'GET' && path.startsWith('/api/saved?')) return { status: 200, data: listPages.shift() || { items: [], has_more: false } };
+  if (method === 'POST' && path === '/api/saved') return { status: 201, data: { saved: { id: ++nextSavedId, kind: body.kind, message_id: body.message_id } } };
+  if (method === 'DELETE') return { status: 200, data: { status: 'removed' } };
+  if (method === 'PUT') return body.remind_at === 'bad' ? { status: 400, data: { error: 'nope' } }
+    : { status: 200, data: { id: +path.split('/')[3], remind_at: body.remind_at, reminded: false } };
+  return { status: 404, data: {} };
+}
+const jumps = [], dms = [], toasts = [], menusHidden = [];
+let view = 'channel';
+const FIXED_NOW = new Date(2026, 2, 28, 12, 0, 0);   // Saturday 28 March 2026, 12:00 local time
+
+(async () => {
+  const ctx = {
+    document: doc, console, MouseEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init); } },
+    location: { protocol: 'https:', host: 'portal.test', pathname: '/chat', href: 'https://portal.test/chat', search: '' },
+    localStorage: { getItem: () => null, setItem() {} }, navigator: {},
+    setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, clearInterval() {},
+    fetch: async (url, opts) => { calls.push({ url, opts }); return { ok: true, status: 200, json: async () => ({}) }; },
+    open: (...a) => { ctx.opened = a; },
+  };
+  ctx.window = ctx;
+  ctx.MutationObserver = class { constructor(cb) { this.cb = cb; } observe(node) { node.observer = this; } };
+  vm.createContext(ctx);
+  const src = fs.readFileSync(process.argv[2], 'utf8');
+  vm.runInContext(fs.readFileSync(process.argv[3], 'utf8'), ctx, { filename: 'portal.js' });
+  vm.runInContext(src, ctx, { filename: 'chat-saved.js' });
+  const CS = ctx.ChatSaved;
+  check('chat-saved.js sets window.ChatSaved as a separate classic script', CS && typeof CS.init === 'function' && typeof CS.open === 'function');
+
+  // ---- time choices, in the zone of this run
+  const tz = process.env.TZ || 'UTC';
+  const choices = CS.remindChoices(FIXED_NOW);
+  const byKey = Object.fromEntries(choices.map(c => [c.key, c]));
+  const iso = d => CS.utcIso(d);
+  const expect = {
+    'Europe/Berlin': { hour: '2026-03-28T12:00:00Z', tomorrow: '2026-03-29T07:00:00Z', nextweek: '2026-03-30T07:00:00Z' },
+    'America/New_York': { hour: '2026-03-28T17:00:00Z', tomorrow: '2026-03-29T13:00:00Z', nextweek: '2026-03-30T13:00:00Z' },
+  }[tz];
+  // 12:00 local on 28 March is 11:00Z in Berlin (still winter time; the clock changes the next night) and
+  // 16:00Z in New York (summer time since 8 March)
+  check(tz + ': in 1 hour is one hour from now', iso(byKey.hour.when) === expect.hour, iso(byKey.hour.when));
+  check(tz + ': tomorrow 9:00 local across the clock change is the right UTC instant', iso(byKey.tomorrow.when) === expect.tomorrow, iso(byKey.tomorrow.when));
+  check(tz + ': next week is the next Monday 9:00 local', iso(byKey.nextweek.when) === expect.nextweek && byKey.nextweek.when.getDay() === 1, iso(byKey.nextweek.when));
+  const monday = new Date(2026, 2, 30, 8, 0, 0);
+  check(tz + ': on a Monday, next week is the Monday a week away', CS.remindChoices(monday).find(c => c.key === 'nextweek').when.getDate() === 6
+        && CS.remindChoices(monday).find(c => c.key === 'nextweek').when.getMonth() === 3);
+  check('the UTC instant has the form the server wants', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(iso(new Date())));
+  const p = CS.parseLocalInput('2026-11-24T09:30');
+  check(tz + ': a picker value is read as local time', p && p.getHours() === 9 && p.getMinutes() === 30 && p.getDate() === 24);
+  check('an impossible date or text is refused', CS.parseLocalInput('2026-02-30T10:00') === null && CS.parseLocalInput('2026-13-01T10:00') === null
+        && CS.parseLocalInput('soon') === null && CS.parseLocalInput('') === null);
+  check('a past time and one beyond the horizon are refused, a good one is not',
+        CS.whenProblem(new Date(FIXED_NOW.getTime() - 1000), FIXED_NOW, 366) !== ''
+        && CS.whenProblem(new Date(FIXED_NOW.getTime() + 400 * 86400000), FIXED_NOW, 366) !== ''
+        && CS.whenProblem(new Date(FIXED_NOW.getTime() + 3600000), FIXED_NOW, 366) === ''
+        && CS.whenProblem(null, FIXED_NOW, 366) !== '');
+
+  // ---- init: marks fetched, rows marked for this member only
+  const row101 = msgRow(101, 'one'), row102 = msgRow(102, 'two');
+  container.append(row101, row102);
+  await CS.init({
+    api: fakeApi, now: () => FIXED_NOW, currentKind: () => view,
+    jumpToMessage: (c, m) => jumps.push([c, m]), openDm: c => dms.push(c),
+    hideMenus: () => menusHidden.push(1), toast: (t, ty) => toasts.push([t, ty]), doc,
+  });
+  check('the marks come from one GET and rows of a saved message get the marker', row101.classList.contains('saved-message')
+        && row101.querySelector('.saved-badge') && row101.querySelector('.saved-badge').textContent === 'Saved'
+        && !row102.classList.contains('saved-message') && apiLog.filter(a => a.path === '/api/saved/marks').length === 1);
+  check('the page container is reachable by keyboard and labelled', container.getAttribute('tabindex') === '0' && container.getAttribute('aria-label') === 'Messages');
+  const row103 = msgRow(103, 'three');
+  marksPayload.marks.push({ id: 13, kind: 'channel', message_id: 103 });
+  await CS.loadMarks();
+  check('a row added later is marked by the observer', (container.appendChild(row103), row103.classList.contains('saved-message')));
+  view = 'dm';
+  CS.decorateAll();
+  check('a saved channel message id is not a mark in a direct-message view', !row101.classList.contains('saved-message') && !row101.querySelector('.saved-badge'));
+  view = 'channel';
+  CS.decorateAll();
+  check('and it is back in the channel view', row101.classList.contains('saved-message'));
+
+  // ---- the message menu: save, then remove
+  CS.prepareMenu(102);
+  check('the menu says Save message for an unsaved message', saveItem.textContent === 'Save message');
+  apiLog.length = 0;
+  await saveItem.click(); await new Promise(r => setImmediate(r));
+  check('Save sends kind and message id only', apiLog.length === 1 && apiLog[0].method === 'POST' && JSON.stringify(apiLog[0].body) === '{"kind":"channel","message_id":102}', JSON.stringify(apiLog));
+  check('the row is marked at once and the menu was closed', row102.classList.contains('saved-message') && menusHidden.length >= 1);
+  CS.prepareMenu(102);
+  check('the menu now says Remove from Saved', saveItem.textContent === 'Remove from Saved');
+  apiLog.length = 0;
+  await saveItem.click(); await new Promise(r => setImmediate(r));
+  check('Remove deletes the member own entry by its id and unmarks the row', apiLog.length === 1 && apiLog[0].method === 'DELETE' && /^\/api\/saved\/\d+$/.test(apiLog[0].path)
+        && !row102.classList.contains('saved-message'), JSON.stringify(apiLog));
+
+  // ---- Remind me: saves first, then offers the times
+  apiLog.length = 0;
+  CS.prepareMenu(104);
+  await remindItem.click(); await new Promise(r => setImmediate(r));
+  const dlg = doc.body.children.find(c => c.className.includes('saved-overlay-remind'));
+  check('Remind me on an unsaved message saves it and opens the dialog', apiLog[0] && apiLog[0].method === 'POST' && dlg
+        && dlg.querySelector('[role="dialog"]') !== null && ['hour', 'tomorrow', 'nextweek', 'custom', 'cancel'].every(k => dlg.querySelector('[data-choice="' + k + '"]')));
+  check('no Clear button for a message without a reminder', dlg.querySelector('[data-choice="clear"]') === null);
+  apiLog.length = 0;
+  await dlg.querySelector('[data-choice="tomorrow"]').click(); await new Promise(r => setImmediate(r));
+  const put = apiLog.find(a => a.method === 'PUT');
+  check(tz + ': Tomorrow 9:00 sends the absolute UTC instant', put && put.body.remind_at === expect.tomorrow && /\/remind$/.test(put.path), JSON.stringify(put));
+  check('the dialog closed and the member was told', !doc.body.children.some(c => c.className.includes('saved-overlay-remind')) && toasts.some(t => /Reminder set/.test(t[0])));
+
+  // custom date: a past value is refused locally, a valid one is sent as UTC
+  CS.prepareMenu(104);
+  await remindItem.click(); await new Promise(r => setImmediate(r));
+  const dlg2 = doc.body.children.find(c => c.className.includes('saved-overlay-remind'));
+  const input = dlg2.querySelector('input');
+  check('the picker is a datetime-local input with a minimum', input.getAttribute('type') === 'datetime-local' && input.getAttribute('min') === '2026-03-28T12:00');
+  input.value = '2026-03-01T09:00';
+  apiLog.length = 0;
+  await dlg2.querySelector('[data-choice="custom"]').click();
+  check('a past picker value is refused without a request', apiLog.length === 0 && /future/.test(dlg2.querySelector('.saved-error').textContent));
+  input.value = '2026-04-02T18:15';
+  await dlg2.querySelector('[data-choice="custom"]').click(); await new Promise(r => setImmediate(r));
+  const put2 = apiLog.find(a => a.method === 'PUT');
+  const want2 = CS.utcIso(new Date(2026, 3, 2, 18, 15));
+  check(tz + ': a chosen date and time is sent as its UTC instant', put2 && put2.body.remind_at === want2, JSON.stringify(put2) + ' want ' + want2);
+
+  // ---- the Saved view
+  listPages = [{ items: [
+      { id: 21, available: true, kind: 'channel', channel_id: 3, channel_name: 'lobby', message_id: 301, saved_at: '2026-03-20T10:00:00Z',
+        remind_at: '2026-04-01T07:00:00Z', reminded: false,
+        message: { username: 'ann', text: '<img src=x onerror=alert(1)> hello', created_at: '2026-03-19T09:00:00Z', anonymous: false } },
+      { id: 22, available: true, kind: 'dm', conversation_id: 7, message_id: 77, saved_at: '2026-03-19T10:00:00Z', remind_at: null, reminded: false,
+        message: { username: 'bo', text: 'dm words', created_at: '2026-03-19T09:00:00Z' } },
+      { id: 23, available: false, saved_at: '2026-03-18T10:00:00Z', remind_at: null, reminded: false }],
+      has_more: true, next_before_id: 23 },
+    { items: [{ id: 24, available: false, saved_at: '2026-03-17T10:00:00Z', remind_at: '2026-03-18T07:00:00Z', reminded: true }], has_more: false }];
+  apiLog.length = 0;
+  active = openBtn;
+  openBtn.click(); await new Promise(r => setImmediate(r));
+  const panel = CS._state.panel;
+  check('the Saved button opens a labelled dialog and asks for the first page', panel && apiLog[0].path === '/api/saved?limit=30'
+        && panel.dlg.getAttribute('role') === 'dialog' && panel.dlg.getAttribute('aria-modal') === 'true');
+  const items = panel.list.children;
+  check('three entries are listed', items.length === 3);
+  check('untrusted text is shown as text and never as markup', items[0].textContent.includes('<img src=x onerror=alert(1)> hello') && items[0].querySelector('img') === null);
+  check('an available entry names its channel, author and reminder', items[0].textContent.includes('ann') && items[0].textContent.includes('#lobby') && /Reminder:/.test(items[0].textContent));
+  check('an unavailable entry shows only "No longer available" and its saved time',
+        items[2].textContent.startsWith('No longer available') && !/#|ann|lobby|hello/.test(items[2].textContent)
+        && items[2].all('button').map(b => b.textContent).join(',') === 'Remove');
+  check('every control is a real button with type=button and no inline handler',
+        panel.dlg.all('button').every(b => b.getAttribute('type') === 'button' && !('onclick' in b.attrs)));
+  const more = panel.more;
+  check('Load more is offered and asks for the next page by the cursor', more.style.display === '' && (await more.click(), await new Promise(r => setImmediate(r)), apiLog[apiLog.length - 1].path === '/api/saved?limit=30&before_id=23'));
+  check('the second page is appended and the button goes', panel.list.children.length === 4 && panel.more.style.display === 'none'
+        && /Reminder sent/.test(panel.list.children[3].textContent));
+  items[0].all('button').find(b => b.getAttribute('data-action') === 'jump').click();
+  check('Jump uses the page jump-to-message with the ids and closes the view', jumps.length === 1 && jumps[0][0] === 3 && jumps[0][1] === 301 && CS._state.panel === null);
+  openBtn.click(); await new Promise(r => setImmediate(r));
+  listPages.length = 0;
+  check('a reopened view asks again (nothing is cached)', apiLog.filter(a => a.path === '/api/saved?limit=30').length === 2);
+
+  // a DM entry jumps by opening the conversation
+  CS._state.panel.list.textContent = '';
+  listPages = [];
+  CS.close();
+  listPages = [{ items: [{ id: 22, available: true, kind: 'dm', conversation_id: 7, message_id: 77, saved_at: '2026-03-19T10:00:00Z', remind_at: null, reminded: false,
+                           message: { username: 'bo', text: 'dm words', created_at: '2026-03-19T09:00:00Z' } }], has_more: false }];
+  openBtn.click(); await new Promise(r => setImmediate(r));
+  CS._state.panel.list.children[0].all('button').find(b => b.getAttribute('data-action') === 'jump').click();
+  check('a direct-message entry opens its conversation', dms.length === 1 && dms[0] === 7);
+
+  // remove from the view
+  active = openBtn;
+  listPages = [{ items: [{ id: 31, available: false, saved_at: '2026-03-18T10:00:00Z', remind_at: null, reminded: false }], has_more: false }];
+  openBtn.click(); await new Promise(r => setImmediate(r));
+  const gone = CS._state.panel.list.children[0];
+  apiLog.length = 0;
+  await gone.all('button').find(b => b.getAttribute('data-action') === 'remove').click(); await new Promise(r => setImmediate(r));
+  check('Remove deletes the entry by id and takes it out of the list, and the empty text appears',
+        apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/31' && CS._state.panel.list.children.length === 0
+        && /Nothing saved yet/.test(CS._state.panel.status.textContent));
+
+  // ---- keyboard
+  active = openBtn;
+  doc.dispatch('keydown', { key: 'Escape', target: doc });
+  check('Escape closes the view and puts focus back on the button that opened it', CS._state.panel === null && active === openBtn);
+
+  active = null;
+  const ke = container.dispatch('keydown', { key: 'ArrowDown', target: container });
+  check('Arrow down on the message list focuses the first message', active === row101 && ke.defaultPrevented);
+  row101.dispatch('keydown', { key: 'ArrowDown', target: row101 });
+  check('Arrow down moves to the next message', active === row102);
+  row102.dispatch('keydown', { key: 'ArrowUp', target: row102 });
+  check('Arrow up moves back', active === row101);
+  let ctxEvent = null;
+  row101.addEventListener('contextmenu', e => { ctxEvent = e; menu.classList.add('show'); });
+  row101.dispatch('keydown', { key: 'ContextMenu', target: row101 });
+  check('the menu key on a focused message opens the message menu at that message', ctxEvent && ctxEvent.type === 'contextmenu' && ctxEvent.clientX > 0);
+  check('focus lands on the first visible menu item and the hidden one is skipped', active === replyItem && !!active && active !== hiddenItem);
+  menu.dispatch('keydown', { key: 'ArrowDown', target: replyItem });
+  check('arrow keys move through the menu', active === saveItem);
+  menusHidden.length = 0; apiLog.length = 0;
+  CS.prepareMenu(101);
+  menu.dispatch('keydown', { key: 'Enter', target: saveItem });
+  await new Promise(r => setImmediate(r));
+  check('Enter on Save or Remove acts like a click', apiLog.some(a => a.method === 'DELETE' && a.path === '/api/saved/11'), JSON.stringify(apiLog));
+  menu.dispatch('keydown', { key: 'Escape', target: saveItem });
+  check('Escape closes the menu and returns to the message', menusHidden.length >= 1 && active === row101);
+
+  // ---- portal.js and chat-saved.js together
+  check('portal.js sets window.Portal', ctx.Portal && typeof ctx.Portal.fetch === 'function');
+  const CS2 = ctx.ChatSaved;
+  const NB = vm.runInContext('NotificationBell', ctx);   // a top-level const of portal.js, as in a page
+  CS2._state.cfg.api = undefined;      // use the page default: Portal.fetch
+  calls.length = 0;
+  await CS2.loadMarks();
+  check('without an injected api the default goes through Portal.fetch with credentials', calls.length === 1 && calls[0].url === '/api/saved/marks'
+        && calls[0].opts.credentials === 'same-origin', JSON.stringify(calls[0]));
+  CS2._state.cfg.api = fakeApi;
+  ctx.chatJumpToMessage = (c, m) => jumps.push(['n', c, m]);
+  await NB.clickNotification(5, JSON.stringify({ channel_id: 3, message_id: 9, saved_id: 2 }));
+  check('a reminder notification with a message opens it through the existing jump', jumps[jumps.length - 1].join() === 'n,3,9');
+  listPages = [{ items: [], has_more: false }];
+  await NB.clickNotification(6, JSON.stringify({ saved: 1, saved_id: 2 }));
+  await new Promise(r => setImmediate(r));
+  check('a reminder notification that could not open its message opens the Saved view', CS2._state.panel !== null);
+  CS2.close();
+  ctx.ChatSaved = undefined;
+  await NB.clickNotification(7, JSON.stringify({ saved: 1 }));
+  check('on a page without the Saved view the notification opens /chat?saved=1', ctx.opened && ctx.opened[0] === '/chat?saved=1');
+
+  console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
+})().catch(e => { console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n')); console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

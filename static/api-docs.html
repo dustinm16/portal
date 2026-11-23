@@ -3355,6 +3355,63 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/saved</span>
+                        <span class="endpoint-desc">Your saved messages, resolved now</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Your own saved entries, newest first (1.23.0). <code>limit</code> 1 to 50, <code>before_id</code> is <code>next_before_id</code> of the previous page. An entry is a reference: no text is stored. Each is resolved now with the same read rule as the chat; a message you can no longer read or that is gone is <code>{"available": false}</code> with only <code>id</code>, <code>saved_at</code>, <code>remind_at</code> and <code>reminded</code>. A channel entry carries <code>channel_id</code> and <code>message_id</code> for jump-to-message, a direct-message entry carries <code>conversation_id</code>. An anonymous post stays anonymous. Answers carry <code>Cache-Control: private, no-store</code>; API keys and stream keys get <code>403</code>.</p>
+                        <h4>Errors</h4>
+                        <p><code>400</code>. <code>401</code>. <code>403</code>. <code>429</code> with <code>Retry-After</code> (shares the chat history budget).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/saved/marks</span>
+                        <span class="endpoint-desc">Which messages you saved</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{"marks": [{"id", "kind", "message_id"}], "limits": {"max_saved": 500, "max_reminders": 100, "reminder_horizon_days": 366}}</code>: what the chat page needs to mark saved messages for you alone. Only entries that resolve now are listed, never one the list shows as no longer available.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/saved</span>
+                        <span class="endpoint-desc">Save a message</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{"kind": "channel" | "dm", "message_id": 123}</code>. <code>201</code> with <code>{"saved": {"id", "kind", "message_id", "saved_at", "remind_at", "reminded"}}</code>, <code>200</code> when it was already saved. Only a message you can read now: a message that does not exist, one you may not read and one of the other kind answer with the same <code>404 {"error": "Message not found"}</code>. At most 500 entries (<code>409</code>).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/saved/{id}</span>
+                        <span class="endpoint-desc">Remove a saved entry</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Removes one of your own entries, also one that is no longer available. <code>404</code> for any other id.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/saved/{id}/remind</span>
+                        <span class="endpoint-desc">Set or clear a reminder</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{"remind_at": "2026-11-24T08:00:00Z"}</code> sets, <code>{"remind_at": null}</code> clears. The time is an absolute UTC instant ending in <code>Z</code>, in the future and at most 366 days ahead (<code>400</code> otherwise); at most 100 reminders wait at once (<code>409</code>). When due, one notification of type <code>reminder</code> is created with the fixed title "Reminder for a saved message" and no text; its <code>data</code> is <code>{"channel_id", "message_id", "saved_id"}</code> while the message is readable in a channel, else <code>{"saved": 1, "saved_id"}</code>. It never repeats, also across a restart. A member keeps at most 200 <code>reminder</code> notifications; a newer firing deletes the oldest ones. A Web Push carries the same fixed title and a link, never text, author or channel name.</p>
+                    </div>
+                </div>
+
                 <h3>WebSocket API</h3>
                 <p>Connect to the chat WebSocket for real-time messaging:</p>
                 <div class="code-block">
@@ -7124,7 +7181,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=51"></script>
+    <script src="/static/js/portal.js?v=52"></script>
     <script src="/static/js/push.js?v=4"></script>
     <script>
         // Headers added since 1.20.0 carry data-toggle-endpoint instead of an inline onclick.

@@ -30,6 +30,9 @@ logger = logging.getLogger("portal.database")
 # Terminal recording files end in this extension (see plugins/terminal.py).
 RECORDING_FILE_EXTENSION = ".cast"
 
+# The one fixed title of a reminder notification and its push: it names no message, author or channel
+SAVED_REMINDER_TITLE = "Reminder for a saved message"
+
 
 class PurgeStopped(Exception):
     """A purge ended at a batch boundary because it was asked to stop (see Database._purge_messages)."""
@@ -721,6 +724,28 @@ MIGRATIONS = [
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
     )""",
+    # Saved messages and remind-me-later (private to the member). A row is a REFERENCE only: kind
+    # ('channel' or 'dm'), the channel or conversation id, the message id and three epoch times. No
+    # text, author or channel name is stored; everything shown is resolved at read time through the
+    # same access checks as reading the message. Ids of chat_messages and dm_messages are
+    # AUTOINCREMENT (never reused); kind and scope_id are still part of every lookup.
+    """CREATE TABLE IF NOT EXISTS saved_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('channel', 'dm')),
+        scope_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        saved_at INTEGER NOT NULL,
+        remind_at INTEGER,
+        fired_at INTEGER,
+        UNIQUE (user_id, kind, message_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    # The list reads one member's rows newest first
+    "CREATE INDEX IF NOT EXISTS idx_saved_messages_user ON saved_messages(user_id, id)",
+    # The reminder tick reads only rows that are waiting; the partial index holds just those
+    "CREATE INDEX IF NOT EXISTS idx_saved_messages_due ON saved_messages(remind_at) "
+    "WHERE remind_at IS NOT NULL AND fired_at IS NULL",
     # The go-live card posted into a chat channel: which message, for which stream, and what
     # it shows. The message text is the plain-text fallback; this row lets history rebuild
     # the card and lets the card be removed when the stream becomes private or is deleted.
@@ -3022,6 +3047,7 @@ class Database:
             ("schedule_feed_tokens", "DELETE FROM schedule_feed_tokens WHERE user_id = ?"),
             ("push_subscriptions", "DELETE FROM push_subscriptions WHERE user_id = ?"),
             ("push_prefs", "DELETE FROM push_prefs WHERE user_id = ?"),
+            ("saved_messages", "DELETE FROM saved_messages WHERE user_id = ?"),
             # Notification levels per channel
             ("channel_notify_prefs", "DELETE FROM channel_notify_prefs WHERE user_id = ?"),
             # Recordings
@@ -5514,8 +5540,22 @@ class Database:
         await self.conn.commit()
         return current
 
+    # Kinds a member does not switch on or off one by one: a reminder is something they asked for,
+    # so it goes to every member who has a device (push as a whole is still on or off).
+    PUSH_DEVICE_ONLY_KINDS = ("reminder",)
+
     async def push_targets(self, user_ids, kind: str) -> set:
         """The members among `user_ids` who have at least one device and want this kind."""
+        if kind in self.PUSH_DEVICE_ONLY_KINDS:
+            ids = [int(u) for u in user_ids]
+            out = set()
+            for i in range(0, len(ids), 400):
+                chunk = ids[i:i + 400]
+                marks = ",".join("?" * len(chunk))
+                cursor = await self.conn.execute(
+                    f"SELECT DISTINCT user_id FROM push_subscriptions WHERE user_id IN ({marks})", chunk)
+                out.update(r["user_id"] for r in await cursor.fetchall())
+            return out
         if kind not in self.PUSH_KINDS:
             return set()
         ids = [int(u) for u in user_ids]
@@ -9889,6 +9929,163 @@ class Database:
         cursor = await self.conn.execute(
             "DELETE FROM device_metric_samples WHERE ts < ?", (cutoff,)
         )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Saved messages and reminders (references only; see the table comment)
+    # ------------------------------------------------------------------
+
+    async def add_saved_message(self, user_id: int, kind: str, scope_id: int, message_id: int,
+                                now: int, max_saved: int) -> tuple:
+        """Save one message for one member. ('saved'|'exists', row) or ('full', None). The cap is
+        part of the INSERT itself, so two requests cannot both pass a separate count."""
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO saved_messages (user_id, kind, scope_id, message_id, saved_at)
+               SELECT ?, ?, ?, ?, ?
+               WHERE (SELECT COUNT(*) FROM saved_messages WHERE user_id = ?) < ?""",
+            (user_id, kind, scope_id, message_id, now, user_id, max_saved))
+        inserted = cursor.rowcount == 1
+        await self.conn.commit()
+        cursor = await self.conn.execute(
+            "SELECT * FROM saved_messages WHERE user_id = ? AND kind = ? AND message_id = ?",
+            (user_id, kind, message_id))
+        row = await cursor.fetchone()
+        if row is None:
+            return "full", None
+        return ("saved" if inserted else "exists"), dict(row)
+
+    async def message_stamps(self, kind: str, scope_id: int, message_ids) -> dict:
+        """{message id: created_at} of the messages that exist in that channel or conversation: no
+        decryption, for the checks that only need to know a message is there."""
+        ids = list({int(i) for i in message_ids})
+        table, column = ("chat_messages", "channel_id") if kind == "channel" else ("dm_messages", "conversation_id")
+        out = {}
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            cursor = await self.conn.execute(
+                f"SELECT id, created_at FROM {table} WHERE {column} = ? AND id IN ({','.join('?' * len(chunk))})",
+                [scope_id] + chunk)
+            out.update({r["id"]: r["created_at"] for r in await cursor.fetchall()})
+        return out
+
+    async def delete_saved_message(self, user_id: int, saved_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM saved_messages WHERE id = ? AND user_id = ?", (saved_id, user_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_saved_message(self, user_id: int, saved_id: int) -> Optional[dict]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM saved_messages WHERE id = ? AND user_id = ?", (saved_id, user_id))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_saved_messages(self, user_id: int, before_id: Optional[int], limit: int) -> list[dict]:
+        """One member's rows, newest saved first (the row id grows with every save)."""
+        if before_id is None:
+            cursor = await self.conn.execute(
+                "SELECT * FROM saved_messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (user_id, limit))
+        else:
+            cursor = await self.conn.execute(
+                "SELECT * FROM saved_messages WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+                (user_id, before_id, limit))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def set_saved_reminder(self, user_id: int, saved_id: int, remind_at: Optional[int],
+                                 max_pending: int) -> str:
+        """Set (an epoch second) or clear (None) the reminder of one row of the member: 'ok', 'missing'
+        or 'full' (too many pending reminders). A new time makes the entry pending again. The cap is
+        inside the UPDATE."""
+        if remind_at is None:
+            cursor = await self.conn.execute(
+                "UPDATE saved_messages SET remind_at = NULL, fired_at = NULL WHERE id = ? AND user_id = ?",
+                (saved_id, user_id))
+        else:
+            cursor = await self.conn.execute(
+                """UPDATE saved_messages SET remind_at = ?, fired_at = NULL
+                   WHERE id = ? AND user_id = ?
+                     AND (SELECT COUNT(*) FROM saved_messages
+                          WHERE user_id = ? AND id != ? AND remind_at IS NOT NULL AND fired_at IS NULL) < ?""",
+                (remind_at, saved_id, user_id, user_id, saved_id, max_pending))
+        changed = cursor.rowcount == 1
+        await self.conn.commit()
+        if changed:
+            return "ok"
+        return "full" if await self.get_saved_message(user_id, saved_id) else "missing"
+
+    async def due_saved_reminders(self, now: int, limit: int) -> list[dict]:
+        """Rows whose reminder is due and not yet fired, oldest due first (the partial index)."""
+        cursor = await self.conn.execute(
+            """SELECT id, user_id, kind, scope_id, message_id, saved_at, remind_at FROM saved_messages
+               WHERE remind_at IS NOT NULL AND fired_at IS NULL AND remind_at <= ?
+               ORDER BY remind_at LIMIT ?""", (now, limit))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def fire_saved_reminders(self, items: list, now: int,
+                                   keep_notes: Optional[int] = None) -> list[tuple[int, int, int]]:
+        """Fire reminders. `items` is [(saved_id, user_id, remind_at as read, data)]. For each, in ONE
+        transaction on the connection's own thread: mark it fired (only if it is still pending with
+        that time) and, only when that changed a row, write its notification. A row that was changed or
+        removed meanwhile, or is already fired, gets nothing. With `keep_notes`, a member keeps at most
+        that many 'reminder' notifications (the newest), the older ones are deleted in the same
+        transaction, so re-arming reminders cannot grow the table without bound. Returns
+        [(saved_id, user_id, notification_id)] of the ones fired."""
+        prepared = [(sid, uid, due, json.dumps(data or {}), encrypt_message(SAVED_REMINDER_TITLE))
+                    for sid, uid, due, data in items]
+        if not prepared:
+            return []
+        return await self.conn._execute(self._fire_saved_sync, prepared, now, keep_notes)
+
+    def _fire_saved_sync(self, prepared: list, now: int, keep_notes: Optional[int] = None) -> list[tuple[int, int, int]]:
+        raw = self._connection._conn
+        out = []
+        raw.execute("SAVEPOINT saved_fire")
+        try:
+            for sid, uid, due, data, title in prepared:
+                cursor = raw.execute(
+                    """UPDATE saved_messages SET fired_at = ?
+                       WHERE id = ? AND user_id = ? AND remind_at = ? AND fired_at IS NULL""",
+                    (now, sid, uid, due))
+                if cursor.rowcount != 1:
+                    continue
+                note = raw.execute(
+                    """INSERT INTO notifications (user_id, type, title, message, data)
+                       VALUES (?, 'reminder', ?, '', ?)""", (uid, title, data))
+                out.append((sid, uid, note.lastrowid))
+            if keep_notes is not None:
+                for uid in {o[1] for o in out}:
+                    raw.execute(
+                        """DELETE FROM notifications WHERE user_id = ? AND type = 'reminder' AND id <= (
+                               SELECT id FROM notifications WHERE user_id = ? AND type = 'reminder'
+                               ORDER BY id DESC LIMIT 1 OFFSET ?)""", (uid, uid, int(keep_notes)))
+            raw.execute("RELEASE saved_fire")
+        except BaseException:
+            try:
+                raw.execute("ROLLBACK TO saved_fire")
+                raw.execute("RELEASE saved_fire")
+            except sqlite3.Error:
+                pass
+            raise
+        raw.commit()
+        return out
+
+    async def cleanup_saved_messages(self, now: int, grace_seconds: int) -> int:
+        """Delete rows whose message is gone (deleted, pruned, aged out, author removed), once nothing
+        waits on them: no pending reminder, and `grace_seconds` since the reminder fired or the entry was
+        saved. A row the member merely cannot read now is kept (access may come back)."""
+        cursor = await self.conn.execute(
+            """DELETE FROM saved_messages
+               WHERE (remind_at IS NULL OR fired_at IS NOT NULL)
+                 AND COALESCE(fired_at, saved_at) < ?
+                 AND ((kind = 'channel' AND NOT EXISTS (
+                           SELECT 1 FROM chat_messages m
+                           WHERE m.id = saved_messages.message_id AND m.channel_id = saved_messages.scope_id))
+                   OR (kind = 'dm' AND NOT EXISTS (
+                           SELECT 1 FROM dm_messages m
+                           WHERE m.id = saved_messages.message_id AND m.conversation_id = saved_messages.scope_id)))""",
+            (now - grace_seconds,))
         await self.conn.commit()
         return cursor.rowcount
 

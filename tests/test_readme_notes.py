@@ -482,11 +482,14 @@ check("the old 'enable desktop alerts' star sentence is gone from the chat part"
       "Enable desktop alerts to get browser notifications" not in text)
 # Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
 MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
+# ... and in 1.23.0 (saved messages lane): an older release's notes keep the version of their day
+MOVED_ON_1_23 = {"portal.js": 52}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}) and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))})
+          and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
 check("the README names the three pictures and they exist",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file()
           for n in ("chat-notify-menu", "phone-notifications", "admin-push")))
@@ -520,7 +523,7 @@ _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glo
 for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 59)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}), str(loaded))
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}), str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",
       all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
 # --- 1.20.0 notes: voice moderation and the room cap -----------------------------------
@@ -781,7 +784,7 @@ check("1.21.0: the administrators' summary says plainly who plays, the limits, t
 _static21 = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec21, re.M)), "")
 _pl = (ROOT / "static" / "vod-player.html").read_text()
 check("1.21.0: the Static files bullet states the versions vod-player.html really loads (portal.css moved on to 56 in 1.22.0)",
-      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v
+      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v or str(MOVED_ON_1_23.get(f)) == v
           for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl))
       and "`portal.css` v55" in _static21 and "portal.css?v=56" in _pl, _static21[:200])
 
@@ -995,7 +998,8 @@ _static_bullet = next((b for b in _sec22.splitlines() if b.startswith("- **Stati
 _pages22 = {n: (ROOT / "static" / n).read_text(encoding="utf-8") for n in ("index.html", "admin.html", "login.html")}
 check("1.22.0: every script and style version the Static files bullet names is the one a page loads",
       all(re.search(rf"{re.escape(f)}\?v={v}\b", "".join(_pages22.values()) + (ROOT / "static" / "js" / "portal.js").read_text()
-                    + _srv_text) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
+                    + _srv_text)
+                    or (f in MOVED_ON_1_23 and str(MOVED_ON_1_22.get(f)) == v) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
       and len(re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet)) >= 11)
 check("1.22.0: the screenshots section shows the new pictures and each file exists",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in (
@@ -1062,6 +1066,48 @@ check("1.23.0: every schedule route is in the API reference and on the API page"
       all(r in _api23 and r in _docs23 for r in ("/api/streams/schedule/upcoming", "/api/streams/{id}/schedule", "/rsvp/{start}",
                                                   "/api/streams/schedule/feed/{token}.ics", "/api/me/schedule-feed")))
 check("1.23.0: the README feature section mentions the schedule", "**Schedule.**" in text)
+
+# --- 1.23.0 notes: saved messages and reminders (the "saved" lane) -----------------------------------
+m23s = re.search(r"### Upgrade notes for 1\.23\.0\n(.*?)(?=\n### Upgrade notes for 1\.22\.0)", text, re.S)
+_sec23s = m23s.group(1) if m23s else ""
+check("README has an 'Upgrade notes for 1.23.0' section directly before the 1.22.0 one", bool(m23s))
+_low23s = _sec23s.lower()
+_nt23s = _sec23s.split("**Not tested**")[-1] if "**Not tested**" in _sec23s else ""
+for name, needles in (
+        ("a saved entry is a reference and holds no copy", ("a reference, not a copy", "no message text, author or channel name is stored")),
+        ("what 'no longer available' shows", ("no longer available", '"available": false', "only its entry id", "anonymous post stays")),
+        ("message ids are not reused and lookups match the kind and scope", ("autoincrement", "never reused", "stored channel or conversation id")),
+        ("the clean-up rule", ("periodic clean-up", "no pending reminder", "seven days")),
+        ("privacy: no frame, no audit, no count for administrators", ("no frame is sent", "no audit or log line", "not even a count")),
+        ("the limits", ("500 saved entries", "100 waiting reminders", "366 days", "absolute utc instant")),
+        ("the reminder tick and exactly-once firing", ("every 30 seconds", "partial index", "at most 50", "one database transaction", "across a restart")),
+        ("the fixed notification text and the Saved view fallback", ("reminder for a saved message", "/chat?saved=1", "ids only")),
+        ("web push", ("fixed `reminder` kind", "never message text", "no portal tab open")),
+        ("the phone long-press gap", ("contextmenu", "open follow-up")),
+        ("the migration", ("create table if not exists saved_messages", "idx_saved_messages_due", "1.22.0 starts on the migrated database")),
+        ("what is not tested", ("no browser and no phone", "no real push service", "no calendar", "no cloudflare"))):
+    check(f"1.23.0 (saved) states: {name}", all(n in _low23s or n in _sec23s for n in needles), str(needles))
+check("1.23.0 (saved) Not tested paragraph is present", bool(_nt23s.strip()))
+check("1.23.0 (saved) notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec23s))
+_srv_saved = (ROOT / "server.py").read_text()
+_db_saved = (ROOT / "database.py").read_text()
+check("1.23.0 (saved): the limits and the title the notes state are the ones in the code",
+      "SAVED_MAX_ENTRIES = 500" in _srv_saved and "SAVED_MAX_PENDING = 100" in _srv_saved and "SAVED_HORIZON_DAYS = 366" in _srv_saved
+      and "SAVED_TICK_SECONDS = 30" in _srv_saved and "SAVED_TICK_CAP = 50" in _srv_saved and "SAVED_FIRST_TICK_SECONDS = 5" in _srv_saved
+      and "SAVED_CLEANUP_GRACE_SECONDS = 7 * 86400" in _srv_saved
+      and 'SAVED_REMINDER_TITLE = "Reminder for a saved message"' in _db_saved)
+check("1.23.0 (saved): the table, its cascade and the partial index are what the notes say",
+      "CREATE TABLE IF NOT EXISTS saved_messages" in _db_saved and "UNIQUE (user_id, kind, message_id)" in _db_saved
+      and "WHERE remind_at IS NOT NULL AND fired_at IS NULL" in _db_saved and '("saved_messages", "DELETE FROM saved_messages WHERE user_id = ?")' in _db_saved
+      and "PUSH_KINDS = (\"dm\", \"mention\", \"golive\")" in _db_saved)
+check("1.23.0 (saved): What You Get has a Saved Messages part, API.md and api-docs.html describe the routes",
+      "### Saved Messages and Reminders" in text.split("## What You Get", 1)[1].split("\n## ", 1)[0]
+      and "/api/saved/marks" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/marks" in (ROOT / "static" / "api-docs.html").read_text()
+      and "/api/saved/:id/remind" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/{id}/remind" in (ROOT / "static" / "api-docs.html").read_text())
+check("1.23.0 (saved): the static versions the notes name are the ones loaded",
+      "`chat-saved.js` is new (v1" in _sec23s and "`portal.js` is now v52" in _sec23s
+      and re.search(r"chat-saved\.js\?v=1\b", (ROOT / "static" / "chat.html").read_text()) is not None
+      and all("portal.js?v=52" in (ROOT / "static" / n).read_text() for n in ("chat.html", "index.html", "admin.html")))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

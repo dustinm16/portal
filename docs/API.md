@@ -2008,6 +2008,41 @@ Sets the caller's level and/or timed mute for a channel they may read. Body: `{"
 - Level `all`: badge, and the chat page plays a sound and shows a desktop alert. `mentions`: only an @mention counts. `none`: nothing, an @mention does not notify either. An active mute stops the badge and the ordinary signal; an @mention still notifies (unless the level is `none`).
 - **Errors:** `400` (neither key, a level or an hour count that is not in the lists above), `401`, `404` as above. `GET /api/chat/channels` also carries `notify_level` and `muted_until` on every channel.
 
+#### Saved messages and reminders (1.23.0)
+
+A member's private list of messages to come back to, with an optional "remind me" time. A saved entry is a **reference** (the kind of chat, the channel or conversation id, the message id and three times): the server stores no message text, author or channel name for it. Every route is the caller's own (a browser session or a full-access token; API keys and stream keys get `403`), nothing about an entry is sent to any other member, any socket or any log, and every answer carries `Cache-Control: private, no-store`.
+
+| Route | What it does |
+|---|---|
+| `GET /api/saved?limit=30&before_id=` | The caller's entries, newest saved first, each resolved now. `limit` 1 to 50 (default 30); `before_id` is the `next_before_id` of the previous page. Counts toward the chat history budget (30 a minute). |
+| `GET /api/saved/marks` | `{"marks": [{"id", "kind", "message_id"}], "limits"}`: what the chat page needs to mark saved messages; only entries that resolve now, never one the list shows as no longer available. |
+| `POST /api/saved` | Body `{"kind": "channel" \| "dm", "message_id": 123}`. `201` and `{"saved": {"id", "kind", "message_id", "saved_at", "remind_at", "reminded"}}`; `200` with the same shape when it was already saved. |
+| `DELETE /api/saved/:id` | Removes one of the caller's entries, also one that is no longer available. |
+| `PUT /api/saved/:id/remind` | Body `{"remind_at": "2026-11-24T08:00:00Z"}` sets the reminder, `{"remind_at": null}` clears it. Answer `{"id", "remind_at", "reminded"}`. |
+
+```json
+{
+  "items": [
+    {"id": 12, "available": true, "kind": "channel", "channel_id": 3, "channel_name": "general", "message_id": 981,
+     "saved_at": "2026-11-23T08:00:00Z", "remind_at": "2026-11-24T08:00:00Z", "reminded": false,
+     "message": {"username": "alice", "avatar": {}, "text": "...", "created_at": "2026-11-23T07:55:00+00:00",
+                 "message_type": "message", "anonymous": false}},
+    {"id": 11, "available": false, "saved_at": "2026-11-22T08:00:00Z", "remind_at": null, "reminded": false}
+  ],
+  "has_more": false, "next_before_id": null,
+  "limits": {"max_saved": 500, "max_reminders": 100, "reminder_horizon_days": 366},
+  "now": "2026-11-23T08:00:00Z"
+}
+```
+
+- **Resolved live.** Each entry goes through the same read rule as reading the message now (`_can_read_channel` for a channel or a stream chat, active participation for a direct message). A message the caller can no longer read (removed from a private channel, left the conversation, a stream chat made private or the caller banned from it) or that is gone (deleted, pruned, aged out by the retention) is listed as `"available": false` with only `id`, `saved_at`, `remind_at` and `reminded`: no kind, no channel, conversation or message id, no author, no text. Access that comes back makes the entry readable again. An anonymous post keeps its masking: `username` is `Anonymous` and no account id or role is ever sent.
+- **Jump.** A `channel` entry carries `channel_id` and `message_id` for the chat page's jump-to-message (`/chat?channel_id=3&message_id=981`); a `dm` entry carries `conversation_id` and opens that conversation.
+- **Saving.** Only a message the caller can read now. A message that does not exist, one the caller may not read and one of another kind answer with the same `404 {"error": "Message not found"}`. At most 500 entries per member (`409` after that, an entry that is already saved is not refused).
+- **Reminders.** `remind_at` is an absolute UTC instant `YYYY-MM-DDTHH:MM:SS[.ffffff]Z`; a time without the `Z`, a time in the past and one more than 366 days ahead are `400`. At most 100 reminders waiting per member (`409`). Setting a time on an entry that already fired makes it pending again. A member keeps at most 200 `reminder` notifications; a newer firing deletes the oldest ones.
+- **Firing.** One tick every 30 seconds fires at most 50 due reminders. Each reminder creates one notification of type `reminder` with the fixed title `Reminder for a saved message` and no text, whose `data` is `{"channel_id", "message_id", "saved_id"}` while the message is readable in a channel, and `{"saved": 1, "saved_id"}` otherwise (the client opens the Saved view, which says "no longer available"). The notification and the "fired" mark are one database transaction, so a reminder never repeats, also across a restart; reminders that came due while the portal was down fire at the first ticks after the start. A Web Push (kind `reminder`, for members who have a device and push switched on) carries the same fixed title, the body `Open the portal to see it.` and the jump URL, never text, author or channel name.
+- **Clean-up.** An entry whose message is gone stays until it has no pending reminder and a week has passed since it fired or was saved, then the periodic clean-up removes it. Entries are deleted with the member.
+- **Errors:** `400` (bad input), `401`, `403` (API key or stream key), `404` (entry or message not found), `409` (caps), `429` with `Retry-After`.
+
 ---
 
 ### Direct Messages

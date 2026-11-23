@@ -993,6 +993,14 @@ const NotificationBell = {
                     window.open('/chat?channel_id=' + encodeURIComponent(data.channel_id) +
                         '&message_id=' + encodeURIComponent(data.message_id), '_blank', 'noopener');
                 }
+            } else if (data.saved) {
+                // A reminder whose message could not be opened: the Saved view says what became of it
+                if (window.ChatSaved && typeof window.ChatSaved.open === 'function') {
+                    window.ChatSaved.open();
+                    if (this._dropdown) this._dropdown.style.display = 'none';
+                } else {
+                    window.open('/chat?saved=1', '_blank', 'noopener');
+                }
             }
         } catch (e) { /* ignore */ }
     },
@@ -1149,6 +1157,12 @@ const NotificationBell = {
                     } else {
                         window.open('/chat?channel_id=' + encodeURIComponent(data.channel_id) +
                             '&message_id=' + encodeURIComponent(data.message_id), '_blank', 'noopener');
+                    }
+                } else if (data.saved) {
+                    if (window.ChatSaved && typeof window.ChatSaved.open === 'function') {
+                        window.ChatSaved.open();
+                    } else {
+                        window.open('/chat?saved=1', '_blank', 'noopener');
                     }
                 }
             } catch (e) { /* ignore */ }

@@ -1815,6 +1815,35 @@
             cursor: pointer;
         }
 
+        /* Saved messages: the member's own marker, the Saved view and the reminder dialog */
+        .message.saved-message { box-shadow: inset 3px 0 0 var(--accent-blue, #3b82f6); }
+        .saved-badge { font-size: 0.7rem; color: var(--accent-blue, #3b82f6); border: 1px solid currentColor; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.4rem; }
+        #chat-messages:focus-visible, .message:focus-visible { outline: 2px solid var(--accent-blue, #3b82f6); outline-offset: -2px; }
+        .context-menu-item:focus-visible { outline: 2px solid var(--accent-blue, #3b82f6); outline-offset: -2px; background: rgba(255,255,255,0.1); }
+        .saved-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.55); display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; }
+        .saved-overlay-remind { z-index: 2100; align-items: center; }
+        .saved-panel { background: var(--bg-primary); color: var(--text-primary); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; width: min(640px, 100%); margin: 2rem 0; padding: 1rem; box-sizing: border-box; }
+        .saved-head { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+        .saved-title { margin: 0; font-size: 1.1rem; }
+        .saved-meta { color: var(--text-secondary); font-size: 0.8rem; margin: 0.25rem 0; }
+        .saved-item { border-top: 1px solid rgba(255,255,255,0.12); padding: 0.75rem 0; }
+        .saved-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.25rem 0; max-height: 6em; overflow: hidden; }
+        .saved-gone { font-style: italic; color: var(--text-secondary); }
+        .saved-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+        .saved-panel .btn { min-height: 36px; }
+        .saved-error { color: var(--accent-red); min-height: 1.2em; margin: 0.5rem 0 0; }
+        .saved-remind-choices { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.75rem 0; }
+        .saved-remind-custom { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+        .saved-remind-custom .saved-input { flex: 1 1 12rem; min-height: 36px; }
+        @media (max-width: 640px), (hover: none) {
+            .saved-overlay { align-items: stretch; }
+            .saved-panel { margin: 0; border-radius: 0; width: 100%; min-height: 100%; }
+            .saved-overlay-remind { align-items: flex-end; }
+            .saved-overlay-remind .saved-panel { min-height: 0; border-radius: 8px 8px 0 0; }
+            .saved-panel .btn, .saved-remind-custom .saved-input { min-height: 44px; }
+            .saved-remind-choices .btn { width: 100%; }
+        }
+
         /* Message highlight animation for scroll-to */
         .message.highlight {
             animation: messageHighlight 2s ease-out;
@@ -2958,6 +2987,9 @@
                         <button class="clear-channel-btn" id="clear-channel-btn" onclick="confirmClearChannel()" title="Clear channel history" style="display: none;">
                             🗑️ Clear
                         </button>
+                        <button class="search-toggle-btn" id="saved-open-btn" type="button" title="Messages you saved and your reminders">
+                            Saved
+                        </button>
                         <button class="search-toggle-btn" onclick="toggleSearchBar()" title="Search messages (Ctrl+K)" style="background: none; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
                             Search
                         </button>
@@ -3185,6 +3217,8 @@
         <div class="context-menu-item" onclick="replyToMessage()">↩️ Reply</div>
         <div class="context-menu-item" onclick="openReactionPicker()">😀 React</div>
         <div class="context-menu-item" onclick="copyMessageText()">📋 Copy Text</div>
+        <div class="context-menu-item" id="saved-menu-item" role="menuitem" tabindex="-1">Save message</div>
+        <div class="context-menu-item" id="remind-menu-item" role="menuitem" tabindex="-1">Remind me...</div>
         <div class="context-menu-item" id="edit-menu-item" onclick="startEditMessage()" style="display:none;">✏️ Edit</div>
         <div class="context-menu-item" id="pin-menu-item" onclick="pinMessage()" style="display:none;">📌 Pin</div>
         <div class="context-menu-item" id="unpin-menu-item" onclick="unpinMessage()" style="display:none;">📌 Unpin</div>
@@ -3250,11 +3284,12 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=51"></script>
+    <script src="/static/js/portal.js?v=52"></script>
     <script src="/static/js/push.js?v=4"></script>
     <script src="/static/js/voice.js?v=15"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
     <script src="/static/js/chat-retention.js?v=3"></script>
+    <script src="/static/js/chat-saved.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3689,6 +3724,24 @@
                     dp.delete('dm');
                     const rest = dp.toString();
                     history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+                }
+            }
+            // Saved messages and reminders: the marker, the menu entries, the Saved view. A reminder
+            // notification that could not open its message links here: /chat?saved=1
+            if (window.ChatSaved) {
+                ChatSaved.init({
+                    currentKind: () => (currentView === 'dm' ? 'dm' : 'channel'),
+                    jumpToMessage: (channelId, messageId) => jumpToChannelMessage(channelId, messageId),
+                    openDm: (convId) => openDmConversation(convId),
+                    hideMenus: () => hideContextMenus(),
+                    toast: (text, type) => showToast(text, type)
+                });
+                const sp = new URLSearchParams(location.search);
+                if (sp.has('saved')) {
+                    sp.delete('saved');
+                    const restSaved = sp.toString();
+                    history.replaceState(null, '', location.pathname + (restSaved ? '?' + restSaved : ''));
+                    ChatSaved.open();
                 }
             }
             connectWebSocket();
@@ -6302,6 +6355,8 @@
                 unblockItem.style.display = 'none';
             }
 
+            // Save / Remove from Saved reads the member's own marks; nothing is sent to anyone
+            if (window.ChatSaved) ChatSaved.prepareMenu(contextMenuMessageId);
             showContextMenu('message-context-menu', e.clientX, e.clientY);
         });
 
