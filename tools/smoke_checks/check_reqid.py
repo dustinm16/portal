@@ -7,6 +7,9 @@ On the staged instance, over real TLS:
   - /search/ with the search service not running answers with the page (service name and ID, Retry-After)
     or, for JSON, with request_id; with search switched off (503) the log has the one throttled INFO line and no
     'Upstream error' line, with search failing (502/504) one 'Upstream error' line under that ID
+  - the search part is skipped, with a message, when search answers anything else: 200 (it is running), or a 503
+    that is the maintenance page ("Down for maintenance": a search service or the whole portal in maintenance on a
+    production copy), which has no such log line
 
 A down HTTP proxy connection cannot be made on a stage (the host policy refuses loopback targets), so that
 path is proven by tests/test_reqid.py only. The user is made with a random suffix and the checks assert on
@@ -83,7 +86,13 @@ async def run(ctx):
         async with user.get(f"{base}/search/", headers={"Accept": "text/html"}, allow_redirects=False) as r:
             page = await r.text()
             status, retry, rid = r.status, r.headers.get("Retry-After"), r.headers.get("X-Request-ID", "")
-        if status not in (502, 503):
+        if status == 503 and "Down for maintenance" in page:
+            why = "search (or the whole portal) is in maintenance on this instance: the 503 is the maintenance page, not the upstream error page"
+            ctx.skip("reqid: search not running page", why)
+            ctx.skip("reqid: search not running JSON", why)
+            ctx.skip("reqid: the log line for the search error", why)
+            return
+        if status not in (502, 503, 504):
             ctx.skip("reqid: search not running page", f"the search service answers here (status {status})")
             ctx.skip("reqid: search not running JSON", "the search service answers here")
             ctx.skip("reqid: the log line for the search error", "the search service answers here")
@@ -108,7 +117,7 @@ async def run(ctx):
         async with user.get(f"{base}/search/?format=json") as r:
             data = await r.json(content_type=None)
             ctx.ok("reqid: the JSON answer carries request_id equal to the header",
-                   r.status in (502, 503) and data.get("request_id") == r.headers.get("X-Request-ID")
+                   r.status in (502, 503, 504) and data.get("request_id") == r.headers.get("X-Request-ID")
                    and bool(data.get("error")), f"{r.status} {data}")
         async with user.get(f"{base}/search/", headers={"Accept": "text/html", "X-Request-ID": FORGED}) as r:
             await r.read()

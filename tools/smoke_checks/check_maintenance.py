@@ -10,9 +10,15 @@ On the staged instance:
   - an outage announcement with a script tag in its text is served as plain text to members, never to visitors
     until "show before sign-in" is ticked, and is gone once ended
 
-The users carry a random suffix, the module asserts on its own rows only and removes what it made, so it also
-passes on a copy of a production database (--from-db). No admin password is needed: the module makes its own
-administrator. If the global flag is already set on the instance, the global part is skipped and nothing is changed.
+The connection points at 169.254.169.254, an address the host policy refuses without dialling, so nothing is ever
+sent out: the maintenance answer comes before the host check, and once the maintenance is over a request gets the
+policy's 403 "Host not allowed" instead of a maintenance page.
+
+The users carry a random suffix and the module asserts on its own rows only, so it also passes on a copy of a
+production database (--from-db). At the end it removes the connection (and with it the shares) and the announcements
+it made; the three users it created, their sessions and the audit rows stay (the names carry the random suffix).
+No admin password is needed: the module makes its own administrator. If the global flag is already set on the
+instance, the global part is skipped and nothing is changed.
 """
 
 import asyncio
@@ -43,7 +49,7 @@ async def main():
             await create_user(name, {PASSWORD!r}, is_admin=admin)
     adm = await db.get_user_by_username({ADMIN!r})
     await db.set_user_role(adm["id"], "superadmin")
-    uuid = await db.create_user_connection(adm["id"], {CONN!r}, "http", "93.184.216.34", 80, "{{}}")
+    uuid = await db.create_user_connection(adm["id"], {CONN!r}, "http", "169.254.169.254", 80, "{{}}")
     print("UUID=" + uuid)
     await db.close()
 
@@ -137,16 +143,16 @@ async def run(ctx):
         except aiohttp.WSServerHandshakeError as e:
             ctx.ok("maintenance: the terminal WebSocket is refused before the upgrade (503)", e.status == 503, str(e.status))
         async with adm.get(f"{base}/proxy/{uuid}/", allow_redirects=False) as r:
-            ctx.ok("maintenance: the administrator is not stopped by the maintenance page",
-                   "Down for maintenance" not in await r.text())
+            ctx.ok("maintenance: the administrator is not stopped by the maintenance page (the host policy refuses, nothing is dialled)",
+                   r.status == 403 and "Down for maintenance" not in await r.text(), str(r.status))
         async with out_s.get(f"{base}/proxy/{uuid}/", allow_redirects=False) as r:
             ctx.ok("maintenance: a member without access gets exactly the answer they got before",
                    (r.status, await r.text()) == outsider_before and outsider_before[0] == 404)
         async with adm.put(f"{base}/api/connections/{uuid}", json={"maintenance": False}) as r:
             ctx.ok("maintenance: the administrator ends it", r.status == 200)
         async with mem.get(f"{base}/proxy/{uuid}/", allow_redirects=False) as r:
-            ctx.ok("maintenance: the member is no longer shown the maintenance page",
-                   "Down for maintenance" not in await r.text())
+            ctx.ok("maintenance: the member is no longer shown the maintenance page (the host policy refuses instead)",
+                   r.status == 403 and "Down for maintenance" not in await r.text(), str(r.status))
 
         # ---- the global flag ------------------------------------------------------------------------------------------
         async with adm.get(f"{base}/api/admin/maintenance") as r:
@@ -170,7 +176,8 @@ async def run(ctx):
                     resp = await ctx.login(fresh, ADMIN, PASSWORD)
                     ctx.ok("maintenance: the administrator can sign in while it is set", resp.status == 200, str(resp.status))
                     async with fresh.get(f"{base}/proxy/{uuid}/", allow_redirects=False) as r:
-                        ctx.ok("maintenance: ... and passes through", "Down for maintenance" not in await r.text())
+                        ctx.ok("maintenance: ... and passes through (to the host policy's refusal)",
+                               r.status == 403 and "Down for maintenance" not in await r.text(), str(r.status))
                 rc, out = await ctx.run_py(CLEAR)
                 ctx.ok("maintenance: the command-line clear works while the server runs", rc == 0 and "cleared" in out, out.strip()[-200:])
                 cleared = False
