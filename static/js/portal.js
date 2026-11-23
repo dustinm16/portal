@@ -803,6 +803,9 @@ const Portal = {
     }
 };
 
+// `const` makes no window property: scripts that read window.Portal (block-ref-admin.js, voice.js, chat-retention.js) need this.
+window.Portal = Portal;
+
 // Navbar hamburger toggle + global feature init
 document.addEventListener('DOMContentLoaded', () => {
     const toggle = document.querySelector('.navbar-toggle');

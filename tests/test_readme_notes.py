@@ -481,7 +481,7 @@ check("the chat part of What You Get describes levels, mute, badges and mass men
 check("the old 'enable desktop alerts' star sentence is gone from the chat part",
       "Enable desktop alerts to get browser notifications" not in text)
 # Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
-MOVED_ON_1_22 = {"portal.js": 49, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
+MOVED_ON_1_22 = {"portal.js": 50, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -876,7 +876,7 @@ check("1.22.0: the close code, the CLI actor name and the setting stated are the
       and "(command line: server.py maintenance-off)" in (ROOT / "maintenance_cli.py").read_text()
       and _maint.GLOBAL_KEY == "maintenance_global" and "maintenance-off" in _srv_text)
 check("1.22.0: the static file versions stated are the ones the pages load",
-      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v2", "`portal.js` v49", "`admin.js` v40", "`user-connections.js` v59"))
+      all(x in _sec22 for x in ("`announce.js` v1", "`maintenance-admin.js` v2", "`portal.js` v50", "`admin.js` v40", "`user-connections.js` v59"))
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "js" / "portal.js").read_text()
       and "/static/js/maintenance-admin.js?v=2" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/announce.js?v=1" in (ROOT / "static" / "login.html").read_text())
@@ -913,7 +913,7 @@ check("1.22.0: reference IDs are in the API reference and the API page",
       all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=", "block_ref_lookup"))
       and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=", "block_ref_lookup")))
 check("1.22.0: the breaking change for a connection shared with a member (no host, port or config) is in the notes and both API pages",
-      all(x in text for x in ("A connection shared with you no longer shows where it points", '"host": null', "`has_stored_password`", "`portal.js` is v49"))
+      all(x in text for x in ("A connection shared with you no longer shows where it points", '"host": null', "`has_stored_password`", "`portal.js` went to v49"))
       and "carries no target" in (ROOT / "docs" / "API.md").read_text()
       and "carries no target" in (ROOT / "static" / "api-docs.html").read_text())
 check("the README feature section names the reference IDs",

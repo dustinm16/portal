@@ -74,10 +74,7 @@ the fictional names they were created with; the dots, their tooltips and everyth
 answered. The checks are switched off again after the picture. The upstream error page is the one a member
 gets for /search/ while the search service is not running (nothing is dialled). The block page is the one a client
 at the already blocked documentation address 198.51.100.77 gets; the reference is read from that page and typed into
-the administrator's Reference lookup. Unblock is never pressed. On the unmodified admin page that lookup
-answers "The lookup failed." (block-ref-admin.js reads window.Portal, which portal.js does not set because it
-declares Portal with const); the picture is taken after giving that one demo page the property, so it shows what the
-lookup returns when it works, not what the shipped field did.
+the administrator's Reference lookup. Unblock is never pressed.
 
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
@@ -1993,10 +1990,6 @@ def _admin_block_lookup(s):
     page.evaluate("showSysSubTab('network')")
     page.wait_for_selector("#block-ref-input", state="visible", timeout=10000)
     page.fill("#block-ref-input", ref)
-    # block-ref-admin.js calls window.Portal, but portal.js declares Portal with const, which makes a global
-    # binding and no window property: on the unmodified page the lookup answers "The lookup failed." (reported
-    # with the release notes). The picture needs a result, so this page gets the property it expects.
-    page.evaluate("() => { if (!window.Portal) { window.Portal = Portal; window.__portal_property_was_missing = true; } }")
     page.click("#block-ref-go")
     page.wait_for_function("() => document.getElementById('block-ref-result').textContent.trim().length > 0", timeout=10000)
     page.wait_for_timeout(500)
