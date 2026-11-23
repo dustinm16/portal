@@ -147,7 +147,7 @@
                 el('div', { text: item.title, style: { fontWeight: '600' } }),
                 el('div', { text: item.streamer + (item.recurring ? ' - weekly' : '') }),
                 el('div', { text: whenText(item.start) }),
-                el('a', { href: '/watch/' + Number(item.stream_id), text: 'Open the stream' })
+                el('a', { class: 'btn btn-sm btn-secondary', href: '/watch/' + Number(item.stream_id), text: 'Open the stream', style: { marginTop: '0.4rem' } })
             ]);
             if (item.interested_count === undefined) card.appendChild(el('div', { style: { marginTop: '0.4rem' } }, [interestedButton(item)]));
             else card.appendChild(el('div', { text: item.interested_count + ' interested', style: { marginTop: '0.4rem' } }));
@@ -232,17 +232,24 @@
             if (!(data.entries || []).length) container.appendChild(el('p', { text: 'Nothing is scheduled.' }));
 
             var lim = data.limits || {};
-            var title = el('input', { type: 'text', maxlength: String(lim.title || 100), placeholder: 'Title of the slot' });
-            var start = el('input', { type: 'datetime-local' });
-            var tz = el('input', { type: 'text', value: defaultZone(), maxlength: '64' });
-            var dur = el('input', { type: 'number', value: '60', min: '5', max: '1440' });
-            var weekly = el('input', { type: 'checkbox', checked: true });
+            var idp = 'schedule-' + sid + '-';
+            var title = el('input', { type: 'text', id: idp + 'title', maxlength: String(lim.title || 100), placeholder: 'Title of the slot' });
+            var start = el('input', { type: 'datetime-local', id: idp + 'start' });
+            var tz = el('input', { type: 'text', id: idp + 'tz', value: defaultZone(), maxlength: '64' });
+            var dur = el('input', { type: 'number', id: idp + 'dur', value: '60', min: '5', max: '1440' });
+            var weekly = el('input', { type: 'checkbox', id: idp + 'weekly', checked: true });
+            /* the form classes of the stream settings: one label and one field per row, the field in the dark theme's look */
+            function row(labelText, field) {
+                return el('div', { class: 'form-group' }, [el('label', { 'for': field.id, text: labelText }), field]);
+            }
             container.appendChild(el('div', { class: 'schedule-form', style: { marginTop: '0.75rem' } }, [
-                el('label', { text: 'Title' }), title,
-                el('label', { text: 'Start (your time zone)' }), start,
-                el('label', { text: 'Time zone (for example Europe/Berlin)' }), tz,
-                el('label', { text: 'Minutes' }), dur,
-                el('label', {}, [weekly, el('span', { text: ' Repeats every week at this local time' })]),
+                row('Title', title),
+                row('Start (read in the time zone chosen below)', start),
+                row('Time zone (for example Europe/Berlin)', tz),
+                row('Minutes', dur),
+                el('div', { class: 'form-group' }, [
+                    el('label', { class: 'checkbox-label', 'for': weekly.id, style: { display: 'flex' } }, [weekly, el('span', { text: 'Repeats every week at this local time' })])
+                ]),
                 el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: 'Add to the schedule', on: { click: function () {
                     act('POST', base, { title: title.value, start: start.value, tz: tz.value.trim(),
                                         duration_min: parseInt(dur.value, 10), recurrence: weekly.checked ? 'weekly' : null },

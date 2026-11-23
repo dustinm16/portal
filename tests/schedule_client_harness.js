@@ -117,6 +117,7 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   const strip = new N('DIV');
   await SS.mountUpcoming(strip);
   check('strip: one card per occurrence with a link to the watch page', strip.find(n => n.tagName === 'A').map(a => a.attrs.href).join() === '/watch/7,/watch/8');
+  check('strip: the link to the stream is a theme button', strip.find(n => n.tagName === 'A').every(a => /(^| )btn( |$)/.test(a.className) && /btn-secondary/.test(a.className)));
   check('strip: the member\'s own state shows; the owner of a stream sees a count and no toggle',
     strip.find(n => n.tagName === 'BUTTON').length === 1 && strip.textContent.indexOf('4 interested') >= 0
     && strip.find(n => n.tagName === 'BUTTON')[0].getAttribute('aria-pressed') === 'true');
@@ -157,6 +158,16 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   c = take();
   check('owner: the form POSTs title, start, zone, minutes and weekly', c[0].method === 'POST' && c[0].url === '/api/streams/7/schedule'
     && JSON.stringify(c[0].body) === JSON.stringify({ title: 'New show', start: '2026-12-11T21:00', tz: 'Europe/Berlin', duration_min: 90, recurrence: 'weekly' }), JSON.stringify(c[0].body));
+  // the form: styled with the stream settings' form classes, every label linked to its field, the start's zone named correctly
+  const labels = ed.find(n => n.tagName === 'LABEL');
+  const ids = ed.find(n => n.tagName === 'INPUT').map(n => n.id);
+  check('owner: every label has a "for" naming exactly one field of the form and the ids are unique',
+    labels.length === 5 && labels.every(l => ids.filter(i => i === l.getAttribute('for')).length === 1) && new Set(ids).size === ids.length && ids.every(Boolean), JSON.stringify(ids));
+  check('owner: each field sits in a form-group row with its label, the checkbox in a checkbox-label',
+    ed.find(n => n.className === 'form-group').length === 5 && ed.find(n => n.className === 'checkbox-label').length === 1
+    && ed.find(n => n.className === 'form-group').every(g => g.find(n => n.tagName === 'LABEL').length === 1 && g.find(n => n.tagName === 'INPUT').length === 1));
+  check('owner: the start is labelled as read in the zone chosen in the zone field, not "your time zone"',
+    ed.textContent.indexOf('Start (read in the time zone chosen below)') >= 0 && ed.textContent.indexOf('your time zone') < 0);
   answers = [{ status: 200, data: {} }, owner];
   await buttonWith(ed, 'Delete the whole entry').click();
   check('owner: Delete removes the entry', take()[0].url === '/api/streams/7/schedule/3');

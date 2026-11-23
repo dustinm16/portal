@@ -1057,8 +1057,8 @@ check("1.23.0: the numbers stated are the ones in the code",
       and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
-      "`stream-schedule.js` is new at version 3" in _sec23 and "`streams.js` is version 50" in _sec23
-      and "/static/js/stream-schedule.js?v=3" in (ROOT / "static" / "watch.html").read_text()
+      "`stream-schedule.js` is new at version 4" in _sec23 and "`streams.js` is version 50" in _sec23
+      and "/static/js/stream-schedule.js?v=4" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/streams.js?v=50" in (ROOT / "static" / "index.html").read_text())
 _api23 = (ROOT / "docs" / "API.md").read_text()
 _docs23 = (ROOT / "static" / "api-docs.html").read_text()

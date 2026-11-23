@@ -39,6 +39,8 @@ check("chat.html loads chat-saved.js with a version, after portal.js",
 _items = {i: next((ln for ln in CHAT.splitlines() if f'id="{i}"' in ln), "") for i in ("saved-menu-item", "remind-menu-item", "saved-open-btn")}
 check("the menu has Save message and Remind me entries and the header a Saved button",
       "Save message" in _items["saved-menu-item"] and "Remind me" in _items["remind-menu-item"] and _items["saved-open-btn"] != "")
+check("the Saved button in the chat header is the theme's secondary button (it was unstyled)",
+      re.search(r'class="[^"]*\bbtn\b[^"]*\bbtn-secondary\b[^"]*"', _items["saved-open-btn"]) is not None, _items["saved-open-btn"])
 check("the new markup carries no inline handler", all("onclick" not in v for v in _items.values()), str(_items))
 check("the menu entries are menu items and the button is a real button",
       'role="menuitem"' in _items["saved-menu-item"] and 'type="button"' in _items["saved-open-btn"])
