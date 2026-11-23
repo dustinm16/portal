@@ -4405,7 +4405,7 @@ Set or clear the global flag (superadmin, a credential with admin power). Body `
 The active announcements for a signed-in member (a credential is required; `401` without). **Response:** `{"announcements": [{"id": 3, "level": "outage", "body": "text", "updated_at": "2026-11-22T10:00:00Z", "ends_at": null}]}`, newest first, `Cache-Control: no-store`. An announcement is active from `starts_at` (when set) to `ends_at` (when set). `body` is plain text exactly as stored: the portal's pages show a small safe subset (`**bold**`, `*italic*`, `` `code` ``, `[text](https://link)`, bare links, line breaks) built with DOM nodes, links only for `http` and `https`; anything else, a script tag or a `javascript:` link included, is shown as text. A page remembers a dismissal in the browser by `id` and `updated_at`, so an edited announcement shows again.
 
 #### GET /api/announcements/public
-No credential. Only active announcements an administrator ticked "show before sign-in" for (none by default), with the same fields. The sign-in page loads this list.
+No credential. Only active announcements an administrator ticked "show before sign-in" for (none by default), with the same fields. The sign-in page loads this list. The answer is kept in memory for 5 seconds (one database read for any number of requests); creating, editing, ending or deleting an announcement drops it at once, and a start or end time that passes shows at most 5 seconds late.
 
 #### GET /api/admin/connections/maintenance and POST /api/admin/connections/{id}/maintenance/clear
 

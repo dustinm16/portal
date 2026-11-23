@@ -29294,12 +29294,31 @@ async def http_list_announcements(request: web.Request) -> web.Response:
                              headers={"Cache-Control": "no-store"})
 
 
+# The anonymous answer is kept in memory for 5 seconds so a crowd of signed-out visitors costs one
+# database read, not one each. Any change by an administrator drops it at once; a start or end time
+# that passes is seen at most 5 seconds late. _public_ann["gen"] changes on every drop, so an answer
+# read before a drop is never stored after it.
+PUBLIC_ANNOUNCEMENTS_TTL = 5.0
+_public_ann = {"gen": 0, "until": 0.0, "view": None}
+
+
+def _public_announcements_changed() -> None:
+    _public_ann["gen"] += 1
+    _public_ann["view"] = None
+
+
 async def http_public_announcements(request: web.Request) -> web.Response:
     """GET /api/announcements/public - no sign-in: only active announcements an administrator ticked
-    "show before sign-in" for (none by default)."""
-    rows = await db.active_announcements(announcements.now_stamp(), public_only=True)
-    return web.json_response({"announcements": [announcements.member_view(r) for r in rows]},
-                             headers={"Cache-Control": "no-store"})
+    "show before sign-in" for (none by default). Answered from a 5 second memory copy."""
+    now = monotonic()
+    view = _public_ann["view"]
+    if view is None or now >= _public_ann["until"]:
+        gen = _public_ann["gen"]
+        rows = await db.active_announcements(announcements.now_stamp(), public_only=True)
+        view = [announcements.member_view(r) for r in rows]
+        if gen == _public_ann["gen"]:
+            _public_ann.update(view=view, until=now + PUBLIC_ANNOUNCEMENTS_TTL)
+    return web.json_response({"announcements": view}, headers={"Cache-Control": "no-store"})
 
 
 async def http_admin_announcements_list(request: web.Request) -> web.Response:
@@ -29349,6 +29368,7 @@ async def http_admin_announcements_create(request: web.Request) -> web.Response:
         return web.json_response({"error": f"At most {announcements.MAX_ROWS} announcements; delete old ones"}, status=400)
     uid, uname = await _announcement_actor(token)
     new_id = await db.create_announcement(values, uid, announcements.now_stamp())
+    _public_announcements_changed()
     row = await db.get_announcement(new_id)
     await audit_log("announcement.create", uid, uname, target_id=new_id, target_type="announcement",
                     details=_announcement_audit_details(row))
@@ -29385,6 +29405,7 @@ async def http_admin_announcements_update(request: web.Request) -> web.Response:
         return web.json_response({"error": "No fields to update"}, status=400)
     uid, uname = await _announcement_actor(token)
     await db.update_announcement(row["id"], values, announcements.now_stamp())
+    _public_announcements_changed()
     new = await db.get_announcement(row["id"])
     await audit_log("announcement.update", uid, uname, target_id=row["id"], target_type="announcement",
                     details=_announcement_audit_details(new, was=_announcement_audit_details(row)))
@@ -29402,6 +29423,7 @@ async def http_admin_announcements_end(request: web.Request) -> web.Response:
     stamp = announcements.now_stamp()
     uid, uname = await _announcement_actor(token)
     await db.update_announcement(row["id"], {"ends_at": stamp}, stamp)
+    _public_announcements_changed()
     new = await db.get_announcement(row["id"])
     await audit_log("announcement.end", uid, uname, target_id=row["id"], target_type="announcement",
                     details=_announcement_audit_details(new))
@@ -29418,6 +29440,7 @@ async def http_admin_announcements_delete(request: web.Request) -> web.Response:
         return err
     uid, uname = await _announcement_actor(token)
     await db.delete_announcement(row["id"])
+    _public_announcements_changed()
     await audit_log("announcement.delete", uid, uname, target_id=row["id"], target_type="announcement",
                     details=_announcement_audit_details(row))
     return web.json_response({"deleted": True})

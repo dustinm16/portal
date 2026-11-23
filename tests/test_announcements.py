@@ -194,6 +194,71 @@ async def main():
           {r["actor_username"] for r in rows} == {"adm"} and any("Storage is back soon" in (r["details"] or "") for r in rows),
           str([(r["actor_username"], r["details"]) for r in rows]))
 
+    # ---- the anonymous answer is kept for 5 seconds -------------------------------------------------------------------
+    import server
+    reads = []
+    real_read, real_clock = db.active_announcements, server.monotonic
+    now = [real_clock() + 1000.0]
+
+    async def counted(*a, **k):
+        reads.append(k.get("public_only"))
+        return await real_read(*a, **k)
+
+    db.active_announcements = counted
+    server.monotonic = lambda: now[0]
+    try:
+        server._public_announcements_changed()
+        for _ in range(20):
+            await public_list()
+        check("20 anonymous requests in a row cost one database read", reads == [True], str(reads))
+        now[0] += 4.9
+        await public_list()
+        check("still the same read 4.9 seconds later", len(reads) == 1, str(reads))
+        now[0] += 0.2
+        await public_list()
+        check("a new read after 5 seconds", len(reads) == 2, str(reads))
+        async with adm.post(admin_url, json={"level": "info", "body": "Public one", "show_before_signin": True}) as r:
+            pub_created = await r.json()
+        check("creating drops the copy: the visitor sees it at once", [a["body"] for a in await public_list()] == ["Public one"]
+              and len(reads) == 3, str(reads))
+        async with adm.put(f"{admin_url}/{pub_created['id']}", json={"body": "Public two"}) as r:
+            check("editing is accepted", r.status == 200)
+        check("editing drops the copy", [a["body"] for a in await public_list()] == ["Public two"] and len(reads) == 4, str(reads))
+        await public_list()
+        check("and the new copy is kept", len(reads) == 4, str(reads))
+        async with adm.post(f"{admin_url}/{pub_created['id']}/end") as r:
+            check("ending is accepted", r.status == 200)
+        check("ending drops the copy", await public_list() == [] and len(reads) == 5, str(reads))
+        async with adm.post(admin_url, json={"level": "info", "body": "Public three", "show_before_signin": True}) as r:
+            three = await r.json()
+        check("a second one shows at once", len(await public_list()) == 1 and len(reads) == 6, str(reads))
+        async with adm.delete(f"{admin_url}/{three['id']}") as r:
+            check("deleting is accepted", r.status == 200)
+        check("deleting drops the copy", await public_list() == [] and len(reads) == 7, str(reads))
+
+        # a read that began before a change is not stored after it
+        gate, started = asyncio.Event(), asyncio.Event()
+
+        async def slow_read(*a, **k):
+            rows = await real_read(*a, **k)
+            started.set()
+            await gate.wait()
+            return rows
+
+        server._public_announcements_changed()
+        db.active_announcements = slow_read
+        pending = asyncio.ensure_future(public_list())
+        await started.wait()
+        db.active_announcements = counted
+        async with adm.post(admin_url, json={"level": "info", "body": "Raced", "show_before_signin": True}) as r:
+            pass
+        gate.set()
+        await pending
+        check("an answer read before a change is not kept after it", [a["body"] for a in await public_list()] == ["Raced"])
+    finally:
+        db.active_announcements = real_read
+        server.monotonic = real_clock
+
     # ---- limits -----------------------------------------------------------------------------------------------------------
     announcements.MAX_ROWS = (await db.count_announcements())
     async with adm.post(admin_url, json={"body": "one too many"}) as r:
