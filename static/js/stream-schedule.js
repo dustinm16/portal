@@ -103,6 +103,7 @@
      * the tab is shown: the server keeps an occurrence that began less than 15 minutes ago in its list ("starting
      * now") and drops it after that, and an owner may add, move or cancel entries meanwhile. */
     var REREAD_MS = 5 * 60 * 1000;
+    var CONFIRM_DELAY_MS = 600;     // a confirm button ignores a click this soon after its question opened
 
     function tabShown() {
         return !(document.hidden === true || document.visibilityState === 'hidden');
@@ -383,7 +384,13 @@
             if (confirming) {
                 /* a new link ends the old one: the calendar applications that use it stop updating */
                 container.appendChild(el('p', { class: 'schedule-feed-confirm', role: 'alert', text: 'Regenerating ends the link you have now. A calendar application that uses it stops updating until you give it the new link.' }));
-                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Yes, regenerate', on: { click: make } }));
+                /* the click that opened the question, or a second click of the same double click or double tap, is not the
+                 * answer: a confirm within CONFIRM_DELAY_MS of the question appearing, or with detail > 1, does nothing */
+                var askedAt = Date.now();
+                container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Yes, regenerate', on: { click: function (e) {
+                    if ((e && e.detail > 1) || Date.now() - askedAt < CONFIRM_DELAY_MS) return;
+                    return make();
+                } } }));
                 container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Keep the current link', on: { click: function () { draw(url, false); } } }));
             } else {
                 container.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: isActive ? 'Regenerate' : 'Create link', on: { click: function () {

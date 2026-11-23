@@ -299,10 +299,22 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   await buttonWith(feed, 'Keep the current link').click();
   check('feed: keeping the current link sends nothing and shows the page as before', take().length === 0 && !!buttonWith(feed, 'Regenerate')
     && feed.find(n => n.tagName === 'INPUT')[0].value === secret && !/ends the link you have now/.test(feed.textContent));
+  // the click that opened the question, or the second click of a double click, is not an answer
   await buttonWith(feed, 'Regenerate').click();
+  await buttonWith(feed, 'Yes, regenerate').click();
+  check('feed: a confirm click right after the question opened sends nothing and keeps the question', take().length === 0 && !!buttonWith(feed, 'Yes, regenerate'));
+  clockShift += 700;
+  await buttonWith(feed, 'Yes, regenerate').listeners.click[0]({ detail: 2 });
+  check('feed: the second click of a double click (detail 2) sends nothing even after the interval', take().length === 0 && !!buttonWith(feed, 'Yes, regenerate'));
+  clockShift -= 700;
+  await buttonWith(feed, 'Keep the current link').click();
+  check('feed: Keep the current link after those clicks sends nothing', take().length === 0 && !!buttonWith(feed, 'Regenerate'));
+  await buttonWith(feed, 'Regenerate').click();
+  clockShift += 700;
   const secret2 = 'https://portal.test/api/streams/schedule/feed/sf_SECOND.ics';
   answers = [{ status: 200, data: { active: true, url: secret2 } }];
   await buttonWith(feed, 'Yes, regenerate').click();
+  clockShift -= 700;
   c = take();
   check('feed: confirming POSTs and shows the new address', c.length === 1 && c[0].method === 'POST' && feed.find(n => n.tagName === 'INPUT')[0].value === secret2);
   // closing the settings dialog takes the address off the page

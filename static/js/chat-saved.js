@@ -415,12 +415,21 @@
         return found;
     }
 
+    /* The question is never answered by the click that opened it: the confirm buttons sit on their own row below the
+     * text, not where the opener was, and a confirm that arrives within PURGE_CONFIRM_DELAY_MS of the question
+     * appearing, or as the second click of a double click or double tap (detail > 1), does nothing. Enter or Space on
+     * the focused button after that interval is a click with detail 0 and works. */
+    var PURGE_CONFIRM_DELAY_MS = 600;
+
     function setPurgeConfirm(on) {
         var p = state.panel;
         if (!p) return;
+        if (on && p.purgeYes.style.display === 'none') p.purgeAskedAt = now().getTime();
+        if (!on) p.purgeAskedAt = null;
         p.confirmText.style.display = on ? '' : 'none';
         p.purgeYes.style.display = on ? '' : 'none';
         p.purgeNo.style.display = on ? '' : 'none';
+        p.purgeRow2.style.display = on ? '' : 'none';
         p.purge.style.display = !on && hasUnavailable() ? '' : 'none';
         if (on && p.purgeNo.focus) p.purgeNo.focus();
     }
@@ -431,6 +440,14 @@
         var asking = p.purgeYes.style.display !== 'none';
         if (!hasUnavailable()) { setPurgeConfirm(false); return; }
         if (!asking) p.purge.style.display = '';
+    }
+
+    function purgeConfirmed(e) {
+        var p = state.panel;
+        if (!p || p.purgeAskedAt === null || p.purgeAskedAt === undefined) return Promise.resolve();
+        if (e && e.detail > 1) return Promise.resolve();
+        if (now().getTime() - p.purgeAskedAt < PURGE_CONFIRM_DELAY_MS) return Promise.resolve();
+        return purgeUnavailable();
     }
 
     function purgeUnavailable() {
@@ -489,18 +506,21 @@
         more.style.display = 'none';
         var purge = button('Remove unavailable entries', 'btn-secondary', function () { setPurgeConfirm(true); }, { 'data-action': 'purge' });
         var confirmText = el('p', 'Remove every entry that is no longer available, with its reminder? That includes unavailable entries further down the list that are not shown yet. It cannot be undone.', 'saved-meta saved-purge-text', { role: 'alert' });
-        var purgeYes = button('Remove them', 'btn-danger', purgeUnavailable, { 'data-action': 'purge-yes' });
+        var purgeYes = button('Remove them', 'btn-danger', purgeConfirmed, { 'data-action': 'purge-yes' });
         var purgeNo = button('Keep them', 'btn-secondary', function () { setPurgeConfirm(false); }, { 'data-action': 'purge-no' });
-        [purge, confirmText, purgeYes, purgeNo].forEach(function (n) { n.style.display = 'none'; });
         var purgeRow = el('div', '', 'saved-actions saved-purge');
-        purgeRow.append(purge, purgeYes, purgeNo);
-        dlg.append(head, note, status, purgeRow, confirmText, list, more);
+        var purgeRow2 = el('div', '', 'saved-actions saved-purge-confirm');
+        [purge, confirmText, purgeYes, purgeNo, purgeRow2].forEach(function (n) { n.style.display = 'none'; });
+        purgeRow.append(purge);
+        purgeRow2.append(purgeYes, purgeNo);
+        dlg.append(head, note, status, purgeRow, confirmText, purgeRow2, list, more);
         overlay.appendChild(dlg);
         overlay.addEventListener('click', function (e) { if (e.target === overlay) closePanel(false); });
         doc().body.appendChild(overlay);
         state.opener = doc().activeElement;
         state.panel = { node: overlay, dlg: dlg, list: list, status: status, more: more, title: title,
-                        purge: purge, purgeYes: purgeYes, purgeNo: purgeNo, confirmText: confirmText };
+                        purge: purge, purgeYes: purgeYes, purgeNo: purgeNo, purgeRow2: purgeRow2, purgeAskedAt: null,
+                        confirmText: confirmText };
         if (title.focus) title.focus();
         loadPage(true);
         return state.panel;

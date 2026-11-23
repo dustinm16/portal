@@ -1057,8 +1057,8 @@ check("1.23.0: the numbers stated are the ones in the code",
       and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
-      "`stream-schedule.js` is new at version 5" in _sec23 and "`streams.js` is version 51" in _sec23
-      and "/static/js/stream-schedule.js?v=5" in (ROOT / "static" / "watch.html").read_text()
+      "`stream-schedule.js` is new at version 6" in _sec23 and "`streams.js` is version 51" in _sec23
+      and "/static/js/stream-schedule.js?v=6" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/streams.js?v=51" in (ROOT / "static" / "index.html").read_text())
 _api23 = (ROOT / "docs" / "API.md").read_text()
 _docs23 = (ROOT / "static" / "api-docs.html").read_text()
@@ -1139,8 +1139,8 @@ check("1.23.0 (saved): What You Get has a Saved Messages part, API.md and api-do
       and "/api/saved/marks" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/marks" in (ROOT / "static" / "api-docs.html").read_text()
       and "/api/saved/:id/remind" in (ROOT / "docs" / "API.md").read_text() and "/api/saved/{id}/remind" in (ROOT / "static" / "api-docs.html").read_text())
 check("1.23.0 (saved): the static versions the notes name are the ones loaded",
-      "`chat-saved.js` is new (v4" in _sec23s and "`portal.js` is now v52" in _sec23s
-      and re.search(r"chat-saved\.js\?v=4\b", (ROOT / "static" / "chat.html").read_text()) is not None
+      "`chat-saved.js` is new (v5" in _sec23s and "`portal.js` is now v52" in _sec23s
+      and re.search(r"chat-saved\.js\?v=5\b", (ROOT / "static" / "chat.html").read_text()) is not None
       and all("portal.js?v=52" in (ROOT / "static" / n).read_text() for n in ("chat.html", "index.html", "admin.html")))
 
 _low74 = text.split("### Saved Messages and Reminders", 1)[1].split("\n###", 1)[0].lower()

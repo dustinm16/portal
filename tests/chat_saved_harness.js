@@ -353,17 +353,37 @@ let clock = FIXED_NOW;                                // what the module sees as
   await purgeBtn.click();
   check('pressing it asks first (nothing is sent) and says it also removes entries not shown yet',
         apiLog.length === 0 && shown(purgeYes) && shown(purgeNo) && !shown(purgeBtn) && /not shown yet/.test(panel.dlg.querySelector('.saved-purge-text').textContent) && shown(panel.dlg.querySelector('.saved-purge-text')));
+  check('the confirm buttons are on their own row below the question, not in the row of the opener',
+        purgeYes.parentNode === purgeNo.parentNode && purgeYes.parentNode !== purgeBtn.parentNode
+        && panel.dlg.children.indexOf(purgeBtn.parentNode) < panel.dlg.children.indexOf(panel.dlg.querySelector('.saved-purge-text'))
+        && panel.dlg.children.indexOf(panel.dlg.querySelector('.saved-purge-text')) < panel.dlg.children.indexOf(purgeYes.parentNode));
+  // a click that arrives at once (the second click of a double click or double tap) is not an answer
+  await purgeYes.click(); await new Promise(r => setImmediate(r));
+  check('a confirm click right after the question opened sends nothing and keeps the question', apiLog.length === 0 && shown(purgeYes) && !shown(purgeBtn));
+  clock = new Date(FIXED_NOW.getTime() + 599);
+  await purgeYes.click(); await new Promise(r => setImmediate(r));
+  check('a confirm click 599 ms after the question opened still sends nothing', apiLog.length === 0 && shown(purgeYes));
+  clock = new Date(FIXED_NOW.getTime() + 2000);
+  await purgeYes.dispatch('click', { detail: 2 }); await new Promise(r => setImmediate(r));
+  check('the second click of a double click (detail 2) sends nothing even after the interval', apiLog.length === 0 && shown(purgeYes));
   await purgeNo.click();
   check('Keep them sends nothing and puts the button back', apiLog.length === 0 && shown(purgeBtn) && !shown(purgeYes) && !shown(panel.dlg.querySelector('.saved-purge-text')));
-  purgeStatus = 429;
+  // asking again starts the interval again, from the new opening
+  clock = FIXED_NOW;
   await purgeBtn.click(); await purgeYes.click(); await new Promise(r => setImmediate(r));
+  check('a second asking is guarded again', apiLog.length === 0 && shown(purgeYes));
+  await purgeNo.click();
+  purgeStatus = 429;
+  await purgeBtn.click(); clock = new Date(FIXED_NOW.getTime() + 700); await purgeYes.dispatch('click', { detail: 0 }); await new Promise(r => setImmediate(r));
   check('a refused removal says why, keeps the list and shows the button again',
         apiLog.length === 1 && apiLog[0].method === 'DELETE' && panel.list.children.length === 4 && shown(purgeBtn) && toasts.some(t => /Too many history requests/.test(t[0]) && t[1] === 'error'), JSON.stringify(apiLog));
   purgeStatus = 200;
   listPages = [{ items: [{ id: 21, available: true, kind: 'channel', channel_id: 3, channel_name: 'lobby', message_id: 301, saved_at: '2026-03-20T10:00:00Z', remind_at: null, reminded: false,
                            message: { username: 'ann', text: 'still here', created_at: '2026-03-19T09:00:00Z' } }], has_more: false }];
   apiLog.length = 0; toasts.length = 0;
-  await purgeBtn.click(); await purgeYes.click(); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+  clock = FIXED_NOW;
+  await purgeBtn.click(); clock = new Date(FIXED_NOW.getTime() + 700); await purgeYes.click(); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+  clock = FIXED_NOW;
   check('confirming sends DELETE /api/saved/unavailable, says how many went and reloads the list from the top',
         apiLog.length === 2 && apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/unavailable' && apiLog[1].method === 'GET' && apiLog[1].path === '/api/saved?limit=30'
         && toasts.some(t => t[0] === 'Removed 2 unavailable entries' && t[1] === 'success') && panel.list.children.length === 1 && /still here/.test(panel.list.textContent), JSON.stringify(apiLog));
