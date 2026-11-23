@@ -3740,8 +3740,9 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
                 {"error": f"You cannot sign out users with role '{target_role}'"}, status=403)
     keep_token_id = token.token_id if own else None
     revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
-    # "Everywhere" includes push devices, the current session's too
+    # "Everywhere" includes push devices, the current session's too, and the calendar link
     await db.delete_user_push_subscriptions(user_id)
+    await db.feed_token_delete(user_id)
     closed = await close_user_websockets(user_id, except_token_id=keep_token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
     actor = await db.get_user_by_id(token.user_id)
@@ -29180,6 +29181,7 @@ async def http_change_password(request: web.Request) -> web.Response:
     # API keys and stream keys are not revoked here, so their sockets stay open.
     await close_user_websockets(token.user_id, except_token_id=token.token_id,
                                 keep_prefixes=("apikey-", "streamkey-"))
+    await db.feed_token_delete(token.user_id)       # the calendar link goes with the old credentials
 
     logger.info(f"Password changed for user {token.user_id}")
     await security_event("password_changed", request=request, user=user,
@@ -29829,6 +29831,7 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
     # keeps the session they are using.
     keep_token_id = token.token_id if user_id == token.user_id else None
     revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
+    await db.feed_token_delete(user_id)              # the calendar link goes with the old credentials
     # API keys outlive browser sessions, so they go too, as do WebSockets opened
     # with the revoked sessions. A self-reset keeps the caller's own credential.
     keys_revoked = await db.revoke_user_api_keys(user_id, except_token_id=keep_token_id)
@@ -32519,6 +32522,7 @@ async def init_admin_user() -> None:
         await db.conn.commit()
         revoked = await db.revoke_user_tokens(admin["id"])
         keys_revoked = await db.revoke_user_api_keys(admin["id"])
+        await db.feed_token_delete(admin["id"])
         await audit_log("password_reset", admin["id"], "cli",
                         target_id=admin["id"], target_type="user",
                         target_name="admin",

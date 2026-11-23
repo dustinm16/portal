@@ -158,6 +158,9 @@ class World:
         r.add_delete("/api/streams/{id}/schedule/{entry_id}/cancel/{start}", server.http_schedule_restore)
         r.add_post("/api/streams/{id}/schedule/{entry_id}/rsvp/{start}", server.http_schedule_rsvp)
         r.add_delete("/api/streams/{id}/schedule/{entry_id}/rsvp/{start}", server.http_schedule_unrsvp)
+        r.add_post("/api/me/password", server.http_change_password)
+        r.add_post("/api/users/{id}/reset-password", server.http_reset_user_password)
+        r.add_post("/api/users/{id}/sessions/revoke", server.http_admin_revoke_user_sessions)
         self.srv = TestServer(app)
         await self.srv.start_server()
         self.http = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
@@ -916,6 +919,43 @@ async def main():
               n_ok == server.HISTORY_RATE_LIMIT and st == 429 and int(h429.get("Retry-After", "0")) >= 1
               and b"Too many" in body429 and st_other == 200, f"{n_ok} {st} {body429[:120]!r} {h429.get('Retry-After')} {st_other}")
         server._upcoming_hits.clear()
+
+        # ------------------------------------------------------------ the feed token ends with the credentials
+        # a changed or reset password and an administrator's "sign out everywhere" revoke the calendar link; the
+        # member makes a new one afterwards
+        await w.db.update_password_hash(ids["m2"], server.hash_password("old-password-1"))
+
+        async def link_of(who):
+            st_, b_ = await w.call("POST", who, "/api/me/schedule-feed")
+            assert st_ == 200, (st_, b_)
+            return b_["url"].rsplit("/", 1)[1][:-4]
+
+        async def link_state(who, token_):
+            st_, b_ = await w.call("GET", who, "/api/me/schedule-feed")
+            st2_ = (await w.raw("GET", None, f"/api/streams/schedule/feed/{token_}.ics"))[0]
+            return b_["active"], st2_
+
+        link = await link_of("m2")
+        st, _ = await w.call("POST", "m2", "/api/me/password", json={"current_password": "wrong-password", "new_password": "new-password-22"})
+        check("(control) a refused password change leaves the calendar link alone", st == 401 and await link_state("m2", link) == (True, 200), str(st))
+        st, _ = await w.call("POST", "admin", f"/api/users/{ids['mod']}/reset-password", json={"new_password": "Reset-by-admin-3"})
+        check("(control) an administrator resetting another member's password leaves this member's link alone",
+              st == 200 and await link_state("m2", link) == (True, 200), str(st))
+        st, _ = await w.call("POST", "m2", "/api/me/password", json={"current_password": "old-password-1", "new_password": "new-password-22"})
+        check("changing the password revokes the member's calendar link (no link, the old address 404)",
+              st == 200 and await link_state("m2", link) == (False, 404), str(st))
+        link = await link_of("m2")
+        check("the member makes a new link afterwards and it works", await link_state("m2", link) == (True, 200))
+        st, _ = await w.call("POST", "admin", f"/api/users/{ids['m2']}/reset-password", json={"new_password": "Reset-by-admin-4"})
+        check("an administrator's password reset revokes it", st == 200 and await link_state("m2", link) == (False, 404), str(st))
+        link = await link_of("m2")
+        st, b = await w.call("POST", "admin", f"/api/users/{ids['m2']}/sessions/revoke")
+        check("an administrator signing the member out everywhere revokes it", st == 200 and await link_state("m2", link) == (False, 404), f"{st} {b}")
+        server_src = (ROOT / "server.py").read_text()
+        cli_src = server_src[server_src.index("async def init_admin_user"):]
+        reset_branch = cli_src[cli_src.index("ADMIN PASSWORD RESET") - 1200:cli_src.index("ADMIN PASSWORD RESET")]
+        check("the command line's admin password reset revokes the link too (the same place it revokes sessions)",
+              "revoke_user_tokens(admin[\"id\"])" in reset_branch and "feed_token_delete(admin[\"id\"])" in reset_branch, reset_branch[-400:])
 
         # ------------------------------------------------------------ logs
         stream_ = io.StringIO()
