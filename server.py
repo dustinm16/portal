@@ -5323,6 +5323,25 @@ def redact_connection_config(connection: dict) -> dict:
     return conn
 
 
+# What a member who was only given a connection (a share) is told about it. The server connects by id, so
+# nothing about the target is needed to use it: host, port and every config value (a config value can be
+# an address: target_url, api_url, hls_url, a pinned host...) are left out. Only the config keys on this list
+# stay, so a new key is hidden until someone adds it here. The two on it tell a grantee that connecting uses a
+# password the owner stored and in which mode (a documented answer since 1.18.0, kept; neither holds an address).
+GRANTEE_CONFIG_KEYS: frozenset = frozenset({"has_stored_password", "credential_mode"})
+
+
+def _hide_target_from_grantee(raw: dict, exposed: dict, is_admin: bool) -> dict:
+    """`exposed` (a redacted copy of `raw`) with the target taken out when `raw` is a connection shared with
+    the caller and the caller is not an administrator. The keys stay, so a client that reads them keeps
+    working: host and port are null and config only holds GRANTEE_CONFIG_KEYS."""
+    if raw.get("shared") and not is_admin:
+        exposed["host"] = None
+        exposed["port"] = None
+        exposed["config"] = {k: v for k, v in (exposed.get("config") or {}).items() if k in GRANTEE_CONFIG_KEYS}
+    return exposed
+
+
 # Sensitive keys that may appear in service configs (API keys, passwords, tokens, secrets)
 _SENSITIVE_SERVICE_CONFIG_FIELDS = {
     "password", "secret", "api_key", "api_secret", "token",
@@ -5689,6 +5708,9 @@ async def http_list_user_connections(request: web.Request) -> web.Response:
             connections = await db.get_user_connections(token.user_id)
 
         exposed = [redact_connection_config(c) for c in connections]
+        if any(c.get("shared") for c in connections):
+            admin = await _is_recording_admin(token.user_id)
+            exposed = [_hide_target_from_grantee(c, e, admin) for c, e in zip(connections, exposed)]
         _attach_prefs(connections, exposed, await db.get_connection_prefs_map(token.user_id))
         return web.json_response({
             "connections": [_externalize_connection(c) for c in exposed]
@@ -5712,7 +5734,10 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
 
-    return web.json_response(_externalize_connection(redact_connection_config(connection)))
+    exposed = redact_connection_config(connection)
+    if connection.get("shared"):
+        _hide_target_from_grantee(connection, exposed, await _is_recording_admin(token.user_id))
+    return web.json_response(_externalize_connection(exposed))
 
 
 async def http_update_user_connection(request: web.Request) -> web.Response:
@@ -6007,8 +6032,11 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
         if key:
             ssh_public_key = key["public_key"]
 
+    exposed = redact_connection_config(connection)
+    if connection.get("shared"):
+        _hide_target_from_grantee(connection, exposed, await _is_recording_admin(token.user_id))
     return web.json_response({
-        "connection": _externalize_connection(redact_connection_config(connection)),
+        "connection": _externalize_connection(exposed),
         "ssh_public_key": ssh_public_key,
         "websocket_url": f"/ws/user-connection/{conn_uuid}"
     })

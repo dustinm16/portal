@@ -564,7 +564,9 @@ const Portal = {
                     (connRes.value.connections || []).forEach(c => {
                         this._items.push({
                             type: 'connection', name: c.name,
-                            detail: `${c.host || ''}${c.port ? ':' + c.port : ''} (${c.type})`,
+                            // A connection shared with the member carries no address: its owner is shown instead.
+                            detail: c.shared ? `shared by ${c.owner_username || '?'} (${c.type})`
+                                : `${c.host || ''}${c.port ? ':' + c.port : ''} (${c.type})`,
                             id: c.id, icon: 'connection',
                             openMode: this._openModeOf(c)
                         });

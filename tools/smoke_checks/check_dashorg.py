@@ -156,6 +156,11 @@ async def run(ctx):
         _, _, b_list = await listing(bob)
         opened = sorted((c for c in b_list.values() if c["prefs"]["last_opened_at"]), key=lambda c: c["prefs"]["last_opened_at"], reverse=True)
         ok("the newest five opened are the last five, newest first", [c["id"] for c in opened[:5]] == list(reversed(order))[:5], [c["id"] for c in opened])
+        shared_one = b_list[order[-1]]
+        ok("a connection shared with bob carries no host, port or config", shared_one["host"] is None
+           and shared_one["port"] is None and shared_one["config"] == {} and "93.184.216.34" not in json.dumps(shared_one), shared_one)
+        _, _, o_list = await listing(owner)
+        ok("the owner's own list still has the host and port", o_list[order[-1]]["host"] == "93.184.216.34" and o_list[order[-1]]["port"] is not None)
         before = b_list[order[-1]]["prefs"]["last_opened_at"]
         await send(bob, "GET", f"/api/connections/{order[-1]}/connect")
         _, _, b_list = await listing(bob)

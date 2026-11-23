@@ -1115,6 +1115,7 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Returns all connections for the authenticated user.</p>
+                        <p><strong>A connection shared with you carries no target (1.22.0, breaking).</strong> For a connection you do not own, unless your role is admin or superadmin, <code>host</code> and <code>port</code> are <code>null</code> and <code>config</code> is <code>{}</code> (the keys stay; the two values that are kept are <code>has_stored_password: true</code> and <code>credential_mode</code> on an SSH or SFTP connection with a stored password), in this list (with or without <code>?type=</code>), in <code>GET /api/connections/{id}</code> and in the <code>connection</code> object of <code>GET /api/connections/{id}/connect</code>. The server connects by id, so using the connection does not need them. The owner and every administrator get the full answer.</p>
                         <div class="try-it">
                             <h4>Try It</h4>
                             <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/connections', this)">Send Request</button>
@@ -1186,7 +1187,7 @@
                         <span class="endpoint-desc">Get connection details</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns details for a specific connection. Sensitive config fields (passwords, private keys) are redacted and replaced with <code>has_&lt;field&gt;</code> boolean flags.</p>
+                        <p>Returns details for a specific connection. Sensitive config fields (passwords, private keys) are redacted and replaced with <code>has_&lt;field&gt;</code> boolean flags. For a connection shared with you, and you are not an administrator, <code>host</code> and <code>port</code> are <code>null</code> and <code>config</code> holds no value but <code>has_stored_password</code> and <code>credential_mode</code> (see the list above).</p>
                     </div>
                 </div>
 
@@ -1310,7 +1311,7 @@
                         <span class="endpoint-desc">Get connection info for launching</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns connection details and WebSocket URL needed to establish a connection. The dashboard uses this to open the appropriate viewer window.</p>
+                        <p>Returns connection details and WebSocket URL needed to establish a connection. The dashboard uses this to open the appropriate viewer window. For a connection shared with you, and you are not an administrator, <code>host</code> and <code>port</code> are <code>null</code> and <code>config</code> holds no value but <code>has_stored_password</code> and <code>credential_mode</code>.</p>
                         <h4>Response</h4>
 <pre>{
   "connection": {
@@ -7068,7 +7069,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=48"></script>
+    <script src="/static/js/portal.js?v=49"></script>
     <script src="/static/js/push.js?v=4"></script>
     <script>
         // Headers added since 1.20.0 carry data-toggle-endpoint instead of an inline onclick.

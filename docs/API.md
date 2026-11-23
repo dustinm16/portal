@@ -869,6 +869,8 @@ Delete user (superadmin only).
 #### GET /api/connections
 List user's remote connections. Sensitive config fields (passwords, private keys) are **redacted** — replaced with boolean `has_<field>` flags.
 
+**A connection shared with you carries no target (1.22.0, breaking).** For a connection you do not own, unless your role is admin or superadmin, `host` and `port` are `null` and `config` is `{}` (the keys stay; the two values that are kept are `has_stored_password: true` and `credential_mode` on an SSH or SFTP connection that has a stored password): the address, the port and the config values (`target_url`, `api_url`, `hls_url`, a user name and so on) are not sent to a grantee, in the list (with or without `?type=`), in `GET /api/connections/{id}` and in the `connection` object of `GET /api/connections/{id}/connect`. The server connects by id, so using the connection does not need them. The owner and every administrator get the full answer. Entries you own are unchanged.
+
 **Response:**
 ```json
 {
@@ -954,7 +956,7 @@ Health of the connections you can reach (1.22.0): `{"<connection id>": {"status"
 How a status comes about: while the feature is on, one background task makes a round every interval (60 to 900 seconds, 60 by default, plus or minus 10 percent) and checks only connections that are pinned or were opened in the last 7 days by somebody who still has access: a TCP connect (closed again at once, nothing written) for `ssh`, `sftp`, `vnc`, `rdp` and the tunnel and database types, a `HEAD` of `/` (a `GET` after `405` or `501`) for the HTTP types, never following a redirect and sending no cookie or credential. The target is only what the connection holds, and goes through the same host policy as a real connection (a name that resolves to a loopback, private, link-local or shared address is never contacted and is `unknown`, not `down`). A status below 500 counts as up. At most 100 checks per round, at most 10 targets per owner in a round (the rounds are filled in turn across members and a member's least recently checked connection goes first, so one member who pins hundreds of connections only gets their own checked less often: those read `unknown` once stale), 5 at once, 6 seconds each. A check sends a `HEAD` request or a TCP connect and nothing else: no credentials, no cookies. A target the host policy refuses is not looked at again for 10 minutes (doubling to an hour) and is logged once when it starts and once when it ends. `down` after 3 failed checks in a row, `up` after 2 good ones; only the changes are stored (14 days, at most 24 per connection per day, at most 50000 rows in all with the oldest removed first; after the daily limit the status still changes and is shown but nothing more is stored or alerted until the next day). After a restart, or after the feature is switched off and on, a stored `down` older than 30 minutes is not announced as `back up`. `service.health_changed` fires on a change between up and down with the connection's name, at most once per connection every 10 minutes and never while the connection is in maintenance (the alert is sent afterwards if the status is still the same) (third-party formats get no name and no host).
 
 #### GET /api/connections/{id}
-Get connection details. `{id}` is the opaque string token. Sensitive config fields are redacted (same as list endpoint).
+Get connection details. `{id}` is the opaque string token. Sensitive config fields are redacted (same as list endpoint). A connection shared with you, and you are not an administrator: `host` and `port` are `null` and `config` holds no value but `has_stored_password` and `credential_mode` (see the list endpoint).
 
 ---
 
@@ -1021,7 +1023,7 @@ Your own filing of a connection you can reach (one you own or one shared with yo
 ---
 
 #### GET /api/connections/{id}/connect
-Get connection details needed to establish a WebSocket relay (plugin info, WebSocket URL).
+Get connection details needed to establish a WebSocket relay (plugin info, WebSocket URL). For a connection shared with you, and you are not an administrator, the `connection` object has `host` and `port` `null` and `config` with no value but `has_stored_password` and `credential_mode` (see the list endpoint).
 
 ---
 
