@@ -37,11 +37,11 @@ check("every link made passes through safeUrl (a protocol of http: or https: onl
 check("links get rel noopener noreferrer", "'noopener noreferrer'" in JS)
 check("no inline handlers are made", "onclick" not in JS.lower() and "setAttribute('on" not in JS)
 check("portal.js loads announce.js with a version, from the member list, and never inside a frame",
-      "/static/js/announce.js?v=1" in PORTAL and "data-url', '/api/announcements'" in PORTAL and "window.self !== window.top" in PORTAL)
+      "/static/js/announce.js?v=2" in PORTAL and "data-url', '/api/announcements'" in PORTAL and "window.self !== window.top" in PORTAL)
 check("the sign-in page loads it with the public list only",
-      'src="/static/js/announce.js?v=1" data-url="/api/announcements/public"' in LOGIN and LOGIN.count("announce.js") == 1)
+      'src="/static/js/announce.js?v=2" data-url="/api/announcements/public"' in LOGIN and LOGIN.count("announce.js") == 1)
 check("no page loads it with a different version",
-      not [p.name for p in STATIC.glob("*.html") if re.search(r"announce\.js\?v=(?!1\b)", p.read_text())])
+      not [p.name for p in STATIC.glob("*.html") if re.search(r"announce\.js\?v=(?!2\b)", p.read_text())])
 
 node = shutil.which("node")
 if not node:

@@ -7909,7 +7909,7 @@ async def http_live_page(request: web.Request) -> web.Response:
     if "</body>" in html and await authenticate_request(request):
         html = html.replace(
             "</body>",
-            '<script src="/static/js/announce.js?v=1" data-url="/api/announcements"></script></body>', 1)
+            '<script src="/static/js/announce.js?v=2" data-url="/api/announcements"></script></body>', 1)
     return web.Response(text=html, content_type="text/html", headers={"Vary": "Cookie"})
 
 

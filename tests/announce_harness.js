@@ -121,7 +121,7 @@ function store(init) { const m = new Map(Object.entries(init || {})); return { g
     const calls = [];
     const win = {
       document: d, location: { pathname }, localStorage: st,
-      fetch: (url, opts) => { calls.push(url); const p = payloads.shift(); return Promise.resolve(p === 401 ? { ok: false, json: async () => ({}) } : { ok: true, json: async () => p }); },
+      fetch: (url, opts) => { calls.push(url); const p = payloads.shift(); return Promise.resolve(p === 401 ? { ok: false, status: 401, json: async () => ({}) } : { ok: true, json: async () => p }); },
       setInterval: () => 0,
     };
     const h = A.start(win, '/api/announcements');
@@ -151,6 +151,47 @@ function store(init) { const m = new Map(Object.entries(init || {})); return { g
   check('on a full-height application page the banner floats (overlay class)', p.box.className === 'announce-overlay');
   p = await runPage('/login', [{ announcements: [a1] }], store(), true);
   check('on the sign-in page the banner floats too', p.box.className === 'announce-overlay');
+  for (const path of ['/chat', '/watch/12']) {
+    p = await runPage(path, [{ announcements: [a1] }], store());
+    check('on ' + path + ' (the page cannot scroll) the banner floats, so it cannot push the input or the controls out of view',
+          p.box.className === 'announce-overlay', p.box.className);
+  }
+  p = await runPage('/dashboard', [{ announcements: [a1] }], store());
+  const css = p.d.created.filter(n => n.tagName === 'STYLE').map(n => n.textContent).join('');
+  check('a floating banner is capped at 40 percent of the viewport and scrolls inside itself (a long text cannot cover the sign-in form)',
+        /#portal-announcements\.announce-overlay\{[^}]*max-height:40vh[^}]*overflow-y:auto/.test(css), css);
+
+  // the poll: nothing while the tab is hidden, one request when it shows, and no more after a 401
+  {
+    const d = makeDoc(); d.body.appendChild(new Node_('MAIN')); d.hidden = true;
+    const calls = []; let timer = null, cleared = 0;
+    const win = { document: d, location: { pathname: '/dashboard' }, localStorage: store(),
+      fetch: (url) => { calls.push(url); return Promise.resolve({ ok: true, json: async () => ({ announcements: [a1] }) }); },
+      setInterval: (f) => { timer = f; return 7; }, clearInterval: (id) => { if (id === 7) cleared++; } };
+    A.start(win, '/api/announcements');
+    await new Promise(res => setTimeout(res, 10));
+    timer();
+    await new Promise(res => setTimeout(res, 10));
+    check('a hidden tab makes no request, neither at the start nor on the timer', calls.length === 0, calls.length);
+    d.hidden = false;
+    (d.listeners.visibilitychange || []).forEach(f => f());
+    await new Promise(res => setTimeout(res, 10));
+    check('a tab that becomes visible asks once', calls.length === 1, calls.length);
+  }
+  {
+    const d = makeDoc(); d.body.appendChild(new Node_('MAIN'));
+    const calls = []; let timer = null, cleared = 0;
+    const win = { document: d, location: { pathname: '/dashboard' }, localStorage: store(),
+      fetch: (url) => { calls.push(url); return Promise.resolve({ ok: false, status: 401, json: async () => ({}) }); },
+      setInterval: (f) => { timer = f; return 7; }, clearInterval: (id) => { if (id === 7) cleared++; } };
+    A.start(win, '/api/announcements');
+    await new Promise(res => setTimeout(res, 10));
+    timer();
+    (d.listeners.visibilitychange || []).forEach(f => f());
+    await new Promise(res => setTimeout(res, 10));
+    check('after a 401 the poll stops: no timer tick and no visibility change asks again, and the timer is cleared',
+          calls.length === 1 && cleared >= 1, JSON.stringify({ calls: calls.length, cleared }));
+  }
   const pub = store({ [A.STORE_KEY]: JSON.stringify({ '7': 'keep me' }) });
   const d2 = makeDoc(); d2.body.appendChild(new Node_('MAIN'));
   A.start({ document: d2, location: { pathname: '/login' }, localStorage: pub, setInterval: () => 0,

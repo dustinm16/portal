@@ -121,7 +121,7 @@ async def main():
     async with bob.get(f"{env.base}/live") as r:
         live_bob, csp_bob = await r.text(), r.headers.get("Content-Security-Policy")
         bob_headers = dict(r.headers)
-    tag = '<script src="/static/js/announce.js?v=1" data-url="/api/announcements"></script>'
+    tag = '<script src="/static/js/announce.js?v=2" data-url="/api/announcements"></script>'
     check("/live: a visitor gets no banner script (nothing to poll with a 401)",
           anon_status == 200 and "announce.js" not in live_anon, str(anon_status))
     check("/live: a signed-in member gets the banner script once, for the member list, and nothing else added",

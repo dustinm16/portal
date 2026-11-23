@@ -18,8 +18,9 @@
     var POLL_MS = 60000;
     var MAX_DEPTH = 3;
     var LEVELS = { info: 1, warning: 1, outage: 1 };
-    // Pages that are one full-height application: the banner floats over the top there instead of pushing the page down.
-    var OVERLAY_PATHS = /^\/(terminal|vnc|media|spice|proxmox|github|browser|vods\/play)(\/|$)/;
+    // Pages whose body cannot scroll (a fixed-height layout, html and body with overflow hidden): the banner floats over
+    // the top there instead of pushing the message input or the player controls out of view.
+    var OVERLAY_PATHS = /^\/(terminal|vnc|media|spice|proxmox|github|browser|vods\/play|chat|watch)(\/|$)/;
 
     // A link target: only http and https, as the browser's own URL parser reads it.
     function safeUrl(raw, URLCtor) {
@@ -155,7 +156,7 @@
     }
 
     var CSS = '#portal-announcements{display:flex;flex-direction:column;gap:0}' +
-        '#portal-announcements.announce-overlay{position:fixed;top:0;left:0;right:0;z-index:100000}' +
+        '#portal-announcements.announce-overlay{position:fixed;top:0;left:0;right:0;z-index:100000;max-height:40vh;overflow-y:auto}' +
         '.announce{display:flex;align-items:flex-start;gap:.75rem;padding:.55rem 1rem;font-size:.9rem;line-height:1.4;' +
         'border-bottom:1px solid rgba(0,0,0,.35);color:#fff;background:#2563eb}' +
         '.announce-warning{background:#b45309}.announce-outage{background:#b91c1c}' +
@@ -210,7 +211,8 @@
         return box;
     }
 
-    // Starts the banners in a page: fetch now, then every minute and when the tab becomes visible again.
+    // Starts the banners in a page: fetch now, then every minute and when the tab becomes visible again. A hidden tab
+    // asks nothing, and after a 401 (signed out) nothing is asked again.
     function start(win, url) {
         var doc = win.document;
         var storage;
@@ -229,9 +231,19 @@
                 draw();
             });
         }
+        var stopped = false;   // set by a 401: the session is over, so nothing more is asked
+        var timer = null;
         function load() {
+            if (stopped || doc.hidden) return Promise.resolve();   // a hidden tab asks again when it is shown
             return win.fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'application/json' } })
-                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (r) {
+                    if (r.status === 401) {
+                        stopped = true;
+                        if (timer !== null && typeof win.clearInterval === 'function') win.clearInterval(timer);
+                        return null;
+                    }
+                    return r.ok ? r.json() : null;
+                })
                 .then(function (data) {
                     if (!data || !Array.isArray(data.announcements)) return;
                     items = data.announcements;
@@ -242,7 +254,7 @@
                 .catch(function () { /* offline or signed out: leave what is shown */ });
         }
         load();
-        win.setInterval(load, POLL_MS);
+        timer = win.setInterval(load, POLL_MS);
         doc.addEventListener('visibilitychange', function () { if (!doc.hidden) load(); });
         return { load: load };
     }

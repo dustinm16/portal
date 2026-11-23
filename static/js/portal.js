@@ -1184,7 +1184,7 @@ const NotificationBell = {
 (function () {
     if (window.self !== window.top || window.Announce) return;
     var s = document.createElement('script');
-    s.src = '/static/js/announce.js?v=1';
+    s.src = '/static/js/announce.js?v=2';
     s.setAttribute('data-url', '/api/announcements');
     s.async = true;
     document.head.appendChild(s);
