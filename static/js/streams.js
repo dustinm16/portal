@@ -417,6 +417,12 @@ async function showStreamDetails(streamId) {
                 </div>
 
                 <div class="info-section">
+                    <h4>Schedule</h4>
+                    <p class="info-description">Plan when you go live. Members who may watch the stream see a countdown while it is offline and can mark themselves interested; each gets one reminder 10 minutes before the start.</p>
+                    <div id="stream-schedule-mount"></div>
+                </div>
+
+                <div class="info-section">
                     <h4>Multi-Platform Relay</h4>
                     <p class="info-description">Relay your stream to external platforms (Twitch, YouTube, Kick, etc.) simultaneously.</p>
                     <div id="relay-destinations-list"></div>
@@ -447,6 +453,7 @@ async function showStreamDetails(streamId) {
         loadRelayDestinations(streamId);
         loadStreamMods(streamId);
         bindStreamModSearch(streamId);
+        if (window.StreamSchedule) window.StreamSchedule.mountOwner(document.getElementById('stream-schedule-mount'), streamId);
 
         // Bind copy buttons programmatically to avoid inlining secrets in onclick attributes
         const copyValues = {

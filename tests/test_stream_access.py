@@ -719,6 +719,19 @@ _MANAGEMENT_CALLS = [
     ("http_update_relay_destination", "PUT", "/api/streams/{id}/relays/{relay_id}"),
     ("http_delete_relay_destination", "DELETE", "/api/streams/{id}/relays/{relay_id}"),
     ("http_get_relay_logs", "GET", "/api/streams/{id}/relays/{relay_id}/logs"),
+    ("http_schedule_upcoming", "GET", "/api/streams/schedule/upcoming"),
+    ("http_schedule_get", "GET", "/api/streams/{id}/schedule"),
+    ("http_schedule_create", "POST", "/api/streams/{id}/schedule"),
+    ("http_schedule_update", "PUT", "/api/streams/{id}/schedule/{entry_id}"),
+    ("http_schedule_delete", "DELETE", "/api/streams/{id}/schedule/{entry_id}"),
+    ("http_schedule_cancel", "POST", "/api/streams/{id}/schedule/{entry_id}/cancel/{start}"),
+    ("http_schedule_restore", "DELETE", "/api/streams/{id}/schedule/{entry_id}/cancel/{start}"),
+    ("http_schedule_suggestion_dismiss", "DELETE", "/api/streams/{id}/schedule/suggestion"),
+    ("http_schedule_rsvp", "POST", "/api/streams/{id}/schedule/{entry_id}/rsvp/{start}"),
+    ("http_schedule_unrsvp", "DELETE", "/api/streams/{id}/schedule/{entry_id}/rsvp/{start}"),
+    ("http_schedule_feed_status", "GET", "/api/me/schedule-feed"),
+    ("http_schedule_feed_create", "POST", "/api/me/schedule-feed"),
+    ("http_schedule_feed_revoke", "DELETE", "/api/me/schedule-feed"),
 ]
 
 
@@ -737,9 +750,9 @@ def test_a_stream_key_or_a_scoped_key_manages_no_stream():
         }
         for label, headers in refused.items():
             for name, method, tmpl in _MANAGEMENT_CALLS:
-                path = tmpl.format(id=sid, relay_id=1, user_id=w.users["member"], ban_id=1)
+                path = tmpl.format(id=sid, relay_id=1, user_id=w.users["member"], ban_id=1, entry_id=1, start=1)
                 req = make_mocked_request(method, path, headers=dict(headers),
-                                          match_info={"id": str(sid), "relay_id": "1",
+                                          match_info={"id": str(sid), "relay_id": "1", "entry_id": "1", "start": "1",
                                                       "user_id": str(w.users["member"]), "ban_id": "1"},
                                           transport=Transport())
                 resp = await getattr(server, name)(req)
@@ -970,7 +983,10 @@ def test_authenticate_request_has_no_stream_key_branch():
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
                  "http_get_open_streams"}     # the last one needs no credential at all (open links only)
 _REFUSES_STREAM_KEYS = ("_stream_user_auth(", "_follow_context(",
-                        "_validate_stream_access(", "_authorize_webrtc_session(")
+                        "_validate_stream_access(", "_authorize_webrtc_session(",
+                        "_schedule_stream_route(", "_schedule_owned_entry(")     # both start with _follow_context
+# The calendar feed is read with a token in its path and no login at all: it must never authenticate_request
+_TOKEN_IN_PATH = {"http_schedule_feed"}
 
 
 def test_every_stream_handler_refuses_stream_keys_or_is_publish_side():
@@ -979,15 +995,15 @@ def test_every_stream_handler_refuses_stream_keys_or_is_publish_side():
     routes = re.findall(r'app\.router\.add_\w+\("(/api/(?:streams|stream|me/follows)[^"]*)", (\w+)', src)
     assert len(routes) >= 30, len(routes)
     handlers = {h for _p, h in routes}
-    assert _PUBLISH_SIDE <= handlers
-    for h in sorted(handlers - _PUBLISH_SIDE):
+    assert _PUBLISH_SIDE <= handlers and _TOKEN_IN_PATH <= handlers
+    for h in sorted(handlers - _PUBLISH_SIDE - _TOKEN_IN_PATH):
         start = src.index(f"async def {h}(")
         m = re.search(r"\n(?:async def|def) ", src[start + 10:])
         chunk = src[start:start + 10 + m.start()]
         assert any(mark in chunk for mark in _REFUSES_STREAM_KEYS), f"{h} accepts a stream key"
         # the plain call (stream keys allowed) is never the whole check
         assert "await authenticate_request(request)" not in chunk, h
-    for h in _PUBLISH_SIDE:        # the allow-listed handlers never authenticates by stream key header either
+    for h in _PUBLISH_SIDE | _TOKEN_IN_PATH:        # the allow-listed handlers never authenticates by stream key header either
         start = src.index(f"async def {h}(")
         m = re.search(r"\n(?:async def|def) ", src[start + 10:])
         assert "authenticate_request(" not in src[start:start + 10 + m.start()], h

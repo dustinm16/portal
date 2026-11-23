@@ -161,6 +161,7 @@ import chat_search
 import secevents
 import apikey_policy
 import webhook_formats
+import stream_schedule
 import webpush
 import session_devices
 setup_logging()
@@ -6777,6 +6778,10 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
                 "is_live": 1
             })
     try:
+        await _schedule_note_go_live(stream)     # the slot this go-live belongs to (a failure never stops a stream)
+    except Exception as e:
+        logger.warning(f"Schedule go-live note for stream {stream_id} failed: {type(e).__name__}")
+    try:
         async with _stream_state_lock:
             announce = await db.claim_golive(
                 stream_id, int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
@@ -7884,6 +7889,514 @@ async def http_stream_games(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     return web.json_response({"games": await db.get_game_suggestions(token.user_id)})
+
+
+# ---------------------------------------------------------------------------
+# Stream schedule (1.23.0): entries, "Interested" marks, reminders and the calendar feed
+#
+# Who sees an entry: exactly those who may watch the stream, by _stream_read_allowed, asked again on
+# every read (list, countdown, RSVP, the reminder tick and the feed). A member who may not gets the same
+# 404 as for an unknown stream. Only the stream's owner writes a schedule: stream settings are owner-only
+# (an administrator and a chat moderator are refused by PUT /api/streams/{id}), so the schedule follows.
+# The owner sees a count of interested members, never who.
+# ---------------------------------------------------------------------------
+
+_schedule_now = time                 # module level so tests can move the clock
+_SCHEDULE_UPCOMING_DAYS = 14
+_SCHEDULE_SUGGESTION_AGE = 6 * 3600  # a title offered at go-live stays on offer this long
+_SCHEDULE_TICK_SECONDS = 30
+_schedule_last_prune = 0
+
+
+def _schedule_tick_interval() -> float:
+    if Config.STAGE_MODE:
+        try:
+            return max(0.2, float(os.getenv("PORTAL_SCHEDULE_TICK_SECONDS", "") or _SCHEDULE_TICK_SECONDS))
+        except ValueError:
+            pass
+    return float(_SCHEDULE_TICK_SECONDS)
+
+
+def _schedule_role(user: dict) -> str:
+    return user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+
+
+def _schedule_may_watch(row: dict, user_id: int, role: str, banned: set) -> bool:
+    """The watch rule for a candidate row (entry joined to its stream)."""
+    stream = {"user_id": row["stream_user_id"], "is_public": row["is_public"],
+              "allow_unauthenticated": row.get("allow_unauthenticated")}
+    return _stream_read_allowed(stream, user_id, role, False, row["stream_id"] in banned)
+
+
+def _schedule_streamer(row: dict) -> str:
+    return row.get("owner_nickname") or row.get("owner_username") or "Someone"
+
+
+def _schedule_item(row: dict, start: int, interested: bool, count=None) -> dict:
+    item = {"entry_id": row["id"], "stream_id": row["stream_id"], "stream_name": row["stream_name"],
+            "streamer": _schedule_streamer(row), "title": row["title"], "start": start,
+            "duration_min": row["duration_min"], "recurring": bool(row["weekly"]), "interested": interested,
+            "live": row.get("is_live") == 1}
+    if count is not None:
+        item["interested_count"] = count          # the owner's own stream only: a number, never names
+    return item
+
+
+async def _schedule_items(rows: list, user_id: int, now: int, horizon_days: int, per_entry: int) -> list:
+    """Upcoming occurrences of the given (already visible) rows, with the caller's own marks."""
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    cancelled = await db.schedule_cancelled_map(ids)
+    started = await db.schedule_started_map(ids, now - 86400)
+    marks = await db.rsvp_of_user(user_id, ids, now - 3600)
+    own = [r["id"] for r in rows if r["stream_user_id"] == user_id]
+    counts = await db.rsvp_counts(own, now - 3600) if own else {}
+    out = []
+    for r in rows:
+        for start in stream_schedule.next_occurrences(r, now, cancelled[r["id"]], started[r["id"]],
+                                                      count=per_entry, horizon_days=horizon_days):
+            mine = r["stream_user_id"] == user_id
+            out.append(_schedule_item(r, start, (r["id"], start) in marks,
+                                      counts.get((r["id"], start), 0) if mine else None))
+    out.sort(key=lambda i: (i["start"], i["entry_id"]))
+    return out
+
+
+async def http_schedule_upcoming(request: web.Request) -> web.Response:
+    """GET /api/streams/schedule/upcoming: the next occurrences, soonest first, of the streams this member may
+    watch, with their own "Interested" state. No list of who else is interested (the owner of a stream gets a
+    count for their own)."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    _token, user_id, role = ctx
+    try:
+        limit = int(request.query.get("limit", "20"))
+    except ValueError:
+        return web.json_response({"error": "Invalid limit"}, status=400)
+    limit = max(1, min(limit, 50))
+    now = int(_schedule_now())
+    banned = await db.get_banned_stream_ids(user_id)
+    rows = [r for r in await db.schedule_visible_candidates(user_id, role in ("admin", "superadmin"))
+            if _schedule_may_watch(r, user_id, role, banned)]
+    items = await _schedule_items(rows, user_id, now, _SCHEDULE_UPCOMING_DAYS, 3)
+    return web.json_response({"now": now, "occurrences": items[:limit]})
+
+
+async def _schedule_stream_route(request: web.Request, owner: bool):
+    """(ctx, stream, refusal) for a /api/streams/{id}/schedule route: the member must be allowed to watch
+    the stream (owner=True: be its owner). Anything else is the one 404 of a stream that is not there."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return None, None, refusal
+    _token, user_id, role = ctx
+    stream = await _viewable_stream_for_follow(request, user_id, role)
+    if not stream or (owner and stream.get("user_id") != user_id):
+        return None, None, web.json_response(_STREAM_FOLLOW_NOT_FOUND, status=404)
+    return ctx, stream, None
+
+
+def _schedule_path_ints(request: web.Request, *names):
+    try:
+        return [_row_id(request.match_info.get(n, "")) for n in names]
+    except (ValueError, TypeError):
+        return None
+
+
+async def _schedule_owner_view(stream: dict, now: int) -> dict:
+    """What the owner's editor needs: every entry in full, a count of interested members per upcoming occurrence
+    and the title offered at the last go-live."""
+    entries = await db.schedule_entries_of_stream(stream["id"])
+    ids = [e["id"] for e in entries]
+    cancelled = await db.schedule_cancelled_map(ids)
+    started = await db.schedule_started_map(ids, now - 86400)
+    counts = await db.rsvp_counts(ids, now - 3600)
+    out = []
+    for e in entries:
+        nxt = stream_schedule.next_occurrences(e, now, cancelled[e["id"]], started[e["id"]], count=3)
+        out.append({"id": e["id"], "title": e["title"], "start": e["local_start"], "tz": e["tz"],
+                    "duration_min": e["duration_min"], "recurrence": "weekly" if e["weekly"] else None,
+                    "next": [{"start": s, "interested_count": counts.get((e["id"], s), 0)} for s in nxt],
+                    "cancelled": sorted(c for c in cancelled[e["id"]] if c >= now - 86400)})
+    suggestion = await db.schedule_pending_suggestion(stream["id"], now - _SCHEDULE_SUGGESTION_AGE)
+    if suggestion and suggestion["suggestion"] == stream.get("name"):
+        suggestion = None
+    return {"entries": out, "suggestion": (
+        {"entry_id": suggestion["entry_id"], "start": suggestion["occ_start"], "title": suggestion["suggestion"]}
+        if suggestion else None), "limits": {
+            "title": stream_schedule.TITLE_MAX, "per_stream": stream_schedule.MAX_ENTRIES_PER_STREAM,
+            "per_member": stream_schedule.MAX_ENTRIES_PER_OWNER}}
+
+
+async def http_schedule_get(request: web.Request) -> web.Response:
+    """GET /api/streams/{id}/schedule: the next occurrences of this stream (anyone who may watch it, with their
+    own "Interested" state) and, for the owner, the entries in full with counts and the go-live suggestion."""
+    ctx, stream, refusal = await _schedule_stream_route(request, owner=False)
+    if refusal is not None:
+        return refusal
+    _token, user_id, _role = ctx
+    now = int(_schedule_now())
+    row = {"stream_name": stream["name"], "stream_user_id": stream["user_id"], "is_live": stream.get("is_live"),
+           "owner_username": stream.get("owner_username"), "owner_nickname": stream.get("owner_nickname")}
+    rows = [{**e, **row} for e in await db.schedule_entries_of_stream(stream["id"])]
+    body = {"stream_id": stream["id"], "now": now, "next": await _schedule_items(rows, user_id, now, 400, 3)}
+    if stream["user_id"] == user_id:
+        body.update(await _schedule_owner_view(stream, now))
+    return web.json_response(body)
+
+
+async def _schedule_owned_entry(request: web.Request):
+    """(ctx, stream, entry, refusal) of a route that changes one entry of the caller's own stream."""
+    ctx, stream, refusal = await _schedule_stream_route(request, owner=True)
+    if refusal is not None:
+        return None, None, None, refusal
+    ids = _schedule_path_ints(request, "entry_id")
+    entry = await db.schedule_get(ids[0]) if ids and ids[0] else None
+    if not entry or entry["stream_id"] != stream["id"]:
+        return None, None, None, web.json_response({"error": "Schedule entry not found"}, status=404)
+    return ctx, stream, entry, None
+
+
+async def _schedule_json(request: web.Request):
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return None, web.json_response({"error": "Invalid JSON"}, status=400)
+    return data, None
+
+
+async def http_schedule_create(request: web.Request) -> web.Response:
+    """POST /api/streams/{id}/schedule {title, start, tz, duration_min?, recurrence?}: add an entry (owner)."""
+    ctx, stream, refusal = await _schedule_stream_route(request, owner=True)
+    if refusal is not None:
+        return refusal
+    data, bad = await _schedule_json(request)
+    if bad is not None:
+        return bad
+    now = int(_schedule_now())
+    clean, problem = stream_schedule.validate_entry(data, now)
+    if problem:
+        return web.json_response({"error": problem}, status=400)
+    result = await db.schedule_create(stream["id"], ctx[1], clean, now, stream_schedule.MAX_ENTRIES_PER_STREAM,
+                                      stream_schedule.MAX_ENTRIES_PER_OWNER)
+    if result == "stream_limit":
+        return web.json_response(
+            {"error": f"At most {stream_schedule.MAX_ENTRIES_PER_STREAM} schedule entries per stream"}, status=409)
+    if result == "owner_limit":
+        return web.json_response(
+            {"error": f"At most {stream_schedule.MAX_ENTRIES_PER_OWNER} schedule entries per member"}, status=409)
+    view = await _schedule_owner_view(stream, now)
+    return web.json_response({"id": result, "entries": view["entries"]}, status=201)
+
+
+async def http_schedule_update(request: web.Request) -> web.Response:
+    """PUT /api/streams/{id}/schedule/{entry_id}: change an entry (owner). A change of the time drops the
+    interested marks and cancellations of the occurrences to come (they named times that are gone)."""
+    _ctx, stream, entry, refusal = await _schedule_owned_entry(request)
+    if refusal is not None:
+        return refusal
+    data, bad = await _schedule_json(request)
+    if bad is not None:
+        return bad
+    now = int(_schedule_now())
+    clean, problem = stream_schedule.validate_entry(data, now, existing=entry)
+    if problem:
+        return web.json_response({"error": problem}, status=400)
+    moved = any(k in clean and clean[k] != entry[k] for k in ("local_start", "tz", "weekly"))
+    await db.schedule_update(entry["id"], clean, now, moved)
+    view = await _schedule_owner_view(stream, now)
+    return web.json_response({"id": entry["id"], "entries": view["entries"]})
+
+
+async def http_schedule_delete(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/schedule/{entry_id}: cancel the whole entry (owner)."""
+    _ctx, stream, entry, refusal = await _schedule_owned_entry(request)
+    if refusal is not None:
+        return refusal
+    await db.schedule_delete(entry["id"])
+    return web.json_response({"success": True, "entries": (await _schedule_owner_view(stream, int(_schedule_now())))["entries"]})
+
+
+def _schedule_start_from_path(request: web.Request):
+    try:
+        start = int(request.match_info.get("start", ""))
+    except ValueError:
+        return None
+    return start if 0 < start <= _SQLITE_INT_MAX else None
+
+
+async def http_schedule_cancel(request: web.Request) -> web.Response:
+    """POST /api/streams/{id}/schedule/{entry_id}/cancel/{start}: cancel one occurrence (owner). Members who
+    marked it get nothing from it, and the calendar feed lists it as an EXDATE."""
+    _ctx, stream, entry, refusal = await _schedule_owned_entry(request)
+    if refusal is not None:
+        return refusal
+    start = _schedule_start_from_path(request)
+    now = int(_schedule_now())
+    if start is None or not stream_schedule.is_occurrence(entry, start) or start < now - 86400:
+        return web.json_response({"error": "That is not an upcoming occurrence of this entry"}, status=400)
+    await db.schedule_cancel_occurrence(entry["id"], start, now, stream_schedule.MAX_CANCELLED_PER_ENTRY)
+    return web.json_response({"success": True, "entries": (await _schedule_owner_view(stream, now))["entries"]})
+
+
+async def http_schedule_restore(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/schedule/{entry_id}/cancel/{start}: bring a cancelled occurrence back (owner).
+    The interested marks it had are gone."""
+    _ctx, stream, entry, refusal = await _schedule_owned_entry(request)
+    if refusal is not None:
+        return refusal
+    start = _schedule_start_from_path(request)
+    if start is None:
+        return web.json_response({"error": "Invalid start"}, status=400)
+    await db.schedule_restore_occurrence(entry["id"], start)
+    return web.json_response({"success": True, "entries": (await _schedule_owner_view(stream, int(_schedule_now())))["entries"]})
+
+
+async def http_schedule_suggestion_dismiss(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/schedule/suggestion: the owner dismisses (or has applied) the offered title."""
+    _ctx, stream, refusal = await _schedule_stream_route(request, owner=True)
+    if refusal is not None:
+        return refusal
+    await db.schedule_clear_suggestions(stream["id"])
+    return web.json_response({"success": True})
+
+
+async def http_schedule_rsvp(request: web.Request) -> web.Response:
+    """POST /api/streams/{id}/schedule/{entry_id}/rsvp/{start}: mark Interested in one occurrence. One reminder
+    follows 10 minutes before it. A mark made inside those 10 minutes gets its one reminder at the next tick."""
+    ctx, stream, refusal = await _schedule_stream_route(request, owner=False)
+    if refusal is not None:
+        return refusal
+    user_id = ctx[1]
+    ids = _schedule_path_ints(request, "entry_id")
+    start = _schedule_start_from_path(request)
+    entry = await db.schedule_get(ids[0]) if ids and ids[0] else None
+    now = int(_schedule_now())
+    if not entry or entry["stream_id"] != stream["id"] or start is None:
+        return web.json_response({"error": "Schedule entry not found"}, status=404)
+    if stream["user_id"] == user_id:
+        return web.json_response({"error": "This is your own stream"}, status=400)
+    cancelled = (await db.schedule_cancelled_map([entry["id"]]))[entry["id"]]
+    started = (await db.schedule_started_map([entry["id"]], now - 86400))[entry["id"]]
+    if (start <= now or start in cancelled or start in started
+            or not stream_schedule.is_occurrence(entry, start)):
+        return web.json_response({"error": "That occurrence is not upcoming"}, status=400)
+    result = await db.rsvp_add(user_id, entry["id"], start, now, stream_schedule.MAX_FUTURE_RSVPS_PER_MEMBER, False)
+    if result == "limit":
+        return web.json_response(
+            {"error": f"You can be interested in at most {stream_schedule.MAX_FUTURE_RSVPS_PER_MEMBER} occurrences"},
+            status=409)
+    return web.json_response({"interested": True, "entry_id": entry["id"], "start": start})
+
+
+async def http_schedule_unrsvp(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/schedule/{entry_id}/rsvp/{start}: take the mark back. It touches the caller's own
+    mark only and answers the same whatever the stream is."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    ids = _schedule_path_ints(request, "id", "entry_id")
+    start = _schedule_start_from_path(request)
+    if ids and all(ids) and start is not None:
+        await db.rsvp_remove(ctx[1], ids[1], start)
+    return web.json_response({"interested": False})
+
+
+# ---- the reminder tick
+
+async def _schedule_send_reminder(stream: dict, user_id: int) -> None:
+    """The in-app notification and, for a member who wants it and is away, the Web Push. The words are
+    "<streamer> starts in 10 minutes" and nothing else: no slot title, no stream title. Push follows the existing
+    rules: a streamer is named in a push only for a public stream, and the golive switch of push covers it."""
+    streamer = stream.get("owner_nickname") or stream.get("owner_username") or "Someone"
+    sid = int(stream["id"])
+    await send_notification(user_id, "stream_reminder", f"{streamer} starts in 10 minutes", "", {"stream_id": sid})
+
+    async def build(uid):
+        title = (f"{streamer} starts in 10 minutes" if stream.get("is_public")
+                 else "A stream you are interested in starts in 10 minutes")
+        return {"title": title, "body": "", "url": f"/watch/{sid}", "ref": f"remind-{sid}", "urgency": "high"}
+    await _push_dispatch([user_id], "golive", build)
+
+
+async def schedule_reminder_pass() -> int:
+    """One tick: the unsent marks whose occurrence starts within 10 minutes. For each: the entry must still
+    generate that occurrence (not moved, cancelled or started), the member must still be allowed to watch the
+    stream (else the mark is dropped and nothing is sent), then the mark is claimed and only then is anything
+    sent, so a restart cannot send it twice. Returns the number sent."""
+    global _schedule_last_prune
+    now = int(_schedule_now())
+    due = await db.rsvp_due(now, now + stream_schedule.REMINDER_LEAD_SECONDS)
+    sent = 0
+    if due:
+        entries, cancelled, started, users = {}, {}, {}, {}
+        for row in due:
+            eid, uid = row["entry_id"], row["user_id"]
+            if eid not in entries:
+                entries[eid] = await db.schedule_get(eid)
+                e = entries[eid]
+                if e:
+                    cancelled[eid] = (await db.schedule_cancelled_map([eid]))[eid]
+                    started[eid] = (await db.schedule_started_map([eid], now - 86400))[eid]
+            entry = entries[eid]
+            if not entry or not stream_schedule.is_occurrence(entry, row["occ_start"]) \
+                    or row["occ_start"] in cancelled[eid]:
+                await db.rsvp_drop(row["id"])               # moved, cancelled or gone: nothing stale
+                continue
+            if row["occ_start"] in started[eid]:
+                await db.rsvp_claim(uid, eid, row["occ_start"], now)   # it began early: no "starts in 10 minutes"
+                continue
+            if uid not in users:
+                users[uid] = await db.get_user_by_id(uid)
+            user = users[uid]
+            banned = await db.is_user_banned_from_stream(entry["stream_id"], uid) if user else False
+            # the stream is read fresh for every row, right before the access check: one made private while the
+            # pass runs is judged as private, and the push title is built from this read too
+            stream = await db.get_user_stream(entry["stream_id"]) if user else None
+            if not stream or not _stream_read_allowed(stream, uid, _schedule_role(user), False, banned):
+                await db.rsvp_drop(row["id"])               # lost access since the mark: dropped, nothing sent
+                continue
+            if not await db.rsvp_claim(uid, eid, row["occ_start"], now):
+                continue
+            try:
+                await _schedule_send_reminder(stream, uid)
+                sent += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Schedule reminder for stream {stream['id']} failed: {type(e).__name__}")
+    if now - _schedule_last_prune >= 3600:
+        _schedule_last_prune = now
+        await db.rsvp_prune_past(now - 7 * 86400)
+    return sent
+
+
+# ---- go-live: the slot the stream belongs to
+
+async def _schedule_note_go_live(stream: dict) -> None:
+    """The stream went live: if that is within the window of one of its slots (15 minutes before the start to 30
+    after), the slot is marked started (its countdown ends, no reminder follows) and its title is stored as a
+    suggestion for the owner. Nothing is renamed here. One indexed query when the stream has no schedule."""
+    now = int(_schedule_now())
+    entries = await db.schedule_entries_of_stream(stream["id"])
+    if not entries:
+        return
+    ids = [e["id"] for e in entries]
+    cancelled = await db.schedule_cancelled_map(ids)
+    started = await db.schedule_started_map(ids, now - 86400)
+    best = None
+    for e in entries:
+        occ = stream_schedule.occurrence_covering(e, now, cancelled[e["id"]], started[e["id"]])
+        if occ is not None and (best is None or abs(occ - now) < abs(best[1] - now)):
+            best = (e, occ)
+    if best:
+        await db.schedule_mark_started(best[0]["id"], best[1], now, best[0]["title"])
+
+
+# ---- the calendar feed
+
+_FEED_ADDR_LIMIT = (120, 600)        # requests per address per 10 minutes (every request, known token or not)
+_FEED_TOKEN_LIMIT = (30, 600)        # requests per token per 10 minutes
+_FEED_BUCKETS_MAX = 4096
+_feed_buckets: dict = {}
+_feed_clock = monotonic
+
+
+def _feed_rate_wait(key: str, limit: tuple) -> int:
+    """Count one request; 0 when allowed, else the seconds to wait."""
+    now = _feed_clock()
+    count, window = limit
+    hits = [t for t in _feed_buckets.get(key, ()) if now - t < window]
+    if len(hits) >= count:
+        _feed_buckets[key] = hits
+        return max(1, int(window - (now - hits[0])) + 1)
+    hits.append(now)
+    if key not in _feed_buckets and len(_feed_buckets) >= _FEED_BUCKETS_MAX:
+        for k in [k for k, v in _feed_buckets.items() if not v or now - v[-1] >= window]:
+            del _feed_buckets[k]
+        if len(_feed_buckets) >= _FEED_BUCKETS_MAX:
+            _feed_buckets.clear()
+    _feed_buckets[key] = hits
+    return 0
+
+
+_FEED_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"}
+
+
+def _feed_not_found() -> web.Response:
+    return web.Response(status=404, text="Not found", headers=dict(_FEED_HEADERS))
+
+
+async def http_schedule_feed(request: web.Request) -> web.Response:
+    """GET /api/streams/schedule/feed/{token}.ics: the member's calendar feed. The token in the path is the only
+    credential (no cookie, header or session is read or accepted) and belongs to this route alone. An unknown,
+    revoked or malformed token is the same 404. Rate limited per address and per token. What the feed holds is
+    decided now: entries of the streams the member follows, marked Interested on, or owns, and only those the
+    watch rule lets them see at this moment."""
+    wait = _feed_rate_wait("a:" + (get_client_ip(request) or "?"), _FEED_ADDR_LIMIT)
+    if wait:
+        return web.Response(status=429, text="Too many requests", headers={**_FEED_HEADERS, "Retry-After": str(wait)})
+    token = request.match_info.get("token", "")
+    digest = stream_schedule.hash_feed_token(token if len(token) <= 200 else token[:200])
+    user = await db.feed_token_user(digest)
+    if not user or not stream_schedule.feed_token_wellformed(token):
+        return _feed_not_found()
+    wait = _feed_rate_wait("t:" + digest, _FEED_TOKEN_LIMIT)
+    if wait:
+        return web.Response(status=429, text="Too many requests", headers={**_FEED_HEADERS, "Retry-After": str(wait)})
+    now = int(_schedule_now())
+    role = _schedule_role(user)
+    banned = await db.get_banned_stream_ids(user["id"])
+    rows = [r for r in await db.schedule_feed_candidates(user["id"]) if _schedule_may_watch(r, user["id"], role, banned)]
+    cancelled = await db.schedule_cancelled_map([r["id"] for r in rows])
+    items = []
+    for r in rows:
+        if not r["weekly"] and stream_schedule.occurrence_start(r, 0) + r["duration_min"] * 60 < now - 86400:
+            continue                                      # a one-off that ended yesterday or before
+        items.append({**r, "streamer": _schedule_streamer(r), "url": _watch_url(r["stream_id"]),
+                      "cancelled": sorted(cancelled[r["id"]])})
+    body = stream_schedule.build_calendar(items, Config.HOSTNAME or "localhost", now)
+    return web.Response(body=body.encode("utf-8"), content_type="text/calendar", charset="utf-8",
+                        headers={**_FEED_HEADERS, "Content-Disposition": 'inline; filename="schedule.ics"'})
+
+
+def _feed_url(token: str) -> str:
+    base = _public_base_url()
+    return f"{base}/api/streams/schedule/feed/{token}.ics" if base else f"/api/streams/schedule/feed/{token}.ics"
+
+
+async def http_schedule_feed_status(request: web.Request) -> web.Response:
+    """GET /api/me/schedule-feed: whether the caller has a feed token (never the token itself)."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    created = await db.feed_token_created(ctx[1])
+    return web.json_response({"active": created is not None, "created_at": created})
+
+
+async def http_schedule_feed_create(request: web.Request) -> web.Response:
+    """POST /api/me/schedule-feed: make the caller's feed token, or replace it (the old address stops working at
+    once). The address is shown in this answer only; only a hash is stored."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    token_value = stream_schedule.new_feed_token()
+    now = int(_schedule_now())
+    await db.feed_token_set(ctx[1], stream_schedule.hash_feed_token(token_value), now)
+    return web.json_response({"active": True, "created_at": now, "url": _feed_url(token_value)},
+                             headers={"Cache-Control": "no-store"})
+
+
+async def http_schedule_feed_revoke(request: web.Request) -> web.Response:
+    """DELETE /api/me/schedule-feed: revoke the feed token. Its address answers 404 from now on."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    await db.feed_token_delete(ctx[1])
+    return web.json_response({"active": False})
 
 
 async def http_get_open_streams(request: web.Request) -> web.Response:
@@ -30407,6 +30920,12 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams/public", http_get_public_streams)
     app.router.add_get("/api/streams/live", http_live_now)
     app.router.add_get("/api/streams/games", http_stream_games)
+    # The schedule's fixed paths come before /api/streams/{id} (and the feed carries its own token, no login)
+    app.router.add_get("/api/streams/schedule/upcoming", http_schedule_upcoming)
+    app.router.add_get("/api/streams/schedule/feed/{token}.ics", http_schedule_feed)
+    app.router.add_get("/api/me/schedule-feed", http_schedule_feed_status)
+    app.router.add_post("/api/me/schedule-feed", http_schedule_feed_create)
+    app.router.add_delete("/api/me/schedule-feed", http_schedule_feed_revoke)
     app.router.add_get("/api/me/follows", http_my_follows)
     app.router.add_get("/api/push/config", http_push_config)
     app.router.add_get("/api/push/subscriptions", http_push_list)
@@ -30423,6 +30942,15 @@ def create_app() -> web.Application:
     app.router.add_put("/api/streams/{id}/follow", http_follow_stream)
     app.router.add_delete("/api/streams/{id}/follow", http_unfollow_stream)
     app.router.add_get("/api/streams/open", http_get_open_streams)
+    app.router.add_get("/api/streams/{id}/schedule", http_schedule_get)
+    app.router.add_post("/api/streams/{id}/schedule", http_schedule_create)
+    app.router.add_delete("/api/streams/{id}/schedule/suggestion", http_schedule_suggestion_dismiss)
+    app.router.add_put("/api/streams/{id}/schedule/{entry_id}", http_schedule_update)
+    app.router.add_delete("/api/streams/{id}/schedule/{entry_id}", http_schedule_delete)
+    app.router.add_post("/api/streams/{id}/schedule/{entry_id}/cancel/{start}", http_schedule_cancel)
+    app.router.add_delete("/api/streams/{id}/schedule/{entry_id}/cancel/{start}", http_schedule_restore)
+    app.router.add_post("/api/streams/{id}/schedule/{entry_id}/rsvp/{start}", http_schedule_rsvp)
+    app.router.add_delete("/api/streams/{id}/schedule/{entry_id}/rsvp/{start}", http_schedule_unrsvp)
     app.router.add_get("/api/streams/{id}", http_get_user_stream)
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
@@ -30929,6 +31457,9 @@ class PortalServer:
         # (runs in staged mode too; it only reads and writes the database and closes sockets)
         asyncio.create_task(self._grant_expiry_task())
 
+        # Stream schedule reminders: one indexed query per tick, nothing else while idle; held so stop() ends it
+        self._schedule_task = asyncio.create_task(self._schedule_reminder_task())
+
         # Connection health checks: one task, a no-op while the setting is off (the default); in
         # staged mode it probes only the loopback test targets the harness names (connection_health.py)
         _health_monitor.start()
@@ -31060,6 +31591,17 @@ class PortalServer:
                 break
             except Exception as e:
                 logger.error(f"Grant expiry sweep error: {e}")
+
+    async def _schedule_reminder_task(self) -> None:
+        """Every 30 s: schedule_reminder_pass(). Cheap when idle (one range query on the occ_start index)."""
+        while True:
+            try:
+                await asyncio.sleep(_schedule_tick_interval())
+                await schedule_reminder_pass()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Schedule reminder pass error: {type(e).__name__}: {e}")
 
     async def _data_cleanup_task(self) -> None:
         """Unified data retention cleanup — interval configurable via settings."""
@@ -31380,6 +31922,10 @@ class PortalServer:
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
+        task = getattr(self, "_schedule_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await _health_monitor.stop()
         if _push_pusher is not None:
             await _push_pusher.shutdown()

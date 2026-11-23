@@ -55,11 +55,14 @@ SENSITIVE_PATTERNS = [
     # Incoming-webhook URLs carry their bearer token as the last path segment
     # (/api/webhooks/incoming/<token>); the token has no recognisable prefix.
     (re.compile(r'(/api/webhooks/incoming/)[^/\s?"\']+'), r'\1[REDACTED]'),
+    # The calendar feed carries its read-only token as the last path segment (/api/streams/schedule/feed/<token>.ics);
+    # the token is not prefixed by anything the other rules know, and proxies log the path.
+    (re.compile(r'(/api/streams/schedule/feed/)[^/\s?"\']+'), r'\1[REDACTED]'),
 ]
 
 # Cheap pre-check so ordinary log lines skip the full pattern list.
 _QUICK_CHECK = re.compile(
-    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/',
+    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/|/api/streams/schedule/feed/',
     re.IGNORECASE,
 )
 

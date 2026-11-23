@@ -1376,6 +1376,67 @@ MIGRATIONS = [
         FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_conn_health_conn ON connection_health_log(connection_id, id)",
+    # Stream schedule (1.23.0): entries of a stream's schedule, cancelled and started occurrences, the
+    # members' "Interested" marks (one row per occurrence, reminded_at is the sent mark) and the calendar
+    # feed token of a member (only its hash is stored).
+    """CREATE TABLE IF NOT EXISTS stream_schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stream_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        local_start TEXT NOT NULL,
+        tz TEXT NOT NULL,
+        duration_min INTEGER NOT NULL DEFAULT 60,
+        weekly INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_schedule_stream ON stream_schedule(stream_id)",
+    """CREATE TABLE IF NOT EXISTS stream_schedule_cancelled (
+        entry_id INTEGER NOT NULL,
+        occ_start INTEGER NOT NULL,
+        PRIMARY KEY (entry_id, occ_start),
+        FOREIGN KEY (entry_id) REFERENCES stream_schedule(id) ON DELETE CASCADE
+    )""",
+    """CREATE TABLE IF NOT EXISTS stream_schedule_started (
+        entry_id INTEGER NOT NULL,
+        occ_start INTEGER NOT NULL,
+        started_at INTEGER NOT NULL,
+        suggestion TEXT,
+        PRIMARY KEY (entry_id, occ_start),
+        FOREIGN KEY (entry_id) REFERENCES stream_schedule(id) ON DELETE CASCADE
+    )""",
+    """CREATE TABLE IF NOT EXISTS stream_rsvps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        entry_id INTEGER NOT NULL,
+        occ_start INTEGER NOT NULL,
+        reminded_at INTEGER,
+        created_at INTEGER NOT NULL,
+        UNIQUE (user_id, entry_id, occ_start),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (entry_id) REFERENCES stream_schedule(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_rsvps_occ ON stream_rsvps(occ_start)",
+    "CREATE INDEX IF NOT EXISTS idx_stream_rsvps_entry ON stream_rsvps(entry_id, occ_start)",
+    # The sent mark outlives the Interested mark: taking the mark back, a cancel, or a move deletes the row,
+    # and marking again must not bring the reminder back (pruned with past occurrences).
+    """CREATE TABLE IF NOT EXISTS stream_rsvp_sent (
+        user_id INTEGER NOT NULL,
+        entry_id INTEGER NOT NULL,
+        occ_start INTEGER NOT NULL,
+        PRIMARY KEY (user_id, entry_id, occ_start),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (entry_id) REFERENCES stream_schedule(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_rsvp_sent_occ ON stream_rsvp_sent(occ_start)",
+    """CREATE TABLE IF NOT EXISTS schedule_feed_tokens (
+        user_id INTEGER PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2956,6 +3017,9 @@ class Database:
             ("stream_bans", "DELETE FROM stream_bans WHERE user_id = ?"),
             # Stream follows
             ("stream_follow", "DELETE FROM stream_follow WHERE user_id = ?"),
+            ("stream_rsvps", "DELETE FROM stream_rsvps WHERE user_id = ?"),
+            ("stream_rsvp_sent", "DELETE FROM stream_rsvp_sent WHERE user_id = ?"),
+            ("schedule_feed_tokens", "DELETE FROM schedule_feed_tokens WHERE user_id = ?"),
             ("push_subscriptions", "DELETE FROM push_subscriptions WHERE user_id = ?"),
             ("push_prefs", "DELETE FROM push_prefs WHERE user_id = ?"),
             # Notification levels per channel
@@ -5563,6 +5627,288 @@ class Database:
             """SELECT u.id, u.role, u.is_admin FROM stream_follow f
                JOIN users u ON u.id = f.user_id WHERE f.stream_id = ? ORDER BY u.id""", (stream_id,))
         return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Stream schedule (1.23.0). Who may see an entry is decided by the caller (the watch rule);
+    # nothing here filters by visibility except where a column says so.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _schedule_row(row) -> dict:
+        d = dict(row)
+        d["weekly"] = bool(d.get("weekly"))
+        return d
+
+    async def schedule_create(self, stream_id: int, owner_id: int, clean: dict, now: int,
+                              per_stream: int, per_owner: int):
+        """Insert an entry unless a cap is reached. The count and the insert are one statement, so
+        parallel requests cannot pass a cap together. Returns the new id, or "stream_limit" / "owner_limit"."""
+        cursor = await self.conn.execute(
+            """INSERT INTO stream_schedule (stream_id, title, local_start, tz, duration_min, weekly,
+                                            created_by, created_at, updated_at)
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+               WHERE (SELECT COUNT(*) FROM stream_schedule WHERE stream_id = ?) < ?
+                 AND (SELECT COUNT(*) FROM stream_schedule ss JOIN user_streams us ON us.id = ss.stream_id
+                      WHERE us.user_id = ?) < ?""",
+            (stream_id, clean["title"], clean["local_start"], clean["tz"], clean["duration_min"],
+             int(clean["weekly"]), owner_id, now, now, stream_id, per_stream, owner_id, per_owner))
+        await self.conn.commit()
+        if cursor.rowcount:
+            return cursor.lastrowid
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM stream_schedule WHERE stream_id = ?", (stream_id,))
+        return "stream_limit" if (await cursor.fetchone())["n"] >= per_stream else "owner_limit"
+
+    async def schedule_get(self, entry_id: int):
+        cursor = await self.conn.execute("SELECT * FROM stream_schedule WHERE id = ?", (entry_id,))
+        row = await cursor.fetchone()
+        return self._schedule_row(row) if row else None
+
+    async def schedule_entries_of_stream(self, stream_id: int) -> list:
+        cursor = await self.conn.execute(
+            "SELECT * FROM stream_schedule WHERE stream_id = ? ORDER BY id", (stream_id,))
+        return [self._schedule_row(r) for r in await cursor.fetchall()]
+
+    async def schedule_update(self, entry_id: int, clean: dict, now: int, moved: bool) -> bool:
+        """Change an entry. When its time moved, the interested marks and the cancellations of occurrences that
+        have not happened are dropped (they named times that no longer exist)."""
+        sets = {k: (int(v) if k == "weekly" else v) for k, v in clean.items()}
+        sets["updated_at"] = now
+        cols = ", ".join(f"{k} = ?" for k in sets)
+        cursor = await self.conn.execute(f"UPDATE stream_schedule SET {cols} WHERE id = ?",
+                                         list(sets.values()) + [entry_id])
+        if moved and cursor.rowcount:
+            await self.conn.execute("DELETE FROM stream_rsvps WHERE entry_id = ? AND occ_start >= ?", (entry_id, now))
+            await self.conn.execute(
+                "DELETE FROM stream_schedule_cancelled WHERE entry_id = ? AND occ_start >= ?", (entry_id, now))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def schedule_delete(self, entry_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM stream_schedule WHERE id = ?", (entry_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def schedule_cancel_occurrence(self, entry_id: int, occ_start: int, now: int, cap: int) -> bool:
+        """Cancel one occurrence: the interested marks for it go with it. Older cancellations beyond the cap
+        are forgotten (only the newest `cap` are kept). False when it was cancelled already."""
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO stream_schedule_cancelled (entry_id, occ_start) VALUES (?, ?)",
+            (entry_id, occ_start))
+        added = cursor.rowcount > 0
+        await self.conn.execute("DELETE FROM stream_rsvps WHERE entry_id = ? AND occ_start = ?", (entry_id, occ_start))
+        await self.conn.execute(
+            """DELETE FROM stream_schedule_cancelled WHERE entry_id = ? AND occ_start NOT IN
+               (SELECT occ_start FROM stream_schedule_cancelled WHERE entry_id = ? ORDER BY occ_start DESC LIMIT ?)""",
+            (entry_id, entry_id, cap))
+        await self.conn.commit()
+        return added
+
+    async def schedule_restore_occurrence(self, entry_id: int, occ_start: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_schedule_cancelled WHERE entry_id = ? AND occ_start = ?", (entry_id, occ_start))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def schedule_cancelled_map(self, entry_ids) -> dict:
+        ids = list(entry_ids)
+        out = {i: set() for i in ids}
+        for k in range(0, len(ids), 400):
+            chunk = ids[k:k + 400]
+            cursor = await self.conn.execute(
+                f"SELECT entry_id, occ_start FROM stream_schedule_cancelled WHERE entry_id IN ({','.join('?' * len(chunk))})",
+                chunk)
+            for r in await cursor.fetchall():
+                out[r["entry_id"]].add(r["occ_start"])
+        return out
+
+    async def schedule_started_map(self, entry_ids, since: int) -> dict:
+        """{entry_id: {occ_start}} of occurrences marked started at or after `since` (older ones cannot matter)."""
+        ids = list(entry_ids)
+        out = {i: set() for i in ids}
+        for k in range(0, len(ids), 400):
+            chunk = ids[k:k + 400]
+            cursor = await self.conn.execute(
+                f"""SELECT entry_id, occ_start FROM stream_schedule_started
+                    WHERE occ_start >= ? AND entry_id IN ({','.join('?' * len(chunk))})""", [since] + chunk)
+            for r in await cursor.fetchall():
+                out[r["entry_id"]].add(r["occ_start"])
+        return out
+
+    async def schedule_mark_started(self, entry_id: int, occ_start: int, now: int, suggestion) -> bool:
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO stream_schedule_started (entry_id, occ_start, started_at, suggestion)
+               VALUES (?, ?, ?, ?)""", (entry_id, occ_start, now, suggestion))
+        # The stream is live now: nobody needs "starts in 10 minutes" for this occurrence any more
+        await self.conn.execute(
+            """INSERT OR IGNORE INTO stream_rsvp_sent (user_id, entry_id, occ_start)
+               SELECT user_id, entry_id, occ_start FROM stream_rsvps
+               WHERE entry_id = ? AND occ_start = ? AND reminded_at IS NULL""", (entry_id, occ_start))
+        await self.conn.execute(
+            "UPDATE stream_rsvps SET reminded_at = ? WHERE entry_id = ? AND occ_start = ? AND reminded_at IS NULL",
+            (now, entry_id, occ_start))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def schedule_pending_suggestion(self, stream_id: int, since: int):
+        """The newest title offered to the owner for this stream since `since` that nobody dismissed."""
+        cursor = await self.conn.execute(
+            """SELECT st.entry_id, st.occ_start, st.suggestion FROM stream_schedule_started st
+               JOIN stream_schedule ss ON ss.id = st.entry_id
+               WHERE ss.stream_id = ? AND st.suggestion IS NOT NULL AND st.started_at >= ?
+               ORDER BY st.started_at DESC LIMIT 1""", (stream_id, since))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def schedule_clear_suggestions(self, stream_id: int) -> int:
+        cursor = await self.conn.execute(
+            """UPDATE stream_schedule_started SET suggestion = NULL WHERE suggestion IS NOT NULL AND entry_id IN
+               (SELECT id FROM stream_schedule WHERE stream_id = ?)""", (stream_id,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def schedule_visible_candidates(self, user_id: int, is_admin: bool, limit: int = 1000) -> list:
+        """Entries joined to their stream and streamer, narrowed in SQL to streams a member could watch
+        (public, or their own, or everything for an administrator). The caller still applies the watch rule
+        (bans, the exact role) to every row."""
+        where = "" if is_admin else "WHERE us.is_public = 1 OR us.user_id = ?"
+        cursor = await self.conn.execute(
+            f"""SELECT ss.*, us.name AS stream_name, us.user_id AS stream_user_id, us.is_public, us.allow_unauthenticated,
+                       us.is_live, u.username AS owner_username, u.nickname AS owner_nickname
+                FROM stream_schedule ss JOIN user_streams us ON us.id = ss.stream_id
+                LEFT JOIN users u ON u.id = us.user_id {where} ORDER BY ss.id LIMIT ?""",
+            ([] if is_admin else [user_id]) + [limit])
+        return [self._schedule_row(r) for r in await cursor.fetchall()]
+
+    async def schedule_feed_candidates(self, user_id: int, limit: int = 1000) -> list:
+        """Entries of the streams a member follows, has marked Interested on, or owns (the feed's scope),
+        joined to the stream and streamer. The caller applies the watch rule to every row."""
+        cursor = await self.conn.execute(
+            """SELECT ss.*, us.name AS stream_name, us.user_id AS stream_user_id, us.is_public, us.allow_unauthenticated,
+                      us.is_live, u.username AS owner_username, u.nickname AS owner_nickname
+               FROM stream_schedule ss JOIN user_streams us ON us.id = ss.stream_id
+               LEFT JOIN users u ON u.id = us.user_id
+               WHERE us.user_id = ?1
+                  OR ss.stream_id IN (SELECT stream_id FROM stream_follow WHERE user_id = ?1)
+                  OR ss.id IN (SELECT entry_id FROM stream_rsvps WHERE user_id = ?1)
+               ORDER BY ss.id LIMIT ?2""", (user_id, limit))
+        return [self._schedule_row(r) for r in await cursor.fetchall()]
+
+    async def rsvp_add(self, user_id: int, entry_id: int, occ_start: int, now: int, cap: int, reminded: bool) -> str:
+        """Mark Interested. 'added', 'exists' or 'limit' (the member's future marks reached the cap).
+        `reminded` stores the sent mark at once (no reminder for it); so does an earlier sent mark of the same
+        (member, entry, occurrence), which survives the mark being taken back."""
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO stream_rsvps (user_id, entry_id, occ_start, reminded_at, created_at)
+               SELECT ?1, ?2, ?3,
+                      CASE WHEN ?4 OR EXISTS (SELECT 1 FROM stream_rsvp_sent
+                                              WHERE user_id = ?1 AND entry_id = ?2 AND occ_start = ?3)
+                           THEN ?5 END, ?5
+               WHERE (SELECT COUNT(*) FROM stream_rsvps WHERE user_id = ?1 AND occ_start >= ?6) < ?7""",
+            (user_id, entry_id, occ_start, 1 if reminded else 0, now, now - 3600, cap))
+        await self.conn.commit()
+        if cursor.rowcount:
+            return "added"
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM stream_rsvps WHERE user_id = ? AND entry_id = ? AND occ_start = ?",
+            (user_id, entry_id, occ_start))
+        return "exists" if await cursor.fetchone() else "limit"
+
+    async def rsvp_remove(self, user_id: int, entry_id: int, occ_start: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_rsvps WHERE user_id = ? AND entry_id = ? AND occ_start = ?",
+            (user_id, entry_id, occ_start))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def rsvp_of_user(self, user_id: int, entry_ids, since: int) -> set:
+        """{(entry_id, occ_start)} this member marked, from `since` on. Their own marks only."""
+        ids = list(entry_ids)
+        out = set()
+        for k in range(0, len(ids), 400):
+            chunk = ids[k:k + 400]
+            cursor = await self.conn.execute(
+                f"""SELECT entry_id, occ_start FROM stream_rsvps WHERE user_id = ? AND occ_start >= ?
+                    AND entry_id IN ({','.join('?' * len(chunk))})""", [user_id, since] + chunk)
+            out.update((r["entry_id"], r["occ_start"]) for r in await cursor.fetchall())
+        return out
+
+    async def rsvp_counts(self, entry_ids, since: int) -> dict:
+        """{(entry_id, occ_start): n} for the owner's view: a number, never who."""
+        ids = list(entry_ids)
+        out = {}
+        for k in range(0, len(ids), 400):
+            chunk = ids[k:k + 400]
+            cursor = await self.conn.execute(
+                f"""SELECT entry_id, occ_start, COUNT(*) AS n FROM stream_rsvps WHERE occ_start >= ?
+                    AND entry_id IN ({','.join('?' * len(chunk))}) GROUP BY entry_id, occ_start""", [since] + chunk)
+            out.update({(r["entry_id"], r["occ_start"]): r["n"] for r in await cursor.fetchall()})
+        return out
+
+    async def rsvp_due(self, after: int, until: int, limit: int = 500) -> list:
+        """Unsent marks whose occurrence starts in (after, until]: the one query of the reminder tick, on
+        the occ_start index. Empty on a quiet portal."""
+        cursor = await self.conn.execute(
+            """SELECT id, user_id, entry_id, occ_start FROM stream_rsvps
+               WHERE occ_start > ? AND occ_start <= ? AND reminded_at IS NULL ORDER BY occ_start, id LIMIT ?""",
+            (after, until, limit))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def rsvp_claim(self, user_id: int, entry_id: int, occ_start: int, now: int) -> bool:
+        """Take the right to send this reminder. Only one caller ever gets True, also across restarts. The
+        claim is the insert of the sent mark, keyed by (member, entry, occurrence) and not by row id, so a
+        mark taken back or taken again while this runs can neither lose the claim nor leave the new row unsent.
+        It is taken only while the mark still exists: a mark taken back, or dropped by a cancel, a move or a
+        delete since the due list was read, claims nothing and so sends nothing."""
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO stream_rsvp_sent (user_id, entry_id, occ_start)
+               SELECT user_id, entry_id, occ_start FROM stream_rsvps
+               WHERE user_id = ? AND entry_id = ? AND occ_start = ?""",
+            (user_id, entry_id, occ_start))
+        claimed = cursor.rowcount == 1
+        # whoever won, the row (this one or one made since) leaves the due list
+        await self.conn.execute(
+            """UPDATE stream_rsvps SET reminded_at = ?
+               WHERE user_id = ? AND entry_id = ? AND occ_start = ? AND reminded_at IS NULL""",
+            (now, user_id, entry_id, occ_start))
+        await self.conn.commit()
+        return claimed
+
+    async def rsvp_drop(self, rsvp_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM stream_rsvps WHERE id = ?", (rsvp_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def rsvp_prune_past(self, before: int) -> int:
+        cursor = await self.conn.execute("DELETE FROM stream_rsvps WHERE occ_start < ?", (before,))
+        await self.conn.execute("DELETE FROM stream_rsvp_sent WHERE occ_start < ?", (before,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def feed_token_set(self, user_id: int, token_hash: str, now: int) -> None:
+        await self.conn.execute(
+            """INSERT INTO schedule_feed_tokens (user_id, token_hash, created_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at""",
+            (user_id, token_hash, now))
+        await self.conn.commit()
+
+    async def feed_token_delete(self, user_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM schedule_feed_tokens WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def feed_token_created(self, user_id: int):
+        cursor = await self.conn.execute("SELECT created_at FROM schedule_feed_tokens WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row["created_at"] if row else None
+
+    async def feed_token_user(self, token_hash: str):
+        """The member a feed token (by hash) belongs to, with their current role, or None."""
+        cursor = await self.conn.execute(
+            """SELECT u.id, u.username, u.role, u.is_admin FROM schedule_feed_tokens t
+               JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?""", (token_hash,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def get_live_streams(self) -> list[dict]:
         """Streams that are live now, with the streamer's names and no key at all."""

@@ -198,8 +198,8 @@ sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to)
 index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
-check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0)",
-      stated == {"48"} and real_v == "49", f"stated {stated}, index.html {real_v}")
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0 and again in 1.23.0)",
+      stated == {"48"} and real_v == "50", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
@@ -617,8 +617,8 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "59")}  # stated in 1.20.0, loaded since 1.22.0
-check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0)",
+_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "50")}  # stated in 1.20.0, loaded since 1.22.0 and 1.23.0
+check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
 for name, needles in (
@@ -1023,6 +1023,45 @@ check("1.22.0: Not tested no longer says the 1.21.0 server was never started on 
 check("1.22.0: the Reference lookup works on the real page, so the notes no longer say it answers 'The lookup failed.'",
       "answered \"The lookup failed.\"" not in _nt22 and (ROOT / "tests" / "test_portal_global.py").is_file())
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
+
+
+# --- 1.23.0: stream schedule, RSVP, reminders and the calendar feed ---------------------------------
+m23 = re.search(r"### Upgrade notes for 1\.23\.0\n(.*?)(?=\n### Upgrade notes for 1\.22\.0)", text, re.S)
+_sec23 = m23.group(1) if m23 else ""
+low23 = _sec23.lower()
+check("1.23.0 notes sit directly before the 1.22.0 notes", bool(m23))
+for name, needles in {
+        "who edits and who sees": ("only the stream's owner", "stream moderators", "`_stream_read_allowed`", "asked again on every read",
+                                   "never who", "visitors", "sends anyone who is not signed in"),
+        "entries and caps": ("100 characters", "iana zone", "5 to 1440", "20 entries per stream", "60 per owner", "200 upcoming"),
+        "reminders": ("every 30 seconds", "9:30 before", "claimed in the database", "never sent twice", "across a restart",
+                      "a mark made inside the 10 minutes", "at most one", "starts in 10 minutes", "no slot title"),
+        "push": ("existing push path", "streams you follow going live", "names the streamer only for a public stream"),
+        "go-live": ("15 minutes before to 30 minutes after", "offered to the owner", "nothing is renamed by the server"),
+        "feed": ("no login", "256 random bits", "sha-256 hash", "shown once", "regenerate", "revoke", "accepted by this route alone",
+                 "`vtimezone`", "`rrule:freq=weekly`", "`exdate;tzid=", "25 october 2026", "75 octets", "crlf", "`no-store`",
+                 "`referrer-policy: no-referrer`", "identical `404`", "`[redacted]`", "proxies"),
+        "behaviour, breaking, database, rollback, not tested": ("behaviour changes", "breaking changes", "`if not exists`", "250 mb",
+                                                               "1.22.0's database layer", "not tested", "cloudflare",
+                                                               "fakes only", "no calendar application"),
+}.items():
+    check(f"1.23.0 states: {name}", all(n in low23 for n in needles), str([n for n in needles if n not in low23]))
+import stream_schedule as _ss23
+check("1.23.0: the numbers stated are the ones in the code",
+      _ss23.TITLE_MAX == 100 and (_ss23.DURATION_MIN, _ss23.DURATION_MAX) == (5, 1440) and _ss23.MAX_ENTRIES_PER_STREAM == 20
+      and _ss23.MAX_ENTRIES_PER_OWNER == 60 and _ss23.MAX_FUTURE_RSVPS_PER_MEMBER == 200 and _ss23.MAX_CANCELLED_PER_ENTRY == 60
+      and _ss23.REMINDER_LEAD_SECONDS == 600 and _ss23.GOLIVE_BEFORE_SECONDS == 900 and _ss23.GOLIVE_AFTER_SECONDS == 1800
+      and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
+check("1.23.0: the static versions stated are the ones the pages load",
+      "`stream-schedule.js` is new at version 1" in _sec23 and "`streams.js` is version 50" in _sec23
+      and "/static/js/stream-schedule.js?v=1" in (ROOT / "static" / "watch.html").read_text()
+      and "/static/js/streams.js?v=50" in (ROOT / "static" / "index.html").read_text())
+_api23 = (ROOT / "docs" / "API.md").read_text()
+_docs23 = (ROOT / "static" / "api-docs.html").read_text()
+check("1.23.0: every schedule route is in the API reference and on the API page",
+      all(r in _api23 and r in _docs23 for r in ("/api/streams/schedule/upcoming", "/api/streams/{id}/schedule", "/rsvp/{start}",
+                                                  "/api/streams/schedule/feed/{token}.ics", "/api/me/schedule-feed")))
+check("1.23.0: the README feature section mentions the schedule", "**Schedule.**" in text)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

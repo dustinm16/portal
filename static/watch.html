@@ -939,6 +939,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=51"></script>
+    <script src="/static/js/stream-schedule.js?v=1"></script>
     <script src="/static/js/voice.js?v=15"></script>
     <script>
         let streamId = null;
@@ -1166,8 +1167,16 @@
         }
 
         function showOfflineMessage() {
+            // The poll calls this every 15 seconds: the offline page (and the countdown in it) is drawn once;
+            // the live indicator, the viewer count and the picture-in-picture button are settled every time
+            if (document.querySelector('#video-container .stream-offline[data-offline="1"]')) {
+                document.getElementById('live-indicator').style.display = 'none';
+                document.getElementById('viewer-count').style.display = 'none';
+                updatePipButton();
+                return;
+            }
             document.getElementById('video-container').innerHTML = `
-                <div class="stream-offline">
+                <div class="stream-offline" data-offline="1">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
                     </svg>
@@ -1177,6 +1186,13 @@
             document.getElementById('live-indicator').style.display = 'none';
             document.getElementById('viewer-count').style.display = 'none';
             updatePipButton();
+            // Next scheduled occurrence: a countdown and an Interested toggle, for a signed-in member who may watch
+            const offline = document.querySelector('#video-container .stream-offline');
+            if (offline && window.StreamSchedule && streamData) {
+                const holder = document.createElement('div');
+                offline.appendChild(holder);
+                window.StreamSchedule.mountWatch(holder, streamData, currentUser);
+            }
         }
 
         function showEncodingMessage() {

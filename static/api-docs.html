@@ -1799,6 +1799,61 @@
                 </div>
 
                 <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/schedule/upcoming</span>
+                        <span class="endpoint-desc">Next scheduled occurrences the member may watch</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>(1.23.0) <code>{"now", "occurrences": [{"entry_id", "stream_id", "stream_name", "streamer", "title", "start" (UTC epoch seconds), "duration_min", "recurring", "interested" (the caller's own mark), "live"}]}</code>, soonest first, within 14 days, <code>?limit=</code> 1 to 50. Only streams the caller may watch (the watch rule, asked again on every read); the owner of a stream gets <code>interested_count</code>, a number and never names. Registered before <code>/api/streams/{id}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/{id}/schedule</span>
+                        <span class="endpoint-desc">A stream's schedule</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>(1.23.0) Next occurrences for anyone who may watch the stream (a stream they may not watch answers the same <code>404</code> as an unknown one); for the owner also the entries in full, counts of interested members and the title offered at the last go-live (<code>suggestion</code>, never applied by the server).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/schedule</span>
+                        <span class="endpoint-desc">Add a schedule entry (owner only)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>(1.23.0) <code>{"title" (max 100), "start": "2026-12-04T21:00", "tz": "Europe/Berlin", "duration_min": 90, "recurrence": "weekly"}</code>. A weekly entry keeps its local time across daylight saving changes. <code>400</code> for a bad field, <code>409</code> at 20 entries per stream or 60 per member. Only the stream's owner: an administrator and a chat moderator get <code>404</code>. <code>PUT</code> and <code>DELETE /api/streams/{id}/schedule/{entry_id}</code> change or cancel the whole entry; <code>POST</code> and <code>DELETE /api/streams/{id}/schedule/{entry_id}/cancel/{start}</code> cancel and restore one occurrence; <code>DELETE /api/streams/{id}/schedule/suggestion</code> dismisses the offered title.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/schedule/{entry_id}/rsvp/{start}</span>
+                        <span class="endpoint-desc">Mark Interested in one occurrence</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>(1.23.0) One reminder follows 10 minutes before the start (an in-app notification and, for members with a device who want golive pushes, a Web Push: "<streamer> starts in 10 minutes" and nothing more). <code>DELETE</code> on the same path takes the mark back. A member who loses access before the start gets nothing. <code>409</code> at 200 marks.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/schedule/feed/{token}.ics</span>
+                        <span class="endpoint-desc">Calendar feed (token in the path, no login)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>(1.23.0) <code>text/calendar</code>, <code>no-store</code>, <code>no-referrer</code>, no cookie. Entries of streams the token's member follows, marked Interested on or owns, and only those they may watch now. Weekly entries carry <code>DTSTART;TZID</code>, <code>RRULE:FREQ=WEEKLY</code>, <code>EXDATE</code> and a VTIMEZONE. Unknown or revoked token: <code>404</code>; rate limited per token and address. The token is in the URL and may be logged by proxies on the way. <code>GET</code>, <code>POST</code> and <code>DELETE /api/me/schedule-feed</code> show the status, make or replace the token (the address is shown once) and revoke it.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/streams/live</span>
