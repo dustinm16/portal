@@ -897,7 +897,7 @@ for name, needles in {
         "storage": ("`block_refs`", "1 hour", "10,000 requests from one blocked address are one row", "60 new ids are made a minute", "`overflow`",
                     "5000 rows", "7 days", "never returned by the lookup"),
         "lookup": ("`get /api/admin/blocks/ref/{ref}`", "20 lookups a minute", "same `404`", "before the id is looked at",
-                   "`static/js/block-ref-admin.js`", "`delete /api/admin/blocked-ips/{ip}?ref=...`", "`ip_unblocked`"),
+                   "`static/js/block-ref-admin.js`", "`delete /api/admin/blocked-ips/{ip}?ref=...`", "`ip_unblocked`", "`block_ref_lookup`"),
         "behaviour, breaking, database, not tested": ("behaviour changes", "breaking changes", "`create table if not exists block_refs`",
                                                       "1.21.0 starts on the migrated database", "not tested", "cloudflare", "fakes only",
                                                       "not proven at all", "scanner blocking and the sign-in ban are unchanged"),
@@ -910,8 +910,8 @@ check("1.22.0: the bounds stated for reference IDs are the ones in the code",
 check("1.22.0: the script version stated for the lookup is the one the admin page loads",
       "`block-ref-admin.js` v1" in _sec22 and "/static/js/block-ref-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text())
 check("1.22.0: reference IDs are in the API reference and the API page",
-      all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref="))
-      and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=")))
+      all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=", "block_ref_lookup"))
+      and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/admin/blocks/ref/{ref}", "ABCD-EFGH", "overflow", "?ref=", "block_ref_lookup")))
 check("the README feature section names the reference IDs",
       "**Reference IDs on block and rate-limit pages.**" in text)
 # --- 1.22.0: dashboard organising -----------------------------------------------------------------

@@ -403,6 +403,16 @@ async def e2e_unit():
         async with sa.get(base + "/api/admin/blocks/ref/EXPIRED2") as r:
             check("an expired ID gets the same 404 and body", (r.status, await r.read(), r.headers.get("Content-Type")) == outs[0])
 
+        # every lookup that passed the role check is one audit entry; the refused ones leave none
+        looks = sorted(await server.db.get_audit_log(limit=100, action="block_ref_lookup"), key=lambda x: x["id"])
+        det = [json.loads(x["details"]) for x in looks]
+        check("each lookup by an administrator is one audit entry (2 found, 5 not found), none for the member or the signed-out client",
+              len(looks) == 7 and all(x["actor_id"] == ids["sa"] for x in looks)
+              and [d["found"] for d in det] == [True, True] + [False] * 5, str(looks))
+        check("the entry names the reference, and a text that is not an ID is not stored",
+              det[0]["ref"] == ref and det[1]["ref"] == ref and det[2]["ref"] == "ZZZZ-ZZZZ"
+              and det[3]["ref"] == "(not an ID)" and "nonsense" not in json.dumps(looks) and "AAAA" not in json.dumps(looks), str(det))
+
         # unblock from the lookup uses the existing route and is audited
         async with sa.delete(base + f"/api/admin/blocked-ips/{data['address']}?ref={ref}") as r:
             check("the one-click unblock is the existing route", r.status == 200, str(r.status))

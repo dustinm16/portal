@@ -15387,6 +15387,13 @@ async def http_block_ref_lookup(request: web.Request) -> web.Response:
             del _ref_lookup_times[uid]
     ref = blockref.normalize(request.match_info.get("ref", ""))
     row = await db.get_block_ref(ref or "-", blockref.MAX_AGE_DAYS)
+    # One audit entry per lookup that got this far: who, which ID (what was typed is never stored,
+    # a text that is not an ID is only noted as such) and whether a row was found.
+    admin_user = await db.get_user_by_id(token.user_id)
+    shown = blockref.display(ref) if ref else "(not an ID)"
+    await audit_log("block_ref_lookup", token.user_id, (admin_user or {}).get("username") or "admin",
+                    target_type="block_ref", target_name=shown,
+                    details={"ref": shown, "found": bool(row)})
     if not row:
         return web.json_response({"error": "Not found"}, status=404, headers={"Cache-Control": "no-store"})
     block = None

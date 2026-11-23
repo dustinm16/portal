@@ -4122,6 +4122,8 @@ Response (200): `{"ref", "kind": "block" | "limit" | "overflow", "limiter" ("ip_
 
 **Errors**: `401` not signed in; `403` not an administrator (checked before the ID is read); `404` an unknown, malformed or expired ID (one answer for all three); `429` more than 20 lookups a minute by one administrator.
 
+**Audit**: every lookup that passes the role check, found or not, is one audit entry `block_ref_lookup` (target type `block_ref`) with the administrator, `ref` (the reference as shown, or `(not an ID)` for text that is not an ID; what was typed is never stored) and `found`. A request refused with `401`, `403` or `429` writes none.
+
 **Auth**: Admin (the scope rule of the other block routes, and the account's role read from the database). **Bounds**: one ID per client and limiter for an hour; at most 60 new IDs a minute for blocks and 60 more for rate limiters; at most 5000 rows; rows older than 7 days are removed and never returned.
 
 An automatic block never overwrites or shortens a manual block, never shortens an automatic one and never turns a permanent block into a timed one; it only replaces a row whose own expiry has passed. Failed sign-ins (see `PUT /api/admin/login-ban`) and, when `PROBE_BLOCK_STRIKES` is on, scanner probes write automatic blocks with kind `login` or `probe`, always with an expiry.
