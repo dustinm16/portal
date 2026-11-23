@@ -38,6 +38,8 @@ check("index and chat name the manifest and a theme colour", all(
     'rel="manifest" href="/manifest.webmanifest"' in p and 'name="theme-color"' in p for p in (INDEX, CHAT)))
 check("no proxied or third-party page gets the manifest", all(
     "manifest.webmanifest" not in (STATIC / n).read_text() for n in ("browser.html", "terminal.html", "vnc.html", "login.html")))
+check("the go-live switch's label also names the stream reminders it covers",
+      "['golive', 'Streams you follow going live, and reminders for streams you are interested in']" in PUSH)
 for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
     text = (STATIC / f"{page}.html").read_text()
     check(f"{page}.html loads push.js (so a sign-out there names this browser's device)",
@@ -46,9 +48,9 @@ for page in sorted(STATIC.glob("*.html")):
     text = page.read_text()
     if 'href="/logout"' in text:
         check(f"{page.name} has a logout link, so it loads push.js (a sign-out there must close this browser's device)",
-              "/static/js/push.js?v=4" in text)
+              "/static/js/push.js?v=5" in text)
 check("the /search/ pages load push.js too (their navbar has a logout link)",
-      "/static/js/push.js?v=4" in (ROOT / "server.py").read_text().split("_SEARXNG_HEAD_INJECT = (")[1].split(")")[0])
+      "/static/js/push.js?v=5" in (ROOT / "server.py").read_text().split("_SEARXNG_HEAD_INJECT = (")[1].split(")")[0])
 check("the chat page opens a /chat?dm= link once the socket's first frame has arrived (the server checks participation)",
       "pendingDmLink" in CHAT and "openDmConversation(linked)" in CHAT)
 check("the admin card has the switch, the test button, a device count and the allow-list, and shows only on a 200",
