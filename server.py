@@ -8330,6 +8330,14 @@ def _feed_not_found() -> web.Response:
     return web.Response(status=404, text="Not found", headers=dict(_FEED_HEADERS))
 
 
+async def _feed_limited(request: web.Request, limiter: str, wait: int) -> web.Response:
+    """The feed's 429 goes the way of every other limiter (a reference ID, the bounded reference rows). The
+    count itself is kept per address and per token hash above; the reference is kept per address only, so
+    neither the token nor its hash reaches the reference row, its reason or a log line."""
+    return await _limited(request, limiter, "Too many requests", plain=True,
+                          headers={**_FEED_HEADERS, "Retry-After": str(wait)})
+
+
 async def http_schedule_feed(request: web.Request) -> web.Response:
     """GET /api/streams/schedule/feed/{token}.ics: the member's calendar feed. The token in the path is the only
     credential (no cookie, header or session is read or accepted) and belongs to this route alone. An unknown,
@@ -8338,7 +8346,7 @@ async def http_schedule_feed(request: web.Request) -> web.Response:
     watch rule lets them see at this moment."""
     wait = _feed_rate_wait("a:" + (get_client_ip(request) or "?"), _FEED_ADDR_LIMIT)
     if wait:
-        return web.Response(status=429, text="Too many requests", headers={**_FEED_HEADERS, "Retry-After": str(wait)})
+        return await _feed_limited(request, "schedule_feed_address", wait)
     token = request.match_info.get("token", "")
     digest = stream_schedule.hash_feed_token(token if len(token) <= 200 else token[:200])
     user = await db.feed_token_user(digest)
@@ -8346,7 +8354,7 @@ async def http_schedule_feed(request: web.Request) -> web.Response:
         return _feed_not_found()
     wait = _feed_rate_wait("t:" + digest, _FEED_TOKEN_LIMIT)
     if wait:
-        return web.Response(status=429, text="Too many requests", headers={**_FEED_HEADERS, "Retry-After": str(wait)})
+        return await _feed_limited(request, "schedule_feed_token", wait)
     now = int(_schedule_now())
     role = _schedule_role(user)
     banned = await db.get_banned_stream_ids(user["id"])

@@ -675,6 +675,36 @@ async def main():
         server._feed_buckets.clear()
         codes = [(await w.raw("GET", None, f"/api/streams/schedule/feed/{ss.new_feed_token()}.ics"))[0] for _ in range(6)]
         check("... and per address, also for tokens that do not exist", codes == [404] * 4 + [429] * 2, str(codes))
+        # the answer carries a reference ID like every other limiter's, keeps its headers, and neither the token
+        # nor its hash reaches the reference row
+        server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = (3, 600), (1000, 600)
+        server._feed_buckets.clear()
+        server._refs._cache.clear()
+        await w.db.conn.execute("DELETE FROM block_refs")
+        await w.db.conn.commit()
+        for _ in range(3):
+            await w.raw("GET", None, f"/api/streams/schedule/feed/{token3}.ics")
+        for _ in range(6):
+            st, body429, h429 = await w.raw("GET", None, f"/api/streams/schedule/feed/{token3}.ics")
+        refs = [dict(r) for r in await (await w.db.conn.execute("SELECT * FROM block_refs")).fetchall()]
+        flat = json.dumps(refs)
+        check("the feed's 429 carries a reference and keeps no-store, no-referrer, noindex and Retry-After",
+              st == 429 and b"(reference " in body429 and h429.get("Cache-Control") == "no-store"
+              and h429.get("Referrer-Policy") == "no-referrer" and h429.get("X-Robots-Tag") == "noindex"
+              and int(h429.get("Retry-After", "0")) >= 1, f"{st} {body429!r} {h429}")
+        check("six limited requests are one reference row, from the token limiter, kept per address",
+              len(refs) == 1 and refs[0]["kind"] == "limit" and refs[0]["limiter"] == "schedule_feed_token", flat)
+        check("neither the token nor its hash is in the reference row or in the answer",
+              token3 not in flat and ss.hash_feed_token(token3) not in flat and token3.encode() not in body429
+              and token3[3:] not in flat, flat)
+        server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = (1000, 600), (2, 600)
+        server._feed_buckets.clear()
+        for _ in range(4):
+            st, body429, h429 = await w.raw("GET", None, f"/api/streams/schedule/feed/{ss.new_feed_token()}.ics")
+        refs = [dict(r) for r in await (await w.db.conn.execute("SELECT limiter FROM block_refs ORDER BY limiter")).fetchall()]
+        check("the address limit answers the same way, from its own limiter",
+              st == 429 and b"(reference " in body429 and [r["limiter"] for r in refs] == ["schedule_feed_address", "schedule_feed_token"],
+              f"{st} {refs}")
         server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = keep
         server._feed_buckets.clear()
 
