@@ -262,12 +262,47 @@
             render(r.data);
         }
 
+        /* One request of the occurrence and delete buttons at a time, and never from the second click of a double click or
+         * double tap (detail > 1): a double click on Cancel this one would otherwise cancel the occurrence and then the
+         * next one that moved under the pointer when the list was drawn again. */
+        var pending = false;
+        async function once(e, fn) {
+            if ((e && e.detail > 1) || pending) return;
+            pending = true;
+            try { await fn(); } finally { pending = false; }
+        }
+
         async function act(method, url, body, okMsg) {
             var r = await api(method, url, body);
             if (!r.ok) { toast(errorOf(r, 'That did not work'), 'error'); return r; }
             if (okMsg) toast(okMsg, 'success');
             await load();
             return r;
+        }
+
+        /* Deleting an entry drops every Interested mark of it, so it asks first. The question and the confirm buttons are
+         * on their own row, not where the opener was, and a confirm within CONFIRM_DELAY_MS of the question appearing,
+         * or with detail > 1 (the second click of a double click or double tap), does nothing. */
+        function deleteBox(e) {
+            var box = el('div', { class: 'schedule-delete' });
+            function draw(asking) {
+                clear(box);
+                if (!asking) {
+                    box.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Delete the whole entry', on: { click: function () { draw(true); } } }));
+                    return;
+                }
+                var askedAt = Date.now();
+                box.appendChild(el('p', { class: 'schedule-delete-confirm', role: 'alert', text: 'Deleting this entry removes every occurrence of it and every Interested mark on it. It cannot be undone.' }));
+                box.appendChild(el('div', { class: 'schedule-delete-actions' }, [
+                    el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Yes, delete the entry', on: { click: function (ev) {
+                        if (Date.now() - askedAt < CONFIRM_DELAY_MS) return;
+                        return once(ev, function () { return act('DELETE', base + '/' + Number(e.id), undefined, 'Entry deleted'); });
+                    } } }),
+                    el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Keep the entry', on: { click: function () { draw(false); } } })
+                ]));
+            }
+            draw(false);
+            return box;
         }
 
         function render(data) {
@@ -294,22 +329,20 @@
                 (e.next || []).slice(0, 2).forEach(function (n) {
                     item.appendChild(el('div', { style: { marginLeft: '1rem' } }, [
                         el('span', { text: whenText(n.start) + ' - ' + n.interested_count + ' interested ' }),
-                        el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Cancel this one', on: { click: function () {
-                            act('POST', base + '/' + Number(e.id) + '/cancel/' + Number(n.start), undefined, 'Occurrence cancelled');
+                        el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Cancel this one', on: { click: function (ev) {
+                            return once(ev, function () { return act('POST', base + '/' + Number(e.id) + '/cancel/' + Number(n.start), undefined, 'Occurrence cancelled'); });
                         } } })
                     ]));
                 });
                 (e.cancelled || []).forEach(function (c) {
                     item.appendChild(el('div', { style: { marginLeft: '1rem' } }, [
                         el('span', { text: 'Cancelled: ' + whenText(c) + ' ' }),
-                        el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Restore', on: { click: function () {
-                            act('DELETE', base + '/' + Number(e.id) + '/cancel/' + Number(c));
+                        el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Restore', on: { click: function (ev) {
+                            return once(ev, function () { return act('DELETE', base + '/' + Number(e.id) + '/cancel/' + Number(c)); });
                         } } })
                     ]));
                 });
-                item.appendChild(el('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Delete the whole entry', on: { click: function () {
-                    act('DELETE', base + '/' + Number(e.id), undefined, 'Entry deleted');
-                } } }));
+                item.appendChild(deleteBox(e));
                 container.appendChild(item);
             });
             if (!(data.entries || []).length) container.appendChild(el('p', { text: 'Nothing is scheduled.' }));

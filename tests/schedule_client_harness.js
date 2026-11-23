@@ -48,6 +48,7 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
     fetch: async (url, init) => {
       calls.push({ url, method: init && init.method, body: init && init.body ? JSON.parse(init.body) : null });
       const a = answers.shift() || { status: 200, data: {} };
+      if (a.gate) await a.gate;                       // a slow answer: the request stays in flight until the gate opens
       return { ok: a.status >= 200 && a.status < 300, status: a.status, json: async () => a.data };
     },
   };
@@ -238,6 +239,27 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   c = take();
   check('owner: Use this title PUTs the name, then clears the suggestion', c[0].method === 'PUT' && c[0].url === '/api/streams/7' && c[0].body.name === 'Friday show'
     && c[1].method === 'DELETE' && c[1].url === '/api/streams/7/schedule/suggestion' && applied.length === 1 && applied[0] === 'Friday show', JSON.stringify(c) + JSON.stringify(applied));
+  const tick = () => new Promise(r => setImmediate(r));
+  const press = (b, detail) => b.listeners.click[0]({ detail });       // one click as the browser delivers it, not awaited
+  // the second click of a double click, and a click while a request is in flight, do not cancel a second occurrence
+  answers = [{ status: 200, data: {} }, owner];
+  await press(buttonWith(ed, 'Cancel this one'), 2);
+  await press(buttonWith(ed, 'Restore'), 2);
+  check('owner: the second click of a double click (detail 2) on Cancel this one or Restore sends nothing', take().length === 0);
+  let openGate; const gate = new Promise(r => { openGate = r; });
+  answers = [{ status: 200, data: {}, gate }, owner];
+  const cancelBtn = buttonWith(ed, 'Cancel this one');
+  const first = press(cancelBtn, 1);
+  const again = press(cancelBtn, 1);
+  const restoreMeanwhile = press(buttonWith(ed, 'Restore'), 1);
+  const deleteMeanwhile = press(buttonWith(ed, 'Delete the whole entry'), 1);
+  await tick();
+  c = take();
+  check('owner: while a request is in flight Cancel this one and Restore ignore clicks (one POST, for the first occurrence)',
+    c.length === 1 && c[0].method === 'POST' && c[0].url === `/api/streams/7/schedule/3/cancel/${nowSec + 100}`, JSON.stringify(c));
+  openGate(); await first; await again; await restoreMeanwhile; await deleteMeanwhile;
+  c = take();
+  check('owner: when the answer is in, the list is read again once and no second request was made', c.length === 1 && c[0].method === 'GET', JSON.stringify(c));
   answers = [{ status: 200, data: {} }, owner];
   await buttonWith(ed, 'Cancel this one').click();
   c = take();
@@ -264,9 +286,36 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
     && ed.find(n => n.className === 'form-group').every(g => g.find(n => n.tagName === 'LABEL').length === 1 && g.find(n => n.tagName === 'INPUT').length === 1));
   check('owner: the start is labelled as read in the zone chosen in the zone field, not "your time zone"',
     ed.textContent.indexOf('Start (read in the time zone chosen below)') >= 0 && ed.textContent.indexOf('your time zone') < 0);
-  answers = [{ status: 200, data: {} }, owner];
+  for (let i = 0; i < 5; i++) await tick();   // the Add click above does not return its request: let its re-read of the list finish
+  take();
+  // Delete the whole entry asks first, on its own row, and the question is not answered by the click that opened it
   await buttonWith(ed, 'Delete the whole entry').click();
-  check('owner: Delete removes the entry', take()[0].url === '/api/streams/7/schedule/3');
+  const yesDel = buttonWith(ed, 'Yes, delete the entry'), keepDel = buttonWith(ed, 'Keep the entry');
+  check('owner: Delete the whole entry asks first (nothing is sent), says what is lost, and the opener is gone', take().length === 0 && !!yesDel && !!keepDel
+    && !buttonWith(ed, 'Delete the whole entry') && /every Interested mark/.test(ed.textContent));
+  const askBox = ed.find(n => n.className === 'schedule-delete')[0];
+  const qIdx = askBox.children.findIndex(n => n.className === 'schedule-delete-confirm');
+  const rowIdx = askBox.children.findIndex(n => n.className === 'schedule-delete-actions');
+  check('owner: the confirm buttons sit on their own row below the question', qIdx === 0 && rowIdx === 1 && askBox.children[rowIdx].children.includes(yesDel) && askBox.children[rowIdx].children.includes(keepDel));
+  await yesDel.click();
+  check('owner: a confirm click right after the question opened sends nothing and keeps the question', take().length === 0 && !!buttonWith(ed, 'Yes, delete the entry'));
+  clockShift += 500;
+  await buttonWith(ed, 'Yes, delete the entry').click();
+  check('owner: a confirm click 500 ms after the question opened still sends nothing', take().length === 0 && !!buttonWith(ed, 'Yes, delete the entry'));
+  clockShift += 2000;
+  await press(buttonWith(ed, 'Yes, delete the entry'), 2);
+  check('owner: the second click of a double click (detail 2) sends nothing even after the interval', take().length === 0 && !!buttonWith(ed, 'Yes, delete the entry'));
+  await buttonWith(ed, 'Keep the entry').click();
+  check('owner: Keep the entry sends nothing and puts the button back', take().length === 0 && !!buttonWith(ed, 'Delete the whole entry') && !buttonWith(ed, 'Yes, delete the entry'));
+  await buttonWith(ed, 'Delete the whole entry').click();
+  await buttonWith(ed, 'Yes, delete the entry').click();
+  check('owner: asking again starts the interval again', take().length === 0 && !!buttonWith(ed, 'Yes, delete the entry'));
+  clockShift += 700;
+  answers = [{ status: 200, data: {} }, owner];
+  await buttonWith(ed, 'Yes, delete the entry').click();
+  c = take();
+  check('owner: confirming DELETEs the entry', c[0].method === 'DELETE' && c[0].url === '/api/streams/7/schedule/3' && c.length === 2, JSON.stringify(c));
+  clockShift = 0;
   answers = [{ status: 200, data: { entries: [
     { id: 4, title: 'Lost zone', start: '2026-12-04T21:00', tz: 'Mars/Olympus', duration_min: 60, recurrence: null, next: [], cancelled: [], problem: 'time zone no longer available' },
     { id: 5, title: 'Fine', start: '2026-12-05T21:00', tz: 'Europe/Berlin', duration_min: 60, recurrence: null, next: [], cancelled: [] }], suggestion: null, limits: { title: 100 } } }];

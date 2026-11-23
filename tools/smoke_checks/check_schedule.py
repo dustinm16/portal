@@ -192,10 +192,10 @@ async def run(ctx):
             ok("the staged server's log does not hold the token", token not in ctx.server_log())
 
             # ---- the pages
-            for page, needle in (("/streams", 'id="schedule-upcoming"'), (f"/watch/{A}", "/static/js/stream-schedule.js?v=6"), ("/dashboard", 'id="calendar-feed-settings"')):
+            for page, needle in (("/streams", 'id="schedule-upcoming"'), (f"/watch/{A}", "/static/js/stream-schedule.js?v=7"), ("/dashboard", 'id="calendar-feed-settings"')):
                 st, body_, _h = await raw(m1, page)
                 ok(f"{page} carries the schedule piece", st == 200 and needle.encode() in body_, f"{st}")
-            st, js, _h = await raw(m1, "/static/js/stream-schedule.js?v=6")
+            st, js, _h = await raw(m1, "/static/js/stream-schedule.js?v=7")
             ok("the script is served", st == 200 and b"StreamSchedule" in js, str(st))
 
             # ---- the reminder: wait for the portal's own tick
