@@ -1007,6 +1007,21 @@ check("1.22.0: What You Get names request IDs and connection health checks",
 check("1.22.0: the test that guards the reference IDs, the global-flag wording and the one-listener wording are in the notes",
       "`tests/test_blockref.py` fails on a `429` built by hand" in _sec22
       and "The global flag cannot lock anybody out" in _sec22 and "one closed loopback port" in text)
+_break22 = _sec22.split("**Breaking changes**")[1].split("**Database, static files")[0]
+_roll22 = next((b for b in _sec22.splitlines() if b.startswith("- **Rollback.**")), "")
+_nt22 = next((b for b in _sec22.splitlines() if b.startswith("- **Not tested.**")), "")
+_live22 = _srv_text.split("async def http_live_page")[1].split("\n\n\n")[0]
+check("1.22.0: the behaviour changes the review found are stated and are in the code",
+      "`/live` reads the session and varies by cookie" in _break22 and '"Vary": "Cookie"' in _live22 and "authenticate_request(request)" in _live22
+      and "grant sweeper does one more thing" in _break22 and "cleanup_orphan_connection_prefs()" in _srv_text.split("async def sweep_expired_grants_once")[1][:600]
+      and "small lookup before the upgrade" in _break22 and "await _ws_maintenance_refusal(request, token, path)" in _srv_text
+      and "`block_ref_lookup`" in _break22 and 'audit_log("block_ref_lookup"' in _srv_text)
+check("1.22.0: the Rollback bullet says the maintenance flags stay stored and come back on a later upgrade",
+      "stay stored in the database while 1.21.0 runs" in _roll22 and "later upgrade to 1.22.0 makes every flag that is still set" in _roll22)
+check("1.22.0: Not tested no longer says the 1.21.0 server was never started on a migrated database",
+      "was not started on one" not in _nt22 and "served `/health`" in _nt22)
+check("1.22.0: the Reference lookup works on the real page, so the notes no longer say it answers 'The lookup failed.'",
+      "answered \"The lookup failed.\"" not in _nt22 and (ROOT / "tests" / "test_portal_global.py").is_file())
 check("1.22.0 notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", _sec22))
 
 if failures:
