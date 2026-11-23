@@ -77,6 +77,22 @@ def occurrence_start(entry: dict, n: int) -> int:
     return local_to_utc(occurrence_local(entry, n), entry["tz"])
 
 
+def occurrence_index(entry: dict, start: int):
+    """The n of the occurrence whose UTC start is `start` (0 is the first), or None when it is none of the
+    entry's own occurrences. The wall-clock time the rule produces for that n is occurrence_local(entry, n)."""
+    try:
+        first = occurrence_start(entry, 0)
+        if not entry.get("weekly"):
+            return 0 if start == first else None
+        guess = round((start - first) / WEEK)
+        for n in (guess, guess - 1, guess + 1):
+            if n >= 0 and occurrence_start(entry, n) == start:
+                return n
+    except (OverflowError, ValueError, OSError):
+        pass
+    return None
+
+
 def occurrences(entry: dict, after: int, until: int, limit: int = 200) -> list:
     """UTC starts of the entry's occurrences with after <= start <= until, oldest first.
     A one-off entry has one; a weekly entry one per week at the same wall-clock time."""
@@ -332,7 +348,13 @@ def build_calendar(items: list, host: str, now: int, name: str = "Stream schedul
             lines.append(f"URL:{it['url']}")
         if weekly:
             lines.append("RRULE:FREQ=WEEKLY")
-            ex = [_fmt_local(utc_to_local(c, it["tz"])) for c in cancelled]
+            # the wall-clock time the RRULE itself produces for that week, not the local reading of the UTC
+            # instant: they differ for a week whose time falls in the hour a spring-forward change skips
+            ex = []
+            for c in cancelled:
+                n = occurrence_index(it, c)
+                if n is not None:
+                    ex.append(_fmt_local(occurrence_local(it, n)))
             if ex:
                 lines.append(f"EXDATE;TZID={it['tz']}:" + ",".join(ex))
         lines.append("END:VEVENT")

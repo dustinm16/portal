@@ -231,6 +231,32 @@ if cal:
     check("a zone without changes has one observance", len(read_ics(ss.build_calendar(
         [{**items[2], "id": 10, "tz": "Asia/Tokyo", "cancelled": []}], "h", now))["kids"][0]["kids"]) == 1)
 
+# ---------------------------------------------------------------- EXDATE is the wall-clock time the RRULE produces
+def _exdates(ics_text):
+    got = [l for l in ics_text.replace("\r\n ", "").split("\r\n") if l.startswith("EXDATE")]
+    return got
+
+
+gap = {"id": 21, "title": "Late show", "local_start": "2027-03-14T02:30", "tz": BERLIN, "duration_min": 60, "weekly": True,
+       "streamer": "A", "url": "", "updated_at": now}
+gap_start = ss.occurrence_start(gap, 2)                      # Sunday 28 March 2027 02:30 does not exist in Berlin
+check("(setup) the cancelled week's own instant, read back in the zone, is 03:30 (the old EXDATE) and not 02:30",
+      ss.utc_to_local(gap_start, BERLIN) == datetime(2027, 3, 28, 3, 30), str(ss.utc_to_local(gap_start, BERLIN)))
+check("(setup) that week is the 3rd occurrence of the rule", ss.occurrence_index(gap, gap_start) == 2)
+out = ss.build_calendar([{**gap, "cancelled": [gap_start]}], "h", now)
+check("a cancelled week inside the spring-forward gap is an EXDATE at the rule's own 02:30, not 03:30",
+      _exdates(out) == ["EXDATE;TZID=Europe/Berlin:20270328T023000"], str(_exdates(out)))
+fold = {**gap, "id": 22, "local_start": "2026-10-11T02:30"}
+fold_start = ss.occurrence_start(fold, 2)                    # Sunday 25 October 2026 02:30 happens twice
+out = ss.build_calendar([{**fold, "cancelled": [fold_start]}], "h", now)
+check("a cancelled week inside the autumn fold is an EXDATE at 02:30",
+      _exdates(out) == ["EXDATE;TZID=Europe/Berlin:20261025T023000"], str(_exdates(out)))
+out = ss.build_calendar([{**gap, "cancelled": [ss.occurrence_start(gap, 1), gap_start, ss.occurrence_start(gap, 3)]}], "h", now)
+check("several cancelled weeks, the gap one among them, are each at their own wall-clock time",
+      _exdates(out) == ["EXDATE;TZID=Europe/Berlin:20270321T023000,20270328T023000,20270404T023000"], str(_exdates(out)))
+out = ss.build_calendar([{**gap, "cancelled": [gap_start + 60, 5]}], "h", now)
+check("a cancelled time that is none of the entry's occurrences leaves no EXDATE", _exdates(out) == [], str(_exdates(out)))
+
 if failed:
     print(f"\ntest_schedule_ics: {len(failed)} FAILED: " + "; ".join(failed))
     sys.exit(1)
