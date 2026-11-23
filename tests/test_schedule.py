@@ -800,6 +800,38 @@ async def main():
             access.setLevel(old_level)
         check("the structured (JSON) log holds no token either", token3 not in stream2.getvalue() and "[REDACTED]" in stream2.getvalue(),
               stream2.getvalue()[:300])
+        # a rate-limited fetch: no logger at any level, in either format, ever holds the token or its hash
+        root = logging.getLogger()
+        old_root = root.level
+        captured = []
+        for fmt in (portal_logger.RequestIdFormatter("%(message)s"), portal_logger.StructuredFormatter()):
+            buf = io.StringIO()
+            hdl = logging.StreamHandler(buf)
+            hdl.setFormatter(fmt)
+            hdl.addFilter(portal_logger.RequestIdFilter())
+            hdl.addFilter(portal_logger.SensitiveDataFilter())
+            # the SQL driver's own debug lines (every query with its parameters, a stored hash included, on every
+            # request of the portal and only when someone turns debug logging on) are not the portal's
+            hdl.addFilter(lambda rec: not rec.name.startswith("aiosqlite"))
+            root.addHandler(hdl)
+            captured.append((hdl, buf))
+        root.setLevel(logging.DEBUG)
+        keep_limits = (server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT)
+        server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = (1, 600), (1000, 600)
+        server._feed_buckets.clear()
+        server._refs._cache.clear()
+        try:
+            limited = [(await w.raw("GET", None, f"/api/streams/schedule/feed/{token3}.ics"))[0] for _ in range(3)]
+        finally:
+            root.setLevel(old_root)
+            for hdl, _buf in captured:
+                root.removeHandler(hdl)
+            server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = keep_limits
+            server._feed_buckets.clear()
+        logged = "".join(buf.getvalue() for _h, buf in captured)
+        check("a rate-limited feed fetch leaves neither the token nor its hash in any log line, in either format",
+              limited == [200, 429, 429] and "429" in logged and token3 not in logged and ss.hash_feed_token(token3) not in logged,
+              f"{limited} {logged[:200]}")
         check("the access log prints the feed path with the token redacted", "schedule/feed/[REDACTED]" in out and token3 not in out, out[:300])
         for line in (f"[req=abcd2345] GET /api/streams/schedule/feed/{token3}.ics 200",
                      f"error for https://h/api/streams/schedule/feed/{token3}.ics?x=1 failed"):
