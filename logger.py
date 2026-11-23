@@ -191,6 +191,18 @@ class BadRequestNoiseFilter(logging.Filter):
         return True
 
 
+LOGGED_ONCE_ATTR = "_portal_logged_once"
+
+
+class LoggedOnceFilter(logging.Filter):
+    """Drop aiohttp's "Error handling request" line for an exception that the request ID middleware
+    has already logged under the request's ID (it marks the exception after writing its own line)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not (exc is not None and getattr(exc, LOGGED_ONCE_ATTR, False))
+
+
 class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive data from log messages."""
 
@@ -329,6 +341,8 @@ def setup_logging(
     server_logger = logging.getLogger("aiohttp.server")
     if not any(isinstance(f, BadRequestNoiseFilter) for f in server_logger.filters):
         server_logger.addFilter(BadRequestNoiseFilter())
+    if not any(isinstance(f, LoggedOnceFilter) for f in server_logger.filters):
+        server_logger.addFilter(LoggedOnceFilter())
 
     # Set levels for noisy loggers
     logging.getLogger("aiohttp.access").setLevel(logging.INFO)

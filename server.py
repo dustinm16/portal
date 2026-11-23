@@ -88,6 +88,7 @@ from plugins.base import ServiceTarget
 
 # Configure logging with rotation
 from logger import (
+    LOGGED_ONCE_ATTR,
     new_request_id,
     set_request_id,
     reset_request_id,
@@ -18775,6 +18776,15 @@ _web_protocol.RequestHandler.handle_error = _handle_error_fixed_400
 # not a WebSocket (error pages, redirects, streamed proxy responses included).
 # ---------------------------------------------------------------------------
 
+def _log_started_failure(request: web.Request, exc: BaseException) -> None:
+    """The one log line, under the request ID, for a handler that failed after its response started."""
+    request.protocol.log_exception("Error handling request from %s", request.remote, exc_info=exc)
+    try:
+        setattr(exc, LOGGED_ONCE_ATTR, True)
+    except Exception:
+        pass
+
+
 @web.middleware
 async def request_id_middleware(request: web.Request, handler):
     rid = new_request_id()
@@ -18785,14 +18795,26 @@ async def request_id_middleware(request: web.Request, handler):
     except (web.HTTPException, asyncio.CancelledError):
         # An HTTP answer and a cancellation are not touched here.
         raise
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
+        if request.writer.output_size > 0:
+            # aiohttp's own line for a timeout carries no exception to recognise, so it goes on as
+            # a (marked) connection failure instead; the connection is closed either way.
+            _log_started_failure(request, exc)
+            gone = ConnectionError("handler timed out after its response started")
+            setattr(gone, LOGGED_ONCE_ATTR, True)
+            raise gone from exc
         # aiohttp answers a handler timeout with 504 (and logs a line); same answer, line has the ID.
         return request.protocol.handle_error(request, 504)
     except Exception as exc:
         # aiohttp would log the traceback after this context is reset, and the ID a member reads
         # out would find nothing. Its own handle_error logs it once, now, with the ID (the log
-        # filter reads the context) and builds the same 500 as before. If a response has already
-        # been started it raises ConnectionError, as it always did.
+        # filter reads the context) and builds the same 500 as before.
+        if request.writer.output_size > 0:
+            # A response is already on its way (streamed or proxied): there is no answer to build, and
+            # aiohttp would log the same failure again after the ID is gone. One line here, then the
+            # exception goes on unchanged and aiohttp's own line for it is dropped (LoggedOnceFilter).
+            _log_started_failure(request, exc)
+            raise
         return request.protocol.handle_error(request, 500, exc)
     finally:
         reset_request_id(token)

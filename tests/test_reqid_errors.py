@@ -64,6 +64,21 @@ async def moved(request):
     raise web.HTTPFound("/elsewhere")
 
 
+async def streamed(request):
+    logging.getLogger("portal").warning("streamed handler line")
+    resp = web.StreamResponse()
+    await resp.prepare(request)
+    await resp.write(b"first part")
+    raise RuntimeError(SECRET_TEXT)
+
+
+async def streamed_slow(request):
+    resp = web.StreamResponse()
+    await resp.prepare(request)
+    await resp.write(b"first part")
+    raise asyncio.TimeoutError()
+
+
 async def slow(request):
     raise asyncio.TimeoutError()
 
@@ -76,6 +91,8 @@ async def main():
     app.router.add_get("/missing", missing)
     app.router.add_get("/moved", moved)
     app.router.add_get("/slow", slow)
+    app.router.add_get("/streamed", streamed)
+    app.router.add_get("/streamed-slow", streamed_slow)
     srv = TestServer(app, host="127.0.0.1")
     await srv.start_server()
     base = f"http://127.0.0.1:{srv.port}"
@@ -140,6 +157,30 @@ async def main():
                 check("timeout: still aiohttp's 504, not turned into a 500", r.status == 504, str(r.status))
             terr = [x for x in out()[len(before):].splitlines() if "Error handling request" in x]
             check("timeout: aiohttp's one line now carries the ID", len(terr) == 1 and f"[req={tid}]" in terr[0], str(terr))
+
+        # a failure after the response started: one line, under the ID, the client answer unchanged
+        for path, label, exc_text in (("/streamed", "streamed", f"RuntimeError: {SECRET_TEXT}"),
+                                      ("/streamed-slow", "streamed timeout", "TimeoutError")):
+            before = out()
+            async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as c:
+                got, broke = b"", False
+                async with c.get(f"{base}{path}") as r:
+                    sid, sstatus = r.headers.get("X-Request-ID"), r.status
+                    try:
+                        got = await r.read()
+                    except aiohttp.ClientPayloadError:
+                        broke = True
+            await asyncio.sleep(0.2)
+            new = out()[len(before):]
+            serr = [x for x in new.splitlines() if "Error handling request" in x]
+            check(f"{label}: the client sees the status it had, the ID and a broken body, never a second answer",
+                  sstatus == 200 and sid and len(sid) == 8 and broke and SECRET_TEXT not in got.decode(errors="replace"),
+                  f"{sstatus} {sid} {broke} {got!r}")
+            check(f"{label}: exactly one error line and it carries the ID", len(serr) == 1 and f"[req={sid}]" in serr[0], str(serr))
+            check(f"{label}: the traceback follows it once", new.count("Traceback (most recent call last)") == 1
+                  and exc_text in new, new[-400:])
+            check(f"{label}: no line without an ID", "Unhandled exception" not in new
+                  and not [x for x in new.splitlines() if x.startswith("20") and "[req=" not in x and "ERROR" in x], new[-400:])
 
         # cancellation is never swallowed, and the ID context is cleared afterwards
         async def cancelled(request):
