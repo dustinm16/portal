@@ -7903,9 +7903,11 @@ async def http_stream_games(request: web.Request) -> web.Response:
 
 _schedule_now = time                 # module level so tests can move the clock
 _SCHEDULE_UPCOMING_DAYS = 14
+_SCHEDULE_STARTED_WINDOW = 86400     # started marks older than this are read by nothing (and pruned hourly)
 _SCHEDULE_SUGGESTION_AGE = 6 * 3600  # a title offered at go-live stays on offer this long
 _SCHEDULE_TICK_SECONDS = 30
 _schedule_last_prune = 0
+_upcoming_hits: dict = {}            # the Upcoming list's own history-style budget, per member
 
 
 def _schedule_tick_interval() -> float:
@@ -7970,7 +7972,7 @@ async def _schedule_items(rows: list, user_id: int, now: int, horizon_days: int,
         return []
     ids = [r["id"] for r in rows]
     cancelled = await db.schedule_cancelled_map(ids)
-    started = await db.schedule_started_map(ids, now - 86400)
+    started = await db.schedule_started_map(ids, now - _SCHEDULE_STARTED_WINDOW)
     marks = await db.rsvp_of_user(user_id, ids, now - 3600)
     own = [r["id"] for r in rows if r["stream_user_id"] == user_id]
     counts = await db.rsvp_counts(own, now - 3600) if own else {}
@@ -7993,6 +7995,10 @@ async def http_schedule_upcoming(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     _token, user_id, role = ctx
+    wait = _history_rate_wait(user_id, _upcoming_hits)
+    if wait:
+        return await _limited(request, "schedule_upcoming", "Too many requests",
+                              user_id=user_id, headers={"Retry-After": str(wait)})
     try:
         limit = int(request.query.get("limit", "20"))
     except ValueError:
@@ -8032,7 +8038,7 @@ async def _schedule_owner_view(stream: dict, now: int) -> dict:
     entries = await db.schedule_entries_of_stream(stream["id"])
     ids = [e["id"] for e in entries]
     cancelled = await db.schedule_cancelled_map(ids)
-    started = await db.schedule_started_map(ids, now - 86400)
+    started = await db.schedule_started_map(ids, now - _SCHEDULE_STARTED_WINDOW)
     counts = await db.rsvp_counts(ids, now - 3600)
     out = []
     for e in entries:
@@ -8204,7 +8210,7 @@ async def http_schedule_rsvp(request: web.Request) -> web.Response:
     if stream["user_id"] == user_id:
         return web.json_response({"error": "This is your own stream"}, status=400)
     cancelled = (await db.schedule_cancelled_map([entry["id"]]))[entry["id"]]
-    started = (await db.schedule_started_map([entry["id"]], now - 86400))[entry["id"]]
+    started = (await db.schedule_started_map([entry["id"]], now - _SCHEDULE_STARTED_WINDOW))[entry["id"]]
     if (start <= now or start in cancelled or start in started
             or not stream_schedule.is_occurrence(entry, start)):
         return web.json_response({"error": "That occurrence is not upcoming"}, status=400)
@@ -8265,7 +8271,7 @@ async def schedule_reminder_pass() -> int:
                 e = entries[eid]
                 if e:
                     cancelled[eid] = (await db.schedule_cancelled_map([eid]))[eid]
-                    started[eid] = (await db.schedule_started_map([eid], now - 86400))[eid]
+                    started[eid] = (await db.schedule_started_map([eid], now - _SCHEDULE_STARTED_WINDOW))[eid]
             entry = entries[eid]
             if entry and not _schedule_zone_ok(entry, now):
                 continue                                    # no occurrence can be computed: skipped, not dropped
@@ -8302,6 +8308,7 @@ async def schedule_reminder_pass() -> int:
     if now - _schedule_last_prune >= 3600:
         _schedule_last_prune = now
         await db.rsvp_prune_past(now - 7 * 86400)
+        await db.schedule_prune_started(now - _SCHEDULE_STARTED_WINDOW)
     return sent
 
 
@@ -8317,7 +8324,7 @@ async def _schedule_note_go_live(stream: dict) -> None:
         return
     ids = [e["id"] for e in entries]
     cancelled = await db.schedule_cancelled_map(ids)
-    started = await db.schedule_started_map(ids, now - 86400)
+    started = await db.schedule_started_map(ids, now - _SCHEDULE_STARTED_WINDOW)
     best = None
     for e in entries:
         if not _schedule_zone_ok(e, now):
@@ -8334,7 +8341,7 @@ async def _schedule_note_go_live(stream: dict) -> None:
 _FEED_ADDR_LIMIT = (120, 600)        # requests per address per 10 minutes (every request, known token or not)
 _FEED_TOKEN_LIMIT = (30, 600)        # requests per token per 10 minutes
 _FEED_BUCKETS_MAX = 4096
-_feed_buckets: dict = {}
+_feed_buckets: dict = {}               # key -> hit times; kept in order of last use, the oldest first
 _feed_clock = monotonic
 
 
@@ -8342,18 +8349,16 @@ def _feed_rate_wait(key: str, limit: tuple) -> int:
     """Count one request; 0 when allowed, else the seconds to wait."""
     now = _feed_clock()
     count, window = limit
-    hits = [t for t in _feed_buckets.get(key, ()) if now - t < window]
-    if len(hits) >= count:
-        _feed_buckets[key] = hits
-        return max(1, int(window - (now - hits[0])) + 1)
-    hits.append(now)
-    if key not in _feed_buckets and len(_feed_buckets) >= _FEED_BUCKETS_MAX:
-        for k in [k for k, v in _feed_buckets.items() if not v or now - v[-1] >= window]:
-            del _feed_buckets[k]
-        if len(_feed_buckets) >= _FEED_BUCKETS_MAX:
-            _feed_buckets.clear()
+    hits = [t for t in _feed_buckets.pop(key, ()) if now - t < window]
+    if len(hits) < count:
+        hits.append(now)
+        wait = 0
+    else:
+        wait = max(1, int(window - (now - hits[0])) + 1)
+    while len(_feed_buckets) >= _FEED_BUCKETS_MAX:       # full: the entry used least recently goes, never all of them
+        del _feed_buckets[next(iter(_feed_buckets))]
     _feed_buckets[key] = hits
-    return 0
+    return wait
 
 
 _FEED_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"}
@@ -8377,7 +8382,7 @@ async def http_schedule_feed(request: web.Request) -> web.Response:
     revoked or malformed token is the same 404. Rate limited per address and per token. What the feed holds is
     decided now: entries of the streams the member follows, marked Interested on, or owns, and only those the
     watch rule lets them see at this moment."""
-    wait = _feed_rate_wait("a:" + (get_client_ip(request) or "?"), _FEED_ADDR_LIMIT)
+    wait = _feed_rate_wait("a:" + _proxy_bucket_key(get_client_ip(request) or "?"), _FEED_ADDR_LIMIT)
     if wait:
         return await _feed_limited(request, "schedule_feed_address", wait)
     token = request.match_info.get("token", "")
@@ -24817,19 +24822,21 @@ def _parse_history_request(before_id, around_id, limit) -> tuple:
     return before_id, around_id, limit
 
 
-def _history_rate_wait(user_id: int) -> int:
+def _history_rate_wait(user_id: int, table: Optional[dict] = None) -> int:
     """Count one history request for this user (all sockets and the HTTP route
-    share the budget). Returns 0 if it is allowed, else the seconds to wait."""
+    share the budget). Returns 0 if it is allowed, else the seconds to wait. `table` is another
+    route's own budget of the same size (the Upcoming list)."""
+    table = _history_hits if table is None else table
     now = monotonic()
-    hits = [t for t in _history_hits.get(user_id, ()) if now - t < HISTORY_RATE_WINDOW]
+    hits = [t for t in table.get(user_id, ()) if now - t < HISTORY_RATE_WINDOW]
     if len(hits) >= HISTORY_RATE_LIMIT:
-        _history_hits[user_id] = hits
+        table[user_id] = hits
         return max(1, int(HISTORY_RATE_WINDOW - (now - hits[0])) + 1)
     hits.append(now)
-    _history_hits[user_id] = hits
-    if len(_history_hits) > 2000:
-        for uid in [u for u, h in _history_hits.items() if not h or now - h[-1] >= HISTORY_RATE_WINDOW]:
-            _history_hits.pop(uid, None)
+    table[user_id] = hits
+    if len(table) > 2000:
+        for uid in [u for u, h in table.items() if not h or now - h[-1] >= HISTORY_RATE_WINDOW]:
+            table.pop(uid, None)
     return 0
 
 

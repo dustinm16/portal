@@ -5936,6 +5936,12 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount
 
+    async def schedule_prune_started(self, before: int) -> int:
+        """Remove started marks of occurrences that began before `before`: nothing reads them any more."""
+        cursor = await self.conn.execute("DELETE FROM stream_schedule_started WHERE occ_start < ?", (before,))
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def feed_token_set(self, user_id: int, token_hash: str, now: int) -> None:
         await self.conn.execute(
             """INSERT INTO schedule_feed_tokens (user_id, token_hash, created_at) VALUES (?, ?, ?)

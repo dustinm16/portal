@@ -852,6 +852,71 @@ async def main():
         await w.call("DELETE", "owner", f"/api/streams/{zs}/schedule/{z_bad}")
         await w.call("DELETE", "owner", f"/api/streams/{zs}/schedule/{z_good}")
 
+        # ------------------------------------------------------------ housekeeping
+        # the hourly prune also removes started marks older than the window that reads them
+        hs, _hc = await w.stream("h")
+        hnow = w.clock.now
+        he = await w.entry(hs, {"title": "Prune show", "start": datetime.fromtimestamp(hnow + 7200, timezone.utc).strftime("%Y-%m-%dT%H:%M"),
+                                "tz": "UTC"})
+        for occ in (hnow - 3 * 86400, hnow - 86400 - 60, hnow - 3600):
+            await w.db.schedule_mark_started(he, occ, occ, "Old title")
+        server._schedule_last_prune = 0
+        await w.tick(hnow)
+        left = sorted(r["occ_start"] for r in await (await w.db.conn.execute(
+            "SELECT occ_start FROM stream_schedule_started WHERE entry_id = ?", (he,))).fetchall())
+        check("the hourly prune removes started marks older than the window that reads them and keeps the ones inside it",
+              left == [hnow - 3600], str(left))
+        await w.call("DELETE", "owner", f"/api/streams/{hs}/schedule/{he}")
+
+        # the feed's address bucket is an IPv6 /64, as for every other limiter
+        real_ip = server.get_client_ip
+        keep_lim = (server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT)
+        server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = (1000, 600), (2, 600)
+        server._feed_buckets.clear()
+        codes = []
+        try:
+            for addr in ("2001:db8:1:2::1", "2001:db8:1:2:ffff::9", "2001:db8:1:2:abcd::5"):
+                server.get_client_ip = lambda request, a=addr: a
+                codes.append((await w.raw("GET", None, f"/api/streams/schedule/feed/{ss.new_feed_token()}.ics"))[0])
+        finally:
+            server.get_client_ip = real_ip
+        check("addresses rotated inside one IPv6 /64 share the feed's address limit", codes == [404, 404, 429], str(codes))
+        check("... and the bucket is kept under the /64 network",
+              "a:2001:db8:1:2::/64" in server._feed_buckets, str(list(server._feed_buckets)))
+
+        # a full table evicts the oldest entries, it does not forget everybody's limit
+        server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = (2, 600), (1000, 600)
+        server._feed_buckets.clear()
+        keep_max = server._FEED_BUCKETS_MAX
+        server._FEED_BUCKETS_MAX = 6
+        try:
+            for i in range(4):
+                server._feed_rate_wait(f"x:{i}", (1000, 600))
+            feed_url = f"/api/streams/schedule/feed/{token3}.ics"
+            codes = [(await w.raw("GET", None, feed_url))[0] for _ in range(3)]
+            server._feed_rate_wait("x:new", (1000, 600))              # the table is full: one entry has to go
+            after = (await w.raw("GET", None, feed_url))[0]
+            size = len(server._feed_buckets)
+            gone = "x:0" not in server._feed_buckets and "x:new" in server._feed_buckets
+        finally:
+            server._FEED_BUCKETS_MAX = keep_max
+            server._FEED_TOKEN_LIMIT, server._FEED_ADDR_LIMIT = keep_lim
+            server._feed_buckets.clear()
+        check("a member whose token is rate limited stays limited when the table fills (the oldest entry goes, not all of them)",
+              codes == [200, 200, 429] and after == 429 and gone and size <= 6, f"{codes} {after} {gone} {size}")
+
+        # the Upcoming list has the history-style limit, answered by the shared limiter (reference ID, Retry-After)
+        server._upcoming_hits.clear()
+        n_ok = 0
+        for _ in range(server.HISTORY_RATE_LIMIT):
+            n_ok += (await w.raw("GET", "m2", "/api/streams/schedule/upcoming"))[0] == 200
+        st, body429, h429 = await w.raw("GET", "m2", "/api/streams/schedule/upcoming")
+        st_other = (await w.raw("GET", "m1", "/api/streams/schedule/upcoming"))[0]
+        check("the Upcoming list is limited per member (429 with Retry-After and a reference), another member is not",
+              n_ok == server.HISTORY_RATE_LIMIT and st == 429 and int(h429.get("Retry-After", "0")) >= 1
+              and b"Too many" in body429 and st_other == 200, f"{n_ok} {st} {body429[:120]!r} {h429.get('Retry-After')} {st_other}")
+        server._upcoming_hits.clear()
+
         # ------------------------------------------------------------ logs
         stream_ = io.StringIO()
         handler = logging.StreamHandler(stream_)
