@@ -356,6 +356,26 @@
         return '';
     }
 
+    /* Remove is one click, no question (a saved entry is only a bookmark), so a double click must not remove twice:
+     * the first click removes the entry and the entry below moves under the pointer, where the second click would
+     * remove it as well. While a removal is in flight every Remove button of the list ignores clicks, a click with
+     * detail > 1 (the second click of a double click or double tap) is ignored, and after the list has been drawn
+     * again no Remove acts for REMOVE_QUIET_MS. A later single click, and Enter or Space (detail 0), work. */
+    var REMOVE_QUIET_MS = 600;
+    var removeBusy = false;
+    var removeQuietUntil = 0;
+
+    function removeAllowed(e) {
+        if (e && e.detail > 1) return false;
+        if (removeBusy) return false;
+        return now().getTime() >= removeQuietUntil;
+    }
+
+    function removeSettled() {
+        removeBusy = false;
+        removeQuietUntil = now().getTime() + REMOVE_QUIET_MS;
+    }
+
     function renderItem(item) {
         var li = el('div', '', 'saved-item', { role: 'listitem', 'data-saved-id': String(item.id) });
         var body = el('div', '', 'saved-item-body');
@@ -381,14 +401,16 @@
             body.append(el('div', 'No longer available', 'saved-gone'),
                         el('div', 'Saved ' + formatWhen(item.saved_at), 'saved-meta'), remindLine);
         }
-        actions.appendChild(button('Remove', 'btn-secondary', function () {
+        actions.appendChild(button('Remove', 'btn-secondary', function (e) {
+            if (!removeAllowed(e)) return;
+            removeBusy = true;
             removeSaved(item.id).then(function (ok) {
                 if (!ok) return;
                 state.items.delete(item.id);
                 if (li.parentNode) li.parentNode.removeChild(li);
                 if (state.panel && !state.panel.list.children.length) showEmpty();
                 syncPurge();
-            });
+            }).then(removeSettled, removeSettled);
         }, { 'data-action': 'remove' }));
         li.append(body, actions);
         return li;
@@ -481,6 +503,7 @@
             if (res.data.limits) state.limits = res.data.limits;
             if (first) { p.list.textContent = ''; state.items = new Map(); }
             (res.data.items || []).forEach(function (it) { p.list.appendChild(renderItem(it)); });
+            removeQuietUntil = now().getTime() + REMOVE_QUIET_MS;
             state.nextBefore = res.data.has_more ? res.data.next_before_id : null;
             p.more.style.display = state.nextBefore ? '' : 'none';
             p.status.textContent = '';

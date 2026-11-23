@@ -127,6 +127,7 @@ let nextSavedId = 50;
 let marksStatus = 429;     // the first load of the marks is refused (a limit), the later ones answer
 let entryStatus = 200;
 let purgeStatus = 200;
+let deleteGate = null;     // a promise the next DELETE of one entry waits for (a slow answer)
 const entryAt = {};        // before_id -> the one entry the single-entry read answers with
 const apiLog = [];
 async function fakeApi(method, path, body) {
@@ -137,7 +138,7 @@ async function fakeApi(method, path, body) {
   if (method === 'GET' && path.startsWith('/api/saved?')) return { status: 200, data: listPages.shift() || { items: [], has_more: false } };
   if (method === 'POST' && path === '/api/saved') return { status: 201, data: { saved: { id: ++nextSavedId, kind: body.kind, message_id: body.message_id } } };
   if (method === 'DELETE' && path === '/api/saved/unavailable') return purgeStatus === 200 ? { status: 200, data: { removed: 2 } } : { status: purgeStatus, data: { error: 'Too many history requests' } };
-  if (method === 'DELETE') return { status: 200, data: { status: 'removed' } };
+  if (method === 'DELETE') { if (deleteGate) await deleteGate; return { status: 200, data: { status: 'removed' } }; }
   if (method === 'PUT') return body.remind_at === 'bad' ? { status: 400, data: { error: 'nope' } }
     : { status: 200, data: { id: +path.split('/')[3], remind_at: body.remind_at, reminded: false } };
   return { status: 404, data: {} };
@@ -420,11 +421,48 @@ let clock = FIXED_NOW;                                // what the module sees as
   const purge31 = CS._state.panel.dlg.querySelector('[data-action="purge"]');
   check('a view whose only entry is unavailable offers the removal button', purge31 && purge31.style.display !== 'none');
   apiLog.length = 0;
-  await gone.all('button').find(b => b.getAttribute('data-action') === 'remove').click(); await new Promise(r => setImmediate(r));
+  const removeBtn = n => n.all('button').find(b => b.getAttribute('data-action') === 'remove');
+  const tick = () => new Promise(r => setImmediate(r));
+  // a click on Remove right after the list was drawn (a double click on the button that opened it) does nothing
+  await removeBtn(gone).click(); await tick();
+  check('a Remove click within 0.6 seconds of the list being drawn sends nothing', apiLog.length === 0 && CS._state.panel.list.children.length === 1);
+  clock = new Date(FIXED_NOW.getTime() + 700);
+  await removeBtn(gone).click(); await tick();
   check('Remove deletes the entry by id and takes it out of the list, and the empty text appears',
         apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/31' && CS._state.panel.list.children.length === 0
         && /Nothing saved yet/.test(CS._state.panel.status.textContent));
   check('removing the last unavailable entry by hand takes the button away', purge31.style.display === 'none');
+
+  // ---- a double click on Remove removes one entry, not that entry and the one that moved under the pointer
+  active = openBtn; doc.dispatch('keydown', { key: 'Escape', target: doc });
+  clock = FIXED_NOW;
+  const gone3 = [41, 42, 43].map(id => ({ id, available: false, saved_at: '2026-03-18T10:00:00Z', remind_at: null, reminded: false }));
+  listPages = [{ items: gone3, has_more: false }];
+  active = openBtn;
+  openBtn.click(); await tick();
+  const rows = () => CS._state.panel.list.children;
+  clock = new Date(FIXED_NOW.getTime() + 1000);
+  apiLog.length = 0;
+  removeBtn(rows()[0]).dispatch('click', { detail: 2 }); await tick();
+  check('the second click of a double click (detail 2) on Remove sends nothing', apiLog.length === 0 && rows().length === 3);
+  let release; deleteGate = new Promise(r => { release = r; });
+  removeBtn(rows()[0]).dispatch('click', { detail: 1 });
+  removeBtn(rows()[1]).dispatch('click', { detail: 1 });
+  removeBtn(rows()[0]).dispatch('click', { detail: 1 });
+  await tick();
+  check('while a removal is in flight every Remove button ignores clicks (one DELETE, for the first entry)',
+        apiLog.length === 1 && apiLog[0].method === 'DELETE' && apiLog[0].path === '/api/saved/41' && rows().length === 3, JSON.stringify(apiLog));
+  release(); deleteGate = null; await tick(); await tick();
+  check('the removed entry is gone and the others stay', rows().length === 2 && rows()[0].getAttribute('data-saved-id') === '42' && apiLog.length === 1);
+  removeBtn(rows()[0]).dispatch('click', { detail: 1 }); await tick();
+  check('a Remove click right after the list redrew (the neighbour under the pointer) sends nothing', apiLog.length === 1 && rows().length === 2);
+  clock = new Date(FIXED_NOW.getTime() + 1000 + 599);
+  removeBtn(rows()[0]).dispatch('click', { detail: 1 }); await tick();
+  check('a Remove click 599 ms after the redraw still sends nothing', apiLog.length === 1 && rows().length === 2);
+  clock = new Date(FIXED_NOW.getTime() + 1000 + 700);
+  removeBtn(rows()[0]).dispatch('click', { detail: 1 }); await tick(); await tick();
+  check('a later single click removes at once, with no question', apiLog.length === 2 && apiLog[1].path === '/api/saved/42' && rows().length === 1 && rows()[0].getAttribute('data-saved-id') === '43');
+  clock = FIXED_NOW;
 
   // ---- keyboard
   active = openBtn;
