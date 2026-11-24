@@ -1355,7 +1355,7 @@ m24 = re.search(r"### Upgrade notes for 1\.24\.0\n(.*?)(?=\n### Upgrade notes fo
 _sec24 = m24.group(1) if m24 else ""
 _low24 = _sec24.lower()
 check("1.24.0 notes sit directly before the 1.23.1 notes", bool(m24) and text.index("### Upgrade notes for 1.24.0") > text.index("### Upgrade notes for 1.18.0"))
-check("1.24.0 has the three groups and a Database, Static files, Rollback and Not tested bullet (at least one each: other lanes of the release add theirs)",
+check("1.24.0 has the three groups and a Database, Static files, Rollback and Not tested bullet (exactly one each)",
       all(g in _sec24 for g in ("**For administrators, in short**", "**Breaking changes**", "**Database, static files, rollback and what was not tested**"))
       and all(len(re.findall(rf"^- \*\*{n}\.\*\*", _sec24, re.M)) >= 1 for n in ("Database", "Static files", "Rollback", "Not tested")))
 check("1.24.0 states what the token reaches, that it is shown once, hashed and in the fragment, and the broadcast warning",
@@ -1393,6 +1393,47 @@ check("docs/API.md and api-docs.html describe the overlay routes and the socket"
 check("the code has the migration the notes describe: one new table, created if missing, nothing existing rewritten",
       "CREATE TABLE IF NOT EXISTS stream_overlay_tokens" in (ROOT / "database.py").read_text(encoding="utf-8"))
 check("robots.txt disallows /overlay", "Disallow: /overlay" in _asyncio23a.run(_server.http_robots_txt(_types23a.SimpleNamespace(host="x.test"))).text)
+
+
+# --- 1.24.0: the notes are one coherent section (release pass) -----------------------------------------
+_short24 = _sec24.split("**For administrators, in short**", 1)[-1].split("**Stream health**", 1)[0]
+_short24l = _short24.lower()
+check("1.24.0 notes: Database, Static files, Rollback and Not tested are one bullet each",
+      all(len(re.findall(rf"^- \*\*{n}\.\*\*", _sec24, re.M)) == 1 for n in ("Database", "Static files", "Rollback", "Not tested")))
+check("1.24.0 notes carry no trace of how they were put together",
+      not any(p_ in _low24 for p_ in ("built separately", "each part has its own list", "both parts changed", "other lanes", "fix pass", "two groups")))
+check("1.24.0 notes: one group per feature, in the order short, health, live streams, overlay, breaking, database",
+      [_sec24.find(h_) for h_ in ("**For administrators, in short**", "**Stream health**", "**Live streams (administrators)**", "**Chat overlay**",
+                                  "**Breaking changes**", "**Database, static files, rollback and what was not tested**")]
+      == sorted(_sec24.find(h_) for h_ in ("**For administrators, in short**", "**Stream health**", "**Live streams (administrators)**", "**Chat overlay**",
+                                           "**Breaking changes**", "**Database, static files, rollback and what was not tested**"))
+      and "-1" not in str([_sec24.find(h_) for h_ in ("**Stream health**", "**Live streams (administrators)**", "**Chat overlay**")]))
+_brk24 = _sec24.split("**Breaking changes**", 1)[-1].split("**Database, static files", 1)[0]
+check("1.24.0 notes: the Breaking changes group is one list of bullets and keeps the /ws/overlay ordering note",
+      len(re.findall(r"^- ", _brk24, re.M)) >= 2 and not re.search(r"^[A-Z]", _brk24.strip().splitlines()[0]) and "`/ws/overlay` is registered before" in _brk24)
+check("1.24.0 in short: who sees health data, the 30 second readings, what End now does, the overlay broadcast and the link as a credential",
+      all(n in _short24l for n in (
+          "owner and administrators", "stream moderator", "every 30 seconds", "replaces the stream key", "no recording is deleted",
+          "broadcast to everyone who can see the video", "is a credential", "regenerate", "revoke", "ends by itself", "no end date of its own",
+          "password is changed", "signs the owner out everywhere")),
+      str([n for n in ("owner and administrators", "stream moderator", "every 30 seconds", "replaces the stream key", "no recording is deleted",
+                       "broadcast to everyone who can see the video", "is a credential", "regenerate", "revoke", "ends by itself",
+                       "no end date of its own", "password is changed", "signs the owner out everywhere") if n not in _short24l]))
+check("1.24.0 in short is short: at most ten bullets", len(re.findall(r"^- ", _short24, re.M)) <= 10)
+check("1.24.0 notes: the overlay audit actions are stated as shown to moderators, as the code does (they are not in the moderator exclusion)",
+      "`stream_overlay_create`" in _sec24 and "a moderator reads them too" in _sec24
+      and "stream_overlay_create" not in _srv24[_srv24.index("LIVE_OPS_AUDIT_ACTIONS = "):_srv24.index("LIVE_OPS_AUDIT_ACTIONS = ") + 200])
+_top24 = text.split("## Contents", 1)[0]
+_priv24 = _top24.split("### Privacy by design", 1)[1]
+check("1.24.0 README: the opening list names the health panel and the chat overlay, and Privacy by design states what is true for them",
+      "stream health panel" in _top24.split("### Privacy by design", 1)[0] and "chat overlay" in _top24.split("### Privacy by design", 1)[0]
+      and "SHA-256 hash" in _priv24 and "owner and the administrators" in _priv24 and "everyone who can see the video" in _priv24
+      and "gone at a restart" in _priv24)
+_g24 = (ROOT / "static" / "guides.html").read_text(encoding="utf-8")
+check("1.24.0: the guides page has a chat overlay entry (index link and section) that says the link is a secret and how to add it to OBS",
+      'href="#guide-chat_overlay"' in _g24 and 'id="guide-chat_overlay"' in _g24
+      and all(n in _g24.split('id="guide-chat_overlay"', 1)[1].split("</section>", 1)[0] for n in (
+          "Browser", "Custom Browser Docks", "Regenerate", "broadcast to everyone who can see the video", "password")))
 
 
 if failures:

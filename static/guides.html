@@ -406,6 +406,7 @@
                 <li><a href="#guide-mediamtx">MediaMTX Stream</a></li>
                 <li><a href="#guide-stream">Media Stream</a></li>
                 <li><a href="#guide-stream_relay">Stream Relay</a></li>
+                <li><a href="#guide-chat_overlay">Chat Overlay for OBS</a></li>
                 <li><a href="#guide-minecraft_rcon">Minecraft RCON</a></li>
                 <li><a href="#guide-gameserver">Deploy a Game Server (SteamCMD)</a></li>
             </ul>
@@ -2679,6 +2680,34 @@
                 </ul>
                 <h4>Schedule</h4>
                 <p>The same stream details window has a <strong>Schedule</strong> section where you, the owner, add one-off or weekly slots in your own time zone. Members who may watch the stream see a countdown on its offline watch page, an Upcoming strip on the Streams page, and can mark a slot <strong>Interested</strong> to get one notification 10 minutes before it starts. Members can follow the schedules they care about in a calendar application with the personal calendar link under <strong>User settings</strong>; the link holds a secret, so use <strong>Regenerate</strong> or <strong>Revoke</strong> there if it may have leaked.</p>
+            </section>
+
+            <section id="guide-chat_overlay">
+                <h3>Chat Overlay for OBS</h3>
+                <p>The chat overlay draws the chat of one of your streams on a transparent background, so OBS can lay it over your picture as a Browser source. It is read-only: it shows what the chat shows to viewers and lets nobody write.</p>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>A stream of your own with a chat of its own (a stream whose chat is shared with other streams cannot have an overlay)</li>
+                    <li>OBS Studio with the Browser source (included in the usual builds)</li>
+                </ul>
+                <h4>Setup in Portal and OBS</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard &rarr; My Streams</strong>, open your stream details and find the <strong>Chat Overlay</strong> block</li>
+                    <li>Click <strong>Create link</strong> and copy it with <strong>Copy</strong>. It is shown once and cannot be shown again</li>
+                    <li>In OBS add a <strong>Browser</strong> source and paste the link as its URL</li>
+                    <li>Set the width and height to the area you want for the chat (for example 480 by 720) and leave &ldquo;Use custom frame rate&rdquo; off</li>
+                </ol>
+                <p>Options go at the end of the link, after the token: <code>&amp;size=28</code> (letter size, 12 to 96), <code>&amp;lines=8</code> (most lines shown, 1 to 30) and <code>&amp;fade=30</code> (seconds a line stays, 0 to 600; 0 keeps it until newer lines push it out). Keep the whole link when you copy it or refresh the source.</p>
+                <h4>Chat dock</h4>
+                <p>For a chat window inside OBS (where you can also write and moderate), choose <strong>Docks &rarr; Custom Browser Docks</strong> and add the dock address shown under the Chat Overlay block. It is your normal chat window behind the portal sign-in, so the dock shows the sign-in page first. After signing in, open the dock again (or reload it) to get the chat. No overlay link is used.</p>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Whatever the overlay shows is broadcast to everyone who can see the video, also when the stream is not public and its chat on the portal is closed to members</li>
+                    <li>The link is a credential: whoever has the whole link can read that one chat, read-only. Treat it like a password. OBS keeps it in its scene file, and a screen share of the OBS settings shows it</li>
+                    <li>The link is stored on the portal only as a hash. <strong>Regenerate</strong> replaces it at once (put the new link into every browser source that used the old one); <strong>Revoke</strong> ends it</li>
+                    <li>The link also ends when your password is changed or reset and when an administrator signs you out everywhere. It has no end date of its own</li>
+                    <li>At most three browser sources can use one link at the same time</li>
+                </ul>
             </section>
 
             <section id="guide-minecraft_rcon">
