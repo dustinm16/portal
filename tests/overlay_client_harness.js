@@ -158,6 +158,8 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   check('the broadcast statement and the instructions for the dock are on the page',
         box.textContent.indexOf('broadcast to everyone who can see your video') >= 0 && box.textContent.indexOf('Custom Browser Docks') >= 0
         && box.textContent.indexOf('https://portal.test/watch/7?chat=only') < 0 || box.find(n => n.tagName === 'INPUT' && n.value === 'https://portal.test/watch/7?chat=only').length === 1);
+  check('the settings say the link ends on a password change or reset and when signed out everywhere',
+        box.textContent.indexOf('ends when your password is changed or reset, or when you are signed out everywhere') >= 0, box.textContent.slice(0, 300));
   check('a public stream gets no extra warning', box.find(n => n.className === 'overlay-private-note').length === 0);
   const url = 'https://portal.test/overlay/stream/7#t=' + token;
   let release; const gate = new Promise(r => { release = r; });

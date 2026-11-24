@@ -199,6 +199,9 @@ class Env:
         app.router.add_delete("/api/streams/{id}/overlay", server.http_overlay_revoke)
         app.router.add_delete("/api/streams/{id}", server.http_delete_user_stream)
         app.router.add_post("/api/webhooks/incoming/{token}", server.http_incoming_webhook)
+        app.router.add_post("/api/me/password", server.http_change_password)
+        app.router.add_post("/api/users/{id}/reset-password", server.http_reset_user_password)
+        app.router.add_post("/api/users/{id}/sessions/revoke", server.http_admin_revoke_user_sessions)
         self.srv = TestServer(app)
         await self.srv.start_server()
         self.http = aiohttp.ClientSession()
@@ -624,6 +627,74 @@ async def webhook_body(env):
     check("a webhook line of one stream's chat is not in another stream's overlay", all("build" not in m["text"] for m in h4["messages"]), h4)
 
 
+# ---------------------------------------------------------------------------------------------------- credentials changed
+async def credentials_body(env):
+    """The overlay link ends with the owner's old credentials, exactly as the calendar link does since 1.23.0: a password
+    change, an administrator's reset and an administrator signing the owner out everywhere, and the sockets of that
+    token are closed at once. Somebody else's link and a refused change leave it alone."""
+    env.ids["boss"] = await env.db.create_user("boss", "x")
+    await env.db.conn.execute("UPDATE users SET role = 'superadmin', is_admin = 1 WHERE id = ?", (env.ids["boss"],))
+    await env.db.update_password_hash(env.ids["owner"], server.hash_password("old-password-1"))
+    cid3 = await env.db.create_chat_channel("strm3", created_by=env.ids["other"])
+    sid3 = await env.db.create_user_stream(env.ids["other"], "s3", "live_" + "e" * 24, public_key="pub_" + "f" * 24, is_public=True)
+    await env.db.conn.execute("UPDATE user_streams SET chat_channel_id = ? WHERE id = ?", (cid3, sid3))
+    await env.db.conn.commit()
+    st, body = await env.call("POST", "other", f"/api/streams/{sid3}/overlay")
+    other_token = body["url"].split("#t=", 1)[1]
+    other_sock = await env.overlay(other_token)
+    await other_sock.wait(lambda f: f.get("type") == "history")
+
+    async def state(token):
+        _s, b = await env.call("GET", "owner", f"/api/streams/{env.sid}/overlay")
+        probe = await env.overlay(token)
+        got = await probe.wait(lambda f: f.get("type") == "history", timeout=1.0)
+        if got is None:
+            await probe.closed(2.0)
+        else:
+            await probe.ws.close()          # the token allows three sockets at a time
+        return b["active"], got is not None, probe.code
+
+    async def fresh():
+        token, _ = await env.make_token()
+        sock = await env.overlay(token)
+        await sock.wait(lambda f: f.get("type") == "history")
+        return token, sock
+
+    token, sock = await fresh()
+    check("(control) the link works", await state(token) == (True, True, None))
+    st, _ = await env.call("POST", "owner", "/api/me/password", json={"current_password": "wrong-password", "new_password": "new-password-22"})
+    check("(control) a refused password change leaves the overlay link alone", st == 401 and (await state(token))[:2] == (True, True), st)
+    st, _ = await env.call("POST", "boss", f"/api/users/{env.ids['viewer']}/reset-password", json={"new_password": "Reset-by-admin-1"})
+    check("(control) an administrator resetting somebody else's password leaves it alone", st == 200 and (await state(token))[:2] == (True, True), st)
+    t0 = time.monotonic()
+    st, _ = await env.call("POST", "owner", "/api/me/password", json={"current_password": "old-password-1", "new_password": "new-password-22"})
+    closed = await sock.closed(3.0)
+    check("changing the password ends the overlay link: no link, the old token refused, its open socket closed at once with 4401",
+          st == 200 and (await state(token)) == (False, False, 4401) and closed and sock.code == 4401, f"{st} {sock.code}")
+    print("note: password change to socket closed: %.0f ms" % ((time.monotonic() - t0) * 1000), flush=True)
+    check("and the other member's link is untouched", not other_sock.ws.closed and (await env.call("GET", "other", f"/api/streams/{sid3}/overlay"))[1]["active"])
+    token, sock = await fresh()
+    check("the owner makes a new link afterwards and it works", await state(token) == (True, True, None))
+    st, _ = await env.call("POST", "boss", f"/api/users/{env.ids['owner']}/reset-password", json={"new_password": "Reset-by-admin-2"})
+    check("an administrator's password reset ends it and closes its socket",
+          st == 200 and await sock.closed(3.0) and sock.code == 4401 and (await state(token))[:2] == (False, False), st)
+    token, sock = await fresh()
+    st, b = await env.call("POST", "boss", f"/api/users/{env.ids['owner']}/sessions/revoke")
+    check("an administrator signing the owner out everywhere ends it and closes its socket",
+          st == 200 and await sock.closed(3.0) and sock.code == 4401 and (await state(token))[:2] == (False, False), f"{st} {b}")
+    check("a stream's other overlay link does not exist afterwards either (every stream of the account)",
+          (await env.call("GET", "owner", f"/api/streams/{env.sid2}/overlay"))[1]["active"] is False)
+    src = (ROOT / "server.py").read_text()
+    for name in ("http_change_password", "http_reset_user_password", "http_admin_revoke_user_sessions"):
+        body = src[src.index(f"async def {name}("):]
+        body = body[:body.index("\nasync def ", 10)]
+        check(f"{name} ends the overlay links where it ends the calendar link", "feed_token_delete" in body and "_overlay_links_end(" in body)
+    cli = src[src.index("async def init_admin_user"):]
+    branch = cli[cli.index("ADMIN PASSWORD RESET") - 1200:cli.index("ADMIN PASSWORD RESET")]
+    check("the command line's admin password reset deletes the overlay links too (a running portal closes the sockets within 30 s)",
+          "feed_token_delete(admin[\"id\"])" in branch and "overlay_tokens_delete_for_user(admin[\"id\"])" in branch, branch[-300:])
+
+
 # ---------------------------------------------------------------------------------------------------- slow clients
 class NeverWs:
     """A socket whose send never finishes: a stalled OBS client."""
@@ -762,6 +833,7 @@ run(refusal_body)
 run(lifecycle_body)
 run(other_routes_body)
 run(webhook_body)
+run(credentials_body)
 # each slow-client body has its own deadline (they take about 3 s each)
 run(fake_slow_body, deadline=10)
 run(raw_slow_body, deadline=20)

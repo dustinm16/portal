@@ -105,7 +105,8 @@
             container.textContent = '';
             container.appendChild(el('p', { text: 'Show your stream chat on your picture with an OBS browser source. The link is read-only: ' +
                 'it shows the chat of this stream and nothing else, and it works without signing in. One link is active at a time, and at most ' +
-                Number(status.max_sockets || 3) + ' browser sources can use it at once.' }));
+                Number(status.max_sockets || 3) + ' browser sources can use it at once. The link ends when your password is changed or reset, ' +
+                'or when you are signed out everywhere; make a new link then and put it in OBS again.' }));
             container.appendChild(el('p', { class: 'overlay-broadcast-note', role: 'note', text: BROADCAST_NOTE }));
             if (status.stream_public === false) container.appendChild(el('p', { class: 'overlay-private-note', role: 'alert', text: PRIVATE_NOTE }));
             if (status.available === false) {

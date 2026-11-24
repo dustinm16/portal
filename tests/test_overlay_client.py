@@ -40,7 +40,7 @@ html = (STATIC / "overlay.html").read_text(encoding="utf-8")
 check("overlay.html loads its own script (v2) and style (v1) and nothing else",
       "/static/js/overlay.js?v=2" in html and "/static/css/overlay.css?v=1" in html and html.count("<script") == 1 and html.count("<link") == 1)
 index = (STATIC / "index.html").read_text(encoding="utf-8")
-check("the dashboard loads the settings block before streams.js, at v1", index.index("stream-overlay-settings.js?v=1") < index.index("streams.js?v=53"))
+check("the dashboard loads the settings block before streams.js, at v2", index.index("stream-overlay-settings.js?v=2") < index.index("streams.js?v=53"))
 streams_js = (STATIC / "js" / "streams.js").read_text(encoding="utf-8")
 check("the stream settings have the mount point and mount the block", 'id="stream-overlay-mount"' in streams_js and "StreamOverlaySettings.mount(" in streams_js)
 

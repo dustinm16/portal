@@ -6004,6 +6004,13 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def overlay_tokens_delete_for_user(self, user_id: int) -> int:
+        """Delete the overlay links of every stream of one account (its credentials changed). How many were deleted."""
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_overlay_tokens WHERE stream_id IN (SELECT id FROM user_streams WHERE user_id = ?)", (user_id,))
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def overlay_token_info(self, stream_id: int):
         """{created_at, last_used_at} of the stream's token (never the token or its hash), or None."""
         cursor = await self.conn.execute(

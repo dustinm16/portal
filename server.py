@@ -3766,6 +3766,7 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
     # "Everywhere" includes push devices, the current session's too, and the calendar link
     await db.delete_user_push_subscriptions(user_id)
     await db.feed_token_delete(user_id)
+    await _overlay_links_end(user_id)               # and the overlay links of its streams
     closed = await close_user_websockets(user_id, except_token_id=keep_token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
     actor = await db.get_user_by_id(token.user_id)
@@ -29095,6 +29096,15 @@ def _overlay_close_owner(user_id: int) -> int:
     return _overlay_close_where(lambda s: s.owner_id == user_id)
 
 
+async def _overlay_links_end(user_id: int) -> int:
+    """The account's credentials changed (password change or reset, signed out everywhere): its overlay links end
+    like its calendar link. The rows go first, then the open sockets are closed, so a socket that is just being
+    opened finds no row when it checks again after registering. Returns how many links were deleted."""
+    ended = await db.overlay_tokens_delete_for_user(user_id)
+    _overlay_close_owner(user_id)
+    return ended
+
+
 def _overlay_close_all() -> int:
     return _overlay_close_where(lambda s: True, overlay_chat.CLOSE_SLOW)
 
@@ -30110,6 +30120,7 @@ async def http_change_password(request: web.Request) -> web.Response:
     await close_user_websockets(token.user_id, except_token_id=token.token_id,
                                 keep_prefixes=("apikey-", "streamkey-"))
     await db.feed_token_delete(token.user_id)       # the calendar link goes with the old credentials
+    await _overlay_links_end(token.user_id)         # and so do the overlay links of its streams
 
     logger.info(f"Password changed for user {token.user_id}")
     await security_event("password_changed", request=request, user=user,
@@ -30761,6 +30772,7 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
     keep_token_id = token.token_id if user_id == token.user_id else None
     revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
     await db.feed_token_delete(user_id)              # the calendar link goes with the old credentials
+    await _overlay_links_end(user_id)                # and so do the overlay links of its streams
     # API keys outlive browser sessions, so they go too, as do WebSockets opened
     # with the revoked sessions. A self-reset keeps the caller's own credential.
     keys_revoked = await db.revoke_user_api_keys(user_id, except_token_id=keep_token_id)
@@ -33488,6 +33500,8 @@ async def init_admin_user() -> None:
         revoked = await db.revoke_user_tokens(admin["id"])
         keys_revoked = await db.revoke_user_api_keys(admin["id"])
         await db.feed_token_delete(admin["id"])
+        # a command-line process has no sockets to close: a running portal drops them within 30 seconds (its revalidation pass)
+        await db.overlay_tokens_delete_for_user(admin["id"])
         await audit_log("password_reset", admin["id"], "cli",
                         target_id=admin["id"], target_type="user",
                         target_name="admin",
