@@ -23,8 +23,8 @@ from config import Config
 # is the one health_check reads every HEALTH_INTERVAL seconds to tell whether MediaMTX is up.
 _paths_listener: Optional[Callable] = None
 
-# The paths list is paged by MediaMTX (100 items a page unless asked otherwise; the answer carries
-# "pageCount"; page numbers start at 0). The listener gets every page up to this many, so streams beyond
+# The paths list is paged by MediaMTX (the answer carries "pageCount" and "itemCount"; the query takes
+# "page", counted from 0, and "itemsPerPage"; the default page size was not observed here). The listener gets every page up to this many, so streams beyond
 # the first 100 paths have numbers too. A list with more pages than this is read up to the bound and the
 # paths on the pages after it get no reading (nothing is asked for them). Pages after the first are only
 # fetched when a listener is set and the first answer reports more than one.

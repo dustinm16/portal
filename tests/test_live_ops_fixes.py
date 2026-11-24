@@ -572,6 +572,38 @@ def test_the_parser_and_the_kick_handle_the_1_9_3_captures():
     run(body)
 
 
+@with_mtx()
+async def test_a_relay_hold_does_not_outlive_its_session_when_the_encoder_comes_back(w, mtx):
+    sid = w.streams["private"]["id"]
+    await w.db.create_relay_destination(sid, "custom", "Twitch", "rtmp://203.0.113.5/app", "KEYKEYKEY")
+    async with Spy(w):
+        await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")
+        assert (await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))).status == 200
+        assert sid in server._relay_stop_held
+        server.active_recordings[sid] = {"process": Proc(), "session_dir": "/nonexistent", "uploaded": set()}
+        hold = asyncio.Event()
+
+        async def held_stop(stream_id, force=False, only=None):
+            await hold.wait()
+        saved = (server.stop_vod_recording, server._vod_graceful_stop)
+
+        async def graceful(p):
+            return "q"
+        server.stop_vod_recording, server._vod_graceful_stop = held_stop, graceful
+        try:
+            assert (await end_now(w, sid, {"regenerate_key": False}))[0] == 200
+            server.active_recordings.pop(sid, None)
+            await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")   # the encoder is back: a new session
+            hold.set()
+            await asyncio.gather(*[t for t in asyncio.all_tasks() if "_finalize_stream_offline" in repr(t.get_coro())])
+        finally:
+            server.stop_vod_recording, server._vod_graceful_stop = saved
+        assert (await w.db.get_user_stream(sid))["is_live"] == 1
+        assert sid not in server._relay_stop_held, "the hold of the ended session carried over into the new one"
+        st, d, _ = await health(w, "owner", sid)
+        assert "stopped_by_admin" not in [r["state"] for r in d["relays"]], d["relays"]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

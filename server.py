@@ -6794,6 +6794,12 @@ async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = Non
         _stream_session_begin(stream_id, path_key)
         if not was_live:
             _viewers.start_session(stream_id)       # fresh peak and unique figures
+            # Going live from offline or from encoding is a new session: what belonged to the session before
+            # (an administrator's relay hold, a recorder error, the ingest numbers) is not carried over. The
+            # finalisation of that session skips its own offline write, which would have dropped them.
+            _relay_stop_held.discard(stream_id)
+            _recorder_errors.pop(stream_id, None)
+            _ingest_forget(stream_id)
     if was_live:
         return
     stream = current
