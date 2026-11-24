@@ -38,7 +38,7 @@ else:
 
 watch = (STATIC / "watch.html").read_text(encoding="utf-8")
 admin = (STATIC / "admin.html").read_text(encoding="utf-8")
-check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=2" in watch
+check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=3" in watch
       and watch.index("/static/js/portal.js") < watch.index("/static/js/stream-health.js"))
 check("the health button is hidden until the page decides", 'id="health-btn" style="display: none;"' in watch
       and "Number(streamData.user_id) === Number(currentUser.id)" in watch and "Portal.isAdmin(currentUser)" in watch)

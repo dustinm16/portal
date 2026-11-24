@@ -1,0 +1,23 @@
+{
+  "itemCount": 2,
+  "pageCount": 2,
+  "items": [
+    {
+      "name": "live/key_rtsp_b",
+      "confName": "all_others",
+      "source": {
+        "type": "rtspSession",
+        "id": "beb1ae13-3d8d-4e66-9dee-d2ca94e2c3ac"
+      },
+      "ready": true,
+      "readyTime": "2026-11-24T01:24:21.982318153Z",
+      "tracks": [
+        "H264",
+        "MPEG-4 Audio"
+      ],
+      "bytesReceived": 473586,
+      "bytesSent": 0,
+      "readers": []
+    }
+  ]
+}

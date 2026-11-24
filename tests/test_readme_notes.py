@@ -1286,10 +1286,19 @@ for name, needles in {
     "stop relays": ("`stream_stop_relays`", "relay monitor", "until the stream ends"),
     "both ask first": ("its own row", "0.6 seconds", "second click of a double click", "while another request is running"),
     "stage mode": ("never contacts a media server",),
+    "fix pass A: sessions, claims, relay hold, own list limiter, paging, 1.9.3": (
+        "`_stream_sessions`", "already being ended", "claimed under the stream state lock", "`stopped_by_admin`",
+        "kept in the portal's memory only", "not stored", "`live_ops_list`", "`max_path_pages`", "at most 10 pages",
+        "tests/fixtures/mediamtx-1.9.3", "rtmps, rtsps, webrtc, srt and hls sources were not", "accepted as they are",
+        "path a live session was published on"),
     "behaviour, breaking, database, static, rollback, not tested": ("behaviour changes", "breaking changes", "**not tested.**", "version 1",
                                                                   "version 53", "1.9.3", "hand-written", "no browser", "no obs", "cloudflare", "fakes and captures"),
 }.items():
     check(f"1.24.0 states: {name}", all(n in _low240 for n in needles), str([n for n in needles if n not in _low240]))
+import services.mediamtx as _mtx24  # noqa: E402
+check("1.24.0: the page bound stated is the one in the code and the 1.9.3 captures exist",
+      _mtx24.MAX_PATH_PAGES == 10 and (ROOT / "tests" / "fixtures" / "mediamtx-1.9.3" / "kick_exchanges.json").is_file()
+      and (ROOT / "tests" / "fixtures" / "mediamtx-1.9.3" / "paths_list_rtmp_rtsp_a.json").is_file())
 check("1.24.0: the thresholds stated are the ones in the code",
       _sh24.NO_DATA_SECONDS == 75.0 and _sh24.NO_DATA_SECONDS >= 2 * 30.0 and _sh24.RING_SIZE == 30 and _sh24.DROP_RATIO == 0.5 and _sh24.DROP_BASELINE_MIN_SAMPLES == 4
       and _sh24.DROP_BASELINE_MIN_BPS == 50_000 and _sh24.DROP_BASELINE_SECONDS == 300.0
@@ -1299,9 +1308,9 @@ check("1.24.0: the thresholds stated are the ones in the code",
       and '"drop_baseline_seconds": 300.0' in (ROOT / "docs" / "API.md").read_text()
       and '"no_data_seconds": 20' not in (ROOT / "docs" / "API.md").read_text())
 check("1.24.0: the static versions stated are the ones the pages load",
-      "`stream-health.js` is new at version 2" in _sec240 and "`live-ops-admin.js` is new at version 2" in _sec240
+      "`stream-health.js` is new at version 3" in _sec240 and "`live-ops-admin.js` is new at version 2" in _sec240
       and "`streams.js` is version 53" in _sec240
-      and "/static/js/stream-health.js?v=2" in (ROOT / "static" / "watch.html").read_text()
+      and "/static/js/stream-health.js?v=3" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/live-ops-admin.js?v=2" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
@@ -1323,9 +1332,9 @@ check("1.24.0: the notes' claim that the tick fetches nothing holds (no MediaMTX
                   for x in ("ClientSession", "http.get", "_mediamtx_kick_publisher"))
       and "async def _viewer_sync_once(paths=None)" in _srv24)
 _svc24 = (ROOT / "services" / "mediamtx.py").read_text()
-check("1.24.0: the ingest feed is the existing health check's answer: one list call, no second one",
-      _svc24.count("/v3/paths/list") == 2 and "async def _offer_paths" in _svc24
-      and "await self._offer_paths(resp)" in _svc24[_svc24.index("async def health_check"):_svc24.index("async def list_streams")]
+check("1.24.0: the ingest feed is the existing health check's answer: one list call, plus only the further pages it reports",
+      _svc24.count("/v3/paths/list") == 3 and "async def _offer_paths" in _svc24
+      and "await self._offer_paths(session, api_port, resp)" in _svc24[_svc24.index("async def health_check"):_svc24.index("async def list_streams")]
       and "set_paths_listener(_ingest_feed)" in _srv24 and "async def _ingest_feed" in _srv24
       and "ClientSession" not in _srv24[_srv24.index("async def _ingest_feed"):_srv24.index("async def _stream_set_offline")])
 check("1.24.0: the notes say moderators do not read the live operation entries, and the code leaves them out",

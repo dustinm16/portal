@@ -134,6 +134,7 @@
         if (rec.last_error) rline += ' (' + rec.last_error + ')';
         body.appendChild(el('p', { text: rline }));
         if (data.load_average) body.appendChild(row('Server load', data.load_average.join(' ')));
+        body.appendChild(el('p', { class: 'stream-health-caption', text: 'The server reads the incoming numbers about every 30 seconds, so the graph has one point per 30 seconds, and "no data" is only reported after 75 seconds without growth.' }));
     }
 
     function mount(opts) {

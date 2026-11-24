@@ -82,6 +82,7 @@ class N {
     relays: [{ name: 'Twitch', state: 'stopped_by_admin', last_error: null }], recorder: { state: 'not_recording' }, warnings: [] });
   const t2 = body2.textContent;
   check('a relay stopped by an administrator is shown as that, not as failing', t2.includes('Twitch: stopped by an administrator') && !t2.includes('failing') && !t2.includes('exit code'), t2);
+  check('the panel says how coarse the readings are', t2.includes('every 30 seconds') && t2.includes('75 seconds'), t2);
   check('the Stop relays question says what a restart does', ctx.LiveOpsAdmin.questionText('stop-relays', 'S', true).includes('restarted'));
   // polling only while visible
   ctx.document.hidden = true; ctx.document.visibilityState = 'hidden';

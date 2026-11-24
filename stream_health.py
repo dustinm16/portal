@@ -7,7 +7,9 @@ and `warnings` for the owner's health route.
 The paths list is read tolerantly. MediaMTX names its received-bytes counter `bytesReceived` in
 the versions the project has run and `inboundBytes` in newer ones (v1.21.3 sends both); a missing
 field means "no number this time", never an error. The fixtures of tests/fixtures/mediamtx-1.21.3
-are real captures of v1.21.3 (RTMP, RTMPS, RTSP), plus one hand-written WebRTC item.
+are real captures of v1.21.3 (RTMP, RTMPS, RTSP), plus one hand-written WebRTC item; those of
+tests/fixtures/mediamtx-1.9.3 are real captures of v1.9.3, the release setup.py installs (RTMP and RTSP;
+there the list carries itemCount and pageCount, and the counter is bytesReceived only).
 """
 
 from __future__ import annotations

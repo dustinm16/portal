@@ -9,7 +9,7 @@ handed to _viewer_sync_once(paths=...). In production the lists come from MediaM
 30 s health check), which test_health_check_feeds_the_ingest_numbers drives against a loopback TLS fake of
 the control API with a real MediaMTXService. tests/outbound_guard.py refuses any dial that is not loopback.
 
-Not proven here: a real MediaMTX of the version setup.py pins (1.9.3), a real encoder, a browser.
+The 1.9.3 captures and the paging are exercised in tests/test_live_ops_fixes.py. Not proven here: a real encoder, a browser.
 
 Run: venv/bin/python tests/test_stream_health_server.py
 """

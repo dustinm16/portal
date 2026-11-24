@@ -1,0 +1,17 @@
+{
+  "name": "live/key_rtmp_a",
+  "confName": "all_others",
+  "source": {
+    "type": "rtmpConn",
+    "id": "6983fcb0-1609-4a7f-9080-fdf3dd068371"
+  },
+  "ready": true,
+  "readyTime": "2026-11-24T01:24:22.10577087Z",
+  "tracks": [
+    "H264",
+    "MPEG-4 Audio"
+  ],
+  "bytesReceived": 475400,
+  "bytesSent": 0,
+  "readers": []
+}

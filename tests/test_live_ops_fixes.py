@@ -29,11 +29,13 @@ import outbound_guard  # noqa: E402
 outbound_guard.install()
 
 import server  # noqa: E402
+import stream_health  # noqa: E402
+from aiohttp import web  # noqa: E402
 from test_stream_access import run  # noqa: E402
 from aiohttp.test_utils import make_mocked_request  # noqa: E402
 from test_stream_access import Transport  # noqa: E402
 from test_stream_health_server import (  # noqa: E402
-    _counted, admin_req, fresh, health, paths_for, req, tick, with_clock, with_mtx,
+    _counted, _self_signed_cert, admin_req, fresh, health, paths_for, req, tick, with_clock, with_mtx,
 )
 
 
@@ -420,6 +422,154 @@ async def test_relays_an_administrator_stopped_are_not_reported_as_failing(w, mt
         assert "-15" not in resp.body.decode() and "203.0.113.5" not in resp.body.decode()
     await server._stream_set_offline(sid)           # the hold ends with the session
     assert sid not in server._relay_stop_held
+
+
+FIX193 = ROOT / "tests" / "fixtures" / "mediamtx-1.9.3"
+
+
+def fx193(name):
+    return json.loads((FIX193 / name).read_text())
+
+
+def _paged(total_pages, per_page, target_item, filler_prefix="live/other_"):
+    """A fake paged answer of /v3/paths/list: the item to find sits on the last page."""
+    pages = []
+    for n in range(total_pages):
+        items = [{"name": f"{filler_prefix}{n}_{i}", "ready": True, "bytesReceived": 1000, "source": {"type": "rtmpConn"}}
+                 for i in range(per_page)]
+        pages.append(items)
+    pages[-1].append(target_item)
+    return pages
+
+
+async def with_paged_api(w, clock, pages_by_call, fn):
+    """Run fn(svc, state) against a TLS fake control API that answers /v3/paths/list by `page` (from 0)."""
+    from services import mediamtx as mtx_service
+    state = {"pages": pages_by_call, "asked": [], "fail_page": None, "page_count": None}
+
+    async def paths_list(request):
+        page = int(request.query.get("page", "0"))
+        state["asked"].append(page)
+        if state["fail_page"] == page:
+            return web.json_response({"error": "boom"}, status=500)
+        pages = state["pages"]
+        body = {"itemCount": sum(len(x) for x in pages), "pageCount": state["page_count"] or len(pages),
+                "items": pages[page] if page < len(pages) else []}
+        return web.json_response(body)
+
+    app = web.Application()
+    app.router.add_get("/v3/paths/list", paths_list)
+    with tempfile.TemporaryDirectory() as tmp:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=_self_signed_cert(tmp))
+        await site.start()
+        port = runner.addresses[0][1]
+        saved = (server.aiohttp.ClientSession, mtx_service.monotonic)
+        server.aiohttp.ClientSession = w.saved[1]
+        mtx_service.monotonic = clock
+        try:
+            svc = mtx_service.MediaMTXService({"id": 1, "name": "mediamtx", "config": json.dumps({"api_port": port})})
+            mtx_service.set_paths_listener(server._ingest_feed)
+            await fn(svc, state)
+        finally:
+            mtx_service.set_paths_listener(None)
+            server.aiohttp.ClientSession, mtx_service.monotonic = saved
+            await runner.cleanup()
+
+
+@with_clock
+async def test_streams_beyond_the_first_page_of_paths_get_numbers(w, clock):
+    from services import mediamtx as mtx_service
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    item = paths_for("paths_list_two_samples_5s_apart_a.json", livekey_a=key)["items"][0]
+
+    async def body(svc, state):
+        clock.t += 30
+        state["pages"] = _paged(3, 100, item)                       # 301 paths on three pages
+        assert await svc.health_check() is True
+        assert state["asked"] == [0, 1, 2], state["asked"]          # the pages the API reported, from 0
+        assert sid in server._ingest_stats and server._ingest_stats[sid]["bytes"] == item["bytesReceived"]
+        clock.t += 30
+        state["asked"].clear()
+        state["pages"] = _paged(3, 100, {**item, "bytesReceived": item["bytesReceived"] + 11_250_000, "inboundBytes": item["bytesReceived"] + 11_250_000})
+        assert await svc.health_check() is True
+        st, d, _ = await health(w, "owner", sid)
+        assert d["ingest"]["available"] and abs(d["ingest"]["bitrate_bps"] - 3_000_000) / 3_000_000 < 0.10, d["ingest"]
+        # the number of pages read is bounded, whatever the API says
+        state["asked"].clear()
+        state["page_count"] = 500
+        assert await svc.health_check() is True
+        assert state["asked"] == list(range(mtx_service.MAX_PATH_PAGES)), state["asked"]
+        assert mtx_service.MAX_PATH_PAGES == 10
+        # a page that cannot be read: the health result stands (page one answered), nothing half-read is handed over
+        state["page_count"], state["fail_page"] = None, 1
+        before = (server._ingest_stats[sid]["bytes"], server._ingest_stats[sid]["at"])
+        clock.t += 30
+        assert await svc.health_check() is True
+        assert (server._ingest_stats[sid]["bytes"], server._ingest_stats[sid]["at"]) == before
+        # one page, no pageCount (v1.21.3 captures carry none): one call, as before
+        state["fail_page"], state["asked"] = None, []
+        state["pages"] = [[item]]
+        state["page_count"] = None
+        await svc.health_check()
+        assert state["asked"] == [0]
+    await with_paged_api(w, clock, None, body)
+
+
+def test_the_parser_and_the_kick_handle_the_1_9_3_captures():
+    a, b = fx193("paths_list_rtmp_rtsp_a.json"), fx193("paths_list_rtmp_rtsp_b.json")
+    parsed = stream_health.parse_paths(a)
+    assert set(parsed) == {"live/key_rtmp_a", "live/key_rtsp_b"}
+    r, t = parsed["live/key_rtmp_a"], parsed["live/key_rtsp_b"]
+    assert r["source_type"] == "rtmpConn" and t["source_type"] == "rtspSession"
+    assert r["source_id"] and t["source_id"] and r["codecs"] == ["H264", "MPEG-4 Audio"]
+    assert r["bytes"] == 227598 and r["ready"] and r["ready_at"]
+    entry = stream_health.new_entry(100.0)
+    stream_health.observe(entry, r, 100.0)
+    stream_health.observe(entry, stream_health.parse_paths(b)["live/key_rtmp_a"], 105.0)
+    bps = entry["samples"][-1][1]
+    assert 200_000 < bps < 600_000, bps                      # about 5 s apart, a 300 kbit/s video plus audio test source
+    for stype in ("rtmpConn", "rtspSession"):
+        assert stream_health.KICK_ROUTES[stype] in fx193("kick_exchanges.json")["source_type_to_kick_route"].values()
+
+    async def body(w):
+        fresh()
+        info = fx193("paths_get_rtmp.json")
+        calls = []
+
+        async def get_path(request):
+            calls.append(("GET", request.path))
+            return web.json_response(info)
+
+        async def kick(request):
+            calls.append(("POST", request.path))
+            ok = request.path == "/v3/rtmpconns/kick/" + info["source"]["id"]
+            # 1.9.3: 200 with an empty body on success, 404 {"error": ...} otherwise
+            return web.Response(status=200) if ok else web.json_response({"error": "connection not found"}, status=404)
+        app = web.Application()
+        app.router.add_get("/v3/paths/get/{name:.*}", get_path)
+        app.router.add_post("/v3/{kind}/kick/{id}", kick)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = runner.addresses[0][1]
+        saved = (server._mediamtx_api_base, server._get_mediamtx_config, server.aiohttp.ClientSession)
+
+        async def cfg():
+            return {"api_port": port}
+        server._mediamtx_api_base = lambda c: f"http://127.0.0.1:{port}"
+        server._get_mediamtx_config = cfg
+        server.aiohttp.ClientSession = w.saved[1]
+        try:
+            res = await server._mediamtx_kick_publisher("key_rtmp_a")
+        finally:
+            server._mediamtx_api_base, server._get_mediamtx_config, server.aiohttp.ClientSession = saved
+            await runner.cleanup()
+        assert res["kicked"] is True and res["source"] == "RTMP", res
+        assert calls[-1] == ("POST", "/v3/rtmpconns/kick/" + info["source"]["id"])
+    run(body)
 
 
 if __name__ == "__main__":

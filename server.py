@@ -12342,7 +12342,7 @@ def _mediamtx_api_base(cfg: dict) -> str:
 async def _mediamtx_kick_publisher(path_key: str) -> dict:
     """Disconnect the publisher of path live/<path_key> through MediaMTX's control API (administrator
     action only, two calls, never per tick): read the path's source, then POST the kick route of its type
-    (stream_health.KICK_ROUTES, verified against v1.21.3 in tests/fixtures/mediamtx-1.21.3).
+    (stream_health.KICK_ROUTES, run against v1.21.3 and, for RTMP and RTSP, v1.9.3: tests/fixtures/mediamtx-1.21.3 and -1.9.3).
     Returns {kicked, reason, source}; a source type without a route (SRT, HLS, camera) is not kicked."""
     if Config.STAGE_MODE:
         return {"kicked": False, "reason": "staged instance: the media server is not contacted", "source": None}

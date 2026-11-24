@@ -23,6 +23,13 @@ from config import Config
 # is the one health_check reads every HEALTH_INTERVAL seconds to tell whether MediaMTX is up.
 _paths_listener: Optional[Callable] = None
 
+# The paths list is paged by MediaMTX (100 items a page unless asked otherwise; the answer carries
+# "pageCount"; page numbers start at 0). The listener gets every page up to this many, so streams beyond
+# the first 100 paths have numbers too. A list with more pages than this is read up to the bound and the
+# paths on the pages after it get no reading (nothing is asked for them). Pages after the first are only
+# fetched when a listener is set and the first answer reports more than one.
+MAX_PATH_PAGES = 10
+
 
 def set_paths_listener(listener: Optional[Callable]) -> None:
     global _paths_listener
@@ -352,19 +359,35 @@ paths:
                 ) as resp:
                     if resp.status != 200:
                         return False
-                    await self._offer_paths(resp)
+                    await self._offer_paths(session, api_port, resp)
                     return True
         except Exception:
             return False
 
-    async def _offer_paths(self, resp) -> None:
-        """Hand the answer of a successful health check to the listener, once. Whatever goes wrong here
-        (an unreadable body, a failing listener) never changes the health result."""
+    async def _offer_paths(self, session, api_port, resp) -> None:
+        """Hand the answer of a successful health check to the listener, once: the first page, plus the
+        further pages MediaMTX reports (at most MAX_PATH_PAGES in all, each with its own 5 s timeout). When a
+        further page cannot be read nothing is handed over this time (a part of the paths would read as
+        "stream gone"). Whatever goes wrong here (an unreadable body, a failing listener) never changes
+        the health result, which depends on the first page alone."""
         listener = _paths_listener
         if listener is None:
             return
         try:
             payload = await resp.json()
+            pages = payload.get("pageCount") if isinstance(payload, dict) else None
+            if isinstance(pages, int) and not isinstance(pages, bool) and pages > 1:
+                items = list(payload.get("items") or [])
+                for page in range(1, min(pages, MAX_PATH_PAGES)):
+                    async with session.get(
+                        f'https://127.0.0.1:{api_port}/v3/paths/list?page={page}',
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as more:
+                        if more.status != 200:
+                            return
+                        extra = await more.json()
+                    items.extend(extra.get("items") or [])
+                payload = {**payload, "items": items}
             await listener(payload, monotonic())
         except Exception:
             pass

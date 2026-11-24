@@ -1,0 +1,47 @@
+{
+  "_note": "Captured against MediaMTX v1.9.3 (the release setup.py installs, downloaded with the setup.py URL pattern) run from the binary on loopback scratch ports with plain HTTP, RTMP and RTSP (tcp) only, publishers were ffmpeg test sources. The paths list carries itemCount, pageCount and items; query parameters page (from 0) and itemsPerPage; a page past the end answers 200 with an empty items list, itemsPerPage=0 answers 400 {error: invalid items per page}. Received bytes are only in bytesReceived (no inboundBytes in 1.9.3). Not captured on 1.9.3: RTMPS, RTSPS, WebRTC, SRT, HLS sources.",
+  "source_type_to_kick_route": {
+    "rtmpConn": "/v3/rtmpconns/kick/{id}",
+    "rtspSession": "/v3/rtspsessions/kick/{id}"
+  },
+  "exchanges": [
+    {
+      "request": "POST /v3/rtspsessions/kick/{id of an rtmpConn}",
+      "status": 404,
+      "body": {
+        "error": "session not found"
+      }
+    },
+    {
+      "request": "POST /v3/rtmpconns/kick/not-an-id",
+      "status": 400,
+      "body": {
+        "error": "invalid UUID length: 9"
+      }
+    },
+    {
+      "request": "POST /v3/rtmpconns/kick/{id of an rtmpConn}",
+      "status": 200,
+      "body": null,
+      "note": "empty body; publisher ffmpeg ended with Broken pipe"
+    },
+    {
+      "request": "POST /v3/rtmpconns/kick/{id already kicked}",
+      "status": 404,
+      "body": {
+        "error": "connection not found"
+      }
+    },
+    {
+      "request": "POST /v3/rtspsessions/kick/{id of an rtspSession}",
+      "status": 200,
+      "body": null,
+      "note": "empty body; publisher ffmpeg ended"
+    }
+  ],
+  "after_kicks": {
+    "itemCount": 0,
+    "pageCount": 0,
+    "items": []
+  }
+}

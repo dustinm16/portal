@@ -1,5 +1,5 @@
 {
-  "_note": "Captured against MediaMTX v1.21.3 (the binary on this machine; setup.py pins 1.9.3, not captured). Plain HTTP API on a scratch instance. Kick routes answer 200 {status:ok} for the right connection type, 404 for the wrong type or an already gone id, 400 for a malformed id. The routes exist under the same names in the 1.9.x API documentation but were not run against 1.9.3.",
+  "_note": "Captured against MediaMTX v1.21.3 (the version the production instance runs; setup.py installs 1.9.3, captured separately in tests/fixtures/mediamtx-1.9.3). Plain HTTP API on a scratch instance. Kick routes answer 200 {status:ok} for the right connection type, 404 for the wrong type or an already gone id, 400 for a malformed id. The RTMP and RTSP routes were also run against 1.9.3 (see tests/fixtures/mediamtx-1.9.3).",
   "source_type_to_kick_route": {
     "rtmpConn": "/v3/rtmpconns/kick/{id}",
     "rtmpsConn": "/v3/rtmpsconns/kick/{id}",
