@@ -24,6 +24,7 @@ import re
 import socket
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -251,7 +252,10 @@ class Env:
         return o
 
 
-def run(body):
+def run(body, deadline=None):
+    """Run one body against a fresh Env. A body that has a deadline prints FAIL and ends when it does not finish
+    in time: a slow-client body whose broadcast has become blocking would otherwise hang the whole file. The second
+    guard is a timer thread, for a body that blocks the loop itself (a cancelled await cannot end that)."""
     async def go():
         cap = Capture()
         logging.getLogger().addHandler(cap)
@@ -259,10 +263,30 @@ def run(body):
         try:
             async with Env() as env:
                 env.cap = cap
-                await body(env)
+                if deadline is None:
+                    await body(env)
+                    return
+                try:
+                    await asyncio.wait_for(body(env), deadline)
+                except asyncio.TimeoutError:
+                    check(f"{body.__name__} finished within its {deadline} s deadline", False,
+                          "the broadcast to a stalled overlay client waits for it")
         finally:
             logging.getLogger().removeHandler(cap)
-    asyncio.run(go())
+
+    guard = None
+    if deadline is not None:
+        def give_up():
+            print(f"FAIL: {body.__name__} did not finish in {deadline + 10} s and did not stop when cancelled", flush=True)
+            os._exit(1)
+        guard = threading.Timer(deadline + 10, give_up)
+        guard.daemon = True
+        guard.start()
+    try:
+        asyncio.run(go())
+    finally:
+        if guard is not None:
+            guard.cancel()
 
 
 # ---------------------------------------------------------------------------------------------------- reducer
@@ -701,8 +725,9 @@ run(socket_body)
 run(refusal_body)
 run(lifecycle_body)
 run(other_routes_body)
-run(fake_slow_body)
-run(raw_slow_body)
+# each slow-client body has its own deadline (they take about 3 s each)
+run(fake_slow_body, deadline=10)
+run(raw_slow_body, deadline=20)
 
 
 async def log_body(env):
