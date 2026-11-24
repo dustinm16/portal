@@ -1,0 +1,22 @@
+{
+  "_note": "HAND-WRITTEN, not captured: ffmpeg 5.1 has no WHIP output so no WebRTC publisher could be run. Shape follows the MediaMTX documentation (source.type webRTCSession). Parser tolerance only, no claim about a real capture.",
+  "itemCount": 1,
+  "pageCount": 1,
+  "items": [
+    {
+      "name": "live/livekey_w",
+      "ready": true,
+      "readyTime": "2026-11-23T22:20:00.000000000Z",
+      "source": {
+        "type": "webRTCSession",
+        "id": "11111111-2222-3333-4444-555555555555"
+      },
+      "tracks": [
+        "H264",
+        "Opus"
+      ],
+      "inboundBytes": 100000,
+      "bytesReceived": 100000
+    }
+  ]
+}

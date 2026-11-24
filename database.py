@@ -5140,6 +5140,17 @@ class Database:
         row = await cursor.fetchone()
         return self._decrypt_stream_keys(dict(row)) if row else None
 
+    async def get_live_stream_keys(self) -> dict:
+        """{stream id: private stream key} of the streams that are live now (is_live = 1). Only what
+        the ingest stats need to match a MediaMTX path to a stream; the keys never leave the process."""
+        cursor = await self.conn.execute("SELECT id, stream_key FROM user_streams WHERE is_live = 1")
+        out = {}
+        for row in await cursor.fetchall():
+            d = self._decrypt_stream_keys({"stream_key": row["stream_key"]})
+            if d.get("stream_key"):
+                out[row["id"]] = d["stream_key"]
+        return out
+
     async def get_stream_by_key(self, stream_key: str) -> Optional[dict]:
         """Get a stream by its private stream key (for publishing authentication)."""
         sk_hash = hash_stream_key(stream_key)

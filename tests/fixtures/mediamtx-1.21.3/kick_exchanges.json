@@ -1,0 +1,76 @@
+{
+  "_note": "Captured against MediaMTX v1.21.3 (the binary on this machine; setup.py pins 1.9.3, not captured). Plain HTTP API on a scratch instance. Kick routes answer 200 {status:ok} for the right connection type, 404 for the wrong type or an already gone id, 400 for a malformed id. The routes exist under the same names in the 1.9.x API documentation but were not run against 1.9.3.",
+  "source_type_to_kick_route": {
+    "rtmpConn": "/v3/rtmpconns/kick/{id}",
+    "rtmpsConn": "/v3/rtmpsconns/kick/{id}",
+    "rtspSession": "/v3/rtspsessions/kick/{id}",
+    "rtspsSession": "/v3/rtspssessions/kick/{id}",
+    "webRTCSession": "/v3/webrtcsessions/kick/{id}"
+  },
+  "exchanges": [
+    {
+      "request": "POST /v3/rtmpsconns/kick/{id of an rtmpsConn}",
+      "status": 200,
+      "body": {
+        "status": "ok"
+      },
+      "effect": "publisher ffmpeg ended with an I/O error, path gone from /v3/paths/list"
+    },
+    {
+      "request": "POST /v3/rtmpconns/kick/{id of an rtmpsConn}",
+      "status": 404,
+      "body": {
+        "status": "error",
+        "error": "connection not found"
+      }
+    },
+    {
+      "request": "POST /v3/rtmpsconns/kick/{id already kicked}",
+      "status": 404,
+      "body": {
+        "status": "error",
+        "error": "connection not found"
+      }
+    },
+    {
+      "request": "POST /v3/rtmpconns/kick/{id of an rtmpConn}",
+      "status": 200,
+      "body": {
+        "status": "ok"
+      },
+      "effect": "path gone"
+    },
+    {
+      "request": "POST /v3/rtspsessions/kick/{id of an rtspSession}",
+      "status": 200,
+      "body": {
+        "status": "ok"
+      },
+      "effect": "path gone"
+    },
+    {
+      "request": "POST /v3/rtspssessions/kick/{id of an rtspSession (plain)}",
+      "status": 404,
+      "body": {
+        "status": "error",
+        "error": "session not found"
+      }
+    },
+    {
+      "request": "POST /v3/webrtcsessions/kick/nonexistent",
+      "status": 400,
+      "body": {
+        "status": "error",
+        "error": "invalid UUID length: 11"
+      }
+    },
+    {
+      "request": "GET /v3/paths/get/{name} of a path with no publisher",
+      "status": 404,
+      "body": {
+        "status": "error",
+        "error": "path not found"
+      }
+    }
+  ]
+}

@@ -662,6 +662,7 @@
                 <button class="tab-btn" onclick="showTab('files', event)">Files</button>
                 <button class="tab-btn" onclick="showTab('audit', event)">Audit Log</button>
                 <button class="tab-btn" id="tab-btn-recordings" data-recordings-tab style="display:none;">Recordings</button>
+                <button class="tab-btn" id="tab-btn-livestreams" style="display:none;">Live streams</button>
                 <button class="tab-btn" onclick="showTab('automod', event)">Auto-Mod</button>
                 <button class="tab-btn" id="tab-btn-webhooks" style="display:none;" onclick="showTab('webhooks', event)">Webhooks</button>
                 <button class="tab-btn" onclick="showTab('updates', event)">Updates</button>
@@ -2286,6 +2287,20 @@
                 </div>
             </div>
 
+            <!-- Live streams Tab (administrators only) -->
+            <div id="tab-livestreams" class="tab-content">
+                <p class="tab-description">Streams that are live now. Ending a stream or stopping its relays is written to the audit log and asks first. The bitrate is shown only when this server collects it.</p>
+                <p id="live-ops-note" style="color:var(--text-muted);font-size:0.85rem;"></p>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr><th>Stream</th><th>Owner</th><th>Uptime</th><th>Bitrate</th><th>Viewers</th><th>Relays</th><th>Recording</th><th></th></tr>
+                        </thead>
+                        <tbody id="live-ops-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- Recordings Tab (session recordings, administrators only) -->
             <div id="tab-recordings" class="tab-content">
                 <p class="tab-description">Recorded terminal and SSH sessions. Playing, downloading and deleting a recording is written to the audit log.</p>
@@ -2555,6 +2570,7 @@
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/recordings-admin.js?v=4"></script>
+    <script src="/static/js/live-ops-admin.js?v=1"></script>
     <script src="/static/js/maintenance-admin.js?v=2"></script>
     <script src="/static/js/block-ref-admin.js?v=1"></script>
     <script>

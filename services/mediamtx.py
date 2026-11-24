@@ -10,11 +10,23 @@ import os
 import ssl
 import subprocess
 from pathlib import Path
-from typing import Optional
+from time import monotonic
+from typing import Callable, Optional
 
 from . import register_service
 from .base import ManagedService, ServiceInfo
 from config import Config
+
+
+# The one consumer of the paths list the health check already fetches (server.py sets it at startup):
+# an async callable (payload, monotonic time of the answer). It is not a second API call: the answer
+# is the one health_check reads every HEALTH_INTERVAL seconds to tell whether MediaMTX is up.
+_paths_listener: Optional[Callable] = None
+
+
+def set_paths_listener(listener: Optional[Callable]) -> None:
+    global _paths_listener
+    _paths_listener = listener
 
 
 @register_service("mediamtx")
@@ -338,9 +350,24 @@ paths:
                     f'https://127.0.0.1:{api_port}/v3/paths/list',
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
-                    return resp.status == 200
+                    if resp.status != 200:
+                        return False
+                    await self._offer_paths(resp)
+                    return True
         except Exception:
             return False
+
+    async def _offer_paths(self, resp) -> None:
+        """Hand the answer of a successful health check to the listener, once. Whatever goes wrong here
+        (an unreadable body, a failing listener) never changes the health result."""
+        listener = _paths_listener
+        if listener is None:
+            return
+        try:
+            payload = await resp.json()
+            await listener(payload, monotonic())
+        except Exception:
+            pass
 
     async def list_streams(self) -> list[dict]:
         """List active streams from MediaMTX API (always uses HTTPS).

@@ -1,0 +1,21 @@
+{
+  "itemCount": 1,
+  "pageCount": 1,
+  "items": [
+    {
+      "name": "live/livekey_a",
+      "ready": true,
+      "readyTime": "2026-11-23T22:16:16.247168615Z",
+      "source": {
+        "type": "rtmpConn",
+        "id": "5da6e955-9406-4911-acc0-982ec80923a1"
+      },
+      "tracks": [
+        "H264",
+        "MPEG-4 Audio"
+      ],
+      "inboundBytes": 722998,
+      "bytesReceived": 722998
+    }
+  ]
+}

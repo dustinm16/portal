@@ -1713,6 +1713,48 @@ The generic `/api/chat/channels/{id}/members` routes do not manage a stream chat
 
 ---
 
+### Stream Health and Live Operations
+
+#### GET /api/streams/{id}/health
+What the server knows about the stream's session: for the stream's **owner and administrators only**. Anybody else (a stream moderator included) and an unknown id get the same `404`; a stream key (`live_`) is refused (`403`, as on every stream route); a browser session or a full-scope credential is needed. Nothing is stored: the numbers live in the server's memory and are gone at a restart. Rate limit: 90 reads per minute per account, `429` with a reference ID (limiter `stream_health`) and `Retry-After`. The panel on the watch page polls every 4 seconds while it is open and the tab is visible.
+
+**Response** (`Cache-Control: no-store`):
+```json
+{
+  "stream_id": 5, "live": true, "uptime_s": 1234,
+  "ingest": {"available": true, "bitrate_bps": 864000, "samples": [{"age_s": 10.0, "bps": 861000}],
+             "source": "RTMP", "codecs": ["H264", "MPEG-4 Audio"], "ready": true, "ready_for_s": 1230,
+             "last_data_age_s": 2.1, "reconnects": 0},
+  "relays": [{"id": 3, "platform": "twitch", "name": "main", "enabled": true, "state": "failed",
+              "last_error": "The destination refused the connection. (exit code 1)", "last_error_at": "2026-11-23T20:00:00+00:00"}],
+  "recorder": {"state": "recording", "waiting_chunks": 1, "waiting_bytes": 52428800, "last_error": null, "guard_code": null},
+  "load_average": [0.4, 0.3, 0.2],
+  "warnings": [{"code": "relay_failing", "level": "warn", "text": "A relay is failing."}],
+  "thresholds": {"no_data_seconds": 75.0, "ring_samples": 30, "drop_ratio": 0.5, "drop_baseline_seconds": 300.0}
+}
+```
+- `ingest` has `available: false` and a `reason` when the stream is not live or when this server has no reading of the stream yet. **The numbers come from the paths list of the 30 second MediaMTX health check (no extra call; the viewer sync tick still fetches nothing), so a reading is at most one every 30 seconds: a live stream has no `ingest` data until its first reading and no `bitrate_bps` until its second, and nothing is read while MediaMTX is stopped or unhealthy.** `samples` is a ring of about 30 readings (about 15 minutes), oldest first, with their age in seconds.
+- Relay `state` is `running`, `failed` (enabled, not running and an error stored since the stream went live), `idle` or `disabled`. Error texts are chosen from a fixed list of sentences with at most an exit code number added; a destination address, host, URL, key or path is never returned, neither for a relay nor for the recorder.
+- `recorder.state` is `recording`, `ending`, `failed`, `stopped_by_guard`, `refused_by_guard` or `not_recording`. `waiting_chunks` and `waiting_bytes` count finished chunks not yet uploaded, without the chunk being written (the disk guard's own count).
+- Warnings are smoothed on the server: `no_data` (the received-bytes counter has not grown for 75 s), `bitrate_drop` (each of the newest three samples under half of the average of the five minutes before them, with at least 4 earlier samples and an average above 50 kbit/s), `relay_failing`, `recording_stopped_by_guard`, `recording_refused_by_guard`, `recording_failed`. `level` is `warn` or `error`.
+
+### Live Operations (Admin)
+
+Only administrators (role `admin` or `superadmin`) with a browser session or an all-scope (`*`) bearer token can use these routes. A non-administrator gets `404`, no credential `401`, and every API key (also one made with `*`) and every narrowly scoped token `403`: there are no other admin stream routes, and the owner's own stream routes (which accept full-scope API keys) do not apply here because these actions end somebody else's stream. Limit: 30 requests per minute per administrator (`429`, limiter `live_ops`). Each action writes one audit entry before anything is done (administrator, stream id, owner, options); if the entry cannot be written the answer is `500` and nothing happened.
+
+#### GET /api/admin/live-streams
+**Response:** `{"streams": [{"id": 5, "name": "Night show", "owner": "alice", "uptime_s": 4000, "bitrate_bps": null, "viewers": 3, "relays_running": 1, "recording": true}]}`. `bitrate_bps` is `null` until the stream's second reading from the 30 second MediaMTX health check, and while MediaMTX is not running. Not audited.
+
+#### POST /api/admin/streams/{id}/stop-relays
+Stops the stream's relays (not the stream). They stay stopped until the stream ends: the relay monitor and the auto-restart are held back. `409` when the stream is not live. **Response:** `{"success": true, "stopped": 2}`. Audit action `stream_stop_relays`.
+
+#### POST /api/admin/streams/{id}/end
+Body `{"regenerate_key": true}` (default true). Replaces the stream key and revokes the temporary RTMP tokens (so the encoder cannot reconnect with the old credential), disconnects the publisher through MediaMTX's control API, then runs the normal end of a session: relays stop, a recording is finished and uploaded as usual (nothing is deleted), the stream's chat is told it is offline and, as at any stream end, its messages are cleared unless the chat is shared. The owner gets a notification of type `stream_ended` ("An administrator ended your stream.") without further detail. `409` when the stream is not live. Audit action `stream_end_now` with `regenerate_key`.
+
+**Response:** `{"success": true, "publisher_disconnected": true, "disconnect_note": null, "source": "RTMP", "key_replaced": true}`. The publisher is disconnected with `POST /v3/rtmpconns/kick/{id}` (RTMP), `/v3/rtmpsconns/kick/{id}` (RTMPS), `/v3/rtspsessions/kick/{id}` or `/v3/rtspssessions/kick/{id}` (RTSP) or `/v3/webrtcsessions/kick/{id}` (WebRTC), chosen from the source type MediaMTX reports for the path (run against MediaMTX v1.21.3 for RTMP, RTMPS and RTSP; the RTSPS and WebRTC routes were only shown to exist there, with a wrong id, and were not run against a real encoder). A source type with no such route (SRT, HLS, camera), a path with no publisher, or a media server that does not answer gives `publisher_disconnected: false` with the reason in `disconnect_note`; the portal still ends the session, and with `regenerate_key` the old key is refused when the encoder next tries to publish. A staged instance never contacts a media server.
+
+---
+
 ### Stream Chat WebSocket Commands
 
 Additional WebSocket message types for stream chat moderation. `pin_message`, `unpin_message`, `timeout_user` (`duration` in seconds, at least 1; the target is `target_user_id`, or `message_id` of one of the member's messages, which also works for an anonymous post), `delete` of another member's message, `ban`, `unban`, `get_bans` and `create_poll` (in a stream's own chat only the owner, its mods and staff may start a poll) use the helper above. `channel_info` carries `slowmode_seconds`, `mod_level` (`none`, `mod`, `owner`, `staff`) and `stream_chat`; messages of the owner and of mods carry `stream_role` (`owner` or `mod`, never on an anonymous post).
@@ -4435,7 +4477,7 @@ The recording file (`application/x-asciicast`, `Cache-Control: no-store`). `?dow
 #### DELETE /api/recordings/{id}
 Removes the row and the file. `409` while the session is still running. Audited as `recording_delete` (written before anything is removed, details `outcome: "requested"`, so it records the request, not the result). If the file cannot be removed (including when the recordings folder fails its safety check, so a file that may still exist is never left without its row), or the row cannot be deleted afterwards, the answer is `500` and a second entry, `recording_delete_failed`, with the reason, is written; entries are never rewritten. **Response:** `{"deleted": 7, "file_removed": true}` (`false` only when the row's stored name was not a plain file name, in which case the row is removed and no file was touched).
 
-The audit actions `recording_play`, `recording_download`, `recording_delete` and `recording_delete_failed` are visible to administrators, not to moderators.
+The audit actions `recording_play`, `recording_download`, `recording_delete` and `recording_delete_failed` are visible to administrators, not to moderators. So are `stream_end_now` and `stream_stop_relays` (1.24.0): they name a stream and its owner, and a moderator may not read a private stream.
 
 ---
 

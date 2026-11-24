@@ -1,0 +1,36 @@
+{
+  "itemCount": 2,
+  "pageCount": 1,
+  "items": [
+    {
+      "name": "live/livekey_a",
+      "ready": true,
+      "readyTime": "2026-11-23T22:15:26.544493327Z",
+      "source": {
+        "type": "rtmpConn",
+        "id": "69e7ffff-16c5-4590-b049-e36dffd0a1cd"
+      },
+      "tracks": [
+        "H264",
+        "MPEG-4 Audio"
+      ],
+      "inboundBytes": 950222,
+      "bytesReceived": 950222
+    },
+    {
+      "name": "live/livekey_b",
+      "ready": true,
+      "readyTime": "2026-11-23T22:15:26.593637892Z",
+      "source": {
+        "type": "rtmpsConn",
+        "id": "a316ce22-e404-406e-a875-d85efbf1b96f"
+      },
+      "tracks": [
+        "H264",
+        "MPEG-4 Audio"
+      ],
+      "inboundBytes": 945648,
+      "bytesReceived": 945648
+    }
+  ]
+}

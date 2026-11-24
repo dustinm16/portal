@@ -41,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, time
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlsplit, urlunsplit
 import re
 import unicodedata
 
@@ -151,6 +151,7 @@ from host_check import (
 )
 import alerts
 import viewers as _viewers_mod
+import stream_health
 import backup_manager
 import ipguard
 import update_manager
@@ -665,6 +666,9 @@ MAX_RELAYS_PER_STREAM = 10
 active_relays: dict[int, dict[int, dict]] = {}
 # Timestamp of last relay restart per stream_id (for health-monitor cooldown)
 _relay_restart_cooldown: dict[int, float] = {}
+# Streams whose relays an administrator stopped ("Stop relays"): nothing starts or restarts them until the
+# stream goes offline (_stream_set_offline). In memory.
+_relay_stop_held: set = set()
 
 # Characters that must not appear in relay URLs or stream keys (null bytes, newlines).
 _BAD_RELAY_CHARS = {'\x00', '\n', '\r'}
@@ -6762,7 +6766,9 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
     stream_id = stream["id"]
     current = await db.get_user_stream(stream_id) or stream
     was_live = current.get("is_live") == 1
+    _ingest_invalidate()
     await db.set_stream_live(stream_id, True)
+    _ingest_invalidate()
     if not was_live:
         _viewers.start_session(stream_id)       # fresh peak and unique figures
     if was_live:
@@ -8885,6 +8891,7 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
             active_recordings[stream_id] = recording
         registered = True
         _vod_guard_state.pop(stream_id, None)
+        _recorder_errors.pop(stream_id, None)
         logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
     finally:
         if not registered:
@@ -9002,6 +9009,12 @@ async def _vod_chunk_uploader(recording: dict) -> None:
             if rec is recording:
                 active_recordings.pop(sid, None)
                 break
+        rc = process.returncode
+        if rc not in (None, 0) and recording.get("stream_id") is not None:
+            tail = (recording.get("stderr_tail") or b"").decode(errors="replace")[-500:]
+            text = stream_health.sanitise_error(f"Exit code {rc}: {tail}")
+            if len(_recorder_errors) < 500:
+                _recorder_errors[recording["stream_id"]] = (monotonic(), text)
         # Clean up local staging directory
         _vod_cleanup_session_dir(session_dir)
         logger.info(f"VOD recording auto-stopped for '{recording['stream_name']}' (ffmpeg exited)")
@@ -9668,52 +9681,13 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             logger.info(f"Stream {stream_name} reconnected during grace period, aborting disconnect")
             return
 
-        # Stop multi-platform relays
-        await stop_stream_relays(stream_id)
-
-        # Still disconnected — proceed with encoding/offline transition
-        async with _stream_state_lock:
-            has_vod = stream_id in active_recordings
-
-        if has_vod:
-            # Transition to encoding state — VOD chunks still being finalized
-            await db.set_stream_encoding(stream_id)
-            _viewers.end_audience(stream_id)        # last seconds into the peak; figures stay until offline
-            logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
-
-            # Broadcast encoding status to chat channel
-            if stream.get("chat_channel_id"):
-                channel = await db.get_chat_channel(stream["chat_channel_id"])
-                if channel:
-                    await broadcast_to_channel(channel["name"], {
-                        "type": "stream_status",
-                        "stream_id": stream_id,
-                        "is_live": 2  # encoding
-                    })
-
-            # Finalize VOD in background, then transition to offline
-            asyncio.create_task(_finalize_stream_offline(stream))
-        else:
-            # No VOD recording — go straight to offline
-            await _stream_set_offline(stream_id)
-            logger.info(f"Stream {stream_name} ended (after grace period)")
-            await _record_stream_offline(stream)
-
-            if stream.get("chat_channel_id"):
-                channel = await db.get_chat_channel(stream["chat_channel_id"])
-                if channel:
-                    await broadcast_to_channel(channel["name"], {
-                        "type": "stream_status",
-                        "stream_id": stream_id,
-                        "is_live": 0
-                    })
-
-            # Clear chat history for the stream's channel
-            if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
-                clear_stats = {}
-                deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
-                if deleted > 0:
-                    logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
+        # An administrator's "End now" (or anything else) may have ended the session while this task
+        # waited: only a stream that is still live is ended here
+        current = await db.get_user_stream(stream_id)
+        if current is not None and current.get("is_live") != 1:
+            logger.info(f"Stream {stream_name} is no longer live, disconnect grace has nothing to end")
+            return
+        await _stream_end_session(stream)
     except asyncio.CancelledError:
         logger.info(f"Stream {stream_name} disconnect grace period cancelled (reconnected)")
     except Exception as e:
@@ -9722,6 +9696,61 @@ async def _handle_disconnect_grace(stream: dict) -> None:
         # Only deregister ourselves — a newer grace task may own this slot now.
         if _disconnect_grace_tasks.get(stream_id) is asyncio.current_task():
             _disconnect_grace_tasks.pop(stream_id, None)
+
+
+async def _stream_end_session(stream: dict) -> None:
+    """The normal end of a live session once the publisher is gone: relays stop, a recording is
+    finished and uploaded in the background (state "encoding", then offline), a stream without one
+    goes offline at once, and the stream's chat is told. Used after the disconnect grace period and by
+    an administrator's "End now"."""
+    stream_id = stream["id"]
+    stream_name = stream.get("name", "?")
+    # Stop multi-platform relays
+    await stop_stream_relays(stream_id)
+
+    # Still disconnected — proceed with encoding/offline transition
+    async with _stream_state_lock:
+        has_vod = stream_id in active_recordings
+
+    if has_vod:
+        # Transition to encoding state — VOD chunks still being finalized
+        await db.set_stream_encoding(stream_id)
+        _viewers.end_audience(stream_id)        # last seconds into the peak; figures stay until offline
+        logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
+
+        # Broadcast encoding status to chat channel
+        if stream.get("chat_channel_id"):
+            channel = await db.get_chat_channel(stream["chat_channel_id"])
+            if channel:
+                await broadcast_to_channel(channel["name"], {
+                    "type": "stream_status",
+                    "stream_id": stream_id,
+                    "is_live": 2  # encoding
+                })
+
+        # Finalize VOD in background, then transition to offline
+        asyncio.create_task(_finalize_stream_offline(stream))
+    else:
+        # No VOD recording — go straight to offline
+        await _stream_set_offline(stream_id)
+        logger.info(f"Stream {stream_name} ended (after grace period)")
+        await _record_stream_offline(stream)
+
+        if stream.get("chat_channel_id"):
+            channel = await db.get_chat_channel(stream["chat_channel_id"])
+            if channel:
+                await broadcast_to_channel(channel["name"], {
+                    "type": "stream_status",
+                    "stream_id": stream_id,
+                    "is_live": 0
+                })
+
+        # Clear chat history for the stream's channel
+        if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
+            clear_stats = {}
+            deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
+            if deleted > 0:
+                logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
 
 
 def _stream_activity_type(action: str, stream: dict) -> str:
@@ -9802,6 +9831,8 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
     with retry on transient RTSPS failures.
     """
     stream_id = stream["id"]
+    if stream_id in _relay_stop_held:
+        return
     destinations = await db.get_enabled_relay_destinations(stream_id)
     if not destinations:
         return
@@ -9937,6 +9968,9 @@ async def _restart_single_relay(stream_id: int, relay_id: int, dest: dict) -> No
         current = await db.get_user_stream(stream_id)
         if not current or current.get("is_live") != 1:
             logger.info(f"Relay auto-restart aborted ({platform}/{name}): stream offline")
+            return
+        if stream_id in _relay_stop_held:
+            logger.info(f"Relay auto-restart aborted ({platform}/{name}): relays stopped by an administrator")
             return
 
         # Abort if already restarted by health monitor or another path
@@ -11930,16 +11964,87 @@ async def http_stream_viewer_beat(request: web.Request) -> web.Response:
     return web.json_response({"ok": True}, headers={"Cache-Control": "no-store"})
 
 
+# What the server receives from each live publisher, in memory only (stream_health.py): stream id ->
+# entry. Bounded by the number of live streams: the feed drops every entry whose stream is not live and
+# _stream_set_offline drops its own at once. Nothing here is stored and a restart empties it.
+_ingest_stats: dict = {}
+_INGEST_KEYS_TTL = 30.0
+_ingest_keys = {"map": {}, "at": None, "gen": 0}
+
+
+def _ingest_invalidate() -> None:
+    """The live-stream key map is stale (a stream went live or offline): the next tick reads it again."""
+    _ingest_keys["gen"] += 1
+    _ingest_keys["at"] = None
+
+
+def _ingest_forget(stream_id: int) -> None:
+    _ingest_stats.pop(stream_id, None)
+    _ingest_invalidate()
+
+
+async def _ingest_live_keys() -> dict:
+    """{stream id: key} of the live streams: one database read, then kept for _INGEST_KEYS_TTL seconds
+    or until a go-live or offline invalidates it (a read that raced an invalidation is not kept)."""
+    now = monotonic()
+    if _ingest_keys["at"] is not None and now - _ingest_keys["at"] < _INGEST_KEYS_TTL:
+        return _ingest_keys["map"]
+    gen = _ingest_keys["gen"]
+    fresh = await db.get_live_stream_keys()
+    _ingest_keys["map"] = fresh
+    _ingest_keys["at"] = now if gen == _ingest_keys["gen"] else None
+    return fresh
+
+
+async def _ingest_tick(live_ids: list, payload, now: Optional[float] = None) -> None:
+    """Fold one MediaMTX paths list (already fetched by the caller; this makes no API call) into the
+    per-stream entries of the streams that are live. A path is "live/<key>", or "live/<rtmp_ token>" for
+    a stream published with a temporary token (_rtmp_stream_paths). `now` is when the list was fetched
+    (the rate is measured between fetches), the present moment when not given."""
+    if now is None:
+        now = monotonic()
+    live = set(live_ids)
+    for sid in [s for s in _ingest_stats if s not in live]:
+        del _ingest_stats[sid]
+    if not live:
+        return
+    parsed = stream_health.parse_paths(payload)
+    keys = await _ingest_live_keys()
+    for sid in live:
+        key = _rtmp_stream_paths.get(sid) or keys.get(sid)
+        if not key:
+            continue
+        entry = _ingest_stats.get(sid)
+        if entry is None:
+            entry = _ingest_stats[sid] = stream_health.new_entry(now)
+        stream_health.observe(entry, parsed.get(f"live/{key}"), now)
+
+
+async def _ingest_feed(payload, fetched_at: float) -> None:
+    """The feed of the ingest numbers in production: MediaMTXService.health_check calls this with the paths
+    list it fetched for the 30 s health check, once per answer. No MediaMTX call is made here or per
+    viewer tick; a reading is therefore up to HEALTH_INTERVAL seconds from the one before."""
+    cursor = await db.conn.execute("SELECT id FROM user_streams WHERE is_live = 1")
+    await _ingest_tick([r["id"] for r in await cursor.fetchall()], payload, now=fetched_at)
+
+
 async def _stream_set_offline(stream_id: int) -> bool:
     """The one way a stream's live session ends: peak and unique viewers of the session are
     written with the offline transition, and nobody is counted any more. Idempotent."""
+    _ingest_forget(stream_id)
+    _recorder_errors.pop(stream_id, None)
+    _relay_stop_held.discard(stream_id)
     stats = _viewers.finish(stream_id)
     return await db.set_stream_live(stream_id, False, session_stats=stats)
 
 
-async def _viewer_sync_once() -> int:
+async def _viewer_sync_once(paths=None) -> int:
     """Turn the viewer map into viewer_count; returns the number of rows written. A row is
-    written only when its number changed, and only while the stream is live."""
+    written only when its number changed, and only while the stream is live.
+
+    `paths` is a MediaMTX /v3/paths/list answer when the caller has one; the ingest stats are updated
+    from it. The tick itself fetches nothing (v1.17.0): _viewer_sync_task passes no list. In production
+    the ingest stats are fed by _ingest_feed from the 30 s MediaMTX health check instead."""
     # What the tracker holds is noted before the list is read: a stream that goes live while the
     # read is under way is not in the list, and its fresh session must not be forgotten for that.
     seen = _viewers.generations()
@@ -11955,7 +12060,340 @@ async def _viewer_sync_once() -> int:
         if n != (r["viewer_count"] or 0):
             if await db.set_live_viewer_count(r["id"], n):
                 written += 1
+    if paths is not None:
+        await _ingest_tick([r["id"] for r in rows if r["is_live"] == 1], paths)
     return written
+
+
+# =============================================================================
+# Stream health (owner and administrators) and administrator live operations
+# =============================================================================
+
+# Why the ingest section can be empty: the numbers come from the paths list of the 30 s MediaMTX health
+# check (_ingest_feed); a stream has none until the first reading after it went live, and none while
+# MediaMTX is not running or its health check does not answer.
+_STREAM_HEALTH_LIMIT = 90           # health reads per account per minute (the panel polls every 3 to 5 s)
+_stream_health_rate = _viewers_mod.RateWindow(_STREAM_HEALTH_LIMIT, 60.0)
+INGEST_NO_DATA_SECONDS = stream_health.NO_DATA_SECONDS
+# stream id -> (monotonic time, fixed text): why a recorder ended on its own with an error. In memory,
+# dropped when the stream goes offline or a recording of it starts.
+_recorder_errors: dict = {}
+
+
+def _health_time(text) -> Optional[float]:
+    """Epoch seconds of a stored timestamp ("T" or space separated, naive means UTC), or None."""
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(text).replace(" ", "T").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+async def _stream_health_relays(stream: dict) -> list:
+    """Each relay of the stream: name, state and a sanitised last error. Never the destination."""
+    stream_id = stream["id"]
+    started = _health_time(stream.get("started_at"))
+    async with _stream_state_lock:
+        running = dict(active_relays.get(stream_id, {}))
+    out = []
+    for r in await db.get_relay_destinations(stream_id):
+        err_at = _health_time(r.get("last_error_at"))
+        error = stream_health.sanitise_error(r.get("last_error"))
+        if r["id"] in running:
+            state = "running"
+        elif not r.get("enabled"):
+            state = "disabled"
+        elif error and stream.get("is_live") == 1 and (started is None or err_at is None or err_at >= started - 5):
+            state = "failed"
+        else:
+            state = "idle"
+        out.append({"id": r["id"], "platform": r.get("platform"), "name": str(r.get("name") or "")[:80],
+                    "enabled": bool(r.get("enabled")), "state": state,
+                    "last_error": error if state != "running" else None,
+                    "last_error_at": r.get("last_error_at") if error and state != "running" else None})
+    return out
+
+
+async def _stream_health_recorder(stream_id: int) -> dict:
+    """The recorder's state and upload backlog: completed chunks waiting (the one being written is not
+    counted, as in the disk guard) and their size, taken with the guard's own helper."""
+    rec = active_recordings.get(stream_id)
+    guard = _vod_guard_state.get(stream_id)
+    err = _recorder_errors.get(stream_id)
+    out = {"state": "not_recording", "waiting_chunks": 0, "waiting_bytes": 0, "last_error": None, "guard_code": None}
+    if rec:
+        proc = rec.get("process")
+        running = proc is not None and proc.returncode is None
+        out["state"] = "recording" if running else ("failed" if err or (proc and proc.returncode) else "ending")
+        files = await asyncio.to_thread(vod_staging.chunk_files, rec["session_dir"])
+        out["waiting_chunks"] = max(0, len(files) - 1) if running else len(files)
+        out["waiting_bytes"] = await asyncio.to_thread(vod_staging.backlog_bytes, rec["session_dir"], running)
+        out["started_at"] = rec["started_at"].isoformat()
+    elif guard and guard.get("kind") == "stopped":
+        out["state"], out["guard_code"] = "stopped_by_guard", str(guard.get("code") or "")[:40]
+    elif guard and guard.get("kind") == "refused":
+        out["state"], out["guard_code"] = "refused_by_guard", str(guard.get("code") or "")[:40]
+    elif err:
+        out["state"] = "failed"
+    if err:
+        out["last_error"] = err[1]
+    return out
+
+
+async def _stream_health_report(stream: dict) -> dict:
+    """The health of one stream as the owner's panel shows it (see stream_health.py for the rules)."""
+    stream_id = stream["id"]
+    live = stream.get("is_live") == 1
+    now, wall = monotonic(), time()
+    entry = _ingest_stats.get(stream_id) if live else None
+    if entry is not None:
+        ingest = {"available": True, **stream_health.snapshot(entry, now, wall)}
+    else:
+        reason = ("The stream is not live." if not live else
+                  "No ingest reading of this stream yet; the server reads MediaMTX about every 30 seconds.")
+        ingest = {"available": False, "reason": reason}
+    relays = await _stream_health_relays(stream) if live else []
+    recorder = await _stream_health_recorder(stream_id) if live else None
+    started = _health_time(stream.get("started_at"))
+    try:
+        load = [round(x, 2) for x in os.getloadavg()]
+    except OSError:
+        load = None
+    return {
+        "stream_id": stream_id, "live": live,
+        "uptime_s": int(max(0.0, wall - started)) if live and started else None,
+        "ingest": ingest, "relays": relays, "recorder": recorder, "load_average": load,
+        "warnings": stream_health.warnings(entry, now, relays=relays, recorder=recorder,
+                                           no_data_seconds=INGEST_NO_DATA_SECONDS) if live else [],
+        "thresholds": {"no_data_seconds": INGEST_NO_DATA_SECONDS, "ring_samples": stream_health.RING_SIZE,
+                       "drop_ratio": stream_health.DROP_RATIO,
+                       "drop_baseline_seconds": stream_health.DROP_BASELINE_SECONDS},
+    }
+
+
+async def http_stream_health(request: web.Request) -> web.Response:
+    """GET /api/streams/{id}/health: what the server receives from the publisher, relay and recorder
+    state and smoothed warnings. The stream's owner and administrators only: anybody else (a stream
+    moderator included) and an unknown stream get the same 404. Nothing is stored."""
+    token, refusal = await _stream_user_auth(request)       # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
+    if not _stream_health_rate.allow(str(token.user_id)):
+        return await _limited(request, "stream_health", "Too many requests", user_id=token.user_id,
+                              headers={"Retry-After": "10"})
+    ctx, refusal = await _stream_mods_context(request, token)
+    if refusal is not None:
+        return refusal
+    report = await _stream_health_report(ctx[1])
+    return web.json_response(report, headers={"Cache-Control": "no-store"})
+
+
+# ----- administrator live operations ----------------------------------------------------------
+
+_LIVE_OPS_LIMIT = 30
+_live_ops_tasks: set = set()       # background steps of End now, kept so they are not collected early
+_live_ops_rate = _viewers_mod.RateWindow(_LIVE_OPS_LIMIT, 60.0)
+_MEDIAMTX_API_TIMEOUT = 5
+
+
+def _mediamtx_api_base(cfg: dict) -> str:
+    """The control API of the portal's own MediaMTX: loopback, TLS (the generated config sets apiEncryption)."""
+    port = cfg.get("api_port", 9997)
+    return f"https://127.0.0.1:{int(port) if isinstance(port, (int, str)) and str(port).isdigit() else 9997}"
+
+
+async def _mediamtx_kick_publisher(path_key: str) -> dict:
+    """Disconnect the publisher of path live/<path_key> through MediaMTX's control API (administrator
+    action only, two calls, never per tick): read the path's source, then POST the kick route of its type
+    (stream_health.KICK_ROUTES, verified against v1.21.3 in tests/fixtures/mediamtx-1.21.3).
+    Returns {kicked, reason, source}; a source type without a route (SRT, HLS, camera) is not kicked."""
+    if Config.STAGE_MODE:
+        return {"kicked": False, "reason": "staged instance: the media server is not contacted", "source": None}
+    cfg = await _get_mediamtx_config()
+    if not cfg:
+        return {"kicked": False, "reason": "media server not configured", "source": None}
+    base = _mediamtx_api_base(cfg)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE          # the loopback API uses the portal's own self-signed certificate
+    timeout = aiohttp.ClientTimeout(total=_MEDIAMTX_API_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=ctx)) as http:
+            async with http.get(f"{base}/v3/paths/get/live/{quote(path_key, safe='')}") as resp:
+                if resp.status == 404:
+                    return {"kicked": False, "reason": "no publisher is connected", "source": None}
+                if resp.status != 200:
+                    return {"kicked": False, "reason": f"media server answered {resp.status}", "source": None}
+                info = await resp.json(content_type=None)
+            src = info.get("source") if isinstance(info, dict) else None
+            stype = src.get("type") if isinstance(src, dict) else None
+            sid = src.get("id") if isinstance(src, dict) else None
+            route = stream_health.KICK_ROUTES.get(stype or "")
+            label = stream_health.SOURCE_LABELS.get(stype or "", stype)
+            if not route or not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", sid):
+                return {"kicked": False, "reason": f"a {label or 'unknown'} source cannot be disconnected from here",
+                        "source": label}
+            async with http.post(base + route.format(id=sid)) as resp:
+                ok = resp.status == 200
+                return {"kicked": ok, "source": label,
+                        "reason": None if ok else f"media server answered {resp.status}"}
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+        logger.warning(f"MediaMTX kick failed: {type(e).__name__}")
+        return {"kicked": False, "reason": "media server did not answer", "source": None}
+
+
+async def _live_ops_gate(request: web.Request):
+    """(user, None) for an administrator with a browser session or a full-scope token, else (None, response).
+    Non-administrators get 404, scoped tokens and every API key 403: these actions end other people's
+    streams, so, like the recordings, they need a full session of an administrator. (There are no other
+    admin stream routes; the stream routes of the owner accept full-scope API keys, these do not.)"""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else None
+    if role not in ("admin", "superadmin"):
+        return None, web.json_response({"error": "Not found"}, status=404)
+    if str(token.token_id or "").startswith("apikey-") or not has_full_user_scope(token):
+        return None, full_scope_required_response()
+    if not _live_ops_rate.allow(str(user["id"])):
+        return None, await _limited(request, "live_ops", "Too many requests", user_id=user["id"],
+                                    headers={"Retry-After": "10"})
+    return user, None
+
+
+async def http_admin_live_streams(request: web.Request) -> web.Response:
+    """GET /api/admin/live-streams: the streams that are live now, with owner, uptime, bitrate (when the
+    server collects it), viewers, running relays and recording state. Administrators only."""
+    admin, refused = await _live_ops_gate(request)
+    if refused:
+        return refused
+    cursor = await db.conn.execute(
+        "SELECT us.id, us.name, us.started_at, us.viewer_count, us.is_live, u.username AS owner_username "
+        "FROM user_streams us LEFT JOIN users u ON us.user_id = u.id WHERE us.is_live = 1 ORDER BY us.started_at")
+    now, wall = monotonic(), time()
+    rows = []
+    for r in await cursor.fetchall():
+        entry = _ingest_stats.get(r["id"])
+        snap = stream_health.snapshot(entry, now, wall) if entry is not None else None
+        started = _health_time(r["started_at"])
+        async with _stream_state_lock:
+            relays = len(active_relays.get(r["id"], {}))
+        rec = active_recordings.get(r["id"])
+        rows.append({
+            "id": r["id"], "name": r["name"], "owner": r["owner_username"],
+            "uptime_s": int(max(0.0, wall - started)) if started else None,
+            "bitrate_bps": snap["bitrate_bps"] if snap else None,
+            "viewers": r["viewer_count"] or 0, "relays_running": relays,
+            "recording": bool(rec and rec.get("process") is not None and rec["process"].returncode is None)})
+    return web.json_response({"streams": rows}, headers={"Cache-Control": "no-store"})
+
+
+async def _live_ops_stream(request: web.Request):
+    """(stream, None) for the stream of an admin live-ops route, or (None, response)."""
+    try:
+        stream_id = _row_id(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return None, web.json_response({"error": "Stream not found"}, status=404)
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return None, web.json_response({"error": "Stream not found"}, status=404)
+    return stream, None
+
+
+async def _live_ops_audit(admin: dict, action: str, stream: dict, **details) -> bool:
+    try:
+        await db.create_audit_entry(
+            action=action, actor_id=admin["id"], actor_username=admin["username"],
+            target_id=stream["id"], target_type="stream", target_name=str(stream.get("name") or "")[:80],
+            details={"stream_id": stream["id"], "owner_id": stream.get("user_id"),
+                     "owner": stream.get("owner_username"), **details})
+        return True
+    except Exception as e:
+        logger.error(f"[AuditLog] Failed to log {action}: {e}")
+        return False
+
+
+async def http_admin_stream_stop_relays(request: web.Request) -> web.Response:
+    """POST /api/admin/streams/{id}/stop-relays: stop the stream's relays (not the stream). They stay
+    stopped until the stream ends: the relay monitor and the auto-restart are held back."""
+    admin, refused = await _live_ops_gate(request)
+    if refused:
+        return refused
+    stream, refused = await _live_ops_stream(request)
+    if refused:
+        return refused
+    if stream.get("is_live") != 1:
+        return web.json_response({"error": "The stream is not live"}, status=409)
+    async with _stream_state_lock:
+        running = len(active_relays.get(stream["id"], {}))
+    if not await _live_ops_audit(admin, "stream_stop_relays", stream, relays_running=running):
+        return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
+    _relay_stop_held.add(stream["id"])       # the monitor, the auto-restart and a reconnect leave them stopped
+    await stop_stream_relays(stream["id"], force=True)
+    return web.json_response({"success": True, "stopped": running})
+
+
+async def http_admin_stream_end(request: web.Request) -> web.Response:
+    """POST /api/admin/streams/{id}/end {regenerate_key?: bool (default true)}: disconnect the publisher,
+    optionally replace the stream key and revoke the temporary RTMP tokens so the encoder cannot come
+    back with the old credential, then run the normal end of a session (relays stop, the recording is
+    finished and uploaded, viewers are told). Recordings are never deleted. The owner gets a notification
+    without further detail. One audit entry, written before anything is done."""
+    admin, refused = await _live_ops_gate(request)
+    if refused:
+        return refused
+    stream, refused = await _live_ops_stream(request)
+    if refused:
+        return refused
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    regenerate = body.get("regenerate_key", True) is not False
+    if stream.get("is_live") != 1:
+        return web.json_response({"error": "The stream is not live"}, status=409)
+    stream_id = stream["id"]
+    if not await _live_ops_audit(admin, "stream_end_now", stream, regenerate_key=regenerate):
+        return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
+
+    async with _stream_state_lock:
+        path_key = _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
+    new_key_set = False
+    if regenerate:
+        # First: from here on the old credential is refused at publish
+        new_key_set = await db.regenerate_stream_key(stream_id, generate_stream_key())
+        await db.revoke_rtmp_tokens_for_stream(stream_id)
+        _stream_access_changed(stream_id)
+    kick = await _mediamtx_kick_publisher(path_key)
+    async with _stream_state_lock:
+        _rtmp_stream_paths.pop(stream_id, None)
+        grace = _disconnect_grace_tasks.pop(stream_id, None)
+    if grace and not grace.done():
+        grace.cancel()
+    # The relays end now (a non-forced stop waits up to 30 s for each, inside this request). The recorder is
+    # finished the normal way below; when the publisher could not be disconnected its source never ends, so it
+    # is asked to finish (ffmpeg "q": the chunk is closed properly) and the session ends as usual.
+    await stop_stream_relays(stream_id, force=True)
+    rec = active_recordings.get(stream_id)
+    if rec is not None and not kick.get("kicked") and rec.get("process") is not None:
+        task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
+        _live_ops_tasks.add(task)
+        task.add_done_callback(_live_ops_tasks.discard)
+    await _stream_end_session(stream)
+    try:
+        await send_notification(stream["user_id"], "stream_ended", "Your stream was ended",
+                                "An administrator ended your stream.", {"stream_id": stream_id})
+    except Exception as e:
+        logger.warning(f"Could not notify the owner of stream {stream_id}: {type(e).__name__}")
+    logger.info(f"Stream {stream_id} ended by administrator {admin['id']} (kick: {kick.get('kicked')})")
+    return web.json_response({"success": True, "publisher_disconnected": bool(kick.get("kicked")),
+                              "disconnect_note": kick.get("reason"), "source": kick.get("source"),
+                              "key_replaced": bool(new_key_set)})
 
 
 # What MediaMTX's HLS muxer serves under a path: playlists, init and media segments, parts.
@@ -25032,6 +25470,10 @@ async def http_unblock_user(request: web.Request) -> web.Response:
 # member, a moderator or a scoped key gets nothing, not even for their own sessions.
 RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_delete",
                            "recording_delete_failed")
+# An administrator's End now and Stop relays name the stream, its owner and its id. A stream that is not
+# public must not reach anybody who may not see it (a moderator gets 404 on its watch, detail and health
+# routes), so a moderator does not read these entries either.
+LIVE_OPS_AUDIT_ACTIONS = ("stream_end_now", "stream_stop_relays")
 _RECORDINGS_PAGE_MAX = 100
 _RECORDING_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -25259,8 +25701,10 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
     if role != "superadmin":
         filters["exclude_actions"] = SUPERADMIN_ONLY_AUDIT_ACTIONS
     if role == "moderator":
-        # who looked at which session recording is for administrators only
-        filters["exclude_actions"] = tuple(filters.get("exclude_actions", ())) + RECORDING_AUDIT_ACTIONS
+        # who looked at which session recording, and which stream an administrator ended or stopped the
+        # relays of, is for administrators only
+        filters["exclude_actions"] = (tuple(filters.get("exclude_actions", ())) + RECORDING_AUDIT_ACTIONS
+                                      + LIVE_OPS_AUDIT_ACTIONS)
     entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
     total = await db.get_audit_log_count(**filters)
     return web.json_response({"entries": entries, "total": total})
@@ -31445,6 +31889,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/streams/{id}/mods", http_add_stream_mod)
     app.router.add_delete("/api/streams/{id}/mods/{user_id}", http_remove_stream_mod)
     # Stream relay destinations
+    app.router.add_get("/api/streams/{id}/health", http_stream_health)
     app.router.add_get("/api/streams/{id}/relays", http_list_relay_destinations)
     app.router.add_post("/api/streams/{id}/relays", http_create_relay_destination)
     app.router.add_put("/api/streams/{id}/relays/{relay_id}", http_update_relay_destination)
@@ -31534,6 +31979,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/admin/blocked-ips", http_block_ip)
     app.router.add_delete("/api/admin/blocked-ips/{ip}", http_unblock_ip)
     app.router.add_get("/api/admin/blocks/ref/{ref}", http_block_ref_lookup)
+    app.router.add_get("/api/admin/live-streams", http_admin_live_streams)
+    app.router.add_post("/api/admin/streams/{id}/end", http_admin_stream_end)
+    app.router.add_post("/api/admin/streams/{id}/stop-relays", http_admin_stream_stop_relays)
     app.router.add_get("/api/admin/never-ban", http_get_never_ban)
     app.router.add_put("/api/admin/never-ban", http_put_never_ban)
     app.router.add_get("/api/admin/proxy-trust", http_get_proxy_trust)
@@ -31972,6 +32420,8 @@ class PortalServer:
         # Initialize managed services
         global _service_manager
         load_service_types()  # Load service type plugins
+        from services.mediamtx import set_paths_listener
+        set_paths_listener(_ingest_feed)   # the ingest numbers come from MediaMTX's 30 s health check
         _service_manager = await init_service_manager(db, on_event=alerts.service_event)
         logger.info("Managed services initialized")
 
@@ -32388,6 +32838,10 @@ class PortalServer:
 
                     # Skip if stream has active relay processes
                     if relay_snapshot.get(stream_id):
+                        continue
+
+                    # Skip a stream whose relays an administrator stopped
+                    if stream_id in _relay_stop_held:
                         continue
 
                     # Skip if we restarted recently (90s cooldown to avoid thrash)

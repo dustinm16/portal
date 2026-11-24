@@ -802,6 +802,7 @@
                 </div>
                 <div class="viewer-header-right">
                     <button type="button" class="watch-follow-btn" id="follow-btn" style="display: none;" aria-pressed="false">Follow</button>
+                    <button type="button" class="watch-follow-btn" id="health-btn" style="display: none;" aria-expanded="false">Stream health</button>
                     <div class="live-indicator" id="live-indicator" style="display: none;">
                         <span class="pulse"></span>LIVE
                     </div>
@@ -940,6 +941,7 @@
 
     <script src="/static/js/portal.js?v=52"></script>
     <script src="/static/js/stream-schedule.js?v=8"></script>
+    <script src="/static/js/stream-health.js?v=1"></script>
     <script src="/static/js/voice.js?v=15"></script>
     <script>
         let streamId = null;
@@ -1043,6 +1045,18 @@
             }
         }
 
+        // Stream health: for the streamer and administrators only (the server answers 404 to anybody else)
+        let healthPanel = null;
+        function setupHealthButton() {
+            const btn = document.getElementById('health-btn');
+            if (!btn || chatOnly || !streamData || !currentUser || !window.StreamHealth || healthPanel) return;
+            const mine = Number(streamData.user_id) === Number(currentUser.id);
+            if (!mine && !Portal.isAdmin(currentUser)) return;
+            btn.style.display = '';
+            healthPanel = window.StreamHealth.mount({ button: btn, streamId: streamData.id });
+            if (location.hash === '#health') healthPanel.open();
+        }
+
         // Follow: hear when this stream goes live. Shown to a viewer who is not the streamer;
         // the state is the member's own, kept on the server.
         function setupFollowButton() {
@@ -1112,6 +1126,7 @@
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
                 setupFollowButton();
+                setupHealthButton();
 
                 if (chatOnly) {
                     // No player in the pop-out: it would only add a second viewer.

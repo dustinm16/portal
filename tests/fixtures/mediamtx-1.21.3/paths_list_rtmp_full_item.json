@@ -1,0 +1,48 @@
+{
+  "itemCount": 1,
+  "pageCount": 1,
+  "items": [
+    {
+      "name": "live/livekey_a",
+      "confName": "all_others",
+      "ready": true,
+      "readyTime": "2026-11-23T22:15:26.544493327Z",
+      "available": true,
+      "availableTime": "2026-11-23T22:15:26.544493327Z",
+      "online": true,
+      "onlineTime": "2026-11-23T22:15:26.54450176Z",
+      "source": {
+        "type": "rtmpConn",
+        "id": "69e7ffff-16c5-4590-b049-e36dffd0a1cd"
+      },
+      "tracks": [
+        "H264",
+        "MPEG-4 Audio"
+      ],
+      "tracks2": [
+        {
+          "codec": "H264",
+          "codecProps": {
+            "width": 640,
+            "height": 360,
+            "profile": "Baseline",
+            "level": "3"
+          }
+        },
+        {
+          "codec": "MPEG-4 Audio",
+          "codecProps": {
+            "sampleRate": 44100,
+            "channelCount": 1
+          }
+        }
+      ],
+      "readers": [],
+      "inboundBytes": 950222,
+      "outboundBytes": 0,
+      "inboundFramesInError": 0,
+      "bytesReceived": 950222,
+      "bytesSent": 0
+    }
+  ]
+}

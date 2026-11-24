@@ -198,8 +198,8 @@ sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to)
 index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
-check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0 and again in 1.23.0)",
-      stated == {"48"} and real_v == "51", f"stated {stated}, index.html {real_v}")
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0, 1.23.0 and 1.24.0)",
+      stated == {"48"} and real_v == "52", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
@@ -620,7 +620,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "51")}  # stated in 1.20.0, loaded since 1.22.0 and 1.23.0
+_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "52")}  # stated in 1.20.0, loaded since 1.22.0, 1.23.0 and 1.24.0
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -1059,7 +1059,7 @@ check("1.23.0: the numbers stated are the ones in the code",
 check("1.23.0: the static versions stated are the ones the pages load",
       "`stream-schedule.js` is new at version 8" in _sec23 and "`streams.js` is version 51" in _sec23
       and "/static/js/stream-schedule.js?v=8" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/streams.js?v=51" in (ROOT / "static" / "index.html").read_text())
+      and "/static/js/streams.js?v=52" in (ROOT / "static" / "index.html").read_text())  # moved on to 52 in 1.24.0
 check("1.23.0: the notes say Revoke on the calendar link asks first and the code has the question",
       "Regenerate and Revoke ask first" in _sec23 and "Yes, revoke" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
 check("1.23.0: the notes say the editor's Delete the whole entry asks first and the code has the question",
@@ -1262,6 +1262,82 @@ _png = (ROOT / "static" / "og-image.png").read_bytes()
 check("the share image is a 1200x630 PNG", _png[:8] == b"\x89PNG\r\n\x1a\n" and _struct23a.unpack(">II", _png[16:24]) == (1200, 630))
 _all_docs = "".join((ROOT / n).read_text(encoding="utf-8") for n in ("ARCHITECTURE.md", "docs/ARCHITECTURE.md"))
 check("the architecture documents open with the new positioning", _all_docs.count("privacy-first, self-hosted streaming and community platform") == 2)
+
+# --- 1.24.0: stream health and administrator live operations (health lane) -----------------------
+import stream_health as _sh24  # noqa: E402
+
+m240 = re.search(r"### Upgrade notes for 1\.24\.0\n(.*?)(?=\n### Upgrade notes for 1\.23\.1)", text, re.S)
+_sec240 = m240.group(1) if m240 else ""
+_low240 = _sec240.lower()
+check("1.24.0 notes sit directly before the 1.23.1 notes", bool(m240))
+check("1.24.0 notes carry no emoji", not re.search(_EMOJI, _sec240))
+for name, needles in {
+    "nothing to do, no database change, rollback": ("nothing has to be done", "or database change", "gone at a restart"),
+    "the ingest feed is the 30 s service check and the panel says how coarse it is": (
+        "fed by the existing 30 second mediamtx health check", "no new call to mediamtx", "`_ingest_feed`", "`ingest.available: false`",
+        "until the second", "not collected", "five minutes",
+        "stopped or unhealthy", "no data after 75 seconds"),
+    "who reads the health": ("owner and administrators", "stream moderator", "same `404`", "90 reads a minute", "`stream_health`"),
+    "what is never shown": ("never shows", "fixed sentence", "destination", "path on the server"),
+    "who may end a stream": ("browser session or a full-scope token", "api keys", "`403`", "`live_ops`", "recordings'"),
+    "warnings": ("`no_data`", "75 seconds", "`bitrate_drop`", "under half", "`relay_failing`", "`recording_stopped_by_guard`"),
+    "end now": ("`stream_ended`", "an administrator ended your stream.", "`stream_end_now`", "before anything is done",
+                "kick route", "srt, hls or camera", "no recording is deleted", "chat's live state ends", "what happens to the key"),
+    "stop relays": ("`stream_stop_relays`", "relay monitor", "until the stream ends"),
+    "both ask first": ("its own row", "0.6 seconds", "second click of a double click", "while another request is running"),
+    "stage mode": ("never contacts a media server",),
+    "behaviour, breaking, database, static, rollback, not tested": ("behaviour changes", "breaking changes", "**not tested.**", "version 1",
+                                                                  "version 52", "1.9.3", "hand-written", "no browser", "no obs", "cloudflare", "fakes and captures"),
+}.items():
+    check(f"1.24.0 states: {name}", all(n in _low240 for n in needles), str([n for n in needles if n not in _low240]))
+check("1.24.0: the thresholds stated are the ones in the code",
+      _sh24.NO_DATA_SECONDS == 75.0 and _sh24.NO_DATA_SECONDS >= 2 * 30.0 and _sh24.RING_SIZE == 30 and _sh24.DROP_RATIO == 0.5 and _sh24.DROP_BASELINE_MIN_SAMPLES == 4
+      and _sh24.DROP_BASELINE_MIN_BPS == 50_000 and _sh24.DROP_BASELINE_SECONDS == 300.0
+      and "_STREAM_HEALTH_LIMIT = 90" in _srv22 and "_LIVE_OPS_LIMIT = 30" in _srv22
+      and "75 s" in (ROOT / "docs" / "API.md").read_text() and "90 reads per minute" in (ROOT / "docs" / "API.md").read_text()
+      and '"no_data_seconds": 75.0' in (ROOT / "docs" / "API.md").read_text()
+      and '"drop_baseline_seconds": 300.0' in (ROOT / "docs" / "API.md").read_text()
+      and '"no_data_seconds": 20' not in (ROOT / "docs" / "API.md").read_text())
+check("1.24.0: the static versions stated are the ones the pages load",
+      "`stream-health.js` is new at version 1" in _sec240 and "`live-ops-admin.js` is new at version 1" in _sec240
+      and "`streams.js` is version 52" in _sec240
+      and "/static/js/stream-health.js?v=1" in (ROOT / "static" / "watch.html").read_text()
+      and "/static/js/live-ops-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
+      and "/static/js/streams.js?v=52" in (ROOT / "static" / "index.html").read_text())
+_api24 = (ROOT / "docs" / "API.md").read_text()
+_docs24 = (ROOT / "static" / "api-docs.html").read_text()
+check("1.24.0: every new route is in the API reference and on the API page",
+      all(r in _api24 and r in _docs24 for r in ("/api/streams/{id}/health", "/api/admin/live-streams",
+                                                  "/api/admin/streams/{id}/stop-relays", "/api/admin/streams/{id}/end")))
+check("1.24.0: the API reference says where the ingest numbers come from and how coarse they are",
+      "30 second MediaMTX health check" in _api24 and "30 second MediaMTX health check" in _docs24
+      and "is empty for a live stream" not in _api24 and "is empty for a live stream" not in _docs24
+      and "waits for a feed" not in _api24)
+check("1.24.0: the README feature section mentions the health panel and its limit",
+      "**Stream health and live controls.**" in text and "nothing feeds it" not in text
+      and "30 seconds" in text[text.index("**Stream health and live controls.**"):text.index("**Stream health and live controls.**") + 4000])
+_srv24 = (ROOT / "server.py").read_text()
+check("1.24.0: the notes' claim that the tick fetches nothing holds (no MediaMTX call in the tick or in the ingest code)",
+      "paths/list" not in _srv24[_srv24.index("async def _viewer_sync_task"):_srv24.index("async def _relay_health_monitor_task")]
+      and not any(x in _srv24[_srv24.index("async def _ingest_tick"):_srv24.index("async def _stream_set_offline")]
+                  for x in ("ClientSession", "http.get", "_mediamtx_kick_publisher"))
+      and "async def _viewer_sync_once(paths=None)" in _srv24)
+_svc24 = (ROOT / "services" / "mediamtx.py").read_text()
+check("1.24.0: the ingest feed is the existing health check's answer: one list call, no second one",
+      _svc24.count("/v3/paths/list") == 2 and "async def _offer_paths" in _svc24
+      and "await self._offer_paths(resp)" in _svc24[_svc24.index("async def health_check"):_svc24.index("async def list_streams")]
+      and "set_paths_listener(_ingest_feed)" in _srv24 and "async def _ingest_feed" in _srv24
+      and "ClientSession" not in _srv24[_srv24.index("async def _ingest_feed"):_srv24.index("async def _stream_set_offline")])
+check("1.24.0: the notes say moderators do not read the live operation entries, and the code leaves them out",
+      "left out for moderators" in text and "visible to moderators in the audit log" not in text
+      and "LIVE_OPS_AUDIT_ACTIONS = (\"stream_end_now\", \"stream_stop_relays\")" in _srv24
+      and "+ LIVE_OPS_AUDIT_ACTIONS" in _srv24 and "`stream_end_now` and `stream_stop_relays` (1.24.0)" in _api24)
+_rb240 = re.search(r"- \*\*Rollback\.\*\*(.*?)(?=\n- \*\*Not tested)", _sec240, re.S)
+_rb240 = _rb240.group(1) if _rb240 else ""
+check("1.24.0: the rollback item does not call a rollback fully safe and gives the audit cleanup for 1.23.x moderators",
+      "nothing to undo" not in _low240 and "needs nothing undone" not in _low240
+      and "DELETE FROM audit_log WHERE action IN ('stream_end_now','stream_stop_relays')" in _rb240
+      and "moderator" in _rb240 and "private" in _rb240)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

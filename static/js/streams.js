@@ -308,6 +308,12 @@ async function showStreamDetails(streamId) {
                 </div>
 
                 <div class="info-section">
+                    <h4>Stream health</h4>
+                    <p class="info-description">What the server receives from your encoder while you stream: bitrate, relays, recording and warnings. Opens on the watch page; only you and administrators can see it.</p>
+                    ${stream.public_key ? `<a class="btn btn-sm btn-secondary" id="stream-health-link" target="_blank" rel="noopener" href="/watch/${encodeURIComponent(stream.public_key)}#health">Open stream health</a>` : ''}
+                </div>
+
+                <div class="info-section">
                     <h4>Stream Settings</h4>
                     <div class="form-group">
                         <label>Stream Name</label>
