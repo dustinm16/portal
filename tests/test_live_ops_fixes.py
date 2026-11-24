@@ -44,7 +44,6 @@ def with_world(fn):
     def runner():
         async def body(w):
             fresh()
-            server._end_claims.clear() if hasattr(server, "_end_claims") else None
             await fn(w)
         run(body)
     runner.__name__ = fn.__name__
@@ -191,6 +190,127 @@ async def test_a_recording_of_a_newer_session_is_not_stopped_by_the_older_one(w)
     server.active_recordings[sid] = new
     await server.stop_vod_recording(sid, only=old)
     assert server.active_recordings.get(sid) is new
+
+
+async def end_now(w, sid, body=None):
+    r = await server.http_admin_stream_end(admin_req(w, "admin", sid, "end", body if body is not None else {}))
+    return r.status, (json.loads(r.body) if r.body else None)
+
+
+async def audit_count(w, action):
+    return len(await w.db.get_audit_log(limit=50, action=action))
+
+
+@with_mtx()
+async def test_two_end_now_requests_at_once_end_the_stream_once(w, mtx):
+    sid = w.streams["public"]["id"]
+    async with Spy(w) as spy:
+        await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")
+        a, b = await asyncio.gather(end_now(w, sid, {"regenerate_key": False}),
+                                    end_now(w, sid, {"regenerate_key": False}))
+        await asyncio.sleep(0.05)
+        assert sorted([a[0], b[0]]) == [200, 409], (a, b)
+        loser = a if a[0] == 409 else b
+        assert "already being ended" in loser[1]["error"] and "/" not in loser[1]["error"]
+        assert await audit_count(w, "stream_end_now") == 1
+        assert len(await offline_rows(w, sid)) == 1
+        assert [e for e, _p in spy.webhooks].count("stream.offline") == 1, spy.webhooks
+        notes = [n for n in await w.db.get_notifications(w.users["owner"], limit=50) if n["type"] == "stream_ended"]
+        assert len(notes) == 1
+    assert not server._end_claims
+
+
+@with_mtx()
+async def test_a_second_end_now_while_the_first_is_uploading_is_refused_and_the_claim_is_released(w, mtx):
+    sid = w.streams["public"]["id"]
+    async with Spy(w) as spy:
+        await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")
+        server.active_recordings[sid] = {"process": Proc(), "session_dir": "/nonexistent", "uploaded": set()}
+        hold = asyncio.Event()
+
+        async def held_stop(stream_id, force=False, only=None):
+            await hold.wait()
+            raise RuntimeError("the upload failed")
+        saved = (server.stop_vod_recording, server._vod_graceful_stop)
+
+        async def graceful(p):
+            return "q"
+        server.stop_vod_recording, server._vod_graceful_stop = held_stop, graceful
+        try:
+            st, _ = await end_now(w, sid, {"regenerate_key": False})
+            assert st == 200 and sid in server._end_claims          # held until the finalisation is over
+            st, body = await end_now(w, sid, {"regenerate_key": False})
+            assert st == 409 and await audit_count(w, "stream_end_now") == 1
+            hold.set()
+            await asyncio.gather(*[t for t in asyncio.all_tasks() if "_finalize_stream_offline" in repr(t.get_coro())])
+        finally:
+            server.stop_vod_recording, server._vod_graceful_stop = saved
+        assert sid not in server._end_claims, "a failed finalisation must release the claim"
+        assert (await w.db.get_user_stream(sid))["is_live"] == 0        # the failure path still ends it
+        await asyncio.sleep(0.05)               # the webhook is a background task
+        assert [e for e, _p in spy.webhooks].count("stream.offline") <= 1     # the failure path records none (as before)
+
+
+@with_mtx()
+async def test_the_disconnect_grace_and_end_now_do_not_end_the_same_session_twice(w, mtx):
+    sid = w.streams["public"]["id"]
+    async with Spy(w) as spy:
+        await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")
+        release, started = asyncio.Event(), asyncio.Event()
+        saved = (server.stop_stream_relays, asyncio.sleep)
+
+        async def slow_relays(stream_id, force=False):
+            started.set()
+            await release.wait()
+        real_sleep = saved[1]
+
+        async def fast(t, *a, **k):
+            return await real_sleep(0)
+        server.stop_stream_relays, asyncio.sleep = slow_relays, fast
+        try:
+            stream = await w.db.get_user_stream(sid)
+            task = asyncio.create_task(server._handle_disconnect_grace(stream, server._stream_sessions.get(sid)))
+            server._disconnect_grace_tasks[sid] = task
+            await started.wait()                        # the grace task holds the claim and is ending the session
+            st, body = await end_now(w, sid, {"regenerate_key": False})
+            assert st == 409 and await audit_count(w, "stream_end_now") == 0, (st, body)
+            release.set()
+            await task
+        finally:
+            server.stop_stream_relays, asyncio.sleep = saved
+            server._disconnect_grace_tasks.pop(sid, None)
+        await asyncio.sleep(0.05)
+        assert [e for e, _p in spy.webhooks].count("stream.offline") == 1
+        assert not server._end_claims
+
+
+@with_mtx()
+async def test_two_stop_relays_requests_at_once_stop_them_once(w, mtx):
+    sid = w.streams["private"]["id"]
+    release, entered = asyncio.Event(), []
+    saved = server.stop_stream_relays
+
+    async def slow(stream_id, force=False):
+        entered.append(stream_id)
+        await release.wait()
+    server.stop_stream_relays = slow
+    try:
+        async def stop():
+            r = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
+            return r.status, json.loads(r.body)
+        t1 = asyncio.create_task(stop())
+        await asyncio.sleep(0.05)
+        t2 = asyncio.create_task(stop())
+        await asyncio.sleep(0.05)
+        release.set()
+        results = await asyncio.gather(t1, t2)
+    finally:
+        server.stop_stream_relays = saved
+    assert sorted(r[0] for r in results) == [200, 409], results
+    assert len(entered) == 1 and await audit_count(w, "stream_stop_relays") == 1
+    assert not server._relay_stop_claims
+    again = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
+    assert again.status == 200                  # the claim is gone once the first one is done
 
 
 if __name__ == "__main__":

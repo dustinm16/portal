@@ -75,6 +75,8 @@ def fresh():
     server._rtmp_stream_paths.clear()
     server._relay_stop_held.clear()
     server._stream_sessions.clear()
+    server._end_claims.clear()
+    server._relay_stop_claims.clear()
     server._recorder_errors.clear()
     server.active_relays.clear()
     server.active_recordings.clear()

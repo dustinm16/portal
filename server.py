@@ -678,6 +678,13 @@ _relay_stop_held: set = set()
 # after it ended (_viewer_sync_once). A restart empties it, and so does the live state of every stream.
 _stream_sessions: dict = {}
 _stream_session_seq = 0
+# The end of a session in progress, per stream: stream id -> {"session"}. An administrator's End now and the
+# disconnect grace each claim it (_claim_end) before they end the session, and it is released when the end
+# has finished or failed (for a stream with a recording: when the upload is done), so a double click, two
+# administrators, or an End now meeting the grace task cannot end the same session twice. A claim of an
+# earlier session does not hold up the end of the next one. "Stop relays" has its own claim set.
+_end_claims: dict = {}
+_relay_stop_claims: set = set()
 _SESSION_KEEP_SECONDS = 3600.0
 
 # Characters that must not appear in relay URLs or stream keys (null bytes, newlines).
@@ -9708,7 +9715,11 @@ async def _handle_disconnect_grace(stream: dict, session=None) -> None:
         if current is not None and current.get("is_live") != 1:
             logger.info(f"Stream {stream_name} is no longer live, disconnect grace has nothing to end")
             return
-        await _stream_end_session(stream, session)
+        claim = await _claim_end(stream_id, session)
+        if claim is None:
+            logger.info(f"Stream {stream_name} is already being ended, disconnect grace has nothing to end")
+            return
+        await _stream_end_session(stream, session, claim)
     except asyncio.CancelledError:
         logger.info(f"Stream {stream_name} disconnect grace period cancelled (reconnected)")
     except Exception as e:
@@ -9733,6 +9744,22 @@ def _session_current(stream_id: int, session) -> bool:
     is still the stream's session. Every step of ending a session asks this before it changes anything
     that is shared with the next session: the stored live state, the viewer figures, the chat."""
     return _stream_sessions.get(stream_id) is session
+
+
+async def _claim_end(stream_id: int, session) -> Optional[dict]:
+    """Claim the end of `session` (taken under the stream state lock); None when it is already claimed."""
+    async with _stream_state_lock:
+        held = _end_claims.get(stream_id)
+        if held is not None and held["session"] is session:
+            return None
+        claim = {"session": session}
+        _end_claims[stream_id] = claim
+        return claim
+
+
+def _release_end(stream_id: int, claim: Optional[dict]) -> None:
+    if claim is not None and _end_claims.get(stream_id) is claim:
+        del _end_claims[stream_id]
 
 
 async def _session_set_encoding(stream_id: int, session) -> bool:
@@ -9790,7 +9817,7 @@ async def _session_after_offline(stream: dict, session) -> None:
             logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream.get('name', '?')}")
 
 
-async def _stream_end_session(stream: dict, session=None) -> None:
+async def _stream_end_session(stream: dict, session=None, claim: Optional[dict] = None) -> None:
     """The normal end of a live session once the publisher is gone: relays stop, a recording is
     finished and uploaded in the background (state "encoding", then offline), a stream without one
     goes offline at once, and the stream's chat is told. Used after the disconnect grace period and by
@@ -9798,40 +9825,48 @@ async def _stream_end_session(stream: dict, session=None) -> None:
 
     `session` is the live session this end belongs to (None: the current one). When the stream is
     published again while the end is under way (an encoder that reconnects at once), the new session is
-    never marked offline, cleared or announced as ended: each step checks it is still the same session."""
+    never marked offline, cleared or announced as ended: each step checks it is still the same session.
+    `claim` (see _claim_end) is released when the end has finished or failed: here, or by the
+    finalisation task once the recording is uploaded."""
     stream_id = stream["id"]
     stream_name = stream.get("name", "?")
-    if session is None:
-        session = _stream_sessions.get(stream_id)
-    if not _session_current(stream_id, session):
-        logger.info(f"Stream {stream_name} was published again, the end of its earlier session does nothing")
-        return
-    # Stop multi-platform relays
-    await stop_stream_relays(stream_id)
-
-    # Still disconnected — proceed with encoding/offline transition
-    async with _stream_state_lock:
-        rec = active_recordings.get(stream_id)
-
-    if rec is not None:
-        # Transition to encoding state — VOD chunks still being finalized
-        if not await _session_set_encoding(stream_id, session):
-            logger.info(f"Stream {stream_name} was published again, not marked as encoding")
+    handed_over = False
+    try:
+        if session is None:
+            session = _stream_sessions.get(stream_id)
+        if not _session_current(stream_id, session):
+            logger.info(f"Stream {stream_name} was published again, the end of its earlier session does nothing")
             return
-        logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
+        # Stop multi-platform relays
+        await stop_stream_relays(stream_id)
 
-        # Broadcast encoding status to chat channel
-        await _session_status_notice(stream, session, 2)
+        # Still disconnected — proceed with encoding/offline transition
+        async with _stream_state_lock:
+            rec = active_recordings.get(stream_id)
 
-        # Finalize VOD in background, then transition to offline
-        asyncio.create_task(_finalize_stream_offline(stream, session, rec))
-    else:
-        # No VOD recording — go straight to offline
-        if not await _session_set_offline(stream_id, session):
-            logger.info(f"Stream {stream_name} was published again, not marked as offline")
-            return
-        logger.info(f"Stream {stream_name} ended (after grace period)")
-        await _session_after_offline(stream, session)
+        if rec is not None:
+            # Transition to encoding state — VOD chunks still being finalized
+            if not await _session_set_encoding(stream_id, session):
+                logger.info(f"Stream {stream_name} was published again, not marked as encoding")
+                return
+            logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
+
+            # Broadcast encoding status to chat channel
+            await _session_status_notice(stream, session, 2)
+
+            # Finalize VOD in background, then transition to offline
+            handed_over = True
+            asyncio.create_task(_finalize_stream_offline(stream, session, rec, claim))
+        else:
+            # No VOD recording — go straight to offline
+            if not await _session_set_offline(stream_id, session):
+                logger.info(f"Stream {stream_name} was published again, not marked as offline")
+                return
+            logger.info(f"Stream {stream_name} ended (after grace period)")
+            await _session_after_offline(stream, session)
+    finally:
+        if not handed_over:
+            _release_end(stream_id, claim)
 
 
 def _stream_activity_type(action: str, stream: dict) -> str:
@@ -9862,12 +9897,19 @@ async def _record_stream_offline(stream: dict) -> None:
     }, meta={"stream_public": bool(now.get("is_public"))}))
 
 
-async def _finalize_stream_offline(stream: dict, session=None, rec=None) -> None:
+async def _finalize_stream_offline(stream: dict, session=None, rec=None, claim: Optional[dict] = None) -> None:
     """Background task: wait for VOD finalization, then transition stream to offline.
 
     `session` is the live session being ended and `rec` the recording that belongs to it: when the stream
     was published again meanwhile, a recording of the new session is not stopped, the stream is not marked
     offline and nothing of the new session (chat, viewer figures, webhook) is touched."""
+    try:
+        await _finalize_stream_offline_steps(stream, session, rec)
+    finally:
+        _release_end(stream["id"], claim)        # the end is over, finished or failed
+
+
+async def _finalize_stream_offline_steps(stream: dict, session, rec) -> None:
     stream_id = stream["id"]
     stream_name = stream.get("name", "?")
     try:
@@ -12404,12 +12446,20 @@ async def http_admin_stream_stop_relays(request: web.Request) -> web.Response:
         return refused
     if stream.get("is_live") != 1:
         return web.json_response({"error": "The stream is not live"}, status=409)
-    async with _stream_state_lock:
-        running = len(active_relays.get(stream["id"], {}))
-    if not await _live_ops_audit(admin, "stream_stop_relays", stream, relays_running=running):
-        return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
-    _relay_stop_held.add(stream["id"])       # the monitor, the auto-restart and a reconnect leave them stopped
-    await stop_stream_relays(stream["id"], force=True)
+    stream_id = stream["id"]
+    async with _stream_state_lock:                  # one Stop relays per stream at a time
+        if stream_id in _relay_stop_claims:
+            return web.json_response({"error": "The relays of this stream are already being stopped"}, status=409)
+        _relay_stop_claims.add(stream_id)
+    try:
+        async with _stream_state_lock:
+            running = len(active_relays.get(stream_id, {}))
+        if not await _live_ops_audit(admin, "stream_stop_relays", stream, relays_running=running):
+            return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
+        _relay_stop_held.add(stream_id)       # the monitor, the auto-restart and a reconnect leave them stopped
+        await stop_stream_relays(stream_id, force=True)
+    finally:
+        _relay_stop_claims.discard(stream_id)
     return web.json_response({"success": True, "stopped": running})
 
 
@@ -12435,34 +12485,48 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
     if stream.get("is_live") != 1:
         return web.json_response({"error": "The stream is not live"}, status=409)
     stream_id = stream["id"]
-    if not await _live_ops_audit(admin, "stream_end_now", stream, regenerate_key=regenerate):
-        return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
+    # One End now per stream at a time: claimed before anything is recorded or done, so the loser of a double
+    # click or of two administrators writes no audit entry and sends no second webhook
+    session = _stream_sessions.get(stream_id)       # the session this End now ends
+    claim = await _claim_end(stream_id, session)
+    if claim is None:
+        return web.json_response({"error": "This stream is already being ended"}, status=409)
+    handed_over = False
+    try:
+        stream = await db.get_user_stream(stream_id)    # read again under the claim
+        if not stream or stream.get("is_live") != 1:
+            return web.json_response({"error": "The stream is not live"}, status=409)
+        if not await _live_ops_audit(admin, "stream_end_now", stream, regenerate_key=regenerate):
+            return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
 
-    async with _stream_state_lock:
-        path_key = _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
-        session = _stream_sessions.get(stream_id)       # the session this End now ends
-    new_key_set = False
-    if regenerate:
-        # First: from here on the old credential is refused at publish
-        new_key_set = await db.regenerate_stream_key(stream_id, generate_stream_key())
-        await db.revoke_rtmp_tokens_for_stream(stream_id)
-        _stream_access_changed(stream_id)
-    kick = await _mediamtx_kick_publisher(path_key)
-    async with _stream_state_lock:
-        _rtmp_stream_paths.pop(stream_id, None)
-        grace = _disconnect_grace_tasks.pop(stream_id, None)
-    if grace and not grace.done():
-        grace.cancel()
-    # The relays end now (a non-forced stop waits up to 30 s for each, inside this request). The recorder is
-    # finished the normal way below; when the publisher could not be disconnected its source never ends, so it
-    # is asked to finish (ffmpeg "q": the chunk is closed properly) and the session ends as usual.
-    await stop_stream_relays(stream_id, force=True)
-    rec = active_recordings.get(stream_id)
-    if rec is not None and not kick.get("kicked") and rec.get("process") is not None:
-        task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
-        _live_ops_tasks.add(task)
-        task.add_done_callback(_live_ops_tasks.discard)
-    await _stream_end_session(stream, session)
+        async with _stream_state_lock:
+            path_key = _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
+        new_key_set = False
+        if regenerate:
+            # First: from here on the old credential is refused at publish
+            new_key_set = await db.regenerate_stream_key(stream_id, generate_stream_key())
+            await db.revoke_rtmp_tokens_for_stream(stream_id)
+            _stream_access_changed(stream_id)
+        kick = await _mediamtx_kick_publisher(path_key)
+        async with _stream_state_lock:
+            _rtmp_stream_paths.pop(stream_id, None)
+            grace = _disconnect_grace_tasks.pop(stream_id, None)
+        if grace and not grace.done():
+            grace.cancel()
+        # The relays end now (a non-forced stop waits up to 30 s for each, inside this request). The recorder is
+        # finished the normal way below; when the publisher could not be disconnected its source never ends, so it
+        # is asked to finish (ffmpeg "q": the chunk is closed properly) and the session ends as usual.
+        await stop_stream_relays(stream_id, force=True)
+        rec = active_recordings.get(stream_id)
+        if rec is not None and not kick.get("kicked") and rec.get("process") is not None:
+            task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
+            _live_ops_tasks.add(task)
+            task.add_done_callback(_live_ops_tasks.discard)
+        handed_over = True                  # _stream_end_session releases the claim when the end is over
+        await _stream_end_session(stream, session, claim)
+    finally:
+        if not handed_over:
+            _release_end(stream_id, claim)
     try:
         await send_notification(stream["user_id"], "stream_ended", "Your stream was ended",
                                 "An administrator ended your stream.", {"stream_id": stream_id})
