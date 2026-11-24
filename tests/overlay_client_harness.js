@@ -132,6 +132,36 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   hist(2, []);
   check('an empty history after a reconnect empties the overlay', lines().length === 0 && root.children.length === 0, lines());
 
+  // the reconnect delay starts over only after the socket stayed open for ten seconds, not on a frame
+  await withDeadline('the reconnect back-off', async () => {
+    ctx = page('#t=' + token + '&lines=3&fade=0');
+    const delays = [];
+    for (let i = 0; i < 7; i++) {          // accepted, greeted with the history, dropped at once
+      sockets[i].onopen();
+      sockets[i].onmessage({ data: JSON.stringify({ type: 'history', messages: [] }) });
+      sockets[i].onclose({ code: 1006 });
+      const t = timers[timers.length - 1];
+      delays.push(t.ms);
+      t.f();
+    }
+    check('a socket that is accepted, sends its history and is dropped backs off to the 30 second ceiling and stays there',
+          JSON.stringify(delays) === JSON.stringify([1000, 2000, 4000, 8000, 16000, 30000, 30000]), JSON.stringify(delays));
+    const k = sockets.length - 1;
+    sockets[k].onopen();
+    const steady = timers.filter(t => t.ms === 10000 && !t.dead).pop();
+    check('an open socket arms a ten second timer', !!steady, JSON.stringify(timers.map(t => t.ms)));
+    if (steady) steady.f();
+    sockets[k].onclose({ code: 1006 });
+    const next = timers[timers.length - 1];
+    check('after ten seconds open the next reconnect waits one second again', next.ms === 1000, next.ms);
+    next.f();
+    sockets[k + 1].onopen();
+    const early = timers.filter(t => t.ms === 10000 && !t.dead).pop();
+    sockets[k + 1].onclose({ code: 1006 });
+    check('the ten second timer of a socket that closed is cleared and the delay keeps growing',
+          !!early && early.dead === true && timers[timers.length - 1].ms === 2000, early && early.dead);
+  });
+
   // ------------------------------------------------------------------ stream-overlay-settings.js
   const calls = [];
   let answers = [];

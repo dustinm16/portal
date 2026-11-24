@@ -235,7 +235,7 @@ async def run(ctx):
             ok("the page's policy lets the page's own socket through (connect-src 'self') and loads nothing from another host",
                "connect-src 'self'" in h.get("content-security-policy", "") and "http" not in h.get("content-security-policy", "")
                and "img-src 'none'" in h.get("content-security-policy", ""), h.get("content-security-policy", ""))
-            for asset in ("/static/js/overlay.js?v=2", "/static/css/overlay.css?v=1"):
+            for asset in ("/static/js/overlay.js?v=3", "/static/css/overlay.css?v=1"):
                 async with obs.get(base + asset) as r:
                     if r.status != 200:
                         ok("asset " + asset + " is served", False, str(r.status))

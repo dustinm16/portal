@@ -14,6 +14,8 @@
     var DEFAULTS = { size: 24, lines: 8, fade: 30 };
     var LIMITS = { size: [12, 96], lines: [1, 30], fade: [0, 600] };
     var FADE_MS = 600;
+    var STEADY_MS = 10000;            // a socket this long open counts as working: the reconnect delay starts over
+    var MAX_DELAY_MS = 30000;
 
     function clampInt(raw, lo, hi, dflt) {
         if (typeof raw !== 'string' || !/^[0-9]{1,4}$/.test(raw)) return dflt;
@@ -159,18 +161,24 @@
         var delay = 1000, stopped = false;
         function connect() {
             var ws = new env.WebSocket(wsUrl(env.location));
-            ws.onopen = function () { ws.send(JSON.stringify({ type: 'auth', token: opts.token })); };
+            var steady = null;
+            ws.onopen = function () {
+                ws.send(JSON.stringify({ type: 'auth', token: opts.token }));
+                // Only a socket that stays open for STEADY_MS ends the back-off. A frame does not: a socket that the server
+                // accepts, greets with the history and drops (too many sockets, a slow client) would retry every second.
+                steady = env.timers.set(function () { steady = null; delay = 1000; }, STEADY_MS);
+            };
             ws.onmessage = function (ev) {
                 var data;
                 try { data = JSON.parse(ev.data); } catch (e) { return; }
-                delay = 1000;
                 overlay.handle(data);
             };
             ws.onclose = function (ev) {
+                if (steady !== null) { env.timers.clear(steady); steady = null; }
                 if (stopped) return;
                 if (ev && ev.code === REFUSED) { stopped = true; overlay.clear(); return; }   // revoked or regenerated: stay quiet
                 env.timers.set(connect, delay);
-                delay = Math.min(delay * 2, 30000);
+                delay = Math.min(delay * 2, MAX_DELAY_MS);
             };
         }
         connect();
