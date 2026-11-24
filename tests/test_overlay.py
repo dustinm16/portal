@@ -926,7 +926,9 @@ async def overlay_caps_body(env):
     """Overlay sockets are capped per owner and over the whole portal, not only per token."""
     owner_streams = [await new_stream(env, "owner", f"cap{i}") for i in range(7)]
     other_sid, _ = await new_stream(env, "other", "capother")
-    check("(control) the per-owner cap is the per-user socket cap", getattr(server, "_OVERLAY_MAX_PER_OWNER", None) == server._MAX_WS_PER_USER == 20)
+    check("(control) the per-owner cap is 9 (three tokens' worth) and the whole-portal cap holds 30 owners' worth of it",
+          getattr(server, "_OVERLAY_MAX_PER_OWNER", None) == 9 and overlay_chat.MAX_SOCKETS_PER_TOKEN <= 9
+          and server._OVERLAY_MAX_TOTAL >= 30 * server._OVERLAY_MAX_PER_OWNER)
     opened, refused = [], []
     for sid, _cid in owner_streams:
         tok, _ = await env.make_token(sid)
@@ -936,35 +938,44 @@ async def overlay_caps_body(env):
             await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
             (opened if o.frames else refused).append(o)
     count = sum(len(v) for v in server.overlay_subscribers.values())
-    check("21 sockets of one owner over seven streams: 20 are served, the rest closed with 1013",
-          len(opened) == 20 and len(refused) == 1 and count == 20, (len(opened), len(refused), count))
+    check("21 sockets of one owner over seven streams: 9 are served, the rest closed with 1013",
+          len(opened) == 9 and len(refused) == 12 and count == 9, (len(opened), len(refused), count))
     check("the refused one got the 'too many' close code",
           bool(refused) and await refused[0].closed() and refused[0].code == overlay_chat.CLOSE_SLOW, len(refused))
+    # one owner at the cap does not take the room of another one: the whole-portal cap is a backstop
+    s, made = await env.call("POST", "other", f"/api/streams/{other_sid}/overlay")
+    tok = made["url"].split("#t=", 1)[1]
+    got = []
+    for _ in range(3):
+        o = await env.overlay(tok)
+        await asyncio.sleep(0.02)
+        await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
+        got.append(o)
+    check("another owner is served in full while the first owner sits at the per-owner cap",
+          all(o.frames for o in got) and sum(len(v) for v in server.overlay_subscribers.values()) == 12,
+          (len([o for o in got if o.frames]), sum(len(v) for v in server.overlay_subscribers.values())))
     # the whole-portal cap, lowered for the test so that it needs few sockets
+    other_sid2, _ = await new_stream(env, "other", "capother2")
     saved = getattr(server, "_OVERLAY_MAX_TOTAL", 300)
-    server._OVERLAY_MAX_TOTAL = 22
+    server._OVERLAY_MAX_TOTAL = 12
     try:
-        tok, _ = await env.call("POST", "other", f"/api/streams/{other_sid}/overlay")
-        tok = _["url"].split("#t=", 1)[1]
-        got = []
-        for _ in range(3):
-            o = await env.overlay(tok)
-            await asyncio.sleep(0.02)
-            await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
-            got.append(o)
-        served = [o for o in got if o.frames]
-        check("another owner is served up to the whole-portal cap and no further",
-              len(served) == 2 and sum(len(v) for v in server.overlay_subscribers.values()) == 22, (len(served), len(got)))
+        s, made2 = await env.call("POST", "other", f"/api/streams/{other_sid2}/overlay")
+        o = await env.overlay(made2["url"].split("#t=", 1)[1])
+        await asyncio.sleep(0.02)
+        await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
+        check("a socket over the whole-portal cap is refused although its owner has room",
+              not o.frames and await o.closed() and o.code == overlay_chat.CLOSE_SLOW and
+              sum(len(v) for v in server.overlay_subscribers.values()) == 12, (o.frames, o.code))
     finally:
         server._OVERLAY_MAX_TOTAL = saved
     # closing sockets frees room
     await env.call("DELETE", "owner", f"/api/streams/{owner_streams[0][0]}/overlay")
     await asyncio.sleep(0.2)
-    check("closed sockets leave the count", sum(len(v) for v in server.overlay_subscribers.values()) < 22)
+    check("closed sockets leave the count", sum(len(v) for v in server.overlay_subscribers.values()) < 12)
 
 
 async def overlay_rate_body(env):
-    """Making and revoking a link have a limiter on the shared path."""
+    """Making a link has a limiter on the shared path; revoking one never does."""
     reset_manage_rate()
     statuses = []
     for i in range(23):
@@ -973,10 +984,16 @@ async def overlay_rate_body(env):
     check("the 21st make in a minute is refused with 429, the first 20 are not",
           statuses[:20] == [200] * 20 and statuses[20:] == [429] * 3, statuses)
     s, b = await env.call("DELETE", "owner", f"/api/streams/{env.sid}/overlay")
-    check("a revoke is held by the same budget (429, through the shared limiter path)", s == 429, (s, b))
-    cur = await env.db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action LIKE 'stream_overlay%'")
-    n = (await cur.fetchone())[0]
-    check("the audit log got no more than the allowed entries", n == 20, n)
+    check("a revoke works although the budget of making is spent (a leaked link must be revocable)",
+          s == 200 and b == {"active": False}, (s, b))
+    s, info = await env.call("GET", "owner", f"/api/streams/{env.sid}/overlay")
+    check("the link is gone after that revoke", s == 200 and info["active"] is False, (s, info))
+    again = [(await env.call("DELETE", "owner", f"/api/streams/{env.sid}/overlay"))[0] for _ in range(40)]
+    check("revoking over and over is never refused", again == [200] * 40, again)
+    cur = await env.db.conn.execute("SELECT action, COUNT(*) FROM audit_log WHERE action LIKE 'stream_overlay%' GROUP BY action")
+    rows = {a: c for a, c in await cur.fetchall()}
+    check("one audit entry per link made and one for the one link that was revoked, none for revokes of nothing",
+          rows == {"stream_overlay_create": 20, "stream_overlay_revoke": 1}, rows)
     s, b = await env.call("POST", "other", f"/api/streams/{env.sid}/overlay")
     check("(control) another account is not held by it (404 for somebody else's stream, not 429)", s == 404, (s, b))
     reset_manage_rate()

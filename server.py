@@ -29113,13 +29113,17 @@ _OVERLAY_HEADERS = {
 }
 
 
-# Owner routes: making and revoking a link each write a row (and an audit entry), so they have a budget per account.
+# Making a link writes a row and an audit entry, so it has a budget per account. Revoking one has none: it must
+# always work (a leaked link has to be revocable at once), and it writes at most one audit entry per token that
+# existed, so it cannot be used to fill the audit log.
 _OVERLAY_MANAGE_LIMIT = 20
 _overlay_manage_rate = _viewers_mod.RateWindow(_OVERLAY_MANAGE_LIMIT, 60.0)
 # Overlay sockets are not counted in _user_websockets: they are capped here, per owner and over the whole portal,
 # so that neither one member with many streams nor many members can grow the registry, the writer tasks and the
-# queues without bound. A socket over either cap is closed with 1013, like a fourth socket on one token.
-_OVERLAY_MAX_PER_OWNER = _MAX_WS_PER_USER
+# queues without bound. A socket over either cap is closed with 1013, like a fourth socket on one token. One owner
+# may hold 9 sockets across all their streams (three links' worth; 3 percent of the portal's 300), so the whole-portal
+# cap is a backstop that it takes 34 owners to reach, not something a few members can fill. The per-token cap stays 3.
+_OVERLAY_MAX_PER_OWNER = 9
 _OVERLAY_MAX_TOTAL = 300
 
 
@@ -29401,9 +29405,6 @@ async def http_overlay_revoke(request: web.Request) -> web.Response:
     token, stream, refusal = await _overlay_owner_stream(request)
     if refusal is not None:
         return refusal
-    if not _overlay_manage_rate.allow(str(token.user_id)):
-        return await _limited(request, "overlay_manage", "Too many requests", user_id=token.user_id,
-                              headers={"Retry-After": "10", "Cache-Control": "no-store"})
     removed = await db.overlay_token_delete(stream["id"])
     ended = _overlay_close_stream(stream["id"])
     if removed:

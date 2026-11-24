@@ -1430,9 +1430,10 @@ check("1.24.0 rollback: the overlay tokens and the overlay audit entries are del
       "DELETE FROM stream_overlay_tokens;" in _rb_all and "would read that owner's chat again" in _rb_all
       and "'stream_overlay_create','stream_overlay_revoke'" in _rb_all and "work again after a later upgrade" not in _rb_all)
 check("1.24.0 notes and API docs: the overlay owner routes share a limiter, and the sockets are capped per owner and overall",
-      "`overlay_manage`" in _sec24 and "20 a minute per account" in _sec24 and "at most 20 per owner" in _sec24 and "300 on the whole portal" in _sec24
+      "`overlay_manage`" in _sec24 and "20 a minute per account" in _sec24 and "at most 9 per owner" in _sec24 and "300 on the whole portal" in _sec24
+      and "revoking has no limit" in _sec24.lower()
       and "`overlay_manage`" in _api24 and "overlay_manage" in (ROOT / "static" / "api-docs.html").read_text()
-      and "_limited(request, \"overlay_manage\"" in _srv24 and _srv24.count("_overlay_manage_rate.allow(") == 2)
+      and "_limited(request, \"overlay_manage\"" in _srv24 and _srv24.count("_overlay_manage_rate.allow(") == 1)
 _top24 = text.split("## Contents", 1)[0]
 _priv24 = _top24.split("### Privacy by design", 1)[1]
 check("1.24.0 README: the opening list names the health panel and the chat overlay, and Privacy by design states what is true for them",
