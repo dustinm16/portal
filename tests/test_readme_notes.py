@@ -1345,7 +1345,9 @@ _rb240 = re.search(r"- \*\*Rollback\.\*\*(.*?)(?=\n- \*\*Not tested)", _sec240, 
 _rb240 = _rb240.group(1) if _rb240 else ""
 check("1.24.0: the rollback item does not call a rollback fully safe and gives the audit cleanup for 1.23.x moderators",
       "nothing to undo" not in _low240 and "needs nothing undone" not in _low240
-      and "DELETE FROM audit_log WHERE action IN ('stream_end_now','stream_stop_relays')" in _rb240
+      and _rb240.count("DELETE FROM audit_log") == 1
+      and "DELETE FROM audit_log WHERE action IN ('stream_end_now','stream_stop_relays','stream_overlay_create','stream_overlay_revoke');" in _rb240
+      and "1.23.1" in _rb240 and "1.23.0" not in _rb240
       and "moderator" in _rb240 and "private" in _rb240)
 
 # --- 1.24.0: chat overlay for an OBS browser source ---------------------------------------------------
@@ -1438,6 +1440,11 @@ check("1.24.0 notes and API docs: at shutdown the overlay refuses new sockets wi
       "stops accepting new chat overlay sockets first" in _sec24 and "waits up to 5 seconds" in _sec24 and "_SHUTDOWN_END_WAIT = 5.0" in _srv24
       and "answered `503` with `Retry-After` while the server is stopping" in _api24
       and "While the server is stopping this answers <code>503</code>" in (ROOT / "static" / "api-docs.html").read_text())
+check("1.24.0 README and API docs: the health readings reuse the first page of the existing check, further pages only when MediaMTX reports more than one",
+      "no extra call" not in text.lower() and "no extra call" not in _api24.lower()
+      and "no extra call" not in (ROOT / "static" / "api-docs.html").read_text().lower()
+      and "first page of its answer is reused" in text and "first page of that check's answer is reused" in text
+      and "the health check's first page is reused" in _api24 and "the health check's first page is reused" in (ROOT / "static" / "api-docs.html").read_text())
 _top24 = text.split("## Contents", 1)[0]
 _priv24 = _top24.split("### Privacy by design", 1)[1]
 check("1.24.0 README: the opening list names the health panel and the chat overlay, and Privacy by design states what is true for them",
