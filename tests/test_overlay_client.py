@@ -40,7 +40,7 @@ html = (STATIC / "overlay.html").read_text(encoding="utf-8")
 check("overlay.html loads its own script (v2) and style (v1) and nothing else",
       "/static/js/overlay.js?v=2" in html and "/static/css/overlay.css?v=1" in html and html.count("<script") == 1 and html.count("<link") == 1)
 index = (STATIC / "index.html").read_text(encoding="utf-8")
-check("the dashboard loads the settings block before streams.js, at v2", index.index("stream-overlay-settings.js?v=2") < index.index("streams.js?v=53"))
+check("the dashboard loads the settings block before streams.js, at v3", index.index("stream-overlay-settings.js?v=3") < index.index("streams.js?v=53"))
 streams_js = (STATIC / "js" / "streams.js").read_text(encoding="utf-8")
 check("the stream settings have the mount point and mount the block", 'id="stream-overlay-mount"' in streams_js and "StreamOverlaySettings.mount(" in streams_js)
 
@@ -48,9 +48,12 @@ node = shutil.which("node")
 if not node:
     check("node is available", False, "install node to run the client checks")
 else:
-    out = subprocess.run([node, str(ROOT / "tests" / "overlay_client_harness.js"), str(STATIC / "js" / "overlay.js"),
-                          str(STATIC / "js" / "stream-overlay-settings.js"), str(STATIC / "js" / "portal.js")],
-                         capture_output=True, text=True, timeout=60)
+    try:
+        out = subprocess.run([node, str(ROOT / "tests" / "overlay_client_harness.js"), str(STATIC / "js" / "overlay.js"),
+                              str(STATIC / "js" / "stream-overlay-settings.js"), str(STATIC / "js" / "portal.js")],
+                             capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as e:
+        out = subprocess.CompletedProcess(e.cmd, 1, "", "the harness did not finish within 60 seconds")
     lines = [l for l in out.stdout.splitlines() if l.startswith("RESULT ")]
     check("the harness ran", bool(lines) and out.returncode == 0, (out.stderr or out.stdout)[-600:])
     for line in lines:

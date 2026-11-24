@@ -60,6 +60,11 @@
         try { await navigator.clipboard.writeText(text); toast('Copied', 'success'); } catch (e) { toast('Copy it by hand', 'error'); }
     }
 
+    var watcher = null;                      // the observer of the open dialog (one at a time)
+    function stopWatching() {
+        if (watcher) { watcher.disconnect(); watcher = null; }
+    }
+
     async function mount(container, streamId) {
         if (!container) return;
         var base = '/api/streams/' + Number(streamId) + '/overlay';
@@ -74,10 +79,15 @@
 
         /* the address is shown once; it does not stay on the page when the settings dialog is closed */
         var modal = container.closest ? container.closest('.modal') : null;
+        stopWatching();                      // the dialog opens again for every stream: never two observers at once
         if (modal && typeof MutationObserver === 'function') {
-            new MutationObserver(function () {
-                if (shown !== null && modal.style.display === 'none') draw(null, false);
-            }).observe(modal, { attributes: true, attributeFilter: ['style', 'class'] });
+            var mine = new MutationObserver(function () {
+                if (modal.style.display !== 'none') return;
+                if (shown !== null) draw(null, false);
+                if (watcher === mine) stopWatching();            // closed: nothing left to watch until it opens again
+            });
+            watcher = mine;
+            mine.observe(modal, { attributes: true, attributeFilter: ['style', 'class'] });
         }
 
         async function make() {

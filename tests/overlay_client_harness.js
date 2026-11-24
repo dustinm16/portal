@@ -12,6 +12,12 @@ class FakeDate extends Date {
   static now() { return Date.now() + clockShift; }
 }
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
+// A group of checks with its own deadline: a hang prints FAIL for the group instead of stalling the whole file.
+async function withDeadline(name, fn, ms) {
+  let timer;
+  const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('no answer within ' + (ms || 5000) + ' ms')), ms || 5000); });
+  try { await Promise.race([fn(), late]); } catch (e) { check(name + ' (did not finish)', false, e && e.message); } finally { clearTimeout(timer); }
+}
 
 class N {
   constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this.attrs = {}; this.listeners = {}; this.value = ''; this.disabled = false; this.className = ''; this.parentNode = null; this.style = { setProperty: (k, v) => { this.style[k] = v; } }; }
@@ -198,6 +204,36 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   const none = new N('DIV');
   await SOS.mount(none, 7);
   check('a stream without a chat of its own offers no link', !buttonWith(none, 'Create link') && none.textContent.indexOf('no chat of its own') >= 0);
+
+  await withDeadline('the dialog observer', async () => {
+    const observers = [];
+    sctx.MutationObserver = class {
+      constructor(cb) { this.cb = cb; this.connected = false; observers.push(this); }
+      observe() { this.connected = true; }
+      disconnect() { this.connected = false; }
+    };
+    const modal = new N('DIV'); modal.style = { display: 'flex' };
+    const open = async () => {
+      const c = new N('DIV'); c.closest = () => modal;
+      answers = [{ status: 200, data: status0 }];
+      await SOS.mount(c, 7);
+      return c;
+    };
+    await open();
+    check('opening the stream settings watches the dialog with one observer', observers.length === 1 && observers[0].connected);
+    const second = await open();
+    check('opening it again disconnects the earlier observer before the new one watches',
+          observers.length === 2 && !observers[0].connected && observers[1].connected && observers.filter(o => o.connected).length === 1);
+    answers = [{ status: 200, data: { active: true, stream_public: true, url, max_sockets: 3 } }];
+    await buttonWith(second, 'Create link').click();
+    check('the link is on the page while the dialog is open', second.find(n => n.tagName === 'INPUT' && n.value === url).length === 1);
+    modal.style.display = 'none';
+    observers[1].cb();
+    check('closing the dialog removes the link from the page and disconnects the observer',
+          second.find(n => n.tagName === 'INPUT' && n.value === url).length === 0 && !observers[1].connected);
+    await open();
+    check('and the next opening watches again, one observer', observers.filter(o => o.connected).length === 1);
+  });
 
   console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

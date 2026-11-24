@@ -1369,9 +1369,9 @@ check("1.24.0 states the limits the code has",
       and str(_ov24.CLOSE_REFUSED) in _sec24 and "10 in 10 minutes" in _sec24
       and "_OVERLAY_FAIL_LIMIT = (10, 600)" in (ROOT / "server.py").read_text(encoding="utf-8"), "")
 check("1.24.0 states the static versions the pages load",
-      "`overlay.js` is new at version 2 and `overlay.css` at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 2" in _sec24
+      "`overlay.js` is new at version 2 and `overlay.css` at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 3" in _sec24
       and "`streams.js` is version 53" in _sec24 and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text()
-      and "overlay.js?v=2" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=2" in (ROOT / "static" / "index.html").read_text())
+      and "overlay.js?v=2" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=3" in (ROOT / "static" / "index.html").read_text())
 check("1.24.0 says the overlay link ends with the credentials, as the calendar link does, and that webhook lines and the history replacement are as the code does",
       all(n in _sec24 for n in ("when an administrator signs the owner out everywhere", "closes their sockets within 30 seconds",
                                 "since 1.23.0", "`[hook] name`", "is the whole set the overlay shows"))
