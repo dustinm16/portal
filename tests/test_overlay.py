@@ -198,6 +198,7 @@ class Env:
         app.router.add_post("/api/streams/{id}/overlay", server.http_overlay_create)
         app.router.add_delete("/api/streams/{id}/overlay", server.http_overlay_revoke)
         app.router.add_delete("/api/streams/{id}", server.http_delete_user_stream)
+        app.router.add_post("/api/webhooks/incoming/{token}", server.http_incoming_webhook)
         self.srv = TestServer(app)
         await self.srv.start_server()
         self.http = aiohttp.ClientSession()
@@ -588,6 +589,41 @@ async def other_routes_body(env):
     check("the owner routes do not take an overlay token", s == 401, s)
 
 
+# ---------------------------------------------------------------------------------------------------- webhook lines
+async def webhook_body(env):
+    """A message an incoming webhook posts is shown to a viewer of the chat, so the overlay shows it too: live and in the
+    history it is given on connect, under the name viewers see ("[hook] name")."""
+    hook = await env.db.create_webhook(env.ids["owner"], "Deploy bot", "incoming", channel_id=env.cid)
+    path = "/api/webhooks/incoming/" + hook["token"]
+    st, _b = await env.call("POST", None, path, json={"content": "build 41 passed", "username": "CI"})
+    check("the incoming webhook accepted the first message", st == 200, st)
+    token, _ = await env.make_token()
+    ov = await env.overlay(token)
+    hist = await ov.wait(lambda f: f.get("type") == "history")
+    old = [m for m in (hist or {}).get("messages", []) if m["text"] == "build 41 passed"]
+    check("a webhook message posted before the overlay connected is in its history, named as in the chat",
+          len(old) == 1 and old[0]["name"] == "[hook] CI" and "badge" not in old[0], hist)
+    n = len(ov.frames)
+    st, _b = await env.call("POST", None, path, json={"text": "build 42 failed"})
+    live = await ov.wait(lambda f: f.get("type") == "message" and f.get("text") == "build 42 failed", n)
+    check("a live webhook message reaches the overlay under the same kind of name, and with no other field",
+          live is not None and live["name"] == "[hook] Deploy bot" and set(live) <= {"type", "id", "name", "text", "time", "badge"}, live)
+    again = await env.overlay(token)
+    hist2 = await again.wait(lambda f: f.get("type") == "history")
+    names = [(m["name"], m["text"]) for m in (hist2 or {}).get("messages", [])]
+    check("and a reconnect shows both, live and history alike", ("[hook] CI", "build 41 passed") in names and ("[hook] Deploy bot", "build 42 failed") in names, names)
+    # other kinds are still not shown
+    await env.db.create_chat_message(env.cid, env.ids["viewer"], "viewer", "a card", message_type="stream_card")
+    third = await env.overlay(token)
+    hist3 = await third.wait(lambda f: f.get("type") == "history")
+    check("a go-live card is still not shown", all(m["text"] != "a card" for m in hist3["messages"]), hist3)
+    # the other stream's overlay never gets it
+    token2, _ = await env.make_token(env.sid2)
+    other = await env.overlay(token2)
+    h4 = await other.wait(lambda f: f.get("type") == "history")
+    check("a webhook line of one stream's chat is not in another stream's overlay", all("build" not in m["text"] for m in h4["messages"]), h4)
+
+
 # ---------------------------------------------------------------------------------------------------- slow clients
 class NeverWs:
     """A socket whose send never finishes: a stalled OBS client."""
@@ -725,6 +761,7 @@ run(socket_body)
 run(refusal_body)
 run(lifecycle_body)
 run(other_routes_body)
+run(webhook_body)
 # each slow-client body has its own deadline (they take about 3 s each)
 run(fake_slow_body, deadline=10)
 run(raw_slow_body, deadline=20)

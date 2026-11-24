@@ -31,6 +31,10 @@ TEXT_MAX = 1000
 NAME_MAX = 64
 IDS_MAX = 1000
 
+# The kinds of chat row an overlay shows: what a viewer reads as a line of chat. A message an incoming webhook
+# posted is one (live it has no message_type, in the history it is "webhook"); a go-live card is not.
+SHOWN_TYPES = ("message", "webhook")
+
 # The only chat frame types an overlay is ever given (the key is the type in the chat, the value the overlay's own)
 ALLOWED_TYPES = {
     "message": "message",
@@ -65,11 +69,11 @@ def reduce_message(m: dict) -> Optional[dict]:
     """One chat message (a live frame or a history row, as a public viewer is shown it) as the overlay's message:
     id, name, optional badge, text, time. Nothing else crosses: no account id, role, avatar, reply, picture,
     attachment, card, poll or reaction. An anonymous post is "Anonymous" with no badge. A message that has no text
-    of its own (a picture or a go-live card) is not shown."""
+    of its own (a picture or a go-live card) is not shown. A webhook post is shown under the name the chat gives it."""
     if not isinstance(m, dict):
         return None
     mid = _int_id(m.get("id"))
-    if mid is None or (m.get("message_type") or "message") != "message":
+    if mid is None or (m.get("message_type") or "message") not in SHOWN_TYPES:
         return None
     text = m.get("message")
     if not isinstance(text, str) or not text.strip():
@@ -77,7 +81,8 @@ def reduce_message(m: dict) -> Optional[dict]:
     anonymous = bool(m.get("anonymous"))
     name = "Anonymous" if anonymous else str(m.get("username") or "")[:NAME_MAX]
     out = {"id": mid, "name": name, "text": text[:TEXT_MAX], "time": str(m.get("created_at") or "")[:40]}
-    if not anonymous and m.get("stream_role") in ("owner", "mod"):
+    posted_by_hook = m.get("message_type") == "webhook" or bool(m.get("webhook"))
+    if not anonymous and not posted_by_hook and m.get("stream_role") in ("owner", "mod"):   # a hook is the account's tool, not the person
         out["badge"] = m["stream_role"]
     return out
 
