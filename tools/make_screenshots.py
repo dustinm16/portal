@@ -121,6 +121,23 @@ except ImportError as e:  # pragma: no cover
 
 REPO = TOOLS_DIR.parent
 DEMO_HOST = "portal.example.org"
+# Chromium dials its maker's hosts on its own (component updates, accounts, models, dictionaries). The flags below
+# switch off background networking, component updates, sync, default apps and field trials, but Chromium 156 still
+# asks for some of them; the part that holds is the resolver rule: every name other than the demo host and loopback
+# is not found, so such a request fails before any packet leaves (checked in a net log: the only connections were to
+# 127.0.0.1). No proxy is used, so nothing is resolved by a proxy either. The profile is the throwaway one Playwright
+# makes for each launch.
+OFFLINE_CHROMIUM_ARGS = [
+    "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps",
+    "--disable-field-trial-config", "--no-first-run", "--disable-domain-reliability", "--no-pings",
+    "--disable-breakpad", "--disable-client-side-phishing-detection", "--safebrowsing-disable-auto-update",
+    "--no-proxy-server",
+]
+
+
+def offline_host_rules() -> str:
+    """The demo host is the stage on loopback; loopback itself stays; every other name is not found."""
+    return f"--host-resolver-rules=MAP {DEMO_HOST} 127.0.0.1, EXCLUDE 127.0.0.1, EXCLUDE localhost, MAP * ~NOTFOUND"
 DEFAULT_PORT = 8921
 VIEWPORT = {"width": 1280, "height": 768}
 PHONE = {"width": 390, "height": 844}
@@ -718,7 +735,7 @@ class Shooter:
         self.stage, self.out, self.info, self.optimize = stage, out, info, optimize
         self.browser = playwright.chromium.launch(
             executable_path=chromium, headless=True,
-            args=["--no-sandbox", f"--host-resolver-rules=MAP {DEMO_HOST} 127.0.0.1",
+            args=["--no-sandbox", offline_host_rules(), *OFFLINE_CHROMIUM_ARGS,
                   "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required"])
         self.contexts: list = []
         self.written: list = []

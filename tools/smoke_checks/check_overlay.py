@@ -15,6 +15,11 @@ in 429 on the upgrade; the server log has no token after all of it.
 Users and streams carry random suffixes and every assertion is about those rows, so the module also holds on a
 stage started from a copy of a production database. It needs no admin password and dials nothing outside.
 
+No browser is started here: a browser dials hosts of its maker on its own (updates, accounts, dictionaries), and a smoke
+check dials nothing outside this machine. The page script is run against a fake DOM in tests/test_overlay_client.py
+(the real overlay.js, loaded the way a browser loads it); here the page's policy is only checked as text, for the
+connect-src 'self' that lets the page's own wss connection through.
+
 Not proven here: OBS or any browser drawing the page, Cloudflare in front of a long-lived socket, a real encoder,
 a congested network (the stalled client is a raw socket on loopback; chat is limited to 5 messages in 5 seconds
 per member, so this module cannot send enough to fill the kernel buffers: tests/test_overlay.py does that
@@ -22,12 +27,9 @@ in-process and shows the stalled socket being dropped).
 """
 import asyncio
 import json
-import re
 import secrets
-import shutil
 import socket
 import ssl
-import tempfile
 import time
 
 import aiohttp
@@ -229,6 +231,9 @@ async def run(ctx):
             ok("the page is no-store, no-referrer, noindex, with a CSP that has no unsafe-inline",
                h.get("cache-control") == "no-store" and h.get("referrer-policy") == "no-referrer" and "noindex" in h.get("x-robots-tag", "")
                and "unsafe-inline" not in h.get("content-security-policy", "") and "default-src 'none'" in h.get("content-security-policy", ""), str(h))
+            ok("the page's policy lets the page's own socket through (connect-src 'self') and loads nothing from another host",
+               "connect-src 'self'" in h.get("content-security-policy", "") and "http" not in h.get("content-security-policy", "")
+               and "img-src 'none'" in h.get("content-security-policy", ""), h.get("content-security-policy", ""))
             for asset in ("/static/js/overlay.js?v=1", "/static/css/overlay.css?v=1"):
                 async with obs.get(base + asset) as r:
                     if r.status != 200:
@@ -333,80 +338,6 @@ async def run(ctx):
             again = await overlay(obs, token3)
             socks.append(again)
             ok("and its token is refused", await again.closed() and again.code == 4401)
-
-            # ---- a real browser, when one is installed: the page draws the history over its own wss connection
-            chromium = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-            if chromium is None:
-                ctx.skip("overlay: the page drawn in headless Chromium", "no chromium on this machine")
-            else:
-                st, made4 = await call(owner, "POST", "/api/streams", json={"name": pre + "b", "is_public": True})
-                st2, d4 = await call(owner, "GET", f"/api/streams/{made4['stream']['id']}")
-                sid4 = made4["stream"]["id"]
-                streams.append(sid4)
-                cid4 = d4["stream"]["chat_channel_id"]
-                st, m5 = await call(owner, "POST", f"/api/streams/{sid4}/overlay")
-                token4 = m5["url"].split("#t=", 1)[1]
-                tokens.append(token4)
-                line = "chromium line " + secrets.token_hex(4)
-                ows = await owner.ws_connect(ws_base + "/ws/chat")
-                osock2 = Sock(ows)
-                socks.append(osock2)
-                await ows.send_json({"type": "join", "channel_id": cid4})
-                await osock2.wait(lambda f: f.get("type") == "history")
-                await ows.send_json({"type": "message", "message": line})
-                await osock2.wait(lambda f: f.get("type") == "message" and f.get("message") == line)
-                url = f"{base}/overlay/stream/{sid4}#t={token4}&lines=5"
-                prof = tempfile.mkdtemp(prefix="overlay-chromium-")
-                text_seen, detail = "", ""
-                proc = None
-                try:
-                    # Driven over the DevTools protocol: the page is opened, and its text is read until the line shows
-                    proc = await asyncio.create_subprocess_exec(
-                        chromium, "--headless", "--no-sandbox", "--disable-gpu", "--ignore-certificate-errors",
-                        "--user-data-dir=" + prof, "--remote-debugging-port=0", "about:blank",
-                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-                    dbg = None
-                    end = time.monotonic() + 20
-                    while dbg is None and time.monotonic() < end:
-                        raw = await asyncio.wait_for(proc.stderr.readline(), 20)
-                        m = re.search(rb"DevTools listening on (ws://\S+)", raw)
-                        if m:
-                            dbg = m.group(1).decode()
-                    if dbg is None:
-                        detail = "no DevTools address"
-                    else:
-                        hostport = dbg.split("/")[2]
-                        async with aiohttp.ClientSession() as cdp_http:
-                            async with cdp_http.put(f"http://{hostport}/json/new?about:blank") as r:
-                                tab = await r.json(content_type=None)
-                            async with cdp_http.ws_connect(tab["webSocketDebuggerUrl"]) as cdp:
-                                seq = 0
-
-                                async def send(method, **params):
-                                    nonlocal seq
-                                    seq += 1
-                                    await cdp.send_json({"id": seq, "method": method, "params": params})
-                                    while True:
-                                        msg = await asyncio.wait_for(cdp.receive_json(), 15)
-                                        if msg.get("id") == seq:
-                                            return msg.get("result", {})
-
-                                await send("Page.enable")
-                                await send("Page.navigate", url=url)
-                                end = time.monotonic() + 15
-                                while time.monotonic() < end and line not in text_seen:
-                                    await asyncio.sleep(0.3)
-                                    res = await send("Runtime.evaluate", expression="(document.getElementById('overlay-chat') ? document.getElementById('overlay-chat').innerText : '') + '|' + document.querySelectorAll('#overlay-chat img, #overlay-chat a').length + '|' + getComputedStyle(document.body).backgroundColor", returnByValue=True)
-                                    text_seen = (res.get("result") or {}).get("value") or ""
-                                detail = text_seen[-300:]
-                finally:
-                    if proc is not None:
-                        proc.kill()
-                        await proc.wait()
-                    shutil.rmtree(prof, ignore_errors=True)
-                parts = text_seen.split("|")
-                ok("headless Chromium draws the stream's chat line on the overlay page (the wss connection is allowed under the page's CSP), as text, on a transparent background",
-                   line in text_seen and parts[-2] == "0" and parts[-1] == "rgba(0, 0, 0, 0)", detail)
 
             # ---- failed tokens from one address (last: it limits this address for ten minutes)
             got429 = None
