@@ -477,6 +477,76 @@ async def test_the_still_sending_sentence_stays_off_when_the_key_is_kept_and_not
 
 
 @with_world
+async def test_shutdown_waits_a_bounded_time_for_the_end_steps_and_cancels_the_rest(w):
+    async def quick():
+        await asyncio.sleep(0.05)
+
+    async def stuck():
+        await asyncio.sleep(3600)
+    fast = asyncio.create_task(quick())
+    slow = asyncio.create_task(stuck())
+    kept = asyncio.create_task(stuck())
+    server._end_tasks.add(fast)
+    server._end_tasks.add(slow)
+    server._live_ops_tasks.add(kept)
+    for t in (fast, slow, kept):
+        t.add_done_callback(lambda x: (server._end_tasks.discard(x), server._live_ops_tasks.discard(x)))
+    t0 = asyncio.get_running_loop().time()
+    cancelled = await asyncio.wait_for(server._drain_end_tasks(0.4), 5)
+    took = asyncio.get_running_loop().time() - t0
+    assert cancelled == 2 and fast.done() and not fast.cancelled(), (cancelled, fast)
+    assert slow.cancelled() and kept.cancelled(), "what was left was not cancelled"
+    assert 0.35 < took < 2.0, f"waited {took:.2f} s: not the bound"
+    assert await server._drain_end_tasks(0.4) == 0            # nothing left: returns at once
+
+
+@with_world
+async def test_stop_gives_a_running_finalisation_time_to_write_the_offline_state(w):
+    """The real PortalServer.stop(): a finalisation that is still uploading when the shutdown comes ends within the
+    bound and the stream is offline in the database before it closes (the cancelling of one that cannot end is
+    tested on its own, above)."""
+    import inspect
+    sid = w.streams["public"]["id"]
+    stream = await w.db.get_user_stream(sid)
+    saved = (server.stop_vod_recording, server._SHUTDOWN_END_WAIT)
+    release = asyncio.Event()
+    server._SHUTDOWN_END_WAIT = 0.6
+
+    async def held_stop(stream_id, force=False, only=None):
+        if only is None:
+            return                                      # stop_all_recordings: nothing of its own to stop here
+        await release.wait()
+    server.stop_vod_recording = held_stop
+    try:
+        async with Spy(w):
+            await server._mark_stream_live(stream, "198.51.100.7")
+            server.active_recordings[sid] = {"process": Proc(), "session_dir": "/nonexistent", "uploaded": set()}
+            await server._stream_end_session(stream)         # encoding; the finalisation is held in its upload
+            task = next(t for t in asyncio.all_tasks() if "_finalize_stream_offline" in repr(t.get_coro()))
+            assert (await w.db.get_user_stream(sid))["is_live"] == 2 and task in server._end_tasks
+            server.active_recordings.pop(sid, None)
+            asyncio.get_running_loop().call_later(0.2, release.set)      # the upload ends 0.2 s into the shutdown
+            await asyncio.wait_for(server.PortalServer().stop(), 30)
+            assert task.done() and not task.cancelled(), "the finalisation was cancelled although it ended in time"
+            from database import Database
+            fresh_db = Database(w.db.db_path)             # the portal's own connection is closed by stop()
+            await fresh_db.connect()
+            try:
+                row = await fresh_db.conn.execute("SELECT is_live FROM user_streams WHERE id = ?", (sid,))
+                assert (await row.fetchone())[0] == 0, "the stream is not offline although its finalisation ended in time"
+            finally:
+                await fresh_db.close()
+    finally:
+        server.stop_vod_recording, server._SHUTDOWN_END_WAIT = saved
+        server._shutting_down = False
+    src = inspect.getsource(server.PortalServer.stop)
+    # after the recordings are stopped (a finalisation waits for its recorder) and after the server stopped taking
+    # requests (an End now in flight can still hand over a finalisation until then), before the database closes
+    assert (src.index("stop_all_recordings()") < src.index("runner.cleanup()") < src.index("_drain_end_tasks(")
+            < src.index("db.close()"))
+
+
+@with_world
 async def test_the_hook_path_is_remembered_only_when_it_ends_in_the_accepted_key(w):
     sid, key = w.streams["public"]["id"], w.streams["public"]["live"]
     async with Spy(w):

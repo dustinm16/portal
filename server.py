@@ -9898,7 +9898,9 @@ async def _stream_end_session(stream: dict, session=None, claim: Optional[dict] 
 
             # Finalize VOD in background, then transition to offline
             handed_over = True
-            asyncio.create_task(_finalize_stream_offline(stream, session, rec, claim))
+            task = asyncio.create_task(_finalize_stream_offline(stream, session, rec, claim))
+            _end_tasks.add(task)            # stop() waits a moment for it, then cancels it
+            task.add_done_callback(_end_tasks.discard)
         else:
             # No VOD recording — go straight to offline
             if not await _session_set_offline(stream_id, session):
@@ -12380,6 +12382,24 @@ async def http_stream_health(request: web.Request) -> web.Response:
 
 _LIVE_OPS_LIMIT = 30
 _live_ops_tasks: set = set()       # background steps of End now, kept so they are not collected early
+_end_tasks: set = set()            # finalisations of a session (recording uploaded, then offline), likewise
+_SHUTDOWN_END_WAIT = 5.0           # seconds stop() waits for the two sets above before it cancels what is left
+_shutting_down = False             # set at the start of PortalServer.stop(): new overlay sockets are refused
+
+
+async def _drain_end_tasks(timeout: float) -> int:
+    """At shutdown, before the database closes: give the running End now steps and session finalisations up to
+    `timeout` seconds to finish, then cancel what is left. Returns how many were cancelled."""
+    pending = [t for t in list(_live_ops_tasks) + list(_end_tasks) if not t.done()]
+    if not pending:
+        return 0
+    _done, left = await asyncio.wait(pending, timeout=timeout)
+    for t in left:
+        t.cancel()
+    if left:
+        await asyncio.wait(left, timeout=2.0)       # a cancelled task ends at once; never wait on it for long
+        logger.warning(f"Shutdown: {len(left)} stream end step(s) did not finish in {timeout:g} s and were cancelled")
+    return len(left)
 _live_ops_rate = _viewers_mod.RateWindow(_LIVE_OPS_LIMIT, 60.0)
 # The list is polled every 5 seconds by each open Live streams tab (12 a minute per tab), so it has its own
 # budget and never uses up the one of the two actions: a confirmed End now is not refused because some
@@ -29240,6 +29260,9 @@ async def handle_overlay_websocket(request: web.Request) -> web.WebSocketRespons
     other credential: the only thing that opens it is the overlay token, in the first frame. The first frame has
     a few seconds to arrive; a bad, unknown, revoked or regenerated token ends with one generic close code. Every
     frame after the first closes the socket: nothing a client sends is acted on."""
+    if _shutting_down:
+        # The server is stopping: no new socket. The page's reconnect timer tries again, later (any close but 4401).
+        return web.Response(status=503, text="Shutting down", headers={"Retry-After": "5", "Cache-Control": "no-store"})
     key = _proxy_bucket_key(get_client_ip(request) or "?")
     wait = _overlay_fail_wait(key)
     if wait or _overlay_pending.get(key, 0) >= _OVERLAY_PENDING_MAX:
@@ -33469,6 +33492,8 @@ class PortalServer:
 
     async def stop(self) -> None:
         """Stop the server gracefully."""
+        global _shutting_down
+        _shutting_down = True           # first: no new overlay socket from here on
         logger.info("Shutting down...")
 
         # A running prune starts winding down now (it ends at its next batch boundary), so that happens
@@ -33541,6 +33566,12 @@ class PortalServer:
 
         if self.runner:
             await self.runner.cleanup()
+
+        # No request is being served any more, so no End now can hand a new finalisation to the background. Those
+        # still running (and End now's recorder stops) get a few seconds to write their offline state while the
+        # database is open (the recordings were finished above, so what is left is database work); what is still
+        # running after that is cancelled
+        await _drain_end_tasks(_SHUTDOWN_END_WAIT)
 
         # No request can start a prune any more; a running one finishes its files and its audit entry
         # while the database is still open

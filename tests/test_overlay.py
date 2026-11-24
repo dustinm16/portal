@@ -1021,10 +1021,40 @@ async def delete_forgets_body(env):
           and sid2 not in server._recorder_errors, "")
 
 
+async def shutdown_refuses_body(env):
+    """A server that is stopping accepts no new overlay socket (503 before the upgrade, which the page retries); once
+    it is not stopping any more, the same token is served."""
+    token, _ = await env.make_token()
+    server._shutting_down = True
+    try:
+        status = None
+        try:
+            await env.overlay(token)
+        except aiohttp.WSServerHandshakeError as e:
+            status = e.status
+        check("while the server stops, a new overlay socket is refused with 503", status == 503, status)
+        async with env.http.get(env.url("/ws/overlay")) as r:
+            check("the refusal says when to try again and is not cached", r.headers.get("Retry-After") and r.headers.get("Cache-Control") == "no-store")
+        check("(nothing was registered)", not any(overlay_subscribers_of(token)))
+    finally:
+        server._shutting_down = False
+    o = await env.overlay(token)
+    await o.wait(lambda f: f.get("type") == "history", timeout=2.0)
+    check("(control) the same token is served when the server is not stopping", bool(o.frames))
+    stop_src = __import__("inspect").getsource(server.PortalServer.stop)
+    check("stop() sets the flag before it does anything else", stop_src.index("_shutting_down = True") < stop_src.index("_ask_prunes_to_stop()"))
+
+
+def overlay_subscribers_of(token):
+    digest = overlay_chat.hash_token(token)
+    return [s for subs in server.overlay_subscribers.values() for s in subs if s.digest == digest]
+
+
 run(audit_moderator_body)
 run(overlay_caps_body)
 run(overlay_rate_body)
 run(delete_forgets_body)
+run(shutdown_refuses_body, deadline=20)
 
 
 async def log_body(env):

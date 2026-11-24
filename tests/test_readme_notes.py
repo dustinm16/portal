@@ -1434,6 +1434,10 @@ check("1.24.0 notes and API docs: the overlay owner routes share a limiter, and 
       and "revoking has no limit" in _sec24.lower()
       and "`overlay_manage`" in _api24 and "overlay_manage" in (ROOT / "static" / "api-docs.html").read_text()
       and "_limited(request, \"overlay_manage\"" in _srv24 and _srv24.count("_overlay_manage_rate.allow(") == 1)
+check("1.24.0 notes and API docs: at shutdown the overlay refuses new sockets with 503 and the end steps get a bounded wait",
+      "stops accepting new chat overlay sockets first" in _sec24 and "waits up to 5 seconds" in _sec24 and "_SHUTDOWN_END_WAIT = 5.0" in _srv24
+      and "answered `503` with `Retry-After` while the server is stopping" in _api24
+      and "While the server is stopping this answers <code>503</code>" in (ROOT / "static" / "api-docs.html").read_text())
 _top24 = text.split("## Contents", 1)[0]
 _priv24 = _top24.split("### Privacy by design", 1)[1]
 check("1.24.0 README: the opening list names the health panel and the chat overlay, and Privacy by design states what is true for them",
