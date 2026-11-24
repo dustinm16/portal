@@ -41,8 +41,12 @@ else:
 
 watch = (STATIC / "watch.html").read_text(encoding="utf-8")
 admin = (STATIC / "admin.html").read_text(encoding="utf-8")
-check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=3" in watch
+check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=4" in watch
       and watch.index("/static/js/portal.js") < watch.index("/static/js/stream-health.js"))
+check("watch.html colours the warning levels with the theme's warning and danger colours, and lets the graph scale",
+      re.search(r"\.stream-health-warn\s*\{[^}]*var\(--accent-yellow\)", watch) is not None
+      and re.search(r"\.stream-health-error\s*\{[^}]*var\(--accent-red\)", watch) is not None
+      and re.search(r"\.stream-health-chart svg\s*\{[^}]*width:\s*100%", watch) is not None)
 check("the health button is hidden until the page decides", 'id="health-btn" style="display: none;"' in watch
       and "Number(streamData.user_id) === Number(currentUser.id)" in watch and "Portal.isAdmin(currentUser)" in watch)
 check("admin.html has the Live streams tab and loads live-ops-admin.js", 'id="tab-btn-livestreams"' in admin

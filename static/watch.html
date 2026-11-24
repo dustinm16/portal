@@ -786,6 +786,12 @@
             min-height: 0;
             border-left: none;
         }
+        /* Stream health panel (static/js/stream-health.js): the graph is as wide as the panel; a warning shows its level
+           in the theme's own warning and danger colours, with a bar and a heavier weight for an error, not by colour alone. */
+        .stream-health-chart svg { display: block; width: 100%; height: auto; max-width: 100%; }
+        .stream-health-panel .stream-health-warning { margin: 0.25rem 0; padding: 0.3rem 0.5rem; border-left: 4px solid; border-radius: 4px; }
+        .stream-health-panel .stream-health-warn { color: var(--accent-yellow); background: rgba(251, 191, 36, 0.15); border-left-color: var(--accent-yellow); }
+        .stream-health-panel .stream-health-error { color: var(--accent-red); background: rgba(239, 68, 68, 0.15); border-left-color: var(--accent-red); font-weight: 600; }
     </style>
 </head>
 <body>
@@ -941,7 +947,7 @@
 
     <script src="/static/js/portal.js?v=52"></script>
     <script src="/static/js/stream-schedule.js?v=8"></script>
-    <script src="/static/js/stream-health.js?v=3"></script>
+    <script src="/static/js/stream-health.js?v=4"></script>
     <script src="/static/js/voice.js?v=15"></script>
     <script>
         let streamId = null;

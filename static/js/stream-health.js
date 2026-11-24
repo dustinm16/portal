@@ -59,12 +59,12 @@
         not_recording: 'not recording'
     };
 
-    /* The sparkline: an SVG polyline of the samples (oldest first), scaled to the largest sample. */
+    /* The sparkline: an SVG polyline of the samples (oldest first), scaled to the largest sample. width and height are the
+     * size of its drawing (the viewBox); the picture itself is as wide as the panel. */
     function sparkline(samples, width, height) {
         var svg = document.createElementNS(SVG_NS, 'svg');
         svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
-        svg.setAttribute('width', String(width));
-        svg.setAttribute('height', String(height));
+        svg.setAttribute('width', '100%');         // scales to the panel; the height follows from the viewBox
         svg.setAttribute('role', 'img');
         svg.setAttribute('aria-label', 'Bitrate the server receives, last samples');
         var vals = (samples || []).map(function (s) { return Math.max(0, Number(s && s.bps) || 0); });

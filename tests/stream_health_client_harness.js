@@ -81,6 +81,15 @@ class N {
   check('it shows bitrate, uptime, source, codecs, relay, recorder and warning', ['850 kbit/s', '1 h 1 min', 'RTMP', 'H264, MPEG-4 Audio', 'failing', '2 finished chunk(s)', 'A relay is failing.', 'What the server receives'].every(s => text.includes(s)), text);
   const svgs = panel.panel.find(n => n.tagName === 'SVG'); const lines = panel.panel.find(n => n.tagName === 'POLYLINE');
   check('the sparkline is built from DOM calls: one svg with one polyline of 4 points', svgs.length === 1 && lines.length === 1 && lines[0].attrs.points.split(' ').length === 4, lines.map(l => l.attrs.points));
+  await withDeadline('the graph scales to the panel', async () => {
+    const a = svgs[0].attrs;
+    check('the sparkline scales to the panel: width 100 percent, a viewBox, no fixed pixel width or height', a.width === '100%' && a.viewBox === '0 0 280 60' && !('height' in a), JSON.stringify(a));
+    const b3 = new N('DIV');
+    ctx.StreamHealth.render(b3, { live: true, uptime_s: 5, ingest: { available: false, reason: 'x' }, relays: [], recorder: { state: 'not_recording' },
+      warnings: [{ code: 'no_data', level: 'error', text: 'No data.' }, { code: 'relay_failing', level: 'warn', text: 'A relay.' }] });
+    const cls = b3.find(n => n.className && n.className.split(' ').indexOf('stream-health-warning') >= 0).map(n => n.className);
+    check('each warning carries its level as a class, so the page can colour it', cls.length === 2 && cls[0].split(' ').indexOf('stream-health-error') >= 0 && cls[1].split(' ').indexOf('stream-health-warn') >= 0, cls);
+  });
   check('relay text from the server stays text (no markup was written)', panel.panel.find(n => n.innerHTMLWrites > 0).length === 0 && text.includes('<img src=x onerror=alert(1)>'));
   // a relay an administrator stopped is not a failure
   const body2 = new N('DIV');
