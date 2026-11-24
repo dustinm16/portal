@@ -88,6 +88,23 @@ shots are defined last, so a full run takes them after the older pictures, which
 Every one of them is checked for the host name, user name and home directory of this machine and for the
 temporary directory of the staged instance before it is written.
 
+Pictures of 1.24.0 (stream-health, admin-live-streams, overlay-settings, overlay-page) need no extra setup. They
+use river's live stream (made live through the real publish hook, so it has no encoder and no MediaMTX behind it).
+stream-health: the stage has no media server and the feature has no test hook for its in-memory readings (a staged
+instance never contacts a media server, so its ingest section says "no reading"), so the browser session of that
+picture answers GET /api/streams/{id}/health itself: the portal's real answer is fetched and only its `ingest`
+section is replaced by a made-up series (30 readings 30 seconds apart around 4.5 Mbit/s, one dip, RTMP, H264 and
+MPEG-4 Audio); uptime, relays, recorder, load and warnings are what the stage really answered. The panel, its
+script and its styles are the portal's own. admin-live-streams: the administrator's Live streams tab as the stage
+answers it (the bitrate column reads "not collected", for the same reason), with the End now question open on its
+own row after its 0.6 second guard; the confirm button is never pressed. overlay-settings: river's stream settings
+window after a reload with an active link, so the block shows the state the portal keeps (the link cannot be shown
+again) and no token. overlay-page: river makes a link through the real route and the real overlay page is loaded
+with it in the browser (a real wss connection to the stage), showing the chat lines the demo data holds; the page
+is transparent, so the picture is taken with a transparent background and laid over a grey checkerboard by this
+script. The token is never printed or written anywhere. Every one is checked for the host name, user name and home
+directory of this machine and for the temporary directory of the staged instance before it is written.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -2249,6 +2266,132 @@ def _saved_view(s):
 
 class _Terminated(BaseException):
     pass
+
+
+# -- 1.24.0: stream health panel, administrator live streams, chat overlay -------------------------------------
+def demo_ingest(uptime_s: int) -> dict:
+    """A made-up ingest section in the shape of GET /api/streams/{id}/health: 30 readings 30 seconds apart."""
+    base = [4120, 4310, 4460, 4390, 3980, 3620, 3890, 4270, 4520, 4610, 4480, 4350, 4040, 3770, 4100,
+            4430, 4580, 4540, 4390, 4210, 3950, 4180, 4470, 4600, 4560, 3420, 2980, 3650, 4290, 4510]
+    samples = [{"age_s": round((len(base) - 1 - i) * 30 + 11.0, 1), "bps": kbit * 1000} for i, kbit in enumerate(base)]
+    return {"available": True, "bitrate_bps": samples[-1]["bps"], "samples": samples, "source": "RTMP",
+            "codecs": ["H264", "MPEG-4 Audio"], "ready": True, "ready_for_s": max(0, int(uptime_s) - 2),
+            "last_data_age_s": 11.0, "reconnects": 0}
+
+
+@shot("stream-health")
+def _stream_health(s):
+    import re
+    watch = s.info["watch"]
+    ctx = s.context("river", viewport={"width": 1280, "height": 900})
+
+    def answer(route):
+        # route.fetch runs outside the browser, where the demo host name does not resolve: ask the stage directly
+        real = route.fetch(url=route.request.url.replace(s.stage.base, s.stage.direct))
+        data = real.json()
+        if not data.get("live"):
+            raise Fail("river's demo stream is not live, the health panel would show nothing")
+        data["uptime_s"] = 8040     # the stage's session is a few seconds old: a plausible two hours and a bit
+        data["load_average"] = [0.42, 0.37, 0.31]    # the real call would report this machine's load
+        data["ingest"] = demo_ingest(data["uptime_s"])
+        route.fulfill(status=200, content_type="application/json", headers={"Cache-Control": "no-store"}, body=json.dumps(data))
+
+    ctx.route(re.compile(r".*/api/streams/\d+/health$"), answer)
+    page = s.open(ctx, f"/watch/{watch['stream_id']}", "#health-btn", settle=1500)
+    page.wait_for_function("() => document.getElementById('health-btn').style.display !== 'none'", timeout=15000)
+    page.click("#health-btn")
+    page.wait_for_selector(".stream-health-panel .stream-health-chart svg polyline", timeout=15000)
+    page.wait_for_timeout(800)
+    assert_clean(s, page, "stream-health")
+    s.save("stream-health", page.locator(".stream-health-panel"))
+
+
+@shot("admin-live-streams")
+def _admin_live_streams(s):
+    # a wide window (the table has eight columns and a long question) and no wait for "network idle", which this
+    # page did not reach in the staged instance (not investigated)
+    ctx = s.context(ADMIN_NAME, viewport={"width": 1900, "height": 700})
+    ctx.route("**/api/system/health", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(DEMO_HEALTH)))
+    ctx.add_init_script(DEMO_BACKUPS_PATCH)
+    page = ctx.new_page()
+    page.goto(s.stage.base + "/admin")
+    page.wait_for_selector("#tab-btn-livestreams", state="visible", timeout=20000)
+    page.click("#tab-btn-livestreams")
+    page.wait_for_selector("#live-ops-body tr button", timeout=15000)
+    row = page.locator("#live-ops-body tr", has_text="Saturday sketch hour").first
+    row.get_by_role("button", name="End now").click()
+    page.wait_for_selector(".live-ops-confirm", timeout=15000)
+    page.wait_for_timeout(1200)     # past the 0.6 second guard; the confirm button is never pressed
+    assert_clean(s, page, "admin-live-streams")
+    s.save("admin-live-streams", page.locator("#tab-livestreams"))
+
+
+def river_overlay(s, ctx, make: bool = True) -> str | None:
+    """River's own overlay link through the real route (the answer holds it once). Returns its address."""
+    pre = api_page(s, ctx)
+    try:
+        if not make:
+            return None
+        data = api_ok(pre, "POST", f"/api/streams/{s.info['watch']['stream_id']}/overlay")
+        return data["url"]
+    finally:
+        pre.close()
+
+
+@shot("overlay-settings")
+def _overlay_settings(s):
+    ctx = s.context("river", viewport={"width": 1280, "height": 3000})
+    river_overlay(s, ctx)           # a link exists; the picture is taken after a reload, so no address is shown
+    page = s.open(ctx, "/", ".stat-card")
+    page.evaluate("switchTab('my-streams')")
+    page.wait_for_selector(".stream-card", timeout=15000)
+    page.wait_for_timeout(800)
+    page.locator(".stream-card", has_text="Saturday sketch hour").get_by_role("button", name="Manage").first.click()
+    page.wait_for_selector("#stream-details-modal .info-section", state="visible")
+    page.evaluate("""() => document.querySelectorAll('#stream-details-modal .modal-content, #stream-details-modal .modal-body')
+        .forEach(el => { el.style.maxHeight = 'none'; el.style.overflow = 'visible'; })""")
+    page.wait_for_selector("#stream-overlay-mount .overlay-broadcast-note", timeout=15000)
+    page.wait_for_timeout(800)
+    text = page.locator("#stream-overlay-mount").inner_text()
+    if "ov_" in text or "http" in text.replace("https://portal.example.org", ""):
+        raise Fail("the overlay block shows an address or a token")
+    assert_clean(s, page, "overlay-settings", "#stream-overlay-mount")
+    mount = page.locator("#stream-overlay-mount").bounding_box()
+    s.write_bytes("overlay-settings", page.screenshot(clip={
+        "x": mount["x"] - 24, "y": mount["y"] - 20, "width": mount["width"] + 48, "height": mount["height"] + 44}))
+
+
+def checkerboard(width: int, height: int, square: int = 24):
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (width, height), (96, 104, 118))
+    d = ImageDraw.Draw(img)
+    for y in range(0, height, square):
+        for x in range(0, width, square):
+            if (x // square + y // square) % 2:
+                d.rectangle([x, y, x + square - 1, y + square - 1], fill=(132, 140, 154))
+    return img
+
+
+@shot("overlay-page")
+def _overlay_page(s):
+    from io import BytesIO
+    from PIL import Image
+    ctx = s.context("river", viewport={"width": 560, "height": 560})
+    url = river_overlay(s, ctx)
+    fragment = url.split("#", 1)[1]
+    page = ctx.new_page()
+    page.goto(f"{s.stage.base}/overlay/stream/{s.info['watch']['stream_id']}#{fragment}&fade=0&size=22&lines=8")
+    page.wait_for_selector(".overlay-line", timeout=15000)
+    page.wait_for_timeout(1500)
+    assert_clean(s, page, "overlay-page")
+    lines = page.locator(".overlay-line").count()
+    if lines < 3:
+        raise Fail(f"the overlay shows {lines} lines")
+    raw = page.screenshot(omit_background=True)
+    top = Image.open(BytesIO(raw)).convert("RGBA")
+    back = checkerboard(*top.size).convert("RGBA")
+    back.alpha_composite(top)
+    s.write("overlay-page", back.convert("RGB"))
 
 
 def parse_args(argv=None):

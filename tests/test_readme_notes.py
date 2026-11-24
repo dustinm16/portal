@@ -1436,6 +1436,17 @@ check("1.24.0: the guides page has a chat overlay entry (index link and section)
           "Browser", "Custom Browser Docks", "Regenerate", "broadcast to everyone who can see the video", "password")))
 
 
+# --- 1.24.0: the pictures of the new features ---------------------------------------------------------
+_shots24 = ("stream-health", "admin-live-streams", "overlay-settings", "overlay-page")
+_ms24 = (ROOT / "tools" / "make_screenshots.py").read_text(encoding="utf-8")
+check("1.24.0 pictures: the screenshot tool defines the four shots and says how the health readings were made",
+      all(f'@shot("{n}")' in _ms24 for n in _shots24) and "Pictures of 1.24.0" in _ms24 and "made-up series" in _ms24)
+check("1.24.0 pictures: each is a PNG file in docs/screenshots and the README shows it with a caption",
+      all((ROOT / "docs" / "screenshots" / f"{n}.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and f"docs/screenshots/{n}.png" in text for n in _shots24))
+check("1.24.0 pictures: the Not tested text says what the pictures did and did not show (a headless Chromium, made-up readings, not OBS)",
+      "headless Chromium 156" in _sec24 and "readings in its picture are made up" in _sec24 and "not OBS's embedded browser" in _sec24)
+
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
