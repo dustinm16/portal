@@ -94,6 +94,30 @@
         }
     };
 
+    /* A history frame is the whole shown set: it comes on every connect, so after a reconnect a line whose message
+     * was deleted while the socket was away is not in it and goes. Lines still in it keep their element (and their
+     * fade), show the text the history has (an edit may have been missed) and stand in the history's order. */
+    Overlay.prototype.replace = function (messages) {
+        var self = this, wanted = {};
+        messages.forEach(function (m) { if (m && typeof m.id === 'number') wanted[m.id] = true; });
+        this.lines.slice().forEach(function (line) { if (!wanted[line.id]) self.drop(line); });
+        var old = this.lines;
+        this.lines = [];
+        messages.forEach(function (m) {
+            if (!m || typeof m.id !== 'number') return;
+            var kept = null;
+            for (var i = 0; i < old.length; i++) if (old[i].id === m.id) { kept = old[i]; break; }
+            if (kept && !self.find(m.id)) {
+                kept.text.textContent = String(m.text || '');
+                self.root.appendChild(kept.node);          // appending an element that is already there moves it
+                self.lines.push(kept);
+                while (self.lines.length > self.opts.lines) self.drop(self.lines[0]);
+            } else {
+                self.add(m);
+            }
+        });
+    };
+
     Overlay.prototype.remove = function (id) {
         var line = this.find(id);
         if (line) this.drop(line);
@@ -113,7 +137,7 @@
         if (!f || typeof f !== 'object') return;
         var self = this;
         if (f.type === 'history' && Array.isArray(f.messages)) {
-            f.messages.forEach(function (m) { self.add(m); });
+            this.replace(f.messages);
         } else if (f.type === 'message') {
             this.add(f);
         } else if (f.type === 'edit') {

@@ -1367,9 +1367,9 @@ check("1.24.0 states the limits the code has",
       and str(_ov24.CLOSE_REFUSED) in _sec24 and "10 in 10 minutes" in _sec24
       and "_OVERLAY_FAIL_LIMIT = (10, 600)" in (ROOT / "server.py").read_text(encoding="utf-8"), "")
 check("1.24.0 states the static versions the pages load",
-      "`overlay.js` and `overlay.css` are new at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 1" in _sec24
+      "`overlay.js` is new at version 2 and `overlay.css` at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 1" in _sec24
       and "`streams.js` is version 53" in _sec24 and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text()
-      and "overlay.js?v=1" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=1" in (ROOT / "static" / "index.html").read_text())
+      and "overlay.js?v=2" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=1" in (ROOT / "static" / "index.html").read_text())
 check("1.24.0 has a Not tested bullet that says no OBS, no browser, no Cloudflare and no real encoder",
       all(n in _low24.split("- **not tested.**")[-1] for n in ("no obs", "chromium", "cloudflare", "real encoder")))
 check("1.24.0 says the dock needs to be opened again after sign-in and to replace the link everywhere after Regenerate",

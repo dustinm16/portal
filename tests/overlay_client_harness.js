@@ -15,7 +15,7 @@ function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail
 
 class N {
   constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this.attrs = {}; this.listeners = {}; this.value = ''; this.disabled = false; this.className = ''; this.parentNode = null; this.style = { setProperty: (k, v) => { this.style[k] = v; } }; }
-  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); return c; }
   removeChild(c) { this.children.splice(this.children.indexOf(c), 1); c.parentNode = null; return c; }
   setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
@@ -101,6 +101,30 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
   check('the fade first marks the line, then removes it', root.children[0].className.indexOf('overlay-fading') >= 0);
   timers.filter(t => t.ms === 600).forEach(t => t.f());
   check('and the line is gone', lines().length === 0);
+
+  // a history frame after a reconnect replaces the shown set (a message deleted while the socket was away must go)
+  ctx = page('#t=' + token + '&lines=3&fade=0');
+  sockets[0].onopen();
+  const hist = (n, msgs) => sockets[n].onmessage({ data: JSON.stringify({ type: 'history', messages: msgs }) });
+  const m = (id, text) => ({ id, name: 'u' + id, text: text || ('t' + id) });
+  hist(0, [m(1), m(2), m(3)]);
+  check('the first history is shown', lines().length === 3, lines());
+  sockets[0].onclose({ code: 1006 });
+  timers[timers.length - 1].f();
+  sockets[1].onopen();
+  const keptNode = root.children[2];
+  hist(1, [m(1), m(3, 'edited three'), m(4)]);
+  check('a line that is not in the history after a reconnect is removed, a new one added, a kept one shows the text of the history',
+        lines().length === 3 && lines().join('|').indexOf('t2') < 0 && lines()[1].indexOf('edited three') >= 0 && lines()[2].indexOf('t4') >= 0, lines());
+  check('and the order is the order of the history', lines()[0].indexOf('t1') >= 0 && lines()[1].indexOf('three') >= 0 && lines()[2].indexOf('t4') >= 0, lines());
+  check('a kept line keeps its own element', root.children[1] === keptNode);
+  sockets[1].onclose({ code: 1006 });
+  timers[timers.length - 1].f();
+  sockets[2].onopen();
+  hist(2, [m(1), m(3), m(4), m(5), m(6)]);
+  check('a history longer than the line limit keeps the newest lines in order', lines().length === 3 && lines()[0].indexOf('t4') >= 0 && lines()[2].indexOf('t6') >= 0, lines());
+  hist(2, []);
+  check('an empty history after a reconnect empties the overlay', lines().length === 0 && root.children.length === 0, lines());
 
   // ------------------------------------------------------------------ stream-overlay-settings.js
   const calls = [];

@@ -37,8 +37,8 @@ for js_name in ("overlay.js", "stream-overlay-settings.js"):
 css = (STATIC / "css" / "overlay.css").read_text(encoding="utf-8")
 check("overlay.css is transparent and has no external url", "transparent" in css and "url(" not in css and "@import" not in css)
 html = (STATIC / "overlay.html").read_text(encoding="utf-8")
-check("overlay.html loads its own script and style at v1 and nothing else",
-      "/static/js/overlay.js?v=1" in html and "/static/css/overlay.css?v=1" in html and html.count("<script") == 1 and html.count("<link") == 1)
+check("overlay.html loads its own script (v2) and style (v1) and nothing else",
+      "/static/js/overlay.js?v=2" in html and "/static/css/overlay.css?v=1" in html and html.count("<script") == 1 and html.count("<link") == 1)
 index = (STATIC / "index.html").read_text(encoding="utf-8")
 check("the dashboard loads the settings block before streams.js, at v1", index.index("stream-overlay-settings.js?v=1") < index.index("streams.js?v=53"))
 streams_js = (STATIC / "js" / "streams.js").read_text(encoding="utf-8")
