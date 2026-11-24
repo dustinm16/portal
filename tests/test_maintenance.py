@@ -456,6 +456,7 @@ EXEMPT = {
     "http_add_connection_shares": "sharing", "http_list_connection_shares": "sharing",
     "http_create_user_connection": "looks up the record it just created to set the flag",
     "http_delete_user_connection": "deletes the record", "http_toggle_connection_pin": "a pin on the dashboard",
+    "handle_overlay_websocket": "the chat overlay reads one stream's chat for an OBS browser source, nothing is proxied or dialled",
     "http_set_connection_prefs": "a member files a connection on the dashboard, nothing is dialled",
 }
 # The routes that carry the check, by handler name.

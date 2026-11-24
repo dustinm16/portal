@@ -58,11 +58,13 @@ SENSITIVE_PATTERNS = [
     # The calendar feed carries its read-only token as the last path segment (/api/streams/schedule/feed/<token>.ics);
     # the token is not prefixed by anything the other rules know, and proxies log the path.
     (re.compile(r'(/api/streams/schedule/feed/)[^/\s?"\']+'), r'\1[REDACTED]'),
+    # Chat overlay tokens (ov_...) travel in a URL fragment and a socket frame, never in a path; redacted anyway.
+    (re.compile(r'ov_[A-Za-z0-9_-]{43}'), '[OVERLAY_TOKEN_REDACTED]'),
 ]
 
 # Cheap pre-check so ordinary log lines skip the full pattern list.
 _QUICK_CHECK = re.compile(
-    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/|/api/streams/schedule/feed/',
+    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/|/api/streams/schedule/feed/|ov_',
     re.IGNORECASE,
 )
 

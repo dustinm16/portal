@@ -429,6 +429,11 @@ async function showStreamDetails(streamId) {
                 </div>
 
                 <div class="info-section">
+                    <h4>Chat Overlay</h4>
+                    <div id="stream-overlay-mount"></div>
+                </div>
+
+                <div class="info-section">
                     <h4>Multi-Platform Relay</h4>
                     <p class="info-description">Relay your stream to external platforms (Twitch, YouTube, Kick, etc.) simultaneously.</p>
                     <div id="relay-destinations-list"></div>
@@ -459,6 +464,7 @@ async function showStreamDetails(streamId) {
         loadRelayDestinations(streamId);
         loadStreamMods(streamId);
         bindStreamModSearch(streamId);
+        if (window.StreamOverlaySettings) window.StreamOverlaySettings.mount(document.getElementById('stream-overlay-mount'), streamId);
         // "Use this title" renames the stream on the server: the name field, the heading and the grid follow, or
         // Save under the name field would put the old name back
         if (window.StreamSchedule) window.StreamSchedule.mountOwner(document.getElementById('stream-schedule-mount'), streamId, (name) => {

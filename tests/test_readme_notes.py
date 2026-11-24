@@ -198,8 +198,8 @@ sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to)
 index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
-check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0, 1.23.0 and 1.24.0)",
-      stated == {"48"} and real_v == "52", f"stated {stated}, index.html {real_v}")
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0, in 1.23.0 and in 1.24.0)",
+      stated == {"48"} and real_v == "53", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
@@ -620,8 +620,8 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "52")}  # stated in 1.20.0, loaded since 1.22.0, 1.23.0 and 1.24.0
-check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0)",
+_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "53")}  # stated in 1.20.0, loaded since 1.22.0, 1.23.0 and 1.24.0
+check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0 and 1.24.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
 for name, needles in (
@@ -1059,7 +1059,7 @@ check("1.23.0: the numbers stated are the ones in the code",
 check("1.23.0: the static versions stated are the ones the pages load",
       "`stream-schedule.js` is new at version 8" in _sec23 and "`streams.js` is version 51" in _sec23
       and "/static/js/stream-schedule.js?v=8" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/streams.js?v=52" in (ROOT / "static" / "index.html").read_text())  # moved on to 52 in 1.24.0
+      and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())  # 51 then, 53 since 1.24.0
 check("1.23.0: the notes say Revoke on the calendar link asks first and the code has the question",
       "Regenerate and Revoke ask first" in _sec23 and "Yes, revoke" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
 check("1.23.0: the notes say the editor's Delete the whole entry asks first and the code has the question",
@@ -1287,7 +1287,7 @@ for name, needles in {
     "both ask first": ("its own row", "0.6 seconds", "second click of a double click", "while another request is running"),
     "stage mode": ("never contacts a media server",),
     "behaviour, breaking, database, static, rollback, not tested": ("behaviour changes", "breaking changes", "**not tested.**", "version 1",
-                                                                  "version 52", "1.9.3", "hand-written", "no browser", "no obs", "cloudflare", "fakes and captures"),
+                                                                  "version 53", "1.9.3", "hand-written", "no browser", "no obs", "cloudflare", "fakes and captures"),
 }.items():
     check(f"1.24.0 states: {name}", all(n in _low240 for n in needles), str([n for n in needles if n not in _low240]))
 check("1.24.0: the thresholds stated are the ones in the code",
@@ -1300,10 +1300,10 @@ check("1.24.0: the thresholds stated are the ones in the code",
       and '"no_data_seconds": 20' not in (ROOT / "docs" / "API.md").read_text())
 check("1.24.0: the static versions stated are the ones the pages load",
       "`stream-health.js` is new at version 1" in _sec240 and "`live-ops-admin.js` is new at version 1" in _sec240
-      and "`streams.js` is version 52" in _sec240
+      and "`streams.js` is version 53" in _sec240
       and "/static/js/stream-health.js?v=1" in (ROOT / "static" / "watch.html").read_text()
       and "/static/js/live-ops-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
-      and "/static/js/streams.js?v=52" in (ROOT / "static" / "index.html").read_text())
+      and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
 _docs24 = (ROOT / "static" / "api-docs.html").read_text()
 check("1.24.0: every new route is in the API reference and on the API page",
@@ -1338,6 +1338,44 @@ check("1.24.0: the rollback item does not call a rollback fully safe and gives t
       "nothing to undo" not in _low240 and "needs nothing undone" not in _low240
       and "DELETE FROM audit_log WHERE action IN ('stream_end_now','stream_stop_relays')" in _rb240
       and "moderator" in _rb240 and "private" in _rb240)
+
+# --- 1.24.0: chat overlay for an OBS browser source ---------------------------------------------------
+import overlay_chat as _ov24  # noqa: E402
+
+m24 = re.search(r"### Upgrade notes for 1\.24\.0\n(.*?)(?=\n### Upgrade notes for 1\.23\.1)", text, re.S)
+_sec24 = m24.group(1) if m24 else ""
+_low24 = _sec24.lower()
+check("1.24.0 notes sit directly before the 1.23.1 notes", bool(m24) and text.index("### Upgrade notes for 1.24.0") > text.index("### Upgrade notes for 1.18.0"))
+check("1.24.0 has the three groups and a Database, Static files, Rollback and Not tested bullet (at least one each: other lanes of the release add theirs)",
+      all(g in _sec24 for g in ("**For administrators, in short**", "**Breaking changes**", "**Database, static files, rollback and what was not tested**"))
+      and all(len(re.findall(rf"^- \*\*{n}\.\*\*", _sec24, re.M)) >= 1 for n in ("Database", "Static files", "Rollback", "Not tested")))
+check("1.24.0 states what the token reaches, that it is shown once, hashed and in the fragment, and the broadcast warning",
+      all(n in _low24 for n in ("sha-256", "shown once", "after the `#`", "never sends to a server", "broadcast to everyone who can see the video",
+                                "stream that is not public", "anonymous post is \"anonymous\"")), "")
+check("1.24.0 states the limits the code has",
+      f"at most {_ov24.MAX_SOCKETS_PER_TOKEN} sockets per token" in _low24 and f"{_ov24.HISTORY_LIMIT} messages" in _low24
+      and f"{int(_ov24.AUTH_TIMEOUT)} seconds" in _low24 and f"({_ov24.QUEUE_MAX} frames)" in _low24 and f"{int(_ov24.SEND_TIMEOUT)} second timeout" in _low24
+      and str(_ov24.CLOSE_REFUSED) in _sec24 and "10 in 10 minutes" in _sec24
+      and "_OVERLAY_FAIL_LIMIT = (10, 600)" in (ROOT / "server.py").read_text(encoding="utf-8"), "")
+check("1.24.0 states the static versions the pages load",
+      "`overlay.js` and `overlay.css` are new at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 1" in _sec24
+      and "`streams.js` is version 53" in _sec24 and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text()
+      and "overlay.js?v=1" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=1" in (ROOT / "static" / "index.html").read_text())
+check("1.24.0 has a Not tested bullet that says no OBS, no browser, no Cloudflare and no real encoder",
+      all(n in _low24.split("- **not tested.**")[-1] for n in ("no obs", "chromium", "cloudflare", "real encoder")))
+check("1.24.0 says the dock needs to be opened again after sign-in and to replace the link everywhere after Regenerate",
+      "open again (or reloaded)" in _sec24.replace("opened again", "open again").replace("(or reloaded)", "(or reloaded)") or "opened again (or reloaded)" in _sec24)
+check("1.24.0 notes carry no emoji", not re.search(_EMOJI, _sec24))
+check("the README feature section describes the overlay and the dock, and states the broadcast rule",
+      "**Chat overlay for OBS.**" in text.split("## What You Get", 1)[1].split("\n## ", 1)[0] and "Custom Browser Docks" in text
+      and "Whatever the overlay shows is broadcast to everyone who can see your video" in text)
+check("docs/API.md and api-docs.html describe the overlay routes and the socket",
+      all(x in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), (ROOT / "static" / "api-docs.html").read_text())
+          for x in ("/api/streams/{id}/overlay", "/ws/overlay", "/overlay/stream/{id}", "4401")))
+check("the code has the migration the notes describe: one new table, created if missing, nothing existing rewritten",
+      "CREATE TABLE IF NOT EXISTS stream_overlay_tokens" in (ROOT / "database.py").read_text(encoding="utf-8"))
+check("robots.txt disallows /overlay", "Disallow: /overlay" in _asyncio23a.run(_server.http_robots_txt(_types23a.SimpleNamespace(host="x.test"))).text)
+
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

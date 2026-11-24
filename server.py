@@ -163,6 +163,7 @@ import secevents
 import apikey_policy
 import webhook_formats
 import stream_schedule
+import overlay_chat
 import webpush
 import session_devices
 setup_logging()
@@ -3253,6 +3254,7 @@ Disallow: /chat
 Disallow: /streams
 Disallow: /files
 Disallow: /watch
+Disallow: /overlay
 Disallow: /github
 Disallow: /terminal
 Disallow: /vnc
@@ -7113,6 +7115,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
     _stream_access_changed(stream_id)
+    _overlay_close_stream(stream_id)    # its overlay token went with it (cascade); the sockets end now
     _viewers.finish(stream_id)          # a deleted stream has no audience and no live session
     if not stream.get("is_public"):
         # Its "went live / went offline" rows from the time it was public must not come back
@@ -9749,6 +9752,9 @@ async def _stream_end_session(stream: dict) -> None:
         if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
             clear_stats = {}
             deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
+            wiped = await db.get_chat_channel(stream["chat_channel_id"])
+            if wiped:
+                _overlay_clear(wiped["name"])         # the chat room is not told of this wipe; the overlay is
             if deleted > 0:
                 logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
 
@@ -9808,6 +9814,9 @@ async def _finalize_stream_offline(stream: dict) -> None:
         if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
             clear_stats = {}
             deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
+            wiped = await db.get_chat_channel(stream["chat_channel_id"])
+            if wiped:
+                _overlay_clear(wiped["name"])         # the chat room is not told of this wipe; the overlay is
             if deleted > 0:
                 logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
     except Exception as e:
@@ -22649,6 +22658,8 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
 
     # Broadcast to channel that history was cleared
     channel_name = channel["name"]
+    if channel_name not in chat_rooms:
+        _overlay_clear(channel_name)
     if channel_name in chat_rooms:
         await broadcast_to_channel(channel_name, {
             "type": "channel_cleared",
@@ -28817,6 +28828,10 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_s
     about (author, poster, moderation target). Staff and that participant get
     the payload as is; everyone else gets a copy without the real id and role.
     """
+    # OBS overlay sockets (1.24.0): a synchronous, bounded hand-over that never awaits, so a slow overlay
+    # client cannot delay the members below. Before the room check: a delete made while nobody is in
+    # the room still reaches the overlay.
+    _overlay_fanout(channel, message)
     if channel not in chat_rooms:
         return
 
@@ -28844,6 +28859,299 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_s
     # Clean up dead connections (the room may have been removed meanwhile)
     if dead_connections and channel in chat_rooms:
         chat_rooms[channel] -= dead_connections
+
+
+# ---------------------------------------------------------------------------
+# Chat overlay for an OBS browser source (1.24.0)
+#
+# One overlay token per stream (table stream_overlay_tokens, only the hash is stored) reaches exactly one thing:
+# /ws/overlay, a read-only view of that stream's own chat as a public viewer sees it. The token travels in the
+# page's URL fragment and the first WebSocket frame, never in a path or a query, so no access log has it. The
+# sockets live in overlay_subscribers (channel name -> set of overlay_chat.Subscriber), never in chat_rooms.
+# _overlay_fanout is called from broadcast_to_channel and never awaits: every socket has a bounded queue and its
+# own writer task with a send timeout, and a socket that is slow is dropped.
+# ---------------------------------------------------------------------------
+
+overlay_subscribers: dict[str, set] = {}
+_OVERLAY_FAIL_LIMIT = (10, 600)        # failed tokens per address per 10 minutes, then 429 on the upgrade
+_OVERLAY_PENDING_MAX = 10              # sockets per address that have not sent their token yet
+_overlay_fail_hits: dict = {}
+_overlay_pending: dict = {}
+_overlay_close_tasks: set = set()
+_OVERLAY_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+}
+
+
+def _overlay_remove(sub) -> None:
+    subs = overlay_subscribers.get(sub.channel)
+    if subs is not None:
+        subs.discard(sub)
+        if not subs:
+            overlay_subscribers.pop(sub.channel, None)
+
+
+def _overlay_fanout(channel: str, message: dict) -> None:
+    """Hand a chat frame to the overlay sockets of a channel. Synchronous and bounded: it reduces the frame to the
+    overlay's allow-list and puts it into each socket's queue; a socket whose queue is full is dropped. Never raises."""
+    try:
+        subs = overlay_subscribers.get(channel)
+        if not subs:
+            return
+        frame = overlay_chat.reduce_frame(message)
+        if frame is None:
+            return
+        data = overlay_chat.encode(frame)
+        for sub in list(subs):
+            if not sub.offer(data):
+                sub.kill(overlay_chat.CLOSE_SLOW)
+    except Exception as e:
+        logger.debug(f"Overlay fan-out failed: {type(e).__name__}")
+
+
+def _overlay_clear(channel: str) -> None:
+    """The room was emptied without a broadcast (the offline wipe): tell the overlay."""
+    _overlay_fanout(channel, {"type": "channel_cleared"})
+
+
+def _overlay_close_where(pred, code: int = overlay_chat.CLOSE_REFUSED) -> int:
+    n = 0
+    for subs in list(overlay_subscribers.values()):
+        for sub in list(subs):
+            if pred(sub):
+                sub.kill(code)
+                n += 1
+    return n
+
+
+def _overlay_close_stream(stream_id: int) -> int:
+    """End every overlay socket of a stream now (token regenerated or revoked, stream deleted)."""
+    return _overlay_close_where(lambda s: s.stream_id == stream_id)
+
+
+def _overlay_close_owner(user_id: int) -> int:
+    return _overlay_close_where(lambda s: s.owner_id == user_id)
+
+
+def _overlay_close_all() -> int:
+    return _overlay_close_where(lambda s: True, overlay_chat.CLOSE_SLOW)
+
+
+def _overlay_fail_wait(key: str) -> int:
+    """Seconds an address must wait after too many failed tokens, else 0. Does not count."""
+    count, window = _OVERLAY_FAIL_LIMIT
+    now = monotonic()
+    hits = [t for t in _overlay_fail_hits.get(key, ()) if now - t < window]
+    if hits:
+        _overlay_fail_hits[key] = hits
+    else:
+        _overlay_fail_hits.pop(key, None)
+    if len(hits) < count:
+        return 0
+    return max(1, int(window - (now - hits[0])) + 1)
+
+
+def _overlay_fail_note(key: str) -> None:
+    now = monotonic()
+    count, window = _OVERLAY_FAIL_LIMIT
+    hits = [t for t in _overlay_fail_hits.pop(key, ()) if now - t < window]
+    hits.append(now)
+    while len(_overlay_fail_hits) >= 4096:
+        del _overlay_fail_hits[next(iter(_overlay_fail_hits))]
+    _overlay_fail_hits[key] = hits
+
+
+async def _overlay_refuse(ws, key: str, count: bool = True):
+    """Close with the one generic code. A failed token counts against the address."""
+    if count:
+        _overlay_fail_note(key)
+    try:
+        await asyncio.wait_for(ws.close(code=overlay_chat.CLOSE_REFUSED), 2.0)
+    except Exception:
+        pass
+    return ws
+
+
+async def handle_overlay_websocket(request: web.Request) -> web.WebSocketResponse:
+    """GET /ws/overlay: the read-only chat socket of an OBS browser source. Never reads the session cookie or any
+    other credential: the only thing that opens it is the overlay token, in the first frame. The first frame has
+    a few seconds to arrive; a bad, unknown, revoked or regenerated token ends with one generic close code. Every
+    frame after the first closes the socket: nothing a client sends is acted on."""
+    key = _proxy_bucket_key(get_client_ip(request) or "?")
+    wait = _overlay_fail_wait(key)
+    if wait or _overlay_pending.get(key, 0) >= _OVERLAY_PENDING_MAX:
+        return await _limited(request, "overlay_token", "Too many attempts", plain=True,
+                              headers={"Cache-Control": "no-store", "Retry-After": str(wait or 5)})
+    ws = web.WebSocketResponse(heartbeat=30, max_msg_size=overlay_chat.MAX_INBOUND_BYTES)
+    _overlay_pending[key] = _overlay_pending.get(key, 0) + 1
+    try:
+        await ws.prepare(request)
+        try:
+            msg = await asyncio.wait_for(ws.receive(), overlay_chat.AUTH_TIMEOUT)
+            data = json.loads(msg.data) if msg.type == WSMsgType.TEXT else None
+        except (asyncio.TimeoutError, ValueError, TypeError):
+            data = None
+        token = data.get("token") if isinstance(data, dict) and data.get("type") == "auth" else None
+        if not overlay_chat.wellformed(token):
+            return await _overlay_refuse(ws, key)
+        digest = overlay_chat.hash_token(token)
+        row = await db.overlay_token_lookup(digest)
+        if not row or not row.get("chat_channel_id"):
+            return await _overlay_refuse(ws, key)
+        channel = await db.get_chat_channel(row["chat_channel_id"])
+        stream = await db.get_stream_by_chat_channel(row["chat_channel_id"]) if channel else None
+        if not channel or not _real_stream_chat(stream) or stream["id"] != row["stream_id"]:
+            return await _overlay_refuse(ws, key, count=False)
+    finally:
+        left = _overlay_pending.get(key, 1) - 1
+        if left > 0:
+            _overlay_pending[key] = left
+        else:
+            _overlay_pending.pop(key, None)
+    if sum(1 for s in overlay_subscribers.get(channel["name"], ()) if s.digest == digest) >= overlay_chat.MAX_SOCKETS_PER_TOKEN:
+        try:
+            await asyncio.wait_for(ws.close(code=overlay_chat.CLOSE_SLOW), 2.0)
+        except Exception:
+            pass
+        return ws
+    sub = overlay_chat.Subscriber(ws, request.transport, channel["name"], row["stream_id"], row["user_id"], digest)
+    sub.on_dead = _overlay_remove
+    overlay_subscribers.setdefault(channel["name"], set()).add(sub)
+    try:
+        # Registered first, then checked again: a token regenerated or revoked meanwhile is refused here, and one
+        # regenerated later finds this socket in the registry and closes it.
+        if await db.overlay_token_lookup(digest) is None:
+            sub.kill(overlay_chat.CLOSE_REFUSED)
+            return ws
+        await db.overlay_token_touch(digest, int(time()))
+        # As a public viewer is shown it: no viewer identity, so an anonymous author stays anonymous
+        history = await _channel_history(channel, -1, "user", limit=overlay_chat.HISTORY_LIMIT)
+        first = overlay_chat.encode(overlay_chat.reduce_history(history["messages"]))
+        sub.writer = asyncio.create_task(sub.run(first))
+        async for _msg in ws:
+            sub.kill(overlay_chat.CLOSE_POLICY)      # nothing a client sends is acted on
+            break
+    finally:
+        sub.kill(overlay_chat.CLOSE_SLOW)
+        if sub.writer is not None:
+            sub.writer.cancel()
+            await asyncio.gather(sub.writer, return_exceptions=True)
+        # The close (with the code that was chosen) is sent by one task; returning first would let aiohttp close
+        # the socket with its own code, or drop the connection before the client has been told why
+        if sub.close_task is not None:
+            await asyncio.gather(sub.close_task, return_exceptions=True)
+    return ws
+
+
+async def _overlay_revalidate_pass() -> int:
+    """Backstop for the explicit closes: close every overlay socket whose token no longer resolves (stream or
+    account gone by a path that did not close it) and any whose channel was renamed. Returns how many."""
+    closed = 0
+    seen: dict = {}
+    for subs in list(overlay_subscribers.values()):
+        for sub in list(subs):
+            if sub.digest not in seen:
+                seen[sub.digest] = await db.overlay_token_lookup(sub.digest)
+            row = seen[sub.digest]
+            if row is None or row["stream_id"] != sub.stream_id:
+                sub.kill(overlay_chat.CLOSE_REFUSED)
+                closed += 1
+                continue
+            channel = await db.get_chat_channel(row["chat_channel_id"]) if row.get("chat_channel_id") else None
+            if not channel or channel["name"] != sub.channel:
+                sub.kill(overlay_chat.CLOSE_SLOW)
+                closed += 1
+    return closed
+
+
+async def http_overlay_page(request: web.Request) -> web.Response:
+    """GET /overlay/stream/{id}: the transparent page an OBS browser source loads. The same bytes for every id (it
+    says nothing about whether a stream exists, and reads nothing from the request); the token is read by the
+    page's script from the URL fragment, which no server ever receives. No cookie is read, set or needed."""
+    return web.Response(text=load_static_file("overlay.html"), content_type="text/html", headers=dict(_OVERLAY_HEADERS))
+
+
+async def _overlay_owner_stream(request: web.Request):
+    """(token, stream, None) for the owner of the stream in the URL whose chat is its own, else (None, None,
+    response). An unknown stream and a stream of somebody else are the same 404."""
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return None, None, refusal
+    try:
+        stream_id = _row_id(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return None, None, web.json_response({"error": "Invalid stream ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        return None, None, web.json_response({"error": "Stream not found"}, status=404)
+    return token, stream, None
+
+
+def _overlay_urls(stream_id: int) -> dict:
+    base = _public_base_url()
+    return {"dock_url": f"{base}/watch/{stream_id}?chat=only"}
+
+
+async def _overlay_has_own_chat(stream: dict) -> bool:
+    cid = stream.get("chat_channel_id")
+    return bool(cid) and _real_stream_chat(await db.get_stream_by_chat_channel(cid))
+
+
+async def http_overlay_status(request: web.Request) -> web.Response:
+    """GET /api/streams/{id}/overlay: whether the stream has an overlay link (never the token)."""
+    token, stream, refusal = await _overlay_owner_stream(request)
+    if refusal is not None:
+        return refusal
+    info = await db.overlay_token_info(stream["id"])
+    return web.json_response({
+        "active": info is not None, "created_at": (info or {}).get("created_at"),
+        "last_used_at": (info or {}).get("last_used_at"), "stream_public": bool(stream.get("is_public")),
+        "available": await _overlay_has_own_chat(stream), "max_sockets": overlay_chat.MAX_SOCKETS_PER_TOKEN,
+        **_overlay_urls(stream["id"])}, headers={"Cache-Control": "no-store"})
+
+
+async def http_overlay_create(request: web.Request) -> web.Response:
+    """POST /api/streams/{id}/overlay: make the stream's overlay token, or replace it (sockets of the old one end at
+    once). One active token per stream. The address is in this answer only; only a hash is stored."""
+    token, stream, refusal = await _overlay_owner_stream(request)
+    if refusal is not None:
+        return refusal
+    if not await _overlay_has_own_chat(stream):
+        return web.json_response({"error": "This stream has no chat of its own"}, status=409)
+    value = overlay_chat.new_token()
+    now = int(time())
+    await db.overlay_token_set(stream["id"], overlay_chat.hash_token(value), now)
+    ended = _overlay_close_stream(stream["id"])
+    user = await db.get_user_by_id(token.user_id)
+    await audit_log("stream_overlay_create", token.user_id, user["username"] if user else "unknown",
+                    target_id=stream["id"], target_type="stream", target_name=stream.get("name"),
+                    details=json.dumps({"sockets_ended": ended}))
+    base = _public_base_url()
+    return web.json_response({
+        "active": True, "created_at": now, "stream_public": bool(stream.get("is_public")),
+        "url": f"{base}/overlay/stream/{stream['id']}#t={value}", "max_sockets": overlay_chat.MAX_SOCKETS_PER_TOKEN,
+        **_overlay_urls(stream["id"])}, headers={"Cache-Control": "no-store"})
+
+
+async def http_overlay_revoke(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/overlay: revoke the overlay token; its sockets end at once."""
+    token, stream, refusal = await _overlay_owner_stream(request)
+    if refusal is not None:
+        return refusal
+    removed = await db.overlay_token_delete(stream["id"])
+    ended = _overlay_close_stream(stream["id"])
+    if removed:
+        user = await db.get_user_by_id(token.user_id)
+        await audit_log("stream_overlay_revoke", token.user_id, user["username"] if user else "unknown",
+                        target_id=stream["id"], target_type="stream", target_name=stream.get("name"),
+                        details=json.dumps({"sockets_ended": ended}))
+    return web.json_response({"active": False}, headers={"Cache-Control": "no-store"})
 
 
 ANON_VOICE_MESSAGE = "Voice chat in a channel is not available in anonymous mode"
@@ -30203,6 +30511,7 @@ async def http_delete_user(request: web.Request) -> web.Response:
     _vod_play_purge(owner=user_id)      # their cached playback copies go with the account
     # The user's streams went with the account
     _playback_cache_forget(everything=True)
+    _overlay_close_owner(user_id)       # the overlay links of its streams end with the account
     # A deleted account must not keep working through sockets it already had open.
     try:
         await close_user_websockets(user_id)
@@ -32192,6 +32501,11 @@ def create_app() -> web.Application:
     app.router.add_get("/", http_root_redirect)
     # Chat WebSocket (before catch-all)
     app.router.add_get("/ws/chat", handle_chat_websocket)
+    app.router.add_get("/ws/overlay", handle_overlay_websocket)     # before the /ws/{path} relay below
+    app.router.add_get("/overlay/stream/{id}", http_overlay_page)
+    app.router.add_get("/api/streams/{id}/overlay", http_overlay_status)
+    app.router.add_post("/api/streams/{id}/overlay", http_overlay_create)
+    app.router.add_delete("/api/streams/{id}/overlay", http_overlay_revoke)
     # WebSocket endpoints - catch all paths for relay (must be last)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_get("/ws/{path:.*}", websocket_handler)
@@ -32209,6 +32523,7 @@ class PortalServer:
         self._search_backfill_task = None
         self._saved_task = None
         self._schedule_task = None
+        self._overlay_task = None
 
     def _start_vod_recovery(self) -> None:
         """Start a recovery pass over the VOD staging folder unless one is already running."""
@@ -32392,6 +32707,9 @@ class PortalServer:
         # Stream schedule reminders: one indexed query per tick, nothing else while idle; held so stop() ends it
         self._schedule_task = asyncio.create_task(self._schedule_reminder_task())
 
+        # Overlay sockets: every 30 s close the ones whose token no longer resolves (backstop for the explicit closes)
+        self._overlay_task = asyncio.create_task(self._overlay_revalidate_task())
+
         # Saved-message reminders: one tick, an indexed query that finds nothing when idle (runs in
         # staged mode too; it only reads and writes the database and pushes to the loopback sink)
         self._saved_task = asyncio.create_task(self._saved_reminder_task())
@@ -32529,6 +32847,17 @@ class PortalServer:
                 break
             except Exception as e:
                 logger.error(f"Grant expiry sweep error: {e}")
+
+    async def _overlay_revalidate_task(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(30 if not Config.STAGE_MODE else 2)
+                if overlay_subscribers:
+                    await _overlay_revalidate_pass()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Overlay revalidation error: {type(e).__name__}")
 
     async def _schedule_reminder_task(self) -> None:
         """Every 30 s: schedule_reminder_pass(). Cheap when idle (one range query on the occ_start index)."""
@@ -32889,6 +33218,11 @@ class PortalServer:
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
         task = getattr(self, "_schedule_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        _overlay_close_all()
+        task = getattr(self, "_overlay_task", None)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

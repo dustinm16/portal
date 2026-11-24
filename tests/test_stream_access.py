@@ -984,7 +984,8 @@ _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_wh
                  "http_get_open_streams"}     # the last one needs no credential at all (open links only)
 _REFUSES_STREAM_KEYS = ("_stream_user_auth(", "_follow_context(",
                         "_validate_stream_access(", "_authorize_webrtc_session(",
-                        "_schedule_stream_route(", "_schedule_owned_entry(")     # both start with _follow_context
+                        "_schedule_stream_route(", "_schedule_owned_entry(",     # both start with _follow_context
+                        "_overlay_owner_stream(")                               # starts with _stream_user_auth
 # The calendar feed is read with a token in its path and no login at all: it must never authenticate_request
 _TOKEN_IN_PATH = {"http_schedule_feed"}
 

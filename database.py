@@ -1473,6 +1473,15 @@ MIGRATIONS = [
         created_at INTEGER NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )""",
+    # Chat overlay (1.24.0): one read-only token per stream for an OBS browser source. Only the hash is stored.
+    # A new table only: nothing existing is rewritten and 1.23.0 never reads it.
+    """CREATE TABLE IF NOT EXISTS stream_overlay_tokens (
+        stream_id INTEGER PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
+    )""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3056,6 +3065,7 @@ class Database:
             ("stream_rsvps", "DELETE FROM stream_rsvps WHERE user_id = ?"),
             ("stream_rsvp_sent", "DELETE FROM stream_rsvp_sent WHERE user_id = ?"),
             ("schedule_feed_tokens", "DELETE FROM schedule_feed_tokens WHERE user_id = ?"),
+            ("stream_overlay_tokens", "DELETE FROM stream_overlay_tokens WHERE stream_id IN (SELECT id FROM user_streams WHERE user_id = ?)"),
             ("push_subscriptions", "DELETE FROM push_subscriptions WHERE user_id = ?"),
             ("push_prefs", "DELETE FROM push_prefs WHERE user_id = ?"),
             ("saved_messages", "DELETE FROM saved_messages WHERE user_id = ?"),
@@ -5977,6 +5987,44 @@ class Database:
                JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?""", (token_hash,))
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    # ---- chat overlay tokens (1.24.0)
+
+    async def overlay_token_set(self, stream_id: int, token_hash: str, now: int) -> None:
+        """Create the stream's overlay token, or replace it (one per stream: the old one stops at once)."""
+        await self.conn.execute(
+            """INSERT INTO stream_overlay_tokens (stream_id, token_hash, created_at, last_used_at) VALUES (?, ?, ?, NULL)
+               ON CONFLICT(stream_id) DO UPDATE SET token_hash = excluded.token_hash,
+                   created_at = excluded.created_at, last_used_at = NULL""",
+            (stream_id, token_hash, now))
+        await self.conn.commit()
+
+    async def overlay_token_delete(self, stream_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM stream_overlay_tokens WHERE stream_id = ?", (stream_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def overlay_token_info(self, stream_id: int):
+        """{created_at, last_used_at} of the stream's token (never the token or its hash), or None."""
+        cursor = await self.conn.execute(
+            "SELECT created_at, last_used_at FROM stream_overlay_tokens WHERE stream_id = ?", (stream_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def overlay_token_lookup(self, token_hash: str):
+        """The stream and owner a token (by hash) belongs to, or None. The join with users means a token whose
+        owner is gone resolves to nothing."""
+        cursor = await self.conn.execute(
+            """SELECT t.stream_id, us.user_id, us.chat_channel_id FROM stream_overlay_tokens t
+               JOIN user_streams us ON us.id = t.stream_id
+               JOIN users u ON u.id = us.user_id
+               WHERE t.token_hash = ?""", (token_hash,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def overlay_token_touch(self, token_hash: str, now: int) -> None:
+        await self.conn.execute("UPDATE stream_overlay_tokens SET last_used_at = ? WHERE token_hash = ?", (now, token_hash))
+        await self.conn.commit()
 
     async def get_live_streams(self) -> list[dict]:
         """Streams that are live now, with the streamer's names and no key at all."""
