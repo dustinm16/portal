@@ -671,6 +671,15 @@ _relay_restart_cooldown: dict[int, float] = {}
 # stream goes offline (_stream_set_offline). In memory.
 _relay_stop_held: set = set()
 
+# The live session of each stream, kept in memory: stream id -> {"id", "at", "ended", "ended_at"}. Every
+# accepted publish makes a new one (_stream_session_begin), so a finalisation that started for an earlier
+# session can tell that the stream has been published again since and leaves everything of the new
+# session alone (_session_current). Bounded by the number of streams; an ended entry is dropped an hour
+# after it ended (_viewer_sync_once). A restart empties it, and so does the live state of every stream.
+_stream_sessions: dict = {}
+_stream_session_seq = 0
+_SESSION_KEEP_SECONDS = 3600.0
+
 # Characters that must not appear in relay URLs or stream keys (null bytes, newlines).
 _BAD_RELAY_CHARS = {'\x00', '\n', '\r'}
 
@@ -6766,13 +6775,18 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
     that restarts quickly, or the same stream arriving by both paths announces only once.
     The announcement carries no key; the watch page resolves access itself."""
     stream_id = stream["id"]
-    current = await db.get_user_stream(stream_id) or stream
-    was_live = current.get("is_live") == 1
-    _ingest_invalidate()
-    await db.set_stream_live(stream_id, True)
-    _ingest_invalidate()
-    if not was_live:
-        _viewers.start_session(stream_id)       # fresh peak and unique figures
+    # One locked step: the state is read, written and the new session recorded together, so a
+    # finalisation of the session before (which checks and writes under the same lock) sees either
+    # the old session in full or the new one.
+    async with _stream_state_lock:
+        current = await db.get_user_stream(stream_id) or stream
+        was_live = current.get("is_live") == 1
+        _ingest_invalidate()
+        await db.set_stream_live(stream_id, True)
+        _ingest_invalidate()
+        _stream_session_begin(stream_id)
+        if not was_live:
+            _viewers.start_session(stream_id)       # fresh peak and unique figures
     if was_live:
         return
     stream = current
@@ -9567,7 +9581,7 @@ async def _sftp_makedirs(sftp, path: str) -> None:
                 pass  # May already exist from race condition
 
 
-async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
+async def stop_vod_recording(stream_id: int, force: bool = False, only: Optional[dict] = None) -> None:
     """Stop recording, finalize last chunk, upload remaining, clean up.
 
     When force=False (stream disconnect), wait for ffmpeg to exit naturally
@@ -9575,9 +9589,11 @@ async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
     chunk and exit cleanly. Only use force=True on server shutdown.
     """
     async with _stream_state_lock:
-        recording = active_recordings.pop(stream_id, None)
-    if not recording:
-        return
+        recording = active_recordings.get(stream_id)
+        # `only` is the recording the caller's session had; a recording of a newer session is not its own
+        if recording is None or (only is not None and recording is not only):
+            return
+        active_recordings.pop(stream_id, None)
 
     process = recording["process"]
 
@@ -9661,12 +9677,14 @@ async def stop_all_recordings() -> None:
         await stop_vod_recording(stream_id, force=True)
 
 
-async def _handle_disconnect_grace(stream: dict) -> None:
+async def _handle_disconnect_grace(stream: dict, session=None) -> None:
     """Grace period before triggering encoding/offline on stream disconnect.
 
     Waits 7 seconds, then re-checks if the stream reconnected. If still disconnected,
     proceeds with encoding (if VOD active) or offline transition. This prevents
     accidental brief disconnects from triggering the full finalization flow.
+    `session` is the live session the disconnect belongs to; a stream published again in the
+    meantime has another one and is left alone.
     """
     stream_id = stream["id"]
     stream_name = stream.get("name", "?")
@@ -9680,7 +9698,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
         # always aborted and left streams stuck "live" after every disconnect.
         async with _stream_state_lock:
             superseded = _disconnect_grace_tasks.get(stream_id) is not asyncio.current_task()
-        if superseded:
+        if superseded or not _session_current(stream_id, session):
             logger.info(f"Stream {stream_name} reconnected during grace period, aborting disconnect")
             return
 
@@ -9690,7 +9708,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
         if current is not None and current.get("is_live") != 1:
             logger.info(f"Stream {stream_name} is no longer live, disconnect grace has nothing to end")
             return
-        await _stream_end_session(stream)
+        await _stream_end_session(stream, session)
     except asyncio.CancelledError:
         logger.info(f"Stream {stream_name} disconnect grace period cancelled (reconnected)")
     except Exception as e:
@@ -9701,62 +9719,119 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             _disconnect_grace_tasks.pop(stream_id, None)
 
 
-async def _stream_end_session(stream: dict) -> None:
+def _stream_session_begin(stream_id: int) -> dict:
+    """A publish was accepted: this is the stream's live session from now on."""
+    global _stream_session_seq
+    _stream_session_seq += 1
+    session = {"id": _stream_session_seq, "at": monotonic(), "ended": False, "ended_at": None}
+    _stream_sessions[stream_id] = session
+    return session
+
+
+def _session_current(stream_id: int, session) -> bool:
+    """True while `session` (the value of _stream_sessions when an end began; None when there was none)
+    is still the stream's session. Every step of ending a session asks this before it changes anything
+    that is shared with the next session: the stored live state, the viewer figures, the chat."""
+    return _stream_sessions.get(stream_id) is session
+
+
+async def _session_set_encoding(stream_id: int, session) -> bool:
+    """The stream goes to "encoding" (recording being finished) if `session` is still the current one;
+    the check and the write are one locked step, so a publish cannot fall between them."""
+    async with _stream_state_lock:
+        if not _session_current(stream_id, session):
+            return False
+        await db.set_stream_encoding(stream_id)
+        _viewers.end_audience(stream_id)        # last seconds into the peak; figures stay until offline
+        return True
+
+
+async def _session_set_offline(stream_id: int, session) -> bool:
+    """The stream goes offline if `session` is still the current one (check and write under the lock);
+    the session is then marked ended. False: the stream has been published again, nothing was touched."""
+    async with _stream_state_lock:
+        if not _session_current(stream_id, session):
+            return False
+        await _stream_set_offline(stream_id)
+        if session is not None:
+            session["ended"], session["ended_at"] = True, monotonic()
+        return True
+
+
+async def _session_status_notice(stream: dict, session, is_live: int) -> None:
+    """Tell the stream's chat room that the stream is encoding (2) or offline (0), unless the stream has
+    been published again since the end of `session` began."""
+    if not stream.get("chat_channel_id") or not _session_current(stream["id"], session):
+        return
+    channel = await db.get_chat_channel(stream["chat_channel_id"])
+    if channel and _session_current(stream["id"], session):
+        await broadcast_to_channel(channel["name"], {
+            "type": "stream_status", "stream_id": stream["id"], "is_live": is_live})
+
+
+async def _session_after_offline(stream: dict, session) -> None:
+    """What follows the offline write of `session`: the activity row and webhook, the notice to the
+    chat room and the chat clean-up. Each step stops at once when the stream has been published again."""
+    stream_id = stream["id"]
+    if not _session_current(stream_id, session):
+        return
+    await _record_stream_offline(stream)
+    await _session_status_notice(stream, session, 0)
+    # Clear chat history for the stream's channel
+    if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
+        if not _session_current(stream_id, session):
+            return
+        clear_stats = {}
+        deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
+        wiped = await db.get_chat_channel(stream["chat_channel_id"])
+        if wiped:
+            _overlay_clear(wiped["name"])         # the chat room is not told of this wipe; the overlay is
+        if deleted > 0:
+            logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream.get('name', '?')}")
+
+
+async def _stream_end_session(stream: dict, session=None) -> None:
     """The normal end of a live session once the publisher is gone: relays stop, a recording is
     finished and uploaded in the background (state "encoding", then offline), a stream without one
     goes offline at once, and the stream's chat is told. Used after the disconnect grace period and by
-    an administrator's "End now"."""
+    an administrator's "End now".
+
+    `session` is the live session this end belongs to (None: the current one). When the stream is
+    published again while the end is under way (an encoder that reconnects at once), the new session is
+    never marked offline, cleared or announced as ended: each step checks it is still the same session."""
     stream_id = stream["id"]
     stream_name = stream.get("name", "?")
+    if session is None:
+        session = _stream_sessions.get(stream_id)
+    if not _session_current(stream_id, session):
+        logger.info(f"Stream {stream_name} was published again, the end of its earlier session does nothing")
+        return
     # Stop multi-platform relays
     await stop_stream_relays(stream_id)
 
     # Still disconnected — proceed with encoding/offline transition
     async with _stream_state_lock:
-        has_vod = stream_id in active_recordings
+        rec = active_recordings.get(stream_id)
 
-    if has_vod:
+    if rec is not None:
         # Transition to encoding state — VOD chunks still being finalized
-        await db.set_stream_encoding(stream_id)
-        _viewers.end_audience(stream_id)        # last seconds into the peak; figures stay until offline
+        if not await _session_set_encoding(stream_id, session):
+            logger.info(f"Stream {stream_name} was published again, not marked as encoding")
+            return
         logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
 
         # Broadcast encoding status to chat channel
-        if stream.get("chat_channel_id"):
-            channel = await db.get_chat_channel(stream["chat_channel_id"])
-            if channel:
-                await broadcast_to_channel(channel["name"], {
-                    "type": "stream_status",
-                    "stream_id": stream_id,
-                    "is_live": 2  # encoding
-                })
+        await _session_status_notice(stream, session, 2)
 
         # Finalize VOD in background, then transition to offline
-        asyncio.create_task(_finalize_stream_offline(stream))
+        asyncio.create_task(_finalize_stream_offline(stream, session, rec))
     else:
         # No VOD recording — go straight to offline
-        await _stream_set_offline(stream_id)
+        if not await _session_set_offline(stream_id, session):
+            logger.info(f"Stream {stream_name} was published again, not marked as offline")
+            return
         logger.info(f"Stream {stream_name} ended (after grace period)")
-        await _record_stream_offline(stream)
-
-        if stream.get("chat_channel_id"):
-            channel = await db.get_chat_channel(stream["chat_channel_id"])
-            if channel:
-                await broadcast_to_channel(channel["name"], {
-                    "type": "stream_status",
-                    "stream_id": stream_id,
-                    "is_live": 0
-                })
-
-        # Clear chat history for the stream's channel
-        if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
-            clear_stats = {}
-            deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
-            wiped = await db.get_chat_channel(stream["chat_channel_id"])
-            if wiped:
-                _overlay_clear(wiped["name"])         # the chat room is not told of this wipe; the overlay is
-            if deleted > 0:
-                logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
+        await _session_after_offline(stream, session)
 
 
 def _stream_activity_type(action: str, stream: dict) -> str:
@@ -9787,43 +9862,32 @@ async def _record_stream_offline(stream: dict) -> None:
     }, meta={"stream_public": bool(now.get("is_public"))}))
 
 
-async def _finalize_stream_offline(stream: dict) -> None:
-    """Background task: wait for VOD finalization, then transition stream to offline."""
+async def _finalize_stream_offline(stream: dict, session=None, rec=None) -> None:
+    """Background task: wait for VOD finalization, then transition stream to offline.
+
+    `session` is the live session being ended and `rec` the recording that belongs to it: when the stream
+    was published again meanwhile, a recording of the new session is not stopped, the stream is not marked
+    offline and nothing of the new session (chat, viewer figures, webhook) is touched."""
     stream_id = stream["id"]
     stream_name = stream.get("name", "?")
     try:
         # Wait for ffmpeg to finish the current chunk and upload all chunks
-        await stop_vod_recording(stream_id)
+        if rec is not None:
+            await stop_vod_recording(stream_id, only=rec)
+        else:
+            await stop_vod_recording(stream_id)
 
         # Now transition to fully offline
-        await _stream_set_offline(stream_id)
+        if not await _session_set_offline(stream_id, session):
+            logger.info(f"Stream {stream_name} was published again, its earlier session is not marked offline")
+            return
         logger.info(f"Stream {stream_name} VOD finalized, now offline")
-        await _record_stream_offline(stream)
-
-        # Broadcast offline status to chat channel
-        if stream.get("chat_channel_id"):
-            channel = await db.get_chat_channel(stream["chat_channel_id"])
-            if channel:
-                await broadcast_to_channel(channel["name"], {
-                    "type": "stream_status",
-                    "stream_id": stream_id,
-                    "is_live": 0
-                })
-
-        # Clear chat history for the stream's channel
-        if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
-            clear_stats = {}
-            deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
-            wiped = await db.get_chat_channel(stream["chat_channel_id"])
-            if wiped:
-                _overlay_clear(wiped["name"])         # the chat room is not told of this wipe; the overlay is
-            if deleted > 0:
-                logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
+        await _session_after_offline(stream, session)
     except Exception as e:
         logger.error(f"Error finalizing stream {stream_name} offline: {e}")
         # Ensure stream goes offline even if VOD finalization fails
         try:
-            await _stream_set_offline(stream_id)
+            await _session_set_offline(stream_id, session)
         except (OSError, ValueError):
             pass
 
@@ -11651,7 +11715,7 @@ async def http_stream_event(request: web.Request) -> web.Response:
 
                 # Spawn grace period task — waits before triggering encoding/offline
                 logger.info(f"Stream {stream['name']} disconnected, starting 7s grace period...")
-                task = asyncio.create_task(_handle_disconnect_grace(stream))
+                task = asyncio.create_task(_handle_disconnect_grace(stream, _stream_sessions.get(stream_id)))
                 _disconnect_grace_tasks[stream_id] = task
 
     return web.json_response({"ok": True})
@@ -12061,6 +12125,10 @@ async def _viewer_sync_once(paths=None) -> int:
     rows = await cursor.fetchall()
     counts = _viewers.sample()
     _viewers.forget_except([r["id"] for r in rows], seen)
+    now_m = monotonic()
+    for sid in [k for k, v in _stream_sessions.items()
+                if v["ended"] and now_m - v["ended_at"] > _SESSION_KEEP_SECONDS]:
+        _stream_sessions.pop(sid, None)
     written = 0
     for r in rows:
         if r["is_live"] != 1:
@@ -12372,6 +12440,7 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
 
     async with _stream_state_lock:
         path_key = _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
+        session = _stream_sessions.get(stream_id)       # the session this End now ends
     new_key_set = False
     if regenerate:
         # First: from here on the old credential is refused at publish
@@ -12393,7 +12462,7 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
         task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
         _live_ops_tasks.add(task)
         task.add_done_callback(_live_ops_tasks.discard)
-    await _stream_end_session(stream)
+    await _stream_end_session(stream, session)
     try:
         await send_notification(stream["user_id"], "stream_ended", "Your stream was ended",
                                 "An administrator ended your stream.", {"stream_id": stream_id})

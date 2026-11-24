@@ -74,6 +74,7 @@ def fresh():
     server._live_ops_rate = server._viewers_mod.RateWindow(500, 60.0)
     server._rtmp_stream_paths.clear()
     server._relay_stop_held.clear()
+    server._stream_sessions.clear()
     server._recorder_errors.clear()
     server.active_relays.clear()
     server.active_recordings.clear()
@@ -533,7 +534,7 @@ async def test_end_now_without_regeneration_keeps_the_key_and_never_deletes_reco
         chunk.write_bytes(b"x" * 10)
         finalised = []
 
-        async def fake_stop(stream_id, force=False):
+        async def fake_stop(stream_id, force=False, **kw):
             finalised.append(stream_id)
         saved = server.stop_vod_recording
         server.stop_vod_recording = fake_stop
@@ -589,7 +590,7 @@ async def test_stop_relays_audit_and_holds_the_monitor_back(w, mtx):
     sid = w.streams["private"]["id"]
     stopped = []
 
-    async def fake_stop(stream_id, force=False):
+    async def fake_stop(stream_id, force=False, **kw):
         stopped.append((stream_id, force))
         server.active_relays.pop(stream_id, None)
     saved = server.stop_stream_relays
@@ -614,7 +615,7 @@ async def test_stop_relays_audit_and_holds_the_monitor_back(w, mtx):
 async def test_a_moderator_does_not_read_the_live_operation_entries_of_the_audit_log(w, mtx):
     sid = w.streams["private"]["id"]
 
-    async def fake_stop(stream_id, force=False):
+    async def fake_stop(stream_id, force=False, **kw):
         server.active_relays.pop(stream_id, None)
     saved = server.stop_stream_relays
     server.stop_stream_relays = fake_stop
@@ -717,7 +718,7 @@ async def test_end_now_stops_relays_at_once_and_finishes_a_recorder_whose_source
         seen.append(("graceful", process.name))
         return "q"
 
-    async def fake_stop(stream_id, force=False):
+    async def fake_stop(stream_id, force=False, **kw):
         seen.append(("stop_vod", force))
 
     class Proc:
