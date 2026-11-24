@@ -59,7 +59,9 @@ SENSITIVE_PATTERNS = [
     # the token is not prefixed by anything the other rules know, and proxies log the path.
     (re.compile(r'(/api/streams/schedule/feed/)[^/\s?"\']+'), r'\1[REDACTED]'),
     # Chat overlay tokens (ov_...) travel in a URL fragment and a socket frame, never in a path; redacted anyway.
-    (re.compile(r'ov_[A-Za-z0-9_-]{43}'), '[OVERLAY_TOKEN_REDACTED]'),
+    # A token stands alone: the lookarounds keep the pattern from matching inside longer base64 text
+    # (an encrypted value in a logged SQL parameter).
+    (re.compile(r'(?<![A-Za-z0-9_-])ov_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])'), '[OVERLAY_TOKEN_REDACTED]'),
 ]
 
 # Cheap pre-check so ordinary log lines skip the full pattern list.
