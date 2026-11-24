@@ -691,6 +691,7 @@ async def _whip_and_hook_together(w, records):
         assert await _whip(w) == 201
         sid = w.sid["pub"]
         session = server._stream_sessions[sid]
+        assert session["path"] == w.keys["pub"], "a WHIP publish is on the path <key>, not live/<key>"
         assert await w.publish() == 200                       # MediaMTX's own publish hook after it
         assert server._stream_sessions[sid] is session, "the second report of the same go-live began another session"
         assert len(await w.notes("m1")) == 1 and len(w.live_events("sys")) == 1
@@ -698,6 +699,7 @@ async def _whip_and_hook_together(w, records):
         w.clock.now += 3600
         assert await w.publish() == 200                       # hook first this time
         session = server._stream_sessions[sid]
+        assert session["path"] == "live/" + w.keys["pub"], session
         assert await _whip(w) == 201
         assert server._stream_sessions[sid] is session, "the WHIP report after the hook began another session"
         assert len(await w.notes("m1")) == 2 and len(w.live_events("sys")) == 2

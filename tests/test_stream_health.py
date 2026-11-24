@@ -33,7 +33,7 @@ def test_parse_captures():
     assert q["live/rtmp_tokx"]["source_type"] == "rtspSession" and q["live/rtmp_tokx"]["codecs"] == ["H264"]
     full = sh.parse_paths(fx("paths_list_rtmp_full_item.json"))["live/livekey_a"]
     assert full["codecs"] == ["H264", "MPEG-4 Audio"]
-    w = sh.parse_paths(fx("paths_list_webrtc_HANDWRITTEN.json"))["live/livekey_w"]
+    w = sh.parse_paths(fx("paths_list_webrtc_HANDWRITTEN.json"))["livekey_w"]
     assert w["source_type"] == "webRTCSession" and sh.SOURCE_LABELS["webRTCSession"] == "WebRTC"
     assert sh.parse_paths(fx("paths_list_empty.json")) == {}
 

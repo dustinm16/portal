@@ -671,7 +671,7 @@ _relay_restart_cooldown: dict[int, float] = {}
 # stream goes offline (_stream_set_offline). In memory.
 _relay_stop_held: set = set()
 
-# The live session of each stream, kept in memory: stream id -> {"id", "at", "ended", "ended_at"}. A
+# The live session of each stream, kept in memory: stream id -> {"id", "at", "ended", "ended_at", "path"}. A
 # publish that is not a repeat report of the go-live under way makes a new one (_stream_session_begin; the hook
 # and the WHIP proxy both report a browser publish, and the second report joins the session), so a finalisation that started for an earlier
 # session can tell that the stream has been published again since and leaves everything of the new
@@ -6773,7 +6773,7 @@ async def _announce_go_live(stream_id: int) -> None:
                            f"{type(e).__name__}: {e}")
 
 
-async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = None) -> None:
+async def _mark_stream_live(stream: dict, ip: str, mtx_path: Optional[str] = None) -> None:
     """A publisher arrived (the MediaMTX hook for RTMP and the like, or the WHIP proxy):
     mark the stream live and, on a change of state, record it, tell the stream's chat and
     announce it (notification, card and webhook) once per cooldown.
@@ -6782,6 +6782,7 @@ async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = Non
     caller's copy may be older than a publish hook that ran in the meantime. The claim is
     one conditional UPDATE taken under the stream state lock, so a retried hook, an encoder
     that restarts quickly, or the same stream arriving by both paths announces only once.
+    `mtx_path` is the MediaMTX path the publisher is on ("live/<key>" for RTMP and RTSP, "<key>" for WHIP).
     The announcement carries no key; the watch page resolves access itself.
 
     A second report of the go-live that is already under way (the hook and the WHIP proxy both report a
@@ -6804,7 +6805,7 @@ async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = Non
         joined = session is not None and session.get("marking", False) and not session["ended"]
         begun = not joined and (ending or not was_live)
         if begun:
-            session = _stream_session_begin(stream_id, path_key)
+            session = _stream_session_begin(stream_id, mtx_path)
             session["marking"] = True
             if not was_live:
                 _viewers.start_session(stream_id)       # fresh peak and unique figures
@@ -6814,8 +6815,8 @@ async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = Non
                 _relay_stop_held.discard(stream_id)
                 _recorder_errors.pop(stream_id, None)
                 _ingest_forget(stream_id)
-        elif path_key and not session["ended"]:
-            session["path"] = path_key                  # the same session, reported again: its path is the latest one
+        elif mtx_path and not session["ended"]:
+            session["path"] = mtx_path                  # the same session, reported again: its path is the latest one
     try:
         await db.set_stream_live(stream_id, True)
     finally:
@@ -9760,20 +9761,20 @@ async def _handle_disconnect_grace(stream: dict, session=None) -> None:
             _disconnect_grace_tasks.pop(stream_id, None)
 
 
-def _stream_session_begin(stream_id: int, path_key: Optional[str] = None) -> dict:
-    """A publish was accepted: this is the stream's live session from now on. `path_key` is the MediaMTX
-    path name (under live/) it was published on, the stream's key or a temporary rtmp_ token: it stays the
-    session's path even when the owner replaces the stream key while it is live."""
+def _stream_session_begin(stream_id: int, mtx_path: Optional[str] = None) -> dict:
+    """A publish was accepted: this is the stream's live session from now on. `mtx_path` is the whole MediaMTX
+    path name it was published on: "live/<key>" or "live/<rtmp_ token>" for RTMP and RTSP, "<key>" for a browser
+    (WHIP) publish. It stays the session's path even when the owner replaces the stream key while it is live."""
     global _stream_session_seq
     _stream_session_seq += 1
     session = {"id": _stream_session_seq, "at": monotonic(), "ended": False, "ended_at": None,
-               "path": path_key if isinstance(path_key, str) and path_key else None}
+               "path": mtx_path if isinstance(mtx_path, str) and mtx_path else None}
     _stream_sessions[stream_id] = session
     return session
 
 
 def _session_path(stream_id: int) -> Optional[str]:
-    """The path the stream's running session was published on, or None (not known, or it has ended)."""
+    """The whole MediaMTX path the stream's running session was published on, or None (not known, or it has ended)."""
     session = _stream_sessions.get(stream_id)
     return session["path"] if session and not session["ended"] else None
 
@@ -11700,7 +11701,11 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         # Mark stream as live; the announcement is the same for every way of publishing
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
         vod_stream_key = stream_key if stream_key.startswith("rtmp_") else (real_stream_key or stream_key)
-        await _mark_stream_live(stream, ip, path_key=vod_stream_key)
+        # The session remembers the path MediaMTX itself reports ("live/<key>" for RTMP and RTSP, "<key>" for a
+        # browser publish through WHIP), but only when it ends in the credential that was just accepted: a
+        # publisher cannot name another stream's path as its own.
+        hook_path = path if isinstance(path, str) and path.split("/")[-1] == stream_key and _MTX_PATH_RE.match(path) and ".." not in path else None
+        await _mark_stream_live(stream, ip, mtx_path=hook_path or _live_path(vod_stream_key))
 
         # Start VOD recording on every publish (guards against duplicates internally)
         asyncio.create_task(start_vod_recording(stream, vod_stream_key))
@@ -12144,6 +12149,14 @@ def _stream_state_forget(stream_id: int) -> None:
     _ingest_forget(stream_id)
 
 
+_MTX_PATH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}\Z")
+
+
+def _live_path(key: Optional[str]) -> Optional[str]:
+    """The MediaMTX path of a stream published over RTMP or RTSP with `key` (a stream key or an rtmp_ token)."""
+    return f"live/{key}" if key else None
+
+
 def _ingest_forget(stream_id: int) -> None:
     _ingest_stats.pop(stream_id, None)
     _ingest_invalidate()
@@ -12164,8 +12177,9 @@ async def _ingest_live_keys() -> dict:
 
 async def _ingest_tick(live_ids: list, payload, now: Optional[float] = None) -> None:
     """Fold one MediaMTX paths list (already fetched by the caller; this makes no API call) into the
-    per-stream entries of the streams that are live. A path is "live/<key>", or "live/<rtmp_ token>" for
-    a stream published with a temporary token (_rtmp_stream_paths). `now` is when the list was fetched
+    per-stream entries of the streams that are live. The path is the one the session was published on
+    (_session_path: "live/<key>", "live/<rtmp_ token>", or "<key>" for a browser publish); when none is
+    known, "live/<key>" or "live/<rtmp_ token>" (_rtmp_stream_paths). `now` is when the list was fetched
     (the rate is measured between fetches), the present moment when not given."""
     if now is None:
         now = monotonic()
@@ -12177,13 +12191,13 @@ async def _ingest_tick(live_ids: list, payload, now: Optional[float] = None) -> 
     parsed = stream_health.parse_paths(payload)
     keys = await _ingest_live_keys()
     for sid in live:
-        key = _session_path(sid) or _rtmp_stream_paths.get(sid) or keys.get(sid)
-        if not key:
+        name = _session_path(sid) or _live_path(_rtmp_stream_paths.get(sid) or keys.get(sid))
+        if not name:
             continue
         entry = _ingest_stats.get(sid)
         if entry is None:
             entry = _ingest_stats[sid] = stream_health.new_entry(now)
-        stream_health.observe(entry, parsed.get(f"live/{key}"), now)
+        stream_health.observe(entry, parsed.get(name), now)
 
 
 async def _ingest_feed(payload, fetched_at: float) -> None:
@@ -12381,8 +12395,8 @@ def _mediamtx_api_base(cfg: dict) -> str:
     return f"https://127.0.0.1:{int(port) if isinstance(port, (int, str)) and str(port).isdigit() else 9997}"
 
 
-async def _mediamtx_kick_publisher(path_key: str) -> dict:
-    """Disconnect the publisher of path live/<path_key> through MediaMTX's control API (administrator
+async def _mediamtx_kick_publisher(mtx_path: str) -> dict:
+    """Disconnect the publisher of the MediaMTX path `mtx_path` ("live/<key>", or "<key>" for a browser publish) through MediaMTX's control API (administrator
     action only, two calls, never per tick): read the path's source, then POST the kick route of its type
     (stream_health.KICK_ROUTES, run against v1.21.3 and, for RTMP and RTSP, v1.9.3: tests/fixtures/mediamtx-1.21.3 and -1.9.3).
     Returns {kicked, reason, source}; a source type without a route (SRT, HLS, camera) is not kicked."""
@@ -12398,7 +12412,7 @@ async def _mediamtx_kick_publisher(path_key: str) -> dict:
     timeout = aiohttp.ClientTimeout(total=_MEDIAMTX_API_TIMEOUT)
     try:
         async with aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=ctx)) as http:
-            async with http.get(f"{base}/v3/paths/get/live/{quote(path_key, safe='')}") as resp:
+            async with http.get(f"{base}/v3/paths/get/{quote(mtx_path, safe='/')}") as resp:
                 if resp.status == 404:
                     return {"kicked": False, "reason": "no publisher is connected", "source": None}
                 if resp.status != 200:
@@ -12559,14 +12573,14 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
             return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
 
         async with _stream_state_lock:
-            path_key = _session_path(stream_id) or _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
+            mtx_path = _session_path(stream_id) or _live_path(_rtmp_stream_paths.get(stream_id) or stream["stream_key"])
         new_key_set = False
         if regenerate:
             # First: from here on the old credential is refused at publish
             new_key_set = await db.regenerate_stream_key(stream_id, generate_stream_key())
             await db.revoke_rtmp_tokens_for_stream(stream_id)
             _stream_access_changed(stream_id)
-        kick = await _mediamtx_kick_publisher(path_key)
+        kick = await _mediamtx_kick_publisher(mtx_path)
         async with _stream_state_lock:
             _rtmp_stream_paths.pop(stream_id, None)
             grace = _disconnect_grace_tasks.pop(stream_id, None)
@@ -12639,8 +12653,8 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     async with _stream_state_lock:
         private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     # MediaMTX path includes the RTMP app name "live"
-    path_key = f"live/{private_key}"
-    url = f"https://127.0.0.1:{hls_port}/{path_key}/{hls_path}"
+    mtx_path = f"live/{private_key}"
+    url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
     # Forward the query string: MediaMTX (v1.1x+) tags every variant playlist and
     # segment URL with ?session=<secret> and answers 401 without it.
     # A ?token= is the viewer's own credential, not MediaMTX's: it is not passed on.
@@ -12669,7 +12683,7 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                     text = content.decode("utf-8")
                     # Rewrite segment URLs to go through our proxy
                     # Use the same key type that was used to access (preserves public/private key)
-                    text = text.replace(f"/{path_key}/", f"/api/stream/{key}/hls/")
+                    text = text.replace(f"/{mtx_path}/", f"/api/stream/{key}/hls/")
                     content = text.encode("utf-8")
                     if resp.status == 200:
                         # A playlist (not every segment) is the sign of a player that is running
@@ -12883,7 +12897,7 @@ _WEBRTC_SESSION_TTL = 7 * 24 * 3600
 _WEBRTC_SESSION_MAX_PER_STREAM = {"whep": 64, "whip": 16}
 
 
-def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, path_key: str,
+def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str,
                              user_id: Optional[int] = None) -> None:
     """Record a session opened via the proxy; prune expired and excess entries."""
     if not session_id:
@@ -12901,7 +12915,7 @@ def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, path_ke
         if victim is None:
             victim = next(iter(_webrtc_sessions))
         del _webrtc_sessions[victim]
-    _webrtc_sessions[session_id] = (kind, stream_id, path_key, now, user_id)
+    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now, user_id)
 
 
 async def _authorize_webrtc_session(request: web.Request, key: str, session_id: str
@@ -13052,7 +13066,7 @@ async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
 
                 if resp.status == 201:
                     # Mark stream as live and announce it, the same way as a hook publish
-                    await _mark_stream_live(stream, get_client_ip(request))
+                    await _mark_stream_live(stream, get_client_ip(request), mtx_path=full_stream_key)
                     logger.info(f"Stream {stream['name']} started via WHIP")
 
                     # Rewrite Location header
@@ -13101,7 +13115,7 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
     rec, error, status, stream = await _authorize_webrtc_session(request, stream_key, session_id)
     if error:
         return _stream_not_found() if status == 404 else web.json_response({"error": error}, status=status)
-    kind, _stream_id, path_key = rec[:3]
+    kind, _stream_id, mtx_path = rec[:3]
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -13112,7 +13126,7 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
 
     method = request.method
     # WebRTC uses plain HTTP internally (localhost only)
-    url = f"http://127.0.0.1:{webrtc_port}/{path_key}/{kind}/{session_id}"
+    url = f"http://127.0.0.1:{webrtc_port}/{mtx_path}/{kind}/{session_id}"
 
     try:
         body = await request.read()

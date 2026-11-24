@@ -1,10 +1,10 @@
 {
-  "_note": "HAND-WRITTEN, not captured: ffmpeg 5.1 has no WHIP output so no WebRTC publisher could be run. Shape follows the MediaMTX documentation (source.type webRTCSession). Parser tolerance only, no claim about a real capture.",
+  "_note": "HAND-WRITTEN, not captured: ffmpeg 5.1 has no WHIP output so no WebRTC publisher could be run. Shape follows the MediaMTX documentation (source.type webRTCSession). The name has no live/ folder because the portal's WHIP proxy publishes on the path <key> (a path published without a folder is listed under its own name: checked on 1.21.3 with an RTSP publish). Parser tolerance only, no claim about a real capture.",
   "itemCount": 1,
   "pageCount": 1,
   "items": [
     {
-      "name": "live/livekey_w",
+      "name": "livekey_w",
       "ready": true,
       "readyTime": "2026-11-23T22:20:00.000000000Z",
       "source": {

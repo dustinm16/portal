@@ -327,6 +327,16 @@ async def publish_hook(w, path):
     return await server.http_stream_auth(hook)
 
 
+async def publish_hook_on(w, path, password=""):
+    """The MediaMTX publish hook for any path name, as it arrives (a browser publish is on "<key>")."""
+    hook = make_mocked_request("POST", "/api/stream/auth", transport=Transport("127.0.0.1"))
+
+    async def _json():
+        return {"action": "publish", "path": path, "ip": "198.51.100.7", "user": "", "password": password, "query": ""}
+    hook.json = _json
+    return await server.http_stream_auth(hook)
+
+
 async def rotate_key(w, sid):
     """The owner replaces the stream key while the encoder keeps publishing on the old path."""
     new = "live_" + "N" * 24
@@ -374,10 +384,55 @@ async def test_a_new_publish_sets_the_path_and_the_end_clears_it(w):
     sid, key = w.streams["public"]["id"], w.streams["public"]["live"]
     async with Spy(w):
         assert (await publish_hook(w, key)).status == 200
-        assert server._session_path(sid) == key if hasattr(server, "_session_path") else True
+        assert server._session_path(sid) == "live/" + key, server._session_path(sid)
         await server._stream_end_session(await w.db.get_user_stream(sid))
         assert server._session_path(sid) is None                  # no path for an ended session
         await w.db.set_stream_live(sid, True)
+
+
+@with_clock
+async def test_a_browser_publish_gets_ingest_readings_on_its_own_path(w, clock):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook_on(w, key)).status == 200          # WHIP: MediaMTX's path is <key>, no live/
+        assert server._session_path(sid) == key
+        a = paths_for("paths_list_two_samples_5s_apart_a.json", livekey_a=key)
+        b = paths_for("paths_list_two_samples_5s_apart_b.json", livekey_a=key)
+        for data in (a, b):
+            for it in data["items"]:
+                if it["name"] == "live/" + key:
+                    it["name"] = key
+        await tick(clock, a)
+        await tick(clock, b)
+        for i in range(20):
+            await tick(clock, _counted(b, 10_000_000 + i * 500_000), dt=5.0)
+        st, d, _resp = await health(w, "owner", sid)
+        assert st == 200 and d["ingest"]["available"], d["ingest"]
+        assert d["ingest"]["bitrate_bps"] is not None, d["ingest"]
+        await asyncio.sleep(0.05)
+
+
+@with_mtx("webRTCSession")
+async def test_end_now_disconnects_a_browser_publish_on_its_own_path(w, mtx):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook_on(w, key)).status == 200
+        st, body = await end_now(w, sid, {"regenerate_key": False})
+        assert st == 200 and body["publisher_disconnected"] is True, body
+        assert [p for m, p in mtx.calls if m == "GET"] == [f"/v3/paths/get/{key}"], mtx.calls
+        assert ("POST", "/v3/webrtcsessions/kick/" + mtx.sid) in mtx.calls, mtx.calls
+
+
+@with_world
+async def test_the_hook_path_is_remembered_only_when_it_ends_in_the_accepted_key(w):
+    sid, key = w.streams["public"]["id"], w.streams["public"]["live"]
+    async with Spy(w):
+        # OBS with the key as the password and some other path: the path is not the key's, so it is not trusted
+        assert (await publish_hook_on(w, "live/someone_elses_path", password=key)).status == 200
+        assert server._session_path(sid) == "live/" + key, server._session_path(sid)
+        await server._stream_end_session(await w.db.get_user_stream(sid))
+        assert (await publish_hook_on(w, "live/../../x/" + key)).status == 200
+        assert server._session_path(sid) == "live/" + key, server._session_path(sid)
 
 
 @with_mtx()
