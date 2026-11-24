@@ -402,6 +402,26 @@ async def test_the_live_list_poll_cannot_use_up_the_budget_of_the_actions(w, mtx
     assert '"live_ops_list"' in src and "status=429" not in src[src.index("async def _live_ops_gate"):src.index("async def http_admin_live_streams")]
 
 
+@with_mtx()
+async def test_relays_an_administrator_stopped_are_not_reported_as_failing(w, mtx):
+    sid = w.streams["private"]["id"]
+    rel = await w.db.create_relay_destination(sid, "custom", "Twitch", "rtmp://203.0.113.5/app", "KEYKEYKEY")
+    await w.db.update_relay_last_error(rel["id"], "Exit code -15: rtmp://203.0.113.5/app/KEYKEYKEY")
+    # the relay was running, an administrator stopped it: the process ended with SIGTERM
+    st, d, _ = await health(w, "owner", sid)
+    assert d["relays"][0]["state"] == "failed" and "relay_failing" in [x["code"] for x in d["warnings"]]      # the unheld case is a failure
+    r = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
+    assert r.status == 200
+    for user in ("owner", "admin"):
+        st, d, resp = await health(w, user, sid)
+        assert d["relays"][0]["state"] == "stopped_by_admin", d["relays"]
+        assert d["relays"][0]["last_error"] is None and d["relays"][0]["last_error_at"] is None
+        assert "relay_failing" not in [x["code"] for x in d["warnings"]], d["warnings"]
+        assert "-15" not in resp.body.decode() and "203.0.113.5" not in resp.body.decode()
+    await server._stream_set_offline(sid)           # the hold ends with the session
+    assert sid not in server._relay_stop_held
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

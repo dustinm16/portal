@@ -45,7 +45,7 @@
      * own chat ends and, as at any stream end, its messages are cleared (a chat shared with other streams is kept). */
     function questionText(action, name, regenerate) {
         if (action === 'stop-relays') {
-            return 'Stop all relays of "' + name + '"? The stream itself keeps running. The relays stay stopped until the stream ends; the owner can start them again on the next stream.';
+            return 'Stop all relays of "' + name + '"? The stream itself keeps running. The relays stay stopped until the stream ends or the portal is restarted (a restart ends every live session); nothing starts them again before that, and the owner sees them as stopped by an administrator. They start as usual on the next stream.';
         }
         return 'End "' + name + '" now? The publisher is disconnected and the stream goes offline for its viewers. '
             + "The stream chat's live state ends too and, as at any stream end, its messages are cleared. "

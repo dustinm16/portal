@@ -12233,14 +12233,16 @@ async def _stream_health_relays(stream: dict) -> list:
             state = "running"
         elif not r.get("enabled"):
             state = "disabled"
+        elif stream_id in _relay_stop_held and stream.get("is_live") == 1:
+            state = "stopped_by_admin"          # Stop relays: not a failure, whatever the last exit looked like
         elif error and stream.get("is_live") == 1 and (started is None or err_at is None or err_at >= started - 5):
             state = "failed"
         else:
             state = "idle"
         out.append({"id": r["id"], "platform": r.get("platform"), "name": str(r.get("name") or "")[:80],
                     "enabled": bool(r.get("enabled")), "state": state,
-                    "last_error": error if state != "running" else None,
-                    "last_error_at": r.get("last_error_at") if error and state != "running" else None})
+                    "last_error": error if state not in ("running", "stopped_by_admin") else None,
+                    "last_error_at": r.get("last_error_at") if error and state not in ("running", "stopped_by_admin") else None})
     return out
 
 

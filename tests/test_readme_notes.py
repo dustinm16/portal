@@ -1299,10 +1299,10 @@ check("1.24.0: the thresholds stated are the ones in the code",
       and '"drop_baseline_seconds": 300.0' in (ROOT / "docs" / "API.md").read_text()
       and '"no_data_seconds": 20' not in (ROOT / "docs" / "API.md").read_text())
 check("1.24.0: the static versions stated are the ones the pages load",
-      "`stream-health.js` is new at version 1" in _sec240 and "`live-ops-admin.js` is new at version 1" in _sec240
+      "`stream-health.js` is new at version 2" in _sec240 and "`live-ops-admin.js` is new at version 2" in _sec240
       and "`streams.js` is version 53" in _sec240
-      and "/static/js/stream-health.js?v=1" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/live-ops-admin.js?v=1" in (ROOT / "static" / "admin.html").read_text()
+      and "/static/js/stream-health.js?v=2" in (ROOT / "static" / "watch.html").read_text()
+      and "/static/js/live-ops-admin.js?v=2" in (ROOT / "static" / "admin.html").read_text()
       and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
 _docs24 = (ROOT / "static" / "api-docs.html").read_text()

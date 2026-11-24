@@ -51,7 +51,8 @@
         return (n / 1073741824).toFixed(2) + ' GB';
     }
 
-    var RELAY_STATE = { running: 'running', failed: 'failing', idle: 'not running', disabled: 'switched off' };
+    var RELAY_STATE = { running: 'running', failed: 'failing', idle: 'not running', disabled: 'switched off',
+        stopped_by_admin: 'stopped by an administrator' };
     var RECORDER_STATE = {
         recording: 'recording', ending: 'finishing', failed: 'ended with an error',
         stopped_by_guard: 'stopped by the disk guard', refused_by_guard: 'not started (disk guard)',

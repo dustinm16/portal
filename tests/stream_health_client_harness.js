@@ -76,6 +76,13 @@ class N {
   const svgs = panel.panel.find(n => n.tagName === 'SVG'); const lines = panel.panel.find(n => n.tagName === 'POLYLINE');
   check('the sparkline is built from DOM calls: one svg with one polyline of 4 points', svgs.length === 1 && lines.length === 1 && lines[0].attrs.points.split(' ').length === 4, lines.map(l => l.attrs.points));
   check('relay text from the server stays text (no markup was written)', panel.panel.find(n => n.innerHTMLWrites > 0).length === 0 && text.includes('<img src=x onerror=alert(1)>'));
+  // a relay an administrator stopped is not a failure
+  const body2 = new N('DIV');
+  ctx.StreamHealth.render(body2, { live: true, uptime_s: 5, ingest: { available: false, reason: 'x' },
+    relays: [{ name: 'Twitch', state: 'stopped_by_admin', last_error: null }], recorder: { state: 'not_recording' }, warnings: [] });
+  const t2 = body2.textContent;
+  check('a relay stopped by an administrator is shown as that, not as failing', t2.includes('Twitch: stopped by an administrator') && !t2.includes('failing') && !t2.includes('exit code'), t2);
+  check('the Stop relays question says what a restart does', ctx.LiveOpsAdmin.questionText('stop-relays', 'S', true).includes('restarted'));
   // polling only while visible
   ctx.document.hidden = true; ctx.document.visibilityState = 'hidden';
   await intervals[0].f(); await new Promise(r => setImmediate(r));

@@ -38,12 +38,12 @@ else:
 
 watch = (STATIC / "watch.html").read_text(encoding="utf-8")
 admin = (STATIC / "admin.html").read_text(encoding="utf-8")
-check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=1" in watch
+check("watch.html loads stream-health.js after portal.js", "/static/js/stream-health.js?v=2" in watch
       and watch.index("/static/js/portal.js") < watch.index("/static/js/stream-health.js"))
 check("the health button is hidden until the page decides", 'id="health-btn" style="display: none;"' in watch
       and "Number(streamData.user_id) === Number(currentUser.id)" in watch and "Portal.isAdmin(currentUser)" in watch)
 check("admin.html has the Live streams tab and loads live-ops-admin.js", 'id="tab-btn-livestreams"' in admin
-      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=1" in admin)
+      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=2" in admin)
 for name in ("stream-health.js", "live-ops-admin.js"):
     src = (STATIC / "js" / name).read_text(encoding="utf-8")
     check(f"{name} has no innerHTML, no inline handler and no emoji", "innerHTML" not in src and "onclick" not in src.lower()
