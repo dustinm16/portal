@@ -7,6 +7,12 @@ const fs = require('fs');
 const vm = require('vm');
 const results = [];
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
+// A check that needs its own deadline: a hang prints FAIL for that check instead of stalling the whole file.
+async function withDeadline(name, fn, ms) {
+  let timer;
+  const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('no answer within ' + (ms || 5000) + ' ms')), ms || 5000); });
+  try { await Promise.race([fn(), late]); } catch (e) { check(name + ' (did not finish)', false, e && e.message); } finally { clearTimeout(timer); }
+}
 
 class N {
   constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this.attrs = {}; this.listeners = {}; this.style = {}; this.className = ''; this.disabled = false; this.checked = false; this.innerHTMLWrites = 0; }
@@ -154,5 +160,30 @@ class N {
   clock += 700;
   await tbody.find(n => n.tagName === 'BUTTON' && n.textContent === 'Yes, stop the relays')[0].fire('click', { detail: 1 });
   check('and then sends it', calls.filter(c => c.kind === 'stop-relays').length === 1);
+  // ---- an open question survives the refresh
+  await withDeadline('the refresh leaves an open question alone', async () => {
+    let rows2 = [{ id: 9, name: 'Quiet hour', owner: 'bob', uptime_s: 60, bitrate_bps: null, viewers: 1, relays_running: 0, recording: false }];
+    const lists = [];
+    const api2 = async (kind) => { lists.push(kind); return { ok: true, data: { streams: rows2 } }; };
+    const tb = new N('TBODY');
+    const c2 = ctx.LiveOpsAdmin.mount({ tbody: tb, note: new N('P'), isShown: () => true }, api2);
+    await c2.load();
+    await tb.find(n => n.tagName === 'BUTTON' && n.textContent === 'End now')[0].fire('click');
+    const yes = tb.find(n => n.tagName === 'BUTTON' && n.textContent === 'Yes, end the stream')[0];
+    check('the question is a row of its own, full width, that the page can style', tb.find(n => n.className === 'live-ops-confirm-row' && n.children[0].attrs.colspan === '8').length === 1);
+    const askedAt = c2.state.asking.at;
+    const n0 = lists.length;
+    rows2 = [Object.assign({}, rows2[0], { uptime_s: 3700, viewers: 5 })];
+    await c2.load();
+    check('a refresh reads the list again', lists.length === n0 + 1);
+    check('with the question open the confirm button is the same element, still in the table', tb.find(n => n === yes).length === 1);
+    check('and the question keeps its guard time', c2.state.asking && c2.state.asking.at === askedAt);
+    await tb.find(n => n.tagName === 'BUTTON' && n.textContent === 'Keep it as it is')[0].fire('click');
+    check('cancelling shows the list as the last refresh read it', tb.find(n => n.className === 'live-ops-confirm').length === 0 && tb.textContent.includes('1 h 1 min') && tb.textContent.includes('5'));
+    await tb.find(n => n.tagName === 'BUTTON' && n.textContent === 'End now')[0].fire('click');
+    rows2 = [];
+    await c2.load();
+    check('a stream that ended meanwhile closes its question', tb.find(n => n.className === 'live-ops-confirm').length === 0 && tb.textContent.includes('No stream is live.'));
+  });
   console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

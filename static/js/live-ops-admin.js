@@ -4,7 +4,8 @@
  * session (optionally replacing the stream key so the encoder cannot reconnect with the old one).
  * Both ask first, on their own row below the stream, never under the button that was clicked; the
  * confirm button ignores a click within CONFIRM_DELAY_MS of the question opening and the second
- * click of a double click, and every action is refused while another request is in flight.
+ * click of a double click, and every action is refused while another request is in flight. The refresh
+ * every REFRESH_MS does not redraw the table while a question is open.
  *
  * Only administrators get past /api/admin/live-streams (anyone else is answered 404), so the tab
  * shows itself only when the list loads. Every cell is built with textContent.
@@ -150,6 +151,9 @@
             } catch (e) {
                 note.textContent = 'Could not load the live streams.';
             }
+            /* An open question keeps its row and its buttons as they are: the list is read again, but nothing is drawn
+             * until the question is answered or cancelled (a stream that has ended meanwhile closes it, as draw does). */
+            if (state.asking && state.rows.some(function (r) { return r.id === state.asking.id; })) return;
             draw();
         }
 

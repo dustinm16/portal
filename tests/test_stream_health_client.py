@@ -27,9 +27,12 @@ node = shutil.which("node")
 if not node:
     check("node is available", False, "install node to run the client checks")
 else:
-    out = subprocess.run([node, str(ROOT / "tests" / "stream_health_client_harness.js"), str(STATIC / "js" / "portal.js"),
-                          str(STATIC / "js" / "stream-health.js"), str(STATIC / "js" / "live-ops-admin.js")],
-                         capture_output=True, text=True, timeout=90)
+    try:
+        out = subprocess.run([node, str(ROOT / "tests" / "stream_health_client_harness.js"), str(STATIC / "js" / "portal.js"),
+                              str(STATIC / "js" / "stream-health.js"), str(STATIC / "js" / "live-ops-admin.js")],
+                             capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired as e:
+        out = subprocess.CompletedProcess(e.cmd, 1, "", "the harness did not finish within 90 seconds")
     lines = [l for l in out.stdout.splitlines() if l.startswith("RESULT ")]
     check("the harness ran", bool(lines) and out.returncode == 0, (out.stderr or out.stdout)[-600:])
     for line in lines:
@@ -43,7 +46,9 @@ check("watch.html loads stream-health.js after portal.js", "/static/js/stream-he
 check("the health button is hidden until the page decides", 'id="health-btn" style="display: none;"' in watch
       and "Number(streamData.user_id) === Number(currentUser.id)" in watch and "Portal.isAdmin(currentUser)" in watch)
 check("admin.html has the Live streams tab and loads live-ops-admin.js", 'id="tab-btn-livestreams"' in admin
-      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=2" in admin)
+      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=3" in admin)
+check("the question row wraps inside the table: a scoped rule gives its cell normal white-space",
+      re.search(r"#live-ops-body \.live-ops-confirm-row\s*>\s*td\s*\{[^}]*white-space:\s*normal", admin) is not None)
 for name in ("stream-health.js", "live-ops-admin.js"):
     src = (STATIC / "js" / name).read_text(encoding="utf-8")
     check(f"{name} has no innerHTML, no inline handler and no emoji", "innerHTML" not in src and "onclick" not in src.lower()

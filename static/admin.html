@@ -363,6 +363,9 @@
             z-index: 1;
         }
         .sysmon-table tr:hover { background: rgba(255,255,255,0.03); }
+        /* Admin > Live streams: the End now / Stop relays question is a long text on a row of its own; the table cells
+           do not wrap, so this one cell does, and it never makes the table wider than its window. */
+        #live-ops-body .live-ops-confirm-row > td { white-space: normal; overflow-wrap: anywhere; }
         .sysmon-table td.cmdline {
             max-width: 300px;
             overflow: hidden;
@@ -2570,7 +2573,7 @@
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/recordings-admin.js?v=4"></script>
-    <script src="/static/js/live-ops-admin.js?v=2"></script>
+    <script src="/static/js/live-ops-admin.js?v=3"></script>
     <script src="/static/js/maintenance-admin.js?v=2"></script>
     <script src="/static/js/block-ref-admin.js?v=1"></script>
     <script>
