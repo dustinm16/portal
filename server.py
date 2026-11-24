@@ -12323,6 +12323,11 @@ async def http_stream_health(request: web.Request) -> web.Response:
 _LIVE_OPS_LIMIT = 30
 _live_ops_tasks: set = set()       # background steps of End now, kept so they are not collected early
 _live_ops_rate = _viewers_mod.RateWindow(_LIVE_OPS_LIMIT, 60.0)
+# The list is polled every 5 seconds by each open Live streams tab (12 a minute per tab), so it has its own
+# budget and never uses up the one of the two actions: a confirmed End now is not refused because some
+# tabs are open.
+_LIVE_OPS_LIST_LIMIT = 90
+_live_ops_list_rate = _viewers_mod.RateWindow(_LIVE_OPS_LIST_LIMIT, 60.0)
 _MEDIAMTX_API_TIMEOUT = 5
 
 
@@ -12372,7 +12377,7 @@ async def _mediamtx_kick_publisher(path_key: str) -> dict:
         return {"kicked": False, "reason": "media server did not answer", "source": None}
 
 
-async def _live_ops_gate(request: web.Request):
+async def _live_ops_gate(request: web.Request, listing: bool = False):
     """(user, None) for an administrator with a browser session or a full-scope token, else (None, response).
     Non-administrators get 404, scoped tokens and every API key 403: these actions end other people's
     streams, so, like the recordings, they need a full session of an administrator. (There are no other
@@ -12386,8 +12391,9 @@ async def _live_ops_gate(request: web.Request):
         return None, web.json_response({"error": "Not found"}, status=404)
     if str(token.token_id or "").startswith("apikey-") or not has_full_user_scope(token):
         return None, full_scope_required_response()
-    if not _live_ops_rate.allow(str(user["id"])):
-        return None, await _limited(request, "live_ops", "Too many requests", user_id=user["id"],
+    rate, name = (_live_ops_list_rate, "live_ops_list") if listing else (_live_ops_rate, "live_ops")
+    if not rate.allow(str(user["id"])):
+        return None, await _limited(request, name, "Too many requests", user_id=user["id"],
                                     headers={"Retry-After": "10"})
     return user, None
 
@@ -12395,7 +12401,7 @@ async def _live_ops_gate(request: web.Request):
 async def http_admin_live_streams(request: web.Request) -> web.Response:
     """GET /api/admin/live-streams: the streams that are live now, with owner, uptime, bitrate (when the
     server collects it), viewers, running relays and recording state. Administrators only."""
-    admin, refused = await _live_ops_gate(request)
+    admin, refused = await _live_ops_gate(request, listing=True)
     if refused:
         return refused
     cursor = await db.conn.execute(

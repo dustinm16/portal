@@ -72,6 +72,7 @@ def fresh():
     server._stream_state_lock = asyncio.Lock()
     server._stream_health_rate = server._viewers_mod.RateWindow(500, 60.0)
     server._live_ops_rate = server._viewers_mod.RateWindow(500, 60.0)
+    server._live_ops_list_rate = server._viewers_mod.RateWindow(500, 60.0)
     server._rtmp_stream_paths.clear()
     server._relay_stop_held.clear()
     server._stream_sessions.clear()

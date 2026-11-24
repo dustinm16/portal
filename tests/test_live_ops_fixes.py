@@ -378,6 +378,30 @@ async def test_a_new_publish_sets_the_path_and_the_end_clears_it(w):
         await w.db.set_stream_live(sid, True)
 
 
+@with_mtx()
+async def test_the_live_list_poll_cannot_use_up_the_budget_of_the_actions(w, mtx):
+    sid = w.streams["private"]["id"]
+    # the real limits: open tabs poll the list far more than 30 times a minute in all
+    server._live_ops_rate = server._viewers_mod.RateWindow(server._LIVE_OPS_LIMIT, 60.0)
+    list_limit = getattr(server, "_LIVE_OPS_LIST_LIMIT", server._LIVE_OPS_LIMIT)
+    server._live_ops_list_rate = server._viewers_mod.RateWindow(list_limit, 60.0)
+    statuses = []
+    for _ in range(60):                           # five tabs for a minute
+        r = await server.http_admin_live_streams(req(w, "admin", 0, path="", route="admin/live-streams"))
+        statuses.append(r.status)
+    assert statuses == [200] * 60, set(statuses)
+    r = await server.http_admin_stream_end(admin_req(w, "admin", sid, "end", {"regenerate_key": False}))
+    assert r.status == 200, "a confirmed End now was refused after list polling"
+    # each has its own limit and its own name for the administrator's lookup
+    for _ in range(list_limit):
+        await server.http_admin_live_streams(req(w, "admin", 0, path="", route="admin/live-streams"))
+    over = await server.http_admin_live_streams(req(w, "admin", 0, path="", route="admin/live-streams"))
+    assert over.status == 429 and over.headers.get("Retry-After") == "10"
+    assert (await server.http_admin_stream_stop_relays(admin_req(w, "admin", w.streams["public"]["id"], "stop-relays", {}))).status == 200
+    src = Path(server.__file__).read_text()
+    assert '"live_ops_list"' in src and "status=429" not in src[src.index("async def _live_ops_gate"):src.index("async def http_admin_live_streams")]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
