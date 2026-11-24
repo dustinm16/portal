@@ -33,7 +33,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
-import outbound_guard  # noqa: E402,F401
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()      # an aiohttp dial to anything but this machine is refused and recorded (checked at the end)
 import aiohttp  # noqa: E402
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import TestServer, make_mocked_request  # noqa: E402
@@ -1021,6 +1023,39 @@ async def delete_forgets_body(env):
           and sid2 not in server._recorder_errors, "")
 
 
+async def queue_full_body(env):
+    """The writer is not running (nothing takes frames out of the queue): the broadcast that finds the queue full drops
+    that socket and returns at once; another socket on the channel and the chat itself are not touched."""
+    member = Member()
+    server.chat_rooms["strm"] = {(member, env.ids["viewer"], "viewer", "user")}
+    try:
+        stuck = NeverWs()
+        sub = overlay_chat.Subscriber(stuck, None, "strm", env.sid, env.ids["owner"], "d1")
+        sub.on_dead = server._overlay_remove
+        server.overlay_subscribers.setdefault("strm", set()).add(sub)     # no writer task: the queue only fills
+        healthy = overlay_chat.Subscriber(NeverWs(), None, "strm", env.sid, env.ids["owner"], "d2")
+        healthy.on_dead = server._overlay_remove
+        server.overlay_subscribers["strm"].add(healthy)
+        for i in range(overlay_chat.QUEUE_MAX):
+            server._overlay_fanout("strm", {"type": "message", "id": i + 1, "username": "v", "message": "m%d" % i, "created_at": "t"})
+            healthy.queue.get_nowait()                                     # this one is read as fast as it fills
+        check("(setup) the queue of the stuck socket is full and it is still registered",
+              sub.queue.full() and not sub.dead and sub in server.overlay_subscribers["strm"])
+        t0 = time.monotonic()
+        await server.broadcast_to_channel("strm", {"type": "message", "id": 1000, "username": "v", "message": "one more", "created_at": "t"})
+        took = time.monotonic() - t0
+        check("the broadcast that finds the queue full returns at once (%.1f ms)" % (took * 1000), took < 0.05, took)
+        check("the full socket was dropped and left the registry", sub.dead and sub not in server.overlay_subscribers.get("strm", ()))
+        await asyncio.sleep(0.1)
+        check("it was closed with the 'too slow' code", stuck.closed and stuck.close_code == overlay_chat.CLOSE_SLOW, stuck.close_code)
+        check("the other socket on the channel and the chat room got that frame",
+              not healthy.dead and healthy in server.overlay_subscribers["strm"] and healthy.queue.qsize() == 1
+              and len(member.got) == 1, (healthy.dead, healthy.queue.qsize(), len(member.got)))
+    finally:
+        server.overlay_subscribers.pop("strm", None)
+        server.chat_rooms.clear()
+
+
 async def shutdown_refuses_body(env):
     """A server that is stopping accepts no new overlay socket (503 before the upgrade, which the page retries); once
     it is not stopping any more, the same token is served."""
@@ -1054,6 +1089,7 @@ run(audit_moderator_body)
 run(overlay_caps_body)
 run(overlay_rate_body)
 run(delete_forgets_body)
+run(queue_full_body, deadline=10)
 run(shutdown_refuses_body, deadline=20)
 
 

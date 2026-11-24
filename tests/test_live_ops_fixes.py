@@ -10,13 +10,19 @@ Item 4: relays an administrator stopped are shown as such, not as failing.
 Item 5: the Live streams list has its own limiter.
 Item 6: the paths list is read page by page; kick and parser handle MediaMTX 1.9.3 and 1.21.3.
 
+Every test has its own deadline (TEST_DEADLINE seconds): a test that does not finish prints FAIL and the run goes on,
+so a regression that makes a handler wait for ever (for example a lost per-stream claim) shows up as FAIL, not as a
+file that hangs.
+
 Run: venv/bin/python tests/test_live_ops_fixes.py
 """
 import asyncio
 import json
 import os
+import signal
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -315,6 +321,73 @@ async def test_two_stop_relays_requests_at_once_stop_them_once(w, mtx):
     assert not server._relay_stop_claims
     again = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
     assert again.status == 200                  # the claim is gone once the first one is done
+
+
+class AuditWriteFails:
+    """The audit log cannot be written (a locked or full database): create_audit_entry raises."""
+
+    def __init__(self, w):
+        self.w = w
+
+    async def __aenter__(self):
+        self.real = self.w.db.create_audit_entry
+
+        async def boom(*a, **k):
+            raise RuntimeError("database or disk full")
+        self.w.db.create_audit_entry = boom
+        return self
+
+    async def __aexit__(self, *exc):
+        self.w.db.create_audit_entry = self.real
+
+
+@with_mtx()
+async def test_end_now_does_nothing_when_its_audit_entry_cannot_be_written(w, mtx):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w) as spy:
+        assert (await publish_hook(w, key)).status == 200
+        async with AuditWriteFails(w):
+            st, body = await end_now(w, sid, {})
+        assert st == 500 and "nothing was done" in body["error"] and "success" not in body, (st, body)
+        row = await w.db.get_user_stream(sid)
+        assert row["is_live"] == 1, "the stream was ended although the audit entry was not written"
+        assert row["stream_key"] == key, "the key was replaced although the audit entry was not written"
+        assert mtx.calls == [], f"the media server was contacted: {mtx.calls}"
+        assert not server._end_claims, "the claim was not released"
+        assert [e for e, _p in spy.webhooks if e == "stream.offline"] == []
+        assert not [n for n in await w.db.get_notifications(w.users["owner"], limit=50) if n["type"] == "stream_ended"]
+        assert await audit_count(w, "stream_end_now") == 0
+        # the claim is free again: the same request goes through once the audit log works
+        st, body = await end_now(w, sid, {})
+        assert st == 200 and body["success"] is True, (st, body)
+        assert await audit_count(w, "stream_end_now") == 1
+
+
+@with_world
+async def test_stop_relays_does_nothing_when_its_audit_entry_cannot_be_written(w):
+    sid = w.streams["private"]["id"]
+    stopped = []
+    saved = server.stop_stream_relays
+
+    async def spy_stop(stream_id, force=False):
+        stopped.append(stream_id)
+    server.stop_stream_relays = spy_stop
+    server.active_relays[sid] = {1: {"process": None, "dest": {}}}
+    try:
+        async with AuditWriteFails(w):
+            r = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
+        body = json.loads(r.body)
+        assert r.status == 500 and "nothing was done" in body["error"] and "success" not in body, (r.status, body)
+        assert stopped == [], "the relays were stopped although the audit entry was not written"
+        assert sid not in server._relay_stop_held, "the relays were held stopped although the audit entry was not written"
+        assert sid not in server._relay_stop_claims, "the claim was not released"
+        assert len(server.active_relays[sid]) == 1
+        assert await audit_count(w, "stream_stop_relays") == 0
+        r = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
+        assert r.status == 200 and stopped == [sid] and await audit_count(w, "stream_stop_relays") == 1
+    finally:
+        server.stop_stream_relays = saved
+        server.active_relays.pop(sid, None)
 
 
 async def publish_hook(w, path):
@@ -782,14 +855,45 @@ async def test_a_relay_hold_does_not_outlive_its_session_when_the_encoder_comes_
         assert "stopped_by_admin" not in [r["state"] for r in d["relays"]], d["relays"]
 
 
+TEST_DEADLINE = float(os.environ.get("TEST_DEADLINE", "40"))
+
+
+class DeadlineExceeded(BaseException):
+    pass       # not an Exception: a test's own `except Exception` cannot swallow it
+
+
+def run_with_deadline(name, fn, deadline=TEST_DEADLINE):
+    """Run one test with a deadline. A timer signal interrupts a test that waits on the event loop (it raises out of
+    asyncio.run); a second timer, on a thread, ends the process when the loop itself is blocked and the signal cannot
+    be handled."""
+    def on_alarm(_signum, _frame):
+        raise DeadlineExceeded(f"{name} did not finish in {deadline:g} s")
+
+    def give_up():
+        print(f"FAIL {name} (blocked for {deadline + 20:g} s and did not stop)", flush=True)
+        os._exit(1)
+    guard = threading.Timer(deadline + 20, give_up)
+    guard.daemon = True
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    guard.start()
+    signal.setitimer(signal.ITIMER_REAL, deadline)
+    try:
+        fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        guard.cancel()
+
+
 if __name__ == "__main__":
     failed = 0
+    only = sys.argv[1:]
     for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
+        if name.startswith("test_") and callable(fn) and (not only or name in only):
             try:
-                fn()
+                run_with_deadline(name, fn)
                 print("ok  ", name)
-            except Exception:
+            except BaseException:
                 import traceback
                 traceback.print_exc()
                 print("FAIL", name)
