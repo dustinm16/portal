@@ -1340,7 +1340,7 @@ check("1.24.0: the ingest feed is the existing health check's answer: one list c
 check("1.24.0: the notes say moderators do not read the live operation entries, and the code leaves them out",
       "left out for moderators" in text and "visible to moderators in the audit log" not in text
       and "LIVE_OPS_AUDIT_ACTIONS = (\"stream_end_now\", \"stream_stop_relays\")" in _srv24
-      and "+ LIVE_OPS_AUDIT_ACTIONS" in _srv24 and "`stream_end_now` and `stream_stop_relays` (1.24.0)" in _api24)
+      and "+ LIVE_OPS_AUDIT_ACTIONS" in _srv24 and "`stream_end_now`, `stream_stop_relays`, `stream_overlay_create` and `stream_overlay_revoke` (1.24.0)" in _api24)
 _rb240 = re.search(r"- \*\*Rollback\.\*\*(.*?)(?=\n- \*\*Not tested)", _sec240, re.S)
 _rb240 = _rb240.group(1) if _rb240 else ""
 check("1.24.0: the rollback item does not call a rollback fully safe and gives the audit cleanup for 1.23.x moderators",
@@ -1420,9 +1420,19 @@ check("1.24.0 in short: who sees health data, the 30 second readings, what End n
                        "broadcast to everyone who can see the video", "is a credential", "regenerate", "revoke", "ends by itself",
                        "no end date of its own", "password is changed", "signs the owner out everywhere") if n not in _short24l]))
 check("1.24.0 in short is short: at most ten bullets", len(re.findall(r"^- ", _short24, re.M)) <= 10)
-check("1.24.0 notes: the overlay audit actions are stated as shown to moderators, as the code does (they are not in the moderator exclusion)",
-      "`stream_overlay_create`" in _sec24 and "a moderator reads them too" in _sec24
-      and "stream_overlay_create" not in _srv24[_srv24.index("LIVE_OPS_AUDIT_ACTIONS = "):_srv24.index("LIVE_OPS_AUDIT_ACTIONS = ") + 200])
+check("1.24.0 notes: the overlay audit actions are stated as left out for moderators, and the code leaves them out",
+      "`stream_overlay_create`" in _sec24 and "a moderator reads them too" not in _sec24 and "left out for moderators" in _sec24
+      and "STREAM_OVERLAY_AUDIT_ACTIONS = (\"stream_overlay_create\", \"stream_overlay_revoke\")" in _srv24
+      and "+ LIVE_OPS_AUDIT_ACTIONS + STREAM_OVERLAY_AUDIT_ACTIONS" in _srv24
+      and "`stream_overlay_create` and `stream_overlay_revoke` (1.24.0)" in _api24)
+_rb_all = _rb240
+check("1.24.0 rollback: the overlay tokens and the overlay audit entries are deleted before going back, and the notes say why",
+      "DELETE FROM stream_overlay_tokens;" in _rb_all and "would read that owner's chat again" in _rb_all
+      and "'stream_overlay_create','stream_overlay_revoke'" in _rb_all and "work again after a later upgrade" not in _rb_all)
+check("1.24.0 notes and API docs: the overlay owner routes share a limiter, and the sockets are capped per owner and overall",
+      "`overlay_manage`" in _sec24 and "20 a minute per account" in _sec24 and "at most 20 per owner" in _sec24 and "300 on the whole portal" in _sec24
+      and "`overlay_manage`" in _api24 and "overlay_manage" in (ROOT / "static" / "api-docs.html").read_text()
+      and "_limited(request, \"overlay_manage\"" in _srv24 and _srv24.count("_overlay_manage_rate.allow(") == 2)
 _top24 = text.split("## Contents", 1)[0]
 _priv24 = _top24.split("### Privacy by design", 1)[1]
 check("1.24.0 README: the opening list names the health panel and the chat overlay, and Privacy by design states what is true for them",

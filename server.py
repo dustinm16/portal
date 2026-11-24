@@ -7145,6 +7145,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     _stream_access_changed(stream_id)
     _overlay_close_stream(stream_id)    # its overlay token went with it (cascade); the sockets end now
     _viewers.finish(stream_id)          # a deleted stream has no audience and no live session
+    _stream_state_forget(stream_id)     # nor a session, an end claim, a relay hold or a recorder error in memory
     if not stream.get("is_public"):
         # Its "went live / went offline" rows from the time it was public must not come back
         # into other members' feed now that no non-public stream carries the name
@@ -12107,6 +12108,16 @@ def _ingest_invalidate() -> None:
     """The live-stream key map is stale (a stream went live or offline): the next tick reads it again."""
     _ingest_keys["gen"] += 1
     _ingest_keys["at"] = None
+
+
+def _stream_state_forget(stream_id: int) -> None:
+    """A stream was deleted (or its owner's account was): nothing in memory may keep its id. The disconnect hook
+    of a deleted stream finds no row and starts no grace task, so nothing else would drop these."""
+    _stream_sessions.pop(stream_id, None)
+    _end_claims.pop(stream_id, None)
+    _relay_stop_held.discard(stream_id)
+    _recorder_errors.pop(stream_id, None)
+    _ingest_forget(stream_id)
 
 
 def _ingest_forget(stream_id: int) -> None:
@@ -25642,6 +25653,9 @@ RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_de
 # public must not reach anybody who may not see it (a moderator gets 404 on its watch, detail and health
 # routes), so a moderator does not read these entries either.
 LIVE_OPS_AUDIT_ACTIONS = ("stream_end_now", "stream_stop_relays")
+# Making and revoking an overlay link name the stream (its id and name) and its owner, for a stream that
+# is not public too: a moderator does not read these either.
+STREAM_OVERLAY_AUDIT_ACTIONS = ("stream_overlay_create", "stream_overlay_revoke")
 _RECORDINGS_PAGE_MAX = 100
 _RECORDING_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -25872,7 +25886,7 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
         # who looked at which session recording, and which stream an administrator ended or stopped the
         # relays of, is for administrators only
         filters["exclude_actions"] = (tuple(filters.get("exclude_actions", ())) + RECORDING_AUDIT_ACTIONS
-                                      + LIVE_OPS_AUDIT_ACTIONS)
+                                      + LIVE_OPS_AUDIT_ACTIONS + STREAM_OVERLAY_AUDIT_ACTIONS)
     entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
     total = await db.get_audit_log_count(**filters)
     return web.json_response({"entries": entries, "total": total})
@@ -29045,6 +29059,26 @@ _OVERLAY_HEADERS = {
 }
 
 
+# Owner routes: making and revoking a link each write a row (and an audit entry), so they have a budget per account.
+_OVERLAY_MANAGE_LIMIT = 20
+_overlay_manage_rate = _viewers_mod.RateWindow(_OVERLAY_MANAGE_LIMIT, 60.0)
+# Overlay sockets are not counted in _user_websockets: they are capped here, per owner and over the whole portal,
+# so that neither one member with many streams nor many members can grow the registry, the writer tasks and the
+# queues without bound. A socket over either cap is closed with 1013, like a fourth socket on one token.
+_OVERLAY_MAX_PER_OWNER = _MAX_WS_PER_USER
+_OVERLAY_MAX_TOTAL = 300
+
+
+def _overlay_over_cap(owner_id: int) -> bool:
+    total = mine = 0
+    for subs in overlay_subscribers.values():
+        for s in subs:
+            total += 1
+            if s.owner_id == owner_id:
+                mine += 1
+    return mine >= _OVERLAY_MAX_PER_OWNER or total >= _OVERLAY_MAX_TOTAL
+
+
 def _overlay_remove(sub) -> None:
     subs = overlay_subscribers.get(sub.channel)
     if subs is not None:
@@ -29179,7 +29213,8 @@ async def handle_overlay_websocket(request: web.Request) -> web.WebSocketRespons
             _overlay_pending[key] = left
         else:
             _overlay_pending.pop(key, None)
-    if sum(1 for s in overlay_subscribers.get(channel["name"], ()) if s.digest == digest) >= overlay_chat.MAX_SOCKETS_PER_TOKEN:
+    if (sum(1 for s in overlay_subscribers.get(channel["name"], ()) if s.digest == digest) >= overlay_chat.MAX_SOCKETS_PER_TOKEN
+            or _overlay_over_cap(row["user_id"])):
         try:
             await asyncio.wait_for(ws.close(code=overlay_chat.CLOSE_SLOW), 2.0)
         except Exception:
@@ -29287,6 +29322,9 @@ async def http_overlay_create(request: web.Request) -> web.Response:
     token, stream, refusal = await _overlay_owner_stream(request)
     if refusal is not None:
         return refusal
+    if not _overlay_manage_rate.allow(str(token.user_id)):
+        return await _limited(request, "overlay_manage", "Too many requests", user_id=token.user_id,
+                              headers={"Retry-After": "10", "Cache-Control": "no-store"})
     if not await _overlay_has_own_chat(stream):
         return web.json_response({"error": "This stream has no chat of its own"}, status=409)
     value = overlay_chat.new_token()
@@ -29309,6 +29347,9 @@ async def http_overlay_revoke(request: web.Request) -> web.Response:
     token, stream, refusal = await _overlay_owner_stream(request)
     if refusal is not None:
         return refusal
+    if not _overlay_manage_rate.allow(str(token.user_id)):
+        return await _limited(request, "overlay_manage", "Too many requests", user_id=token.user_id,
+                              headers={"Retry-After": "10", "Cache-Control": "no-store"})
     removed = await db.overlay_token_delete(stream["id"])
     ended = _overlay_close_stream(stream["id"])
     if removed:
@@ -30671,9 +30712,13 @@ async def http_delete_user(request: web.Request) -> web.Response:
     # The connections the account owns go with it, and their shares with them: the ids are
     # read first, to end what grantees hold open through those shares afterwards.
     owned_connection_ids = await db.list_owned_connection_ids(user_id)
+    cursor = await db.conn.execute("SELECT id FROM user_streams WHERE user_id = ?", (user_id,))
+    owned_stream_ids = [r["id"] for r in await cursor.fetchall()]
 
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
+    for sid in owned_stream_ids:
+        _stream_state_forget(sid)
     _vod_play_purge(owner=user_id)      # their cached playback copies go with the account
     # The user's streams went with the account
     _playback_cache_forget(everything=True)

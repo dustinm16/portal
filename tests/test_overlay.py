@@ -82,6 +82,12 @@ ALL_TOKENS: set = set()          # every overlay token this file made or sent, g
 failed = []
 
 
+def reset_manage_rate():
+    rate = getattr(server, "_overlay_manage_rate", None)      # absent before the limiter was added
+    if rate is not None:
+        rate._hits.clear()
+
+
 def check(name, ok, detail=""):
     print(("ok:   " if ok else "FAIL: ") + name + ("" if ok else f"  ({detail})"), flush=True)
     if not ok:
@@ -217,6 +223,10 @@ class Env:
         self.ids = {}
         for name in ("owner", "viewer", "other"):
             self.ids[name] = await self.db.create_user(name, "x")
+        reset_manage_rate()
+        for name, role in (("mod", "moderator"), ("adm", "superadmin")):
+            self.ids[name] = await self.db.create_user(name, "x")
+            await self.db.set_user_role(self.ids[name], role)
         self.cid = await self.db.create_chat_channel("strm", created_by=self.ids["owner"])
         self.sid = await self.db.create_user_stream(self.ids["owner"], "s1", "live_" + "a" * 24, public_key="pub_" + "b" * 24,
                                                     is_public=True)
@@ -235,6 +245,8 @@ class Env:
         app.router.add_post("/api/streams/{id}/overlay", server.http_overlay_create)
         app.router.add_delete("/api/streams/{id}/overlay", server.http_overlay_revoke)
         app.router.add_delete("/api/streams/{id}", server.http_delete_user_stream)
+        app.router.add_get("/api/admin/audit-log", server.http_get_audit_log)
+        app.router.add_delete("/api/users/{id}", server.http_delete_user)
         app.router.add_post("/api/webhooks/incoming/{token}", server.http_incoming_webhook)
         app.router.add_post("/api/me/password", server.http_change_password)
         app.router.add_post("/api/users/{id}/reset-password", server.http_reset_user_password)
@@ -879,6 +891,123 @@ run(credentials_body)
 # each slow-client body has its own deadline (they take about 3 s each)
 run(fake_slow_body, deadline=10)
 run(raw_slow_body, deadline=20)
+
+
+async def new_stream(env, user, name, public=False):
+    """A stream of `user` with a chat of its own: (stream id, channel id)."""
+    cid = await env.db.create_chat_channel("c-" + name, created_by=env.ids[user])
+    sid = await env.db.create_user_stream(env.ids[user], name, "live_" + name.ljust(24, "x")[:24],
+                                          public_key="pub_" + name.ljust(24, "y")[:24], is_public=public)
+    await env.db.conn.execute("UPDATE user_streams SET chat_channel_id = ? WHERE id = ?", (cid, sid))
+    await env.db.conn.commit()
+    return sid, cid
+
+
+async def audit_moderator_body(env):
+    """Making and revoking an overlay link name the stream; a moderator must not read them, for a stream that is not
+    public least of all (it gets 404 on that stream's health route)."""
+    sid, _ = await new_stream(env, "owner", "SecretPrivateShow", public=False)
+    await env.make_token(sid)
+    s, _b = await env.call("DELETE", "owner", f"/api/streams/{sid}/overlay")
+    check("(setup) the private stream's link was made and revoked", s == 200, s)
+    s, b = await env.call("GET", "adm", "/api/admin/audit-log?limit=200")
+    names = [e["action"] for e in b["entries"]]
+    check("(control) an administrator reads both entries, with the stream's name",
+          s == 200 and "stream_overlay_create" in names and "stream_overlay_revoke" in names
+          and any(e.get("target_name") == "SecretPrivateShow" for e in b["entries"]), (s, names))
+    for q in ("", "&action=stream_overlay_create", "&action=stream_overlay_revoke", "&target_type=stream"):
+        s, b = await env.call("GET", "mod", "/api/admin/audit-log?limit=200" + q)
+        text = json.dumps(b)
+        check(f"a moderator reads no overlay entry and no stream name from the audit log (filter '{q}')",
+              s == 200 and "stream_overlay" not in text and "SecretPrivateShow" not in text, (s, text[:200]))
+
+
+async def overlay_caps_body(env):
+    """Overlay sockets are capped per owner and over the whole portal, not only per token."""
+    owner_streams = [await new_stream(env, "owner", f"cap{i}") for i in range(7)]
+    other_sid, _ = await new_stream(env, "other", "capother")
+    check("(control) the per-owner cap is the per-user socket cap", getattr(server, "_OVERLAY_MAX_PER_OWNER", None) == server._MAX_WS_PER_USER == 20)
+    opened, refused = [], []
+    for sid, _cid in owner_streams:
+        tok, _ = await env.make_token(sid)
+        for _ in range(3):
+            o = await env.overlay(tok)
+            await asyncio.sleep(0.02)
+            await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
+            (opened if o.frames else refused).append(o)
+    count = sum(len(v) for v in server.overlay_subscribers.values())
+    check("21 sockets of one owner over seven streams: 20 are served, the rest closed with 1013",
+          len(opened) == 20 and len(refused) == 1 and count == 20, (len(opened), len(refused), count))
+    check("the refused one got the 'too many' close code",
+          bool(refused) and await refused[0].closed() and refused[0].code == overlay_chat.CLOSE_SLOW, len(refused))
+    # the whole-portal cap, lowered for the test so that it needs few sockets
+    saved = getattr(server, "_OVERLAY_MAX_TOTAL", 300)
+    server._OVERLAY_MAX_TOTAL = 22
+    try:
+        tok, _ = await env.call("POST", "other", f"/api/streams/{other_sid}/overlay")
+        tok = _["url"].split("#t=", 1)[1]
+        got = []
+        for _ in range(3):
+            o = await env.overlay(tok)
+            await asyncio.sleep(0.02)
+            await o.wait(lambda f: f.get("type") == "history", timeout=1.0)
+            got.append(o)
+        served = [o for o in got if o.frames]
+        check("another owner is served up to the whole-portal cap and no further",
+              len(served) == 2 and sum(len(v) for v in server.overlay_subscribers.values()) == 22, (len(served), len(got)))
+    finally:
+        server._OVERLAY_MAX_TOTAL = saved
+    # closing sockets frees room
+    await env.call("DELETE", "owner", f"/api/streams/{owner_streams[0][0]}/overlay")
+    await asyncio.sleep(0.2)
+    check("closed sockets leave the count", sum(len(v) for v in server.overlay_subscribers.values()) < 22)
+
+
+async def overlay_rate_body(env):
+    """Making and revoking a link have a limiter on the shared path."""
+    reset_manage_rate()
+    statuses = []
+    for i in range(23):
+        s, b = await env.call("POST", "owner", f"/api/streams/{env.sid}/overlay")
+        statuses.append(s)
+    check("the 21st make in a minute is refused with 429, the first 20 are not",
+          statuses[:20] == [200] * 20 and statuses[20:] == [429] * 3, statuses)
+    s, b = await env.call("DELETE", "owner", f"/api/streams/{env.sid}/overlay")
+    check("a revoke is held by the same budget (429, through the shared limiter path)", s == 429, (s, b))
+    cur = await env.db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action LIKE 'stream_overlay%'")
+    n = (await cur.fetchone())[0]
+    check("the audit log got no more than the allowed entries", n == 20, n)
+    s, b = await env.call("POST", "other", f"/api/streams/{env.sid}/overlay")
+    check("(control) another account is not held by it (404 for somebody else's stream, not 429)", s == 404, (s, b))
+    reset_manage_rate()
+
+
+async def delete_forgets_body(env):
+    """A deleted stream (or an account's streams) leaves nothing in the in-memory live-state maps."""
+    sid, _ = await new_stream(env, "other", "gone1")
+    sid2, _ = await new_stream(env, "viewer", "gone2")
+    for x in (sid, sid2):
+        server._stream_sessions[x] = {"id": 900 + x, "at": 0.0, "ended": False, "ended_at": None, "path": None}
+        server._end_claims[x] = {"session": server._stream_sessions[x]}
+        server._relay_stop_held.add(x)
+        server._recorder_errors[x] = (0.0, "x")
+    s, b = await env.call("DELETE", "other", f"/api/streams/{sid}")
+    check("(setup) the stream was deleted", s == 200, (s, b))
+    check("deleting a stream forgets its session, end claim, relay hold and recorder error",
+          sid not in server._stream_sessions and sid not in server._end_claims and sid not in server._relay_stop_held
+          and sid not in server._recorder_errors, "")
+    check("(control) another stream's entries are kept", sid2 in server._stream_sessions and sid2 in server._relay_stop_held)
+    s, b = await env.call("DELETE", "adm", f"/api/users/{env.ids['viewer']}")
+    check("(setup) the account was deleted", s == 200, (s, b))
+    check("deleting an account forgets the same for its streams",
+          sid2 not in server._stream_sessions and sid2 not in server._end_claims and sid2 not in server._relay_stop_held
+          and sid2 not in server._recorder_errors, "")
+
+
+run(audit_moderator_body)
+run(overlay_caps_body)
+run(overlay_rate_body)
+run(delete_forgets_body)
 
 
 async def log_body(env):
