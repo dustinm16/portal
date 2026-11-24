@@ -423,6 +423,59 @@ async def test_end_now_disconnects_a_browser_publish_on_its_own_path(w, mtx):
         assert ("POST", "/v3/webrtcsessions/kick/" + mtx.sid) in mtx.calls, mtx.calls
 
 
+async def owner_notice(w, sid):
+    notes = [n for n in await w.db.get_notifications(w.users["owner"], limit=50) if n["type"] == "stream_ended"]
+    assert len(notes) == 1, notes
+    return notes[0]["message"]
+
+
+BASE = "An administrator ended your stream."
+KEY_SENTENCE = " The stream key was replaced: the encoder needs the new key from the stream settings."
+STILL_SENDING = " The encoder could not be disconnected and may still be sending."
+
+
+@with_mtx()
+async def test_the_owner_is_told_about_a_replaced_key_only_when_it_was_replaced(w, mtx):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, key)).status == 200
+        assert (await end_now(w, sid, {"regenerate_key": False}))[0] == 200
+        assert await owner_notice(w, sid) == BASE
+
+
+@with_mtx()
+async def test_the_owner_is_told_the_key_was_replaced(w, mtx):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, key)).status == 200
+        st, body = await end_now(w, sid, {})
+        assert st == 200 and body["key_replaced"] is True and body["publisher_disconnected"] is True
+        assert await owner_notice(w, sid) == BASE + KEY_SENTENCE
+
+
+@with_mtx("srtConn")
+async def test_the_owner_is_told_when_the_encoder_could_not_be_disconnected(w, mtx):
+    sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, key)).status == 200
+        st, body = await end_now(w, sid, {})
+        assert st == 200 and body["publisher_disconnected"] is False, body
+        assert await owner_notice(w, sid) == BASE + KEY_SENTENCE + STILL_SENDING
+        for forbidden in (key, "SRT", "admin_", "198.51"):
+            assert forbidden not in await owner_notice(w, sid)
+
+
+@with_mtx("srtConn")
+async def test_the_still_sending_sentence_stays_off_when_the_key_is_kept_and_nothing_is_connected(w, mtx):
+    sid = w.streams["private"]["id"]
+    mtx.has_path = False                                # MediaMTX has no publisher on the path
+    async with Spy(w):
+        await server._mark_stream_live(await w.db.get_user_stream(sid), "198.51.100.7")
+        st, body = await end_now(w, sid, {"regenerate_key": False})
+        assert st == 200 and body["disconnect_note"] == "no publisher is connected", body
+        assert await owner_notice(w, sid) == BASE
+
+
 @with_world
 async def test_the_hook_path_is_remembered_only_when_it_ends_in_the_accepted_key(w):
     sid, key = w.streams["public"]["id"], w.streams["public"]["live"]

@@ -522,7 +522,8 @@ async def test_end_now_with_key_regeneration_refuses_the_old_key_and_audits_once
     assert d["regenerate_key"] is True and d["owner_id"] == owner
     assert key not in rows[0]["details"] and row["stream_key"] not in rows[0]["details"]
     notes = [n for n in await w.db.get_notifications(owner, limit=50) if n["type"] == "stream_ended"]
-    assert len(notes) == 1 and notes[0]["message"] == "An administrator ended your stream."
+    assert len(notes) == 1 and notes[0]["message"] == (
+        "An administrator ended your stream. The stream key was replaced: the encoder needs the new key from the stream settings.")
     assert "admin" not in (notes[0]["title"] + notes[0]["message"]).replace("administrator", "")
     # ending it again: the stream is not live
     r = await server.http_admin_stream_end(admin_req(w, "admin", sid, "end", {}))

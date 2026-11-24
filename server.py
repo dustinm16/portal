@@ -12395,6 +12395,21 @@ def _mediamtx_api_base(cfg: dict) -> str:
     return f"https://127.0.0.1:{int(port) if isinstance(port, (int, str)) and str(port).isdigit() else 9997}"
 
 
+_KICK_NO_PUBLISHER = "no publisher is connected"
+
+
+def _end_now_notice(key_replaced: bool, kick: dict) -> str:
+    """The text of the owner's notification after an administrator's End now: that it happened, and only when they
+    apply, that the stream key was replaced (the encoder needs the new one) and that the encoder could not be
+    disconnected (it may still be sending). Nothing else: no name, no reason, no key."""
+    text = "An administrator ended your stream."
+    if key_replaced:
+        text += " The stream key was replaced: the encoder needs the new key from the stream settings."
+    if not kick.get("kicked") and kick.get("reason") != _KICK_NO_PUBLISHER:
+        text += " The encoder could not be disconnected and may still be sending."
+    return text
+
+
 async def _mediamtx_kick_publisher(mtx_path: str) -> dict:
     """Disconnect the publisher of the MediaMTX path `mtx_path` ("live/<key>", or "<key>" for a browser publish) through MediaMTX's control API (administrator
     action only, two calls, never per tick): read the path's source, then POST the kick route of its type
@@ -12414,7 +12429,7 @@ async def _mediamtx_kick_publisher(mtx_path: str) -> dict:
         async with aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=ctx)) as http:
             async with http.get(f"{base}/v3/paths/get/{quote(mtx_path, safe='/')}") as resp:
                 if resp.status == 404:
-                    return {"kicked": False, "reason": "no publisher is connected", "source": None}
+                    return {"kicked": False, "reason": _KICK_NO_PUBLISHER, "source": None}
                 if resp.status != 200:
                     return {"kicked": False, "reason": f"media server answered {resp.status}", "source": None}
                 info = await resp.json(content_type=None)
@@ -12540,8 +12555,9 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
     """POST /api/admin/streams/{id}/end {regenerate_key?: bool (default true)}: disconnect the publisher,
     optionally replace the stream key and revoke the temporary RTMP tokens so the encoder cannot come
     back with the old credential, then run the normal end of a session (relays stop, the recording is
-    finished and uploaded, viewers are told). Recordings are never deleted. The owner gets a notification
-    without further detail. One audit entry, written before anything is done."""
+    finished and uploaded, viewers are told). Recordings are never deleted. The owner gets a notification that
+    says only that an administrator ended the stream and, when they apply, that the key was replaced and that the
+    encoder could not be disconnected (_end_now_notice). One audit entry, written before anything is done."""
     admin, refused = await _live_ops_gate(request)
     if refused:
         return refused
@@ -12602,7 +12618,7 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
             _release_end(stream_id, claim)
     try:
         await send_notification(stream["user_id"], "stream_ended", "Your stream was ended",
-                                "An administrator ended your stream.", {"stream_id": stream_id})
+                                _end_now_notice(bool(new_key_set), kick), {"stream_id": stream_id})
     except Exception as e:
         logger.warning(f"Could not notify the owner of stream {stream_id}: {type(e).__name__}")
     logger.info(f"Stream {stream_id} ended by administrator {admin['id']} (kick: {kick.get('kicked')})")

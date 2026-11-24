@@ -8,7 +8,7 @@ id get the same 404 and a request with no login is refused; a relay with a store
 only as a fixed sentence (no host, no key); the administrator's live list holds the stream and a
 non-administrator gets 404; Stop relays and End now write one audit entry each, End now with key
 replacement takes the stream offline, the old key is refused by the publish hook, the owner has a
-notification without detail, ending a stream that is not live is 409, and the stage never contacts a
+notification that names no administrator and no reason, ending a stream that is not live is 409, and the stage never contacts a
 media server (publisher_disconnected is false with the staged-instance note).
 
 Users and streams carry random suffixes and every assertion is about those rows, so the module also holds
@@ -163,7 +163,10 @@ async def run(ctx):
         ok("End now wrote one audit entry that names the administrator", len(rows) == 1 and rows[0].get("actor_username") == pre + "adm", f"{st} {len(rows)}")
         st, d, raw = await call(owner, "GET", "/api/notifications?limit=100")
         notes = [n for n in (d or {}).get("notifications", []) if n.get("type") == "stream_ended"]
-        ok("the owner has a notification without detail", len(notes) == 1 and notes[0]["message"] == "An administrator ended your stream."
+        ok("the owner has a notification that says the key was replaced and the encoder was not disconnected, and nothing else",
+           len(notes) == 1 and notes[0]["message"] == (
+               "An administrator ended your stream. The stream key was replaced: the encoder needs the new key from the stream settings."
+               " The encoder could not be disconnected and may still be sending.")
            and key not in raw.decode(), f"{st} {notes}")
         st, _, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={})
         ok("ending a stream that is not live is 409", st == 409, str(st))
