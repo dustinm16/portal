@@ -29034,7 +29034,6 @@ _OVERLAY_FAIL_LIMIT = (10, 600)        # failed tokens per address per 10 minute
 _OVERLAY_PENDING_MAX = 10              # sockets per address that have not sent their token yet
 _overlay_fail_hits: dict = {}
 _overlay_pending: dict = {}
-_overlay_close_tasks: set = set()
 _OVERLAY_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",

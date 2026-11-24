@@ -1376,6 +1376,9 @@ check("1.24.0 says the overlay link ends with the credentials, as the calendar l
       and "overlay_tokens_delete_for_user" in (ROOT / "database.py").read_text(encoding="utf-8")
       and "ends when your password is changed or reset" in (ROOT / "static" / "js" / "stream-overlay-settings.js").read_text(encoding="utf-8")
       and "within 30 seconds" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8"))
+check("1.24.0 says what the log checks cover and what they cannot see",
+      "finds no token in the log file nor in any record as it was written" in _sec24 and "at its normal INFO level" in _sec24
+      and "_overlay_close_tasks" not in (ROOT / "server.py").read_text(encoding="utf-8"))
 check("1.24.0 has a Not tested bullet that says no OBS, no browser, no Cloudflare and no real encoder",
       all(n in _low24.split("- **not tested.**")[-1] for n in ("no obs", "chromium", "cloudflare", "real encoder")))
 check("1.24.0 says the dock needs to be opened again after sign-in and to replace the link everywhere after Regenerate",

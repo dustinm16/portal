@@ -42,6 +42,43 @@ import overlay_chat  # noqa: E402
 import server  # noqa: E402
 from database import Database  # noqa: E402
 
+import logger as portal_logger  # noqa: E402
+
+# Logging for the whole file, at DEBUG level, in two places: the portal's own file handler (with its redaction filter)
+# in a temporary directory, and a handler of ours that sees every record as it was written, redaction or not. The
+# portal's own loggers are set to DEBUG explicitly, so nothing is hidden by a level.
+LOG_TMP = tempfile.TemporaryDirectory()
+portal_logger.setup_logging(level="DEBUG", log_dir=Path(LOG_TMP.name), console_enabled=False, file_enabled=True)
+for _name in list(logging.root.manager.loggerDict):
+    if _name in ("portal", "database", "server", "overlay_chat", "aiosqlite") or _name.startswith("portal."):
+        logging.getLogger(_name).setLevel(logging.DEBUG)
+logging.getLogger("portal").setLevel(logging.DEBUG)
+
+
+class Everything(logging.Handler):
+    """Every record of the whole file as written (message, arguments, traceback), before any redaction."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.text = []
+        self.names = set()
+        self.debug_records = 0
+        self.fmt = logging.Formatter("%(name)s %(levelname)s %(message)s")
+
+    def emit(self, record):
+        try:
+            self.text.append(self.fmt.format(record))
+        except Exception:
+            self.text.append(str(record.msg))
+        self.names.add(record.name)
+        if record.levelno == logging.DEBUG:
+            self.debug_records += 1
+
+
+EVERYTHING = Everything()
+logging.getLogger().handlers.insert(0, EVERYTHING)     # first: the portal's handlers redact the record in place
+ALL_TOKENS: set = set()          # every overlay token this file made or sent, good or bad
+
 failed = []
 
 
@@ -234,6 +271,8 @@ class Env:
                 body = await r.json()
             except Exception:
                 body = None
+            if isinstance(body, dict) and "#t=" in str(body.get("url") or ""):
+                ALL_TOKENS.add(body["url"].split("#t=", 1)[1])
             return r.status, body
 
     async def chat(self, user):
@@ -250,6 +289,7 @@ class Env:
     async def overlay(self, token, **kw):
         ws = await self.http.ws_connect(self.url("/ws/overlay"), **kw)
         if token is not None:
+            ALL_TOKENS.add(str(token))
             await ws.send_json({"type": "auth", "token": token})
         o = Overlay(ws)
         self.extra.append(o)
@@ -821,6 +861,8 @@ def source_guards():
     check("failed tokens go through the shared limiter path", "_limited(request, \"overlay_token\"" in h and "status=429" not in h)
     check("/ws/overlay is registered before the /ws/{path} relay", src.index('"/ws/overlay"') < src.index('"/ws/{path:.*}"'))
     check("the offline wipes tell the overlay", src.count("_overlay_clear(") >= 3)
+    check("the registry has no unused task set left over (_overlay_close_tasks): a close is the subscriber's own close_task",
+          "_overlay_close_tasks" not in src and "close_task" in (ROOT / "overlay_chat.py").read_text())
     check("no token appears in a log call of the overlay code", not re.search(r"logger\.\w+\([^)]*token", src[src.index("def _overlay_remove"):src.index("\nANON_VOICE_MESSAGE")]))
 
 
@@ -858,6 +900,40 @@ async def log_body(env):
 
 
 run(log_body)
+
+
+def whole_run_log():
+    """After every body above (tokens made, sent, refused, regenerated, revoked; slow clients; credentials changed): the
+    log of the whole file, at DEBUG level, holds no token."""
+    logging.getLogger("portal").debug("canary: a debug line of a portal logger")
+    logging.getLogger("portal.database").debug("canary: a debug line of the database logger")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    files = sorted(Path(LOG_TMP.name).glob("*.log*"))
+    in_files = "\n".join(f.read_text(errors="replace") for f in files if f.is_file())
+    # the one request this file makes with a token-shaped value in a query string, on purpose (page_body): its access line
+    # carries it as written, and the file's redaction removes it (checked below); every other record is checked as written
+    seen = "\n".join(l for l in EVERYTHING.text if "GET /overlay/stream/1?t=ov_" + "a" * 43 not in l)
+    shape = re.compile(r"ov_[A-Za-z0-9_-]{43}")
+    good = {t for t in ALL_TOKENS if overlay_chat.wellformed(t)}
+    check("(control) the file saw many tokens: made, sent and refused ones", len(ALL_TOKENS) >= 8 and len(good) >= 6, f"{len(ALL_TOKENS)} {len(good)}")
+    check("(control) the log was really written at DEBUG: the portal's own debug lines reached its file and the capture, "
+          "and other loggers' debug records were seen too",
+          "canary: a debug line of a portal logger" in in_files and "canary: a debug line of the database logger" in in_files
+          and "canary: a debug line of a portal logger" in seen and EVERYTHING.debug_records > 20
+          and "portal" in EVERYTHING.names, f"{EVERYTHING.debug_records} {sorted(EVERYTHING.names)[:8]}")
+    check("(control) the log has the ordinary lines of the run", "User viewer connected" in in_files and "/ws/overlay" in in_files, in_files[:200])
+    check("no log file of the whole run, at DEBUG level, holds an overlay token, good or bad", not any(t in in_files for t in ALL_TOKENS) and not shape.search(in_files), "")
+    check("and no record as written (before redaction) holds one", not any(t in seen for t in ALL_TOKENS) and not shape.search(seen), "")
+    marked = [l for l in in_files.splitlines() if "OVERLAY_TOKEN_REDACTED" in l]
+    check("the redactor acted only for the one request this file made on purpose, a token in a query string of the page (the "
+          "access log; the portal's own code never logged a token)",
+          len(marked) == 1 and "GET /overlay/stream/" in marked[0] and "?t=[OVERLAY_TOKEN_REDACTED]" in marked[0], marked[:3])
+    check("(control) a leak would show: the same checks find a token written to a portal logger",
+          (lambda t: t in "portal " + t and shape.search("x " + t) is not None)(next(iter(good))))
+
+
+whole_run_log()
 
 check("the outbound guard refused no dial", not outbound_guard.refused, str(outbound_guard.refused))
 if failed:

@@ -27,6 +27,7 @@ in-process and shows the stalled socket being dropped).
 """
 import asyncio
 import json
+import re
 import secrets
 import socket
 import ssl
@@ -359,8 +360,12 @@ async def run(ctx):
                         log += f.read_text(errors="replace")
             except OSError:
                 pass
-            ok("the server output and the log files (%s) have no overlay token after the whole run" % ", ".join(files or ["stdout only"]),
-               not any(t and t in log for t in tokens), "")
+            # The staged server logs at INFO (nothing in the stage can raise it), so this is the INFO-level check; the
+            # DEBUG-level one, with the portal's own loggers at DEBUG, is in tests/test_overlay.py.
+            ok("the stage wrote its log files (a log file was read, not only the server's output)", "portal.log" in files, ", ".join(files) or "none")
+            ok("the server output and the log files (%s) have no overlay token after the whole run" % ", ".join(files or ["none"]),
+               not any(t and t in log for t in tokens) and not re.search(r"ov_[A-Za-z0-9_-]{43}", log), "")
+            ok("and the log redaction never had to act (no marker: no code logged a token)", "OVERLAY_TOKEN_REDACTED" not in log, "")
         finally:
             for s in socks:
                 try:
