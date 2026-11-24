@@ -92,10 +92,11 @@ Pictures of 1.24.0 (stream-health, admin-live-streams, overlay-settings, overlay
 use river's live stream (made live through the real publish hook, so it has no encoder and no MediaMTX behind it).
 stream-health: the stage has no media server and the feature has no test hook for its in-memory readings (a staged
 instance never contacts a media server, so its ingest section says "no reading"), so the browser session of that
-picture answers GET /api/streams/{id}/health itself: the portal's real answer is fetched and only its `ingest`
-section is replaced by a made-up series (30 readings 30 seconds apart around 4.5 Mbit/s, one dip, RTMP, H264 and
-MPEG-4 Audio); uptime, relays, recorder, load and warnings are what the stage really answered. The panel, its
-script and its styles are the portal's own. admin-live-streams: the administrator's Live streams tab as the stage
+picture answers GET /api/streams/{id}/health itself: the portal's real answer is fetched and three parts of it are
+replaced by made-up values: the `ingest` section (a made-up series of 30 readings 30 seconds apart around 4 Mbit/s with
+two dips, RTMP, H264 and MPEG-4 Audio), the uptime (two hours and a bit, because the stage's session is seconds old)
+and the load average (the real call would report this machine's). Relays, recorder and warnings are what the stage
+really answered. The panel, its script and its styles are the portal's own. admin-live-streams: the administrator's Live streams tab as the stage
 answers it (the bitrate column reads "not collected", for the same reason), with the End now question open on its
 own row after its 0.6 second guard; the confirm button is never pressed. overlay-settings: river's stream settings
 window after a reload with an active link, so the block shows the state the portal keeps (the link cannot be shown

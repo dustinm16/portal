@@ -339,10 +339,10 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 
 <img src="docs/screenshots/stream-health.png" alt="Stream health panel" width="320">
 
-*The stream health panel on the watch page of the owner (1.24.0) — warnings, uptime, the bitrate the server receives with its graph (one point per 30 seconds), source and codecs, relays, the recorder and the server load. The readings in this picture are made up: the demo instance has no media server, so the picture's browser replaces the ingest part of the portal's answer*
+*The stream health panel on the watch page of the owner (1.24.0) — warnings, uptime, the bitrate the server receives with its graph (one point per 30 seconds), source and codecs, relays, the recorder and the server load. The readings in this picture are made up: the demo instance has no media server, so the picture's browser replaces the ingest part of the portal's answer, and also its uptime and load average (relays, recorder and warnings are what the demo instance answered)*
 
 ![Live streams tab with the End now question](docs/screenshots/admin-live-streams.png)
-*Admin > Live streams (1.24.0) — two live demo streams, and the End now question open on its own row with the choice to replace the stream key; nothing is pressed. The question is a long line and runs past the edge of the table in this window*
+*Admin > Live streams (1.24.0) — two live demo streams, and the End now question open on its own row with the choice to replace the stream key; the confirm button is not pressed. The question is a long line and runs past the edge of the table in this window*
 
 <img src="docs/screenshots/overlay-settings.png" alt="Chat overlay block in the stream settings" width="460">
 
