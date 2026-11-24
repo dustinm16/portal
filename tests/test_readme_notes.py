@@ -1469,6 +1469,12 @@ check("1.24.0 pictures: the Not tested text says what the pictures did and did n
       "headless Chromium 156" in _sec24 and "readings in its picture are made up" in _sec24 and "not OBS's embedded browser" in _sec24)
 
 
+check("1.24.0 pictures: the Live streams caption and the Not tested text say the question wraps inside the table, and the tool fails a picture whose table is wider than its window",
+      "The question wraps inside the table, on a row of its own" in text and "runs past the edge of the table" not in text
+      and "scrolling sideways; this was seen and left as it is" not in _sec24 and "the tool fails the picture when the table is wider than its window" in _sec24
+      and "the question did not wrap" in _ms24)
+
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

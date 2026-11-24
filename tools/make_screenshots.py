@@ -98,7 +98,7 @@ two dips, RTMP, H264 and MPEG-4 Audio), the uptime (two hours and a bit, because
 and the load average (the real call would report this machine's). Relays, recorder and warnings are what the stage
 really answered. The panel, its script and its styles are the portal's own. admin-live-streams: the administrator's Live streams tab as the stage
 answers it (the bitrate column reads "not collected", for the same reason), with the End now question open on its
-own row after its 0.6 second guard; the confirm button is never pressed. overlay-settings: river's stream settings
+own row after its 0.6 second guard, wrapped inside the table (the tool fails the picture when the table is wider than its window); the confirm button is never pressed. overlay-settings: river's stream settings
 window after a reload with an active link, so the block shows the state the portal keeps (the link cannot be shown
 again) and no token. overlay-page: river makes a link through the real route and the real overlay page is loaded
 with it in the browser (a real wss connection to the stage), showing the chat lines the demo data holds; the page
@@ -2309,9 +2309,9 @@ def _stream_health(s):
 
 @shot("admin-live-streams")
 def _admin_live_streams(s):
-    # a wide window (the table has eight columns and a long question) and no wait for "network idle", which this
-    # page did not reach in the staged instance (not investigated)
-    ctx = s.context(ADMIN_NAME, viewport={"width": 1900, "height": 700})
+    # an ordinary laptop window: the long question wraps inside the table on its own row. No wait for "network idle",
+    # which this page did not reach in the staged instance (not investigated)
+    ctx = s.context(ADMIN_NAME, viewport={"width": 1280, "height": 700})
     ctx.route("**/api/system/health", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(DEMO_HEALTH)))
     ctx.add_init_script(DEMO_BACKUPS_PATCH)
     page = ctx.new_page()
@@ -2323,6 +2323,10 @@ def _admin_live_streams(s):
     row.get_by_role("button", name="End now").click()
     page.wait_for_selector(".live-ops-confirm", timeout=15000)
     page.wait_for_timeout(1200)     # past the 0.6 second guard; the confirm button is never pressed
+    wide = page.evaluate("() => { const w = document.querySelector('#tab-livestreams .sys-table-scroll');"
+                         " return [w.scrollWidth, w.clientWidth]; }")
+    if wide[0] > wide[1]:
+        raise Fail(f"the Live streams table is wider than its window ({wide[0]} against {wide[1]} pixels): the question did not wrap")
     assert_clean(s, page, "admin-live-streams")
     s.save("admin-live-streams", page.locator("#tab-livestreams"))
 
