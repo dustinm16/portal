@@ -689,12 +689,17 @@ async def test_whip_and_the_media_hook_together_announce_once(w):
 async def _whip_and_hook_together(w, records):
     async with FakeMediaMTX():
         assert await _whip(w) == 201
+        sid = w.sid["pub"]
+        session = server._stream_sessions[sid]
         assert await w.publish() == 200                       # MediaMTX's own publish hook after it
+        assert server._stream_sessions[sid] is session, "the second report of the same go-live began another session"
         assert len(await w.notes("m1")) == 1 and len(w.live_events("sys")) == 1
         await w.go_offline()
         w.clock.now += 3600
         assert await w.publish() == 200                       # hook first this time
+        session = server._stream_sessions[sid]
         assert await _whip(w) == 201
+        assert server._stream_sessions[sid] is session, "the WHIP report after the hook began another session"
         assert len(await w.notes("m1")) == 2 and len(w.live_events("sys")) == 2
         # both at the same moment, both having read the stream as offline: the claim decides
         await w.go_offline()
@@ -702,6 +707,7 @@ async def _whip_and_hook_together(w, records):
         # make it certain that both read the stream as offline before either writes: the write of
         # "live" waits (at most 2 s) until a second one has arrived, so only the claim can decide
         del records[:]
+        seq_before = server._stream_session_seq
         arrived = asyncio.Event()
         writes = []
         real_set = w.db.set_stream_live
@@ -725,6 +731,8 @@ async def _whip_and_hook_together(w, records):
         assert (first, second) == (201, 200)
         assert len(writes) == 2, "both arrivals read the stream as offline and went on to the claim"
         assert len([m for m in records if "not announced again (cooldown)" in m]) == 1, records
+        assert len([m for m in records if " started by user " in m]) == 1, records
+        assert server._stream_session_seq == seq_before + 1, "the two reports began more than one session"
     assert len(await w.notes("m1")) == 3 and len(w.live_events("sys")) == 3
     # the lock never failed (no "bound to a different event loop" turned into a skipped claim):
     # the conditional claim decided and one announced (the 3 above, not 4)

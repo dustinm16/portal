@@ -671,8 +671,9 @@ _relay_restart_cooldown: dict[int, float] = {}
 # stream goes offline (_stream_set_offline). In memory.
 _relay_stop_held: set = set()
 
-# The live session of each stream, kept in memory: stream id -> {"id", "at", "ended", "ended_at"}. Every
-# accepted publish makes a new one (_stream_session_begin), so a finalisation that started for an earlier
+# The live session of each stream, kept in memory: stream id -> {"id", "at", "ended", "ended_at"}. A
+# publish that is not a repeat report of the go-live under way makes a new one (_stream_session_begin; the hook
+# and the WHIP proxy both report a browser publish, and the second report joins the session), so a finalisation that started for an earlier
 # session can tell that the stream has been published again since and leaves everything of the new
 # session alone (_session_current). Bounded by the number of streams; an ended entry is dropped an hour
 # after it ended (_viewer_sync_once). A restart empties it, and so does the live state of every stream.
@@ -6781,44 +6782,65 @@ async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = Non
     caller's copy may be older than a publish hook that ran in the meantime. The claim is
     one conditional UPDATE taken under the stream state lock, so a retried hook, an encoder
     that restarts quickly, or the same stream arriving by both paths announces only once.
-    The announcement carries no key; the watch page resolves access itself."""
+    The announcement carries no key; the watch page resolves access itself.
+
+    A second report of the go-live that is already under way (the hook and the WHIP proxy both report a
+    browser publish, a retried hook) joins the session the first one began: it never begins another one, so
+    nothing that is bound to the session (its path, the end of it) is aimed at a newer identity, and it does
+    not log, record or tell the chat again; the claim below still decides the announcement."""
     stream_id = stream["id"]
-    # One locked step: the state is read, written and the new session recorded together, so a
-    # finalisation of the session before (which checks and writes under the same lock) sees either
-    # the old session in full or the new one.
+    _ingest_invalidate()
+    # The session is decided in one locked step, with the state read inside it (a finalisation of the session
+    # before checks and writes under the same lock, so it sees either the old session in full or the new one).
+    # The report that begins a session marks it "marking" until the stream is written live: a report that
+    # finds that mark is the same go-live arriving by the other way and joins the session.
     async with _stream_state_lock:
         current = await db.get_user_stream(stream_id) or stream
         was_live = current.get("is_live") == 1
-        _ingest_invalidate()
+        session = _stream_sessions.get(stream_id)
+        held = _end_claims.get(stream_id)
+        ending = session is None or session["ended"] or session.get("ending", False) or (
+            held is not None and held["session"] is session)
+        joined = session is not None and session.get("marking", False) and not session["ended"]
+        begun = not joined and (ending or not was_live)
+        if begun:
+            session = _stream_session_begin(stream_id, path_key)
+            session["marking"] = True
+            if not was_live:
+                _viewers.start_session(stream_id)       # fresh peak and unique figures
+                # Going live from offline or from encoding is a new session: what belonged to the session before
+                # (an administrator's relay hold, a recorder error, the ingest numbers) is not carried over. The
+                # finalisation of that session skips its own offline write, which would have dropped them.
+                _relay_stop_held.discard(stream_id)
+                _recorder_errors.pop(stream_id, None)
+                _ingest_forget(stream_id)
+        elif path_key and not session["ended"]:
+            session["path"] = path_key                  # the same session, reported again: its path is the latest one
+    try:
         await db.set_stream_live(stream_id, True)
-        _ingest_invalidate()
-        _stream_session_begin(stream_id, path_key)
-        if not was_live:
-            _viewers.start_session(stream_id)       # fresh peak and unique figures
-            # Going live from offline or from encoding is a new session: what belonged to the session before
-            # (an administrator's relay hold, a recorder error, the ingest numbers) is not carried over. The
-            # finalisation of that session skips its own offline write, which would have dropped them.
-            _relay_stop_held.discard(stream_id)
-            _recorder_errors.pop(stream_id, None)
-            _ingest_forget(stream_id)
+    finally:
+        if begun:
+            session.pop("marking", None)
+    _ingest_invalidate()
     if was_live:
         return
     stream = current
-    logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
-    await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
-    # Notify chat channel that stream went live
-    if stream.get("chat_channel_id"):
-        channel = await db.get_chat_channel(stream["chat_channel_id"])
-        if channel:
-            await broadcast_to_channel(channel["name"], {
-                "type": "stream_status",
-                "stream_id": stream_id,
-                "is_live": 1
-            })
-    try:
-        await _schedule_note_go_live(stream)     # the slot this go-live belongs to (a failure never stops a stream)
-    except Exception as e:
-        logger.warning(f"Schedule go-live note for stream {stream_id} failed: {type(e).__name__}")
+    if begun:        # the report that began the session records the go-live; the other one only meets the claim
+        logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
+        await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
+        # Notify chat channel that stream went live
+        if stream.get("chat_channel_id"):
+            channel = await db.get_chat_channel(stream["chat_channel_id"])
+            if channel:
+                await broadcast_to_channel(channel["name"], {
+                    "type": "stream_status",
+                    "stream_id": stream_id,
+                    "is_live": 1
+                })
+        try:
+            await _schedule_note_go_live(stream)     # the slot this go-live belongs to (a failure never stops a stream)
+        except Exception as e:
+            logger.warning(f"Schedule go-live note for stream {stream_id} failed: {type(e).__name__}")
     try:
         async with _stream_state_lock:
             announce = await db.claim_golive(
@@ -9854,6 +9876,8 @@ async def _stream_end_session(stream: dict, session=None, claim: Optional[dict] 
         if not _session_current(stream_id, session):
             logger.info(f"Stream {stream_name} was published again, the end of its earlier session does nothing")
             return
+        if session is not None:
+            session["ending"] = True        # from here on a publish is a new session, never a repeat report of this one
         # Stop multi-platform relays
         await stop_stream_relays(stream_id)
 
@@ -12615,8 +12639,8 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     async with _stream_state_lock:
         private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     # MediaMTX path includes the RTMP app name "live"
-    mtx_path = f"live/{private_key}"
-    url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
+    path_key = f"live/{private_key}"
+    url = f"https://127.0.0.1:{hls_port}/{path_key}/{hls_path}"
     # Forward the query string: MediaMTX (v1.1x+) tags every variant playlist and
     # segment URL with ?session=<secret> and answers 401 without it.
     # A ?token= is the viewer's own credential, not MediaMTX's: it is not passed on.
@@ -12645,7 +12669,7 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                     text = content.decode("utf-8")
                     # Rewrite segment URLs to go through our proxy
                     # Use the same key type that was used to access (preserves public/private key)
-                    text = text.replace(f"/{mtx_path}/", f"/api/stream/{key}/hls/")
+                    text = text.replace(f"/{path_key}/", f"/api/stream/{key}/hls/")
                     content = text.encode("utf-8")
                     if resp.status == 200:
                         # A playlist (not every segment) is the sign of a player that is running
@@ -12859,7 +12883,7 @@ _WEBRTC_SESSION_TTL = 7 * 24 * 3600
 _WEBRTC_SESSION_MAX_PER_STREAM = {"whep": 64, "whip": 16}
 
 
-def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str,
+def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, path_key: str,
                              user_id: Optional[int] = None) -> None:
     """Record a session opened via the proxy; prune expired and excess entries."""
     if not session_id:
@@ -12877,7 +12901,7 @@ def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_pat
         if victim is None:
             victim = next(iter(_webrtc_sessions))
         del _webrtc_sessions[victim]
-    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now, user_id)
+    _webrtc_sessions[session_id] = (kind, stream_id, path_key, now, user_id)
 
 
 async def _authorize_webrtc_session(request: web.Request, key: str, session_id: str
@@ -13077,7 +13101,7 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
     rec, error, status, stream = await _authorize_webrtc_session(request, stream_key, session_id)
     if error:
         return _stream_not_found() if status == 404 else web.json_response({"error": error}, status=status)
-    kind, _stream_id, mtx_path = rec[:3]
+    kind, _stream_id, path_key = rec[:3]
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -13088,7 +13112,7 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
 
     method = request.method
     # WebRTC uses plain HTTP internally (localhost only)
-    url = f"http://127.0.0.1:{webrtc_port}/{mtx_path}/{kind}/{session_id}"
+    url = f"http://127.0.0.1:{webrtc_port}/{path_key}/{kind}/{session_id}"
 
     try:
         body = await request.read()
