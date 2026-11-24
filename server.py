@@ -6771,7 +6771,7 @@ async def _announce_go_live(stream_id: int) -> None:
                            f"{type(e).__name__}: {e}")
 
 
-async def _mark_stream_live(stream: dict, ip: str) -> None:
+async def _mark_stream_live(stream: dict, ip: str, path_key: Optional[str] = None) -> None:
     """A publisher arrived (the MediaMTX hook for RTMP and the like, or the WHIP proxy):
     mark the stream live and, on a change of state, record it, tell the stream's chat and
     announce it (notification, card and webhook) once per cooldown.
@@ -6791,7 +6791,7 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
         _ingest_invalidate()
         await db.set_stream_live(stream_id, True)
         _ingest_invalidate()
-        _stream_session_begin(stream_id)
+        _stream_session_begin(stream_id, path_key)
         if not was_live:
             _viewers.start_session(stream_id)       # fresh peak and unique figures
     if was_live:
@@ -9730,13 +9730,22 @@ async def _handle_disconnect_grace(stream: dict, session=None) -> None:
             _disconnect_grace_tasks.pop(stream_id, None)
 
 
-def _stream_session_begin(stream_id: int) -> dict:
-    """A publish was accepted: this is the stream's live session from now on."""
+def _stream_session_begin(stream_id: int, path_key: Optional[str] = None) -> dict:
+    """A publish was accepted: this is the stream's live session from now on. `path_key` is the MediaMTX
+    path name (under live/) it was published on, the stream's key or a temporary rtmp_ token: it stays the
+    session's path even when the owner replaces the stream key while it is live."""
     global _stream_session_seq
     _stream_session_seq += 1
-    session = {"id": _stream_session_seq, "at": monotonic(), "ended": False, "ended_at": None}
+    session = {"id": _stream_session_seq, "at": monotonic(), "ended": False, "ended_at": None,
+               "path": path_key if isinstance(path_key, str) and path_key else None}
     _stream_sessions[stream_id] = session
     return session
+
+
+def _session_path(stream_id: int) -> Optional[str]:
+    """The path the stream's running session was published on, or None (not known, or it has ended)."""
+    session = _stream_sessions.get(stream_id)
+    return session["path"] if session and not session["ended"] else None
 
 
 def _session_current(stream_id: int, session) -> bool:
@@ -11657,11 +11666,11 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             logger.info(f"Stream {stream['name']} reconnected, cancelled disconnect grace period")
 
         # Mark stream as live; the announcement is the same for every way of publishing
-        await _mark_stream_live(stream, ip)
-
-        # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
         vod_stream_key = stream_key if stream_key.startswith("rtmp_") else (real_stream_key or stream_key)
+        await _mark_stream_live(stream, ip, path_key=vod_stream_key)
+
+        # Start VOD recording on every publish (guards against duplicates internally)
         asyncio.create_task(start_vod_recording(stream, vod_stream_key))
 
         # Start multi-platform relays
@@ -12126,7 +12135,7 @@ async def _ingest_tick(live_ids: list, payload, now: Optional[float] = None) -> 
     parsed = stream_health.parse_paths(payload)
     keys = await _ingest_live_keys()
     for sid in live:
-        key = _rtmp_stream_paths.get(sid) or keys.get(sid)
+        key = _session_path(sid) or _rtmp_stream_paths.get(sid) or keys.get(sid)
         if not key:
             continue
         entry = _ingest_stats.get(sid)
@@ -12500,7 +12509,7 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
             return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
 
         async with _stream_state_lock:
-            path_key = _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
+            path_key = _session_path(stream_id) or _rtmp_stream_paths.get(stream_id) or stream["stream_key"]
         new_key_set = False
         if regenerate:
             # First: from here on the old credential is refused at publish

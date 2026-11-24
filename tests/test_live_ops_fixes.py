@@ -30,8 +30,10 @@ outbound_guard.install()
 
 import server  # noqa: E402
 from test_stream_access import run  # noqa: E402
+from aiohttp.test_utils import make_mocked_request  # noqa: E402
+from test_stream_access import Transport  # noqa: E402
 from test_stream_health_server import (  # noqa: E402
-    admin_req, fresh, req, with_mtx,
+    _counted, admin_req, fresh, health, paths_for, req, tick, with_clock, with_mtx,
 )
 
 
@@ -311,6 +313,69 @@ async def test_two_stop_relays_requests_at_once_stop_them_once(w, mtx):
     assert not server._relay_stop_claims
     again = await server.http_admin_stream_stop_relays(admin_req(w, "admin", sid, "stop-relays", {}))
     assert again.status == 200                  # the claim is gone once the first one is done
+
+
+async def publish_hook(w, path):
+    """The MediaMTX publish hook for live/<path>, as the portal receives it (loopback)."""
+    hook = make_mocked_request("POST", "/api/stream/auth", transport=Transport("127.0.0.1"))
+
+    async def _json():
+        return {"action": "publish", "path": "live/" + path, "ip": "198.51.100.7", "user": "", "password": "", "query": ""}
+    hook.json = _json
+    return await server.http_stream_auth(hook)
+
+
+async def rotate_key(w, sid):
+    """The owner replaces the stream key while the encoder keeps publishing on the old path."""
+    new = "live_" + "N" * 24
+    await w.db.regenerate_stream_key(sid, new)
+    server._ingest_invalidate()
+    server._stream_access_changed(sid)
+    return new
+
+
+@with_clock
+async def test_a_key_replaced_while_live_does_not_lose_the_ingest_numbers(w, clock):
+    sid, old = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, old)).status == 200
+        new = await rotate_key(w, sid)
+        assert new != old and await w.db.get_stream_by_key(old) is None
+        a = paths_for("paths_list_two_samples_5s_apart_a.json", livekey_a=old)
+        b = paths_for("paths_list_two_samples_5s_apart_b.json", livekey_a=old)
+        await tick(clock, a)
+        await tick(clock, b)
+        for i in range(20):                                         # 100 s of growing readings: past the no-data limit
+            await tick(clock, _counted(b, 10_000_000 + i * 500_000), dt=5.0)
+        st, d, _resp = await health(w, "owner", sid)
+        assert st == 200 and d["ingest"]["available"], d["ingest"]
+        assert d["ingest"]["bitrate_bps"] is not None
+        assert "no_data" not in [x["code"] for x in d["warnings"]], d["warnings"]
+        await asyncio.sleep(0.05)
+
+
+@with_mtx()
+async def test_end_now_after_a_key_replacement_kicks_the_path_the_session_publishes_on(w, mtx):
+    sid, old = w.streams["private"]["id"], w.streams["private"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, old)).status == 200
+        new = await rotate_key(w, sid)
+        st, body = await end_now(w, sid, {"regenerate_key": False})
+        assert st == 200 and body["publisher_disconnected"] is True, body
+        asked = [p for m, p in mtx.calls if m == "GET"]
+        assert asked == [f"/v3/paths/get/live/{old}"], asked
+        assert new not in "".join(p for _m, p in mtx.calls)
+
+
+@with_world
+async def test_a_new_publish_sets_the_path_and_the_end_clears_it(w):
+    sid, key = w.streams["public"]["id"], w.streams["public"]["live"]
+    async with Spy(w):
+        assert (await publish_hook(w, key)).status == 200
+        assert server._session_path(sid) == key if hasattr(server, "_session_path") else True
+        await server._stream_end_session(await w.db.get_user_stream(sid))
+        assert server._session_path(sid) is None                  # no path for an ended session
+        await w.db.set_stream_live(sid, True)
 
 
 if __name__ == "__main__":
