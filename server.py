@@ -34038,10 +34038,16 @@ async def http_admin_backups_list(request: web.Request) -> web.Response:
             free = shutil.disk_usage(str(probe)).free
         except OSError:
             pass
+        try:
+            uploads_estimate = await asyncio.to_thread(backup_manager.estimate_uploads_cached)
+        except Exception as e:
+            logger.warning(f"Could not estimate the uploads folder: {e}")
+            uploads_estimate = None
         return web.json_response({
             "archives": archives,
             "config": await backup_manager.load_config(),
             "status": await backup_manager.get_status(),
+            "uploads_estimate": uploads_estimate,
             "free_bytes": free,
             "stage_mode": bool(Config.STAGE_MODE),
         })
@@ -34070,7 +34076,7 @@ async def http_admin_backups_run(request: web.Request) -> web.Response:
 
 
 async def http_admin_backups_settings(request: web.Request) -> web.Response:
-    """Update the backup settings: enabled, interval_hours, keep, extra_dir."""
+    """Update the backup settings: enabled, interval_hours, keep, extra_dir, include_uploads."""
     user, err = await _backup_superadmin(request)
     if err:
         return err
@@ -34100,7 +34106,7 @@ async def http_admin_backups_settings(request: web.Request) -> web.Response:
                     status=403)
             return cerr
     update, errors = await asyncio.to_thread(
-        backup_manager.validate_config_update, data, current)
+        backup_manager.validate_config_update, data, current, saved_cfg["include_uploads"])
     if errors:
         return web.json_response({"error": "; ".join(errors)}, status=400)
     config = await backup_manager.save_config(update)
@@ -35809,7 +35815,13 @@ def main():
     subparsers.add_parser("backup-archive", help="Write a backup archive (database, .env, salt, invite code) to backups/archives/")
     restore_cmd = subparsers.add_parser("restore-archive", help="Unpack a backup archive into an EMPTY directory after verifying it")
     restore_cmd.add_argument("archive", help="Path of the .tar.gz archive")
-    restore_cmd.add_argument("--into", required=True, metavar="DIR", help="Empty target directory (created if missing)")
+    restore_cmd.add_argument("--into", default=None, metavar="DIR", help="Empty target directory (created if missing)")
+    restore_cmd.add_argument("--with-uploads", action="store_true",
+                             help="Also restore the member uploads of the archive into DIR/static/uploads (default: database only)")
+    restore_cmd.add_argument("--uploads-into", default=None, metavar="DIR",
+                             help="Restore only the member uploads into DIR (may already hold files; never the live installation; nothing is deleted)")
+    restore_cmd.add_argument("--overwrite", action="store_true",
+                             help="With --uploads-into: replace files that already exist (default: keep them)")
 
     # Lift IP blocks without the web UI (server stopped; no migrations are run)
     unblock_cmd = subparsers.add_parser("unblock", help="Remove the IP block(s) for one address from the database (run with the server stopped)")
@@ -35890,19 +35902,46 @@ def main():
         try:
             _cfg = backup_manager.read_config_sync()
             _version = asyncio.run(update_manager._get_portal_version())
-            _info = backup_manager.create_archive(None, _version, _cfg["keep"], _cfg["extra_dir"])
+            _info = backup_manager.create_archive(None, _version, _cfg["keep"], _cfg["extra_dir"],
+                                                  include_uploads=_cfg["include_uploads"])
         except Exception as e:
             print(f"backup-archive failed: {e}", file=sys.stderr)
             sys.exit(1)
+        if _info.get("uploads_note"):
+            print(f"WARNING: {_info['uploads_note']}", file=sys.stderr)
         if _info.get("extra_error"):
             print(f"WARNING: copy to the extra destination failed: {_info['extra_error']}", file=sys.stderr)
         print(_info["path"])
     elif args.command == "restore-archive":
+        if bool(args.into) == bool(args.uploads_into):
+            print("restore-archive needs exactly one of --into DIR (database) or --uploads-into DIR (uploads only)", file=sys.stderr)
+            sys.exit(2)
+        if args.uploads_into and args.with_uploads:
+            print("--with-uploads belongs to --into; --uploads-into restores the uploads only", file=sys.stderr)
+            sys.exit(2)
+        if args.overwrite and not args.uploads_into:
+            print("--overwrite only applies to --uploads-into", file=sys.stderr)
+            sys.exit(2)
+        if args.uploads_into:
+            try:
+                _up = backup_manager.restore_uploads(args.archive, args.uploads_into, overwrite=args.overwrite)
+            except Exception as e:
+                print(f"restore-archive failed: {e}", file=sys.stderr)
+                sys.exit(1)
+            print(f"Uploads restored into {_up['into']}: {_up['restored']} restored, "
+                  f"{_up['skipped_existing']} kept (already there), {_up['refused']} refused.")
+            for _n in _up["refused_names"]:
+                print(f"  refused: {_n}", file=sys.stderr)
+            sys.exit(0)
         try:
-            _res = backup_manager.restore_archive(args.archive, args.into)
+            _res = backup_manager.restore_archive(args.archive, args.into, uploads=args.with_uploads)
         except Exception as e:
             print(f"restore-archive failed: {e}", file=sys.stderr)
             sys.exit(1)
+        if _res.get("uploads"):
+            _u = _res["uploads"]
+            print(f"Uploads restored into {_res['into']}/static/uploads: {_u['restored']} restored, "
+                  f"{_u['skipped_existing']} kept, {_u['refused']} refused.")
         print(f"Restored into {_res['into']}: {', '.join(_res['files'])}")
         print(f"Archive made by portal version {_res['portal_version']} at {_res['created_at']}.")
         for _w in _res["warnings"]:

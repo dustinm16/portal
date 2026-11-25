@@ -6395,6 +6395,7 @@
                     <td>${escapeHtml(a.portal_version || (a.readable ? '' : 'unreadable'))}</td>
                     <td>${escapeHtml(a.created_at || '')}</td>
                     <td>${formatBytes(a.size)}</td>
+                    <td>${escapeHtml(backupUploadsLabel(a))}</td>
                     <td>
                         <a class="range-btn" href="/api/admin/backups/${encodeURIComponent(a.name)}/download" download>Download</a>
                         <button class="range-btn" data-backup-delete="${escapeHtml(a.name)}">Delete</button>
@@ -6411,6 +6412,8 @@
                 <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
                     An archive holds the database copy, the JWT secret and the encryption salt. Treat it like root access.
                     Restore with <code>python server.py restore-archive FILE --into EMPTY_DIR</code> (see the README).
+                    Member uploads in an archive are restored only on request: add <code>--with-uploads</code>, or use
+                    <code>--uploads-into DIR</code> (add <code>--overwrite</code> to replace files that already exist).
                 </p>
                 <div style="margin-bottom:0.75rem;">${statusLine}
                     ${d.free_bytes != null ? ` <span style="color:var(--text-muted);">&middot; ${formatBytes(d.free_bytes)} free</span>` : ''}
@@ -6418,8 +6421,8 @@
                 </div>
                 <div class="sys-table-scroll">
                     <table class="sysmon-table">
-                        <thead><tr><th>Archive</th><th>Version</th><th>Created</th><th>Size</th><th>Actions</th></tr></thead>
-                        <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No archives yet</td></tr>'}</tbody>
+                        <thead><tr><th>Archive</th><th>Version</th><th>Created</th><th>Size</th><th>Uploads</th><th>Actions</th></tr></thead>
+                        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No archives yet</td></tr>'}</tbody>
                     </table>
                 </div>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-top:1rem;">
@@ -6441,11 +6444,32 @@
                         <input type="checkbox" id="bk-enabled" ${c.enabled ? 'checked' : ''}>
                         Scheduled backups (checked on each data cleanup run)
                     </label>
+                    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
+                        <input type="checkbox" id="bk-uploads" ${c.include_uploads ? 'checked' : ''}>
+                        Include member uploads (chat files, avatars, emotes, thumbnails)
+                    </label>
                 </div>
+                <p id="bk-uploads-note" style="color:var(--text-muted);font-size:0.8rem;margin:0.5rem 0 0 0;"></p>
                 <div style="margin-top:1rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
                     <button class="btn btn-primary" data-backup-action="save">Save Settings</button>
                     <button class="range-btn" data-backup-action="run" id="bk-run-btn">Back Up Now</button>
                 </div>`;
+            const note = document.getElementById('bk-uploads-note');
+            const est = d.uploads_estimate;
+            let text = 'Off by default: every archive then grows by the size of the uploads folder, and the archives kept add up.';
+            if (est) {
+                text = 'The uploads folder holds ' + est.files + ' file' + (est.files === 1 ? '' : 's') + ', ' + formatBytes(est.bytes)
+                    + '; each archive with uploads needs about that much space (it is refused when the disk is too full, and the database is still backed up). '
+                    + 'Archives hold uploads that were deleted later until they are pruned. Scheduled and manual backups include them, the backup before an update does not.';
+            }
+            note.textContent = text;
+        }
+
+        function backupUploadsLabel(a) {
+            const u = a.uploads;
+            if (!u) return 'none';
+            if (!u.included) return u.skipped || 'none';
+            return (u.files != null ? u.files + ' files' : 'yes') + (u.bytes != null ? ', ' + formatBytes(u.bytes) : '');
         }
 
         async function saveBackupSettings() {
@@ -6453,7 +6477,8 @@
                 enabled: document.getElementById('bk-enabled').checked,
                 interval_hours: parseInt(document.getElementById('bk-interval').value, 10),
                 keep: parseInt(document.getElementById('bk-keep').value, 10),
-                extra_dir: document.getElementById('bk-extra').value.trim()
+                extra_dir: document.getElementById('bk-extra').value.trim(),
+                include_uploads: document.getElementById('bk-uploads').checked
             };
             try {
                 const res = await Portal.fetch('/api/admin/backups/settings', {

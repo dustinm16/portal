@@ -405,7 +405,8 @@ def test_consistency_under_writes():
 
 def test_config_and_schedule():
     check("defaults are daily and keep 7",
-          bm.parse_config({}) == {"enabled": True, "interval_hours": 24, "keep": 7, "extra_dir": ""})
+          bm.parse_config({}) == {"enabled": True, "interval_hours": 24, "keep": 7, "extra_dir": "",
+                                  "include_uploads": False})
     cfg = bm.parse_config({"backup_interval_hours": "junk", "backup_keep": "9999", "backup_enabled": "false"})
     check("bad values fall back or clamp", cfg["interval_hours"] == 24 and cfg["keep"] == bm.KEEP_MAX and not cfg["enabled"])
     upd, errs = bm.validate_config_update({"enabled": False, "interval_hours": 12, "keep": 5, "extra_dir": ""})

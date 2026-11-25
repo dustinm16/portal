@@ -472,8 +472,49 @@ async def run(ctx):
             ctx.ok("backups: archive holds manifest, database, .env and salt",
                    members[:2] == ["manifest.json", "portal.db"] and ".env" in members and ".encryption_salt" in members,
                    str(members))
+            # Member uploads: the setting is off unless somebody switched it on (also on a production copy),
+            # so this archive has no uploads member, and the card offers the setting and shows the estimate.
+            ctx.ok("backups: with Include uploads off the archive has no uploads member",
+                   not any(m.startswith("uploads") for m in members) and info.get("uploads") is None,
+                   str(members))
             st, body, _ = await _status(admin, "GET", base + "/api/admin/backups")
             listing = json.loads(body)
+            cfg_now = listing.get("config", {})
+            est = listing.get("uploads_estimate") or {}
+            ctx.ok("backups: the list carries the Include uploads setting and an estimate of the uploads folder",
+                   isinstance(cfg_now.get("include_uploads"), bool)
+                   and isinstance(est.get("files"), int) and isinstance(est.get("bytes"), int),
+                   f"{cfg_now} {est}")
+            if cfg_now.get("include_uploads") is False:
+                ctx.ok("backups: the list shows no uploads for an archive made with the setting off",
+                       all(a.get("uploads") is None for a in listing.get("archives", []) if a["name"] == name),
+                       str(listing.get("archives", [])[:1]))
+            st, body, _ = await _status(admin, "GET", base + "/admin")
+            ctx.ok("backups: the Backups card has the Include uploads checkbox",
+                   st == 200 and b'id="bk-uploads"' in body, f"status={st}")
+            # Switched on and off again (the archive made in between is removed so later checks see what they expect).
+            st, body, _ = await _status(admin, "PUT", base + "/api/admin/backups/settings", json={"include_uploads": True})
+            ctx.ok("backups: the superadmin can switch Include uploads on", st == 200 and json.loads(body)["config"]["include_uploads"] is True,
+                   f"status={st} {body[:200]!r}")
+            st, body, _ = await _status(other, "PUT", base + "/api/admin/backups/settings", json={"include_uploads": False})
+            ctx.ok("backups: a plain admin cannot change Include uploads", st == 403, f"status={st}")
+            st, body, _ = await _status(admin, "POST", base + "/api/admin/backups/run")
+            up_info = json.loads(body) if st == 201 else {}
+            up_path = os.path.join(adir, up_info.get("name", "x"))
+            if os.path.isfile(up_path):
+                with tarfile.open(up_path, "r:gz") as tar:
+                    up_members = tar.getnames()
+                    up_manifest = json.loads(tar.extractfile("manifest.json").read())
+                ctx.ok("backups: with Include uploads on the archive ends with the uploads index and the manifest announces it",
+                       up_members[-1] == "uploads.index.json" and up_manifest.get("uploads", {}).get("included") is True
+                       and not any(k.startswith("uploads") for k in up_manifest["files"]),
+                       f"{up_members[-3:]} {up_manifest.get('uploads')}")
+                os.unlink(up_path)
+            else:
+                ctx.ok("backups: a run with Include uploads on writes an archive", False, f"status={st} {body[:200]!r}")
+            st, body, _ = await _status(admin, "PUT", base + "/api/admin/backups/settings", json={"include_uploads": False})
+            ctx.ok("backups: Include uploads is switched off again", st == 200 and json.loads(body)["config"]["include_uploads"] is False,
+                   f"status={st}")
             ctx.ok("backups: list shows the archive and a successful last run",
                    name in [a["name"] for a in listing.get("archives", [])] and listing["status"]["backup_last_status"] == "ok",
                    str(listing.get("status")))
