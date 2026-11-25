@@ -61,6 +61,30 @@ def part1():
     check("capability: a good one verifies and names the viewer's session", ok and ok["user_id"] == 7 and ok["token_id"] == "tok1")
     check("capability: it is a plain path segment", "/" not in cap and cap.startswith("~") and len(cap) < 200, cap)
     check("capability: another connection is refused", po.verify(SECRET, cap, conn_uuid="other") is None)
+    # (1.24.2, E34) the address is encrypted: a page that reads its own location learns no member id, session id or connection
+    cap34 = po.mint(SECRET, user_id=987654, token_id="sessionid-abcdef", conn_uuid="conn-uuid-123")
+    body34 = cap34[len(po.CAP_PREFIX):].partition(".")[0]
+    raw34 = po._unb64(body34)
+    check("E34 capability: the decoded body shows neither the member id, the session id nor the connection",
+          b"987654" not in raw34 and b"sessionid-abcdef" not in raw34 and b"conn-uuid-123" not in raw34
+          and b"987654" not in cap34.encode() and "sessionid-abcdef" not in cap34, raw34[:60])
+    ok34 = po.verify(SECRET, cap34, conn_uuid="conn-uuid-123")
+    check("E34 capability: it still names the member and the session", ok34 and ok34["user_id"] == 987654 and ok34["token_id"] == "sessionid-abcdef", ok34)
+    check("E34 capability: it still binds the connection", po.verify(SECRET, cap34, conn_uuid="conn-uuid-124") is None)
+    check("E34 capability: two mints of the same viewer differ (random nonce)",
+          po.mint(SECRET, user_id=987654, token_id="sessionid-abcdef", conn_uuid="conn-uuid-123", now=1000) !=
+          po.mint(SECRET, user_id=987654, token_id="sessionid-abcdef", conn_uuid="conn-uuid-123", now=1000))
+    check("E34 capability: it stays a capability and is shorter than the limit", po.is_capability(cap34) and len(cap34) < po.CAP_MAX_LEN, len(cap34))
+    # the 1.24.1 readable shape (valid MAC over a base64 JSON body) must no longer verify
+    import base64 as _b64m, hashlib as _hl, hmac as _hm
+    old_body = _b64m.urlsafe_b64encode(json.dumps([7, "tok1", "cid", int(time.time()) + 3600], separators=(",", ":")).encode()).decode().rstrip("=")
+    old_key = _hl.sha256(b"portal-proxy-capability-v1|" + SECRET.encode()).digest()
+    old_mac = _b64m.urlsafe_b64encode(_hm.new(old_key, old_body.encode(), _hl.sha256).digest()[:18]).decode().rstrip("=")
+    old_cap = f"~pc1.{old_body}.{old_mac}"
+    check("E34 capability: a readable 1.24.1 address is a capability by shape but no longer verifies",
+          po.is_capability(old_cap) and po.verify(SECRET, old_cap, conn_uuid="cid") is None)
+    check("E34 capability: a body that was encrypted under another secret does not verify",
+          po.verify("t" * 64, po.mint(SECRET, user_id=7, token_id="tok1", conn_uuid="cid"), conn_uuid="cid") is None)
     check("capability: it is not bound to an address (mint and verify take none): a member whose address changes keeps the page", "ip" not in po.mint.__code__.co_varnames[:po.mint.__code__.co_argcount + po.mint.__code__.co_kwonlyargcount] and "ip" not in po.verify.__code__.co_varnames[:po.verify.__code__.co_argcount + po.verify.__code__.co_kwonlyargcount])
     check("capability: another secret is refused", po.verify("t" * 64, cap, conn_uuid="cid") is None)
     prefix = getattr(po, "CAP_PREFIX", "~")
@@ -102,7 +126,25 @@ def part1():
     check("fetch metadata: same-origin POST allowed", r("POST", "/api/x", {"Sec-Fetch-Site": "same-origin", "Origin": "https://portal.example"}, own) is None)
     check("fetch metadata: same-site POST allowed", r("POST", "/api/x", {"Sec-Fetch-Site": "same-site"}, own) is None)
     check("fetch metadata: Origin null refused", r("DELETE", "/api/x", {"Origin": "null"}, own) is not None)
-    check("fetch metadata: Origin null refused even with same-origin metadata", r("POST", "/api/x", {"Origin": "null", "Sec-Fetch-Site": "same-origin"}, own) is not None)
+    # (1.24.2, E3) a same-origin form POST from a no-referrer page carries Origin null: only the null rule is skipped
+    check("E3 fetch metadata: Origin null with same-origin metadata passes", r("POST", "/api/x", {"Origin": "null", "Sec-Fetch-Site": "same-origin"}, own) is None)
+    check("E3 fetch metadata: Origin null with same-origin metadata still meets the Referer rule",
+          r("POST", "/api/x", {"Origin": "null", "Sec-Fetch-Site": "same-origin", "Referer": "https://portal.example/proxy/abc/page"}, own) is not None)
+    check("E3 fetch metadata: Origin null with cross-site metadata is refused", r("POST", "/api/x", {"Origin": "null", "Sec-Fetch-Site": "cross-site"}, own) is not None)
+    check("E3 fetch metadata: Origin null with same-site metadata is refused", r("POST", "/api/x", {"Origin": "null", "Sec-Fetch-Site": "same-site"}, own) is not None)
+    check("E3 fetch metadata: Origin null with no fetch metadata is refused", r("POST", "/api/x", {"Origin": "NULL"}, own) is not None)
+    # (1.24.2, E7) a page on a sibling subdomain is same-site, not same-origin
+    check("E7 fetch metadata: same-site with a foreign Origin is refused",
+          r("POST", "/login", {"Sec-Fetch-Site": "same-site", "Origin": "https://evil.portal.example"}, own) == "same-site foreign origin")
+    check("E7 fetch metadata: same-site with one of our own Origins (port included) is allowed",
+          r("POST", "/api/x", {"Sec-Fetch-Site": "same-site", "Origin": "https://stream.example"}, own) is None
+          and r("POST", "/api/x", {"Sec-Fetch-Site": "same-site", "Origin": "http://127.0.0.1:9701"}, {"127.0.0.1:9701"}) is None)
+    check("E7 fetch metadata: same-site with a scheme-less or unreadable foreign Origin is refused",
+          r("POST", "/api/x", {"Sec-Fetch-Site": "same-site", "Origin": "evil"}, own) is not None)
+    check("E7 fetch metadata: same-origin with our Origin is unchanged",
+          r("POST", "/login", {"Sec-Fetch-Site": "same-origin", "Origin": "https://portal.example"}, own) is None)
+    check("E7 fetch metadata: a safe method from a sibling is not judged",
+          r("GET", "/api/x", {"Sec-Fetch-Site": "same-site", "Origin": "https://evil.portal.example"}, own) is None)
     check("fetch metadata: no metadata, foreign Origin refused", r("PUT", "/api/x", {"Origin": "https://evil.example"}, own) is not None)
     check("fetch metadata: no metadata, our Origin allowed", r("PUT", "/api/x", {"Origin": "https://portal.example"}, own) is None)
     check("fetch metadata: no headers at all (script, curl, OBS) allowed", r("POST", "/api/x", {}, own) is None)
@@ -122,6 +164,27 @@ def part1():
           po.forbidden_cookie_name(" Portal_Session ", "portal_session") and po.forbidden_cookie_name("PORTAL_SESSION", "portal_session"))
     check("cookie: other names are not", not po.forbidden_cookie_name("sid", "portal_session")
           and not po.forbidden_cookie_name("__Secure-next-auth.session-token", "portal_session"))
+    # (1.24.2, E32) an empty name with the session cookie in the value is sent back by browsers as that cookie
+    sn = "portal_session"
+    check("E32 cookie: '=portal_session=x' (empty name) is forbidden when the value is given",
+          po.forbidden_cookie_name("", sn, "portal_session=x") and po.forbidden_cookie_name(" ", sn, "  Portal_Session=x")
+          and po.forbidden_cookie_name("", sn, "PORTAL_SESSION=x; Path=/"))
+    check("E32 cookie: ordinary empty-name cookies and other names stay allowed",
+          not po.forbidden_cookie_name("", sn, "other=x") and not po.forbidden_cookie_name("", sn, "portal_sessionx=1")
+          and not po.forbidden_cookie_name("", sn, "") and not po.forbidden_cookie_name("", sn)
+          and not po.forbidden_cookie_name("sid", sn, "portal_session=x")
+          and not po.forbidden_cookie_name("", sn, "portal_session") and not po.forbidden_cookie_name("", sn, "portal_sessionx =1")
+          and not po.forbidden_cookie_name("", sn, "my portal_session=1"))
+    check("E32 cookie: white space between the name and the second '=' does not hide the session cookie",
+          po.forbidden_cookie_name("", sn, "portal_session =x") and po.forbidden_cookie_name("", sn, "portal_session\t=x")
+          and po.forbidden_cookie_name("", sn, " PORTAL_Session \t = x") and po.forbidden_cookie_name(" ", sn, "portal_session\t =x; Path=/"))
+    rw = server._rewrite_set_cookie
+    sc_name = Config.SESSION_COOKIE_NAME
+    check("E32 cookie: the Set-Cookie rewrite drops '=<session>=x; Path=/' and keeps an ordinary one",
+          rw(f"={sc_name}=x; Path=/", "/proxy/abc") is None and rw(f"={sc_name.upper()}=x", "/proxy/abc") is None
+          and rw("sid=1; Path=/", "/proxy/abc") is not None and rw("=plain; Path=/", "/proxy/abc") is not None)
+    check("E32 cookie: the Cookie header filter drops the pair too",
+          server._cookies_without_portal_session(f"a=1; ={sc_name}=x; b=2") == ["a=1", "b=2"])
     check("cookie path: dot segments and relative paths are treated as missing",
           po.clean_cookie_path("/a/../b") == "" and po.clean_cookie_path("/a/%2e%2e/b") == "" and po.clean_cookie_path("a") == ""
           and po.clean_cookie_path("/a/b") == "/a/b")
@@ -135,6 +198,26 @@ PAGE = ("<!doctype html><html><head><title>t</title></head><body>hello"
         "<script>fetch('/api/me')</script></body></html>")
 
 
+# (1.24.2) pages whose own text tries to keep the embedded browser's report script out or to run before it
+FRAME_BODIES = {
+    "comment": (b"<!doctype html><html><!--<head>--><head><title>c</title></head><body><h1>c</h1></body></html>", "text/html; charset=utf-8"),
+    "early": (b"<!doctype html><script>window.EARLY=1</script><html><head><title>e</title></head><body></body></html>", "text/html"),
+    "badutf": (b"<!doctype html><html><head><title>b</title></head><body><h1>x \xff</h1></body></html>", "text/html; charset=utf-8"),
+    "upper": (b"<!doctype html><html><head><title>u</title></head><body>u</body></html>", "TEXT/HTML; Charset=UTF-8"),
+    "bom": (b"\xef\xbb\xbf  <!-- note --><!DOCTYPE html><html><head></head><body>m</body></html>", "text/html"),
+    "nodoc": (b"<p>fragment <b>only</b></p>", "text/html"),
+    "badcharset": (b"<!doctype html><html><head><title>x</title></head><body>q</body></html>", "text/html; charset=no-such-charset"),
+    "utf16": ("<!doctype html><html><body>w</body></html>".encode("utf-16"), "text/html; charset=utf-16"),
+    "xhtml": (b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head><body><script>window.X=1</script></body></html>', "application/xhtml+xml"),
+    "xml": (b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>x</body></html>', "application/xml"),
+}
+
+
+async def frame_body(request):
+    body, ctype = FRAME_BODIES[request.match_info["kind"]]
+    return web.Response(body=body, headers={"Content-Type": ctype})
+
+
 async def page(request):
     resp = web.Response(text=PAGE, content_type="text/html")
     resp.headers.add("Set-Cookie", "sid=1; Path=/; HttpOnly")
@@ -142,6 +225,7 @@ async def page(request):
     resp.headers.add("Set-Cookie", f"{Config.SESSION_COOKIE_NAME.upper()}=evil2; Path=/")
     resp.headers.add("Set-Cookie", "dots=1; Path=/proxy/abc/../../")
     resp.headers["Clear-Site-Data"] = '"cookies", "storage"'
+    resp.headers["Referrer-Policy"] = "unsafe-url"      # (1.24.2, E4) must not reach an isolated page's browser
     resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Content-Security-Policy"] = "default-src *"
     for name, value in ORIGIN_WIDE.items():
@@ -314,6 +398,7 @@ async def amain():
     def make_upstream():
         up = web.Application()
         up.router.add_get("/page", page)
+        up.router.add_get("/fj/{kind}", frame_body)
         up.router.add_get("/binary", binary)
         up.router.add_route("*", "/data", data)
         up.router.add_get("/ws", sock)
@@ -390,6 +475,61 @@ async def amain():
           st == 200 and hd.getall("Content-Security-Policy", []) == [server._PROXY_HTML_CSP], f"{st} {hd.getall('Content-Security-Policy', [])}")
     st, hd, body = await get(adm, f"/proxy/{web_a}/page")
     check("an administrator opening their own is unchanged too", st == 200 and "sandbox" not in str(hd.getall("Content-Security-Policy", [])))
+    st, hd, body = await get(owner, f"/proxy/{web_m}/page", headers={"Origin": "null"})
+    check("E31: a trusted connection answers an Origin null request with no CORS grant of the portal (the upstream's own pass through)",
+          st == 200 and "Access-Control-Allow-Origin" not in hd and "Vary" not in hd, str(dict(hd)))
+    # a request that is isolated but carries no verified capability (a bearer token served in place) never gets the
+    # credentialed answer, whatever its Origin says
+    from multidict import CIMultiDict
+    class _Req(dict):
+        headers = {"Origin": "null"}
+    hh = CIMultiDict()
+    server._proxy_isolate_headers(hh, _Req())
+    check("E31: without a verified capability on the request the answer stays * with no credentials",
+          hh.get("Access-Control-Allow-Origin") == "*" and "Access-Control-Allow-Credentials" not in hh and "Vary" not in hh, str(dict(hh)))
+    hh = CIMultiDict([("Vary", "Accept-Encoding"), ("Access-Control-Allow-Credentials", "true")])
+    capreq = _Req()
+    capreq[server._PROXY_CAP_TOKEN] = object()
+    server._proxy_isolate_headers(hh, capreq)
+    check("E31: with one, Origin null gets null + credentials and Vary: Origin is added next to the upstream's Vary",
+          hh.get("Access-Control-Allow-Origin") == "null" and hh.getall("Access-Control-Allow-Credentials") == ["true"]
+          and "Origin" in ", ".join(hh.getall("Vary")) and "Accept-Encoding" in ", ".join(hh.getall("Vary")), str(dict(hh)))
+    # (1.24.2, E31) Vary: Origin on every answer to a request with a verified capability, merged, never duplicated
+    class _ReqNoOrigin(dict):
+        headers = {}
+    nreq = _ReqNoOrigin()
+    nreq[server._PROXY_CAP_TOKEN] = object()
+    hh = CIMultiDict([("Vary", "Accept-Encoding")])
+    server._proxy_isolate_headers(hh, nreq)
+    check("E31: a capability request without Origin null gets '*' and Vary: Origin merged into the upstream's single Vary",
+          hh.get("Access-Control-Allow-Origin") == "*" and hh.getall("Vary") == ["Accept-Encoding, Origin"], str(dict(hh)))
+    hh = CIMultiDict([("Vary", "Origin"), ("vary", "Accept-Encoding")])
+    server._proxy_isolate_headers(hh, nreq)
+    server._proxy_isolate_headers(hh, capreq)
+    check("E31: an existing Vary: Origin is not repeated, whichever answer is given and however often it is called",
+          ", ".join(hh.getall("Vary")).lower().count("origin") == 1, str(hh.getall("Vary")))
+    hh = CIMultiDict()
+    server._proxy_isolate_headers(hh, capreq)
+    check("E31: the credentialed answer gets Vary: Origin when the response had none", hh.getall("Vary") == ["Origin"], str(dict(hh)))
+    # Expose-Headers: "*" on a non-credentialed answer, the response's own names on a credentialed one
+    hh = CIMultiDict([("X-Total", "1"), ("ETag", "x"), ("Set-Cookie", "a=b"), ("Connection", "close"), ("Transfer-Encoding", "chunked"),
+                      ("Access-Control-Allow-Headers", "x"), ("x-total", "2"), ("Bad Name", "1")])
+    server._proxy_isolate_headers(hh, capreq)
+    exposed = [n.strip() for n in hh.get("Access-Control-Expose-Headers", "").split(",")]
+    check("E31: the credentialed answer lists the response's own header names instead of '*'",
+          "*" not in exposed and "X-Total" in exposed and "ETag" in exposed and len([n for n in exposed if n.lower() == "x-total"]) == 1
+          and hh.get("Access-Control-Allow-Credentials") == "true", str(dict(hh)))
+    check("E31: ... never Set-Cookie, a hop-by-hop header, an Access-Control header or an invalid name",
+          not any(n.lower() in ("set-cookie", "connection", "transfer-encoding", "bad name") or n.lower().startswith("access-control-") for n in exposed), str(exposed))
+    hh = CIMultiDict([("X-Total", "1")])
+    server._proxy_isolate_headers(hh, nreq)
+    check("E31: a non-credentialed answer keeps Expose-Headers '*'", hh.get("Access-Control-Expose-Headers") == "*", str(dict(hh)))
+    hh = CIMultiDict([(f"X-H{i}", "1") for i in range(200)])
+    server._proxy_isolate_headers(hh, capreq)
+    check("E31: the list of exposed names is bounded", len(hh.get("Access-Control-Expose-Headers", "").split(",")) <= 64, str(len(hh.get("Access-Control-Expose-Headers", ""))))
+    hh = CIMultiDict([("Access-Control-Expose-Headers", "X-Evil")])
+    server._proxy_isolate_headers(hh, capreq)
+    check("E31: an Expose-Headers the upstream sent is replaced", "X-Evil" not in hh.get("Access-Control-Expose-Headers", ""), str(dict(hh)))
 
     # ---- a path that starts with "~" is the application's own, not a capability (1.24.1) ---------------------
     for label, sess, uuid in (("a member opening an administrator's", bob, web_a), ("the administrator opening their own", adm, web_a),
@@ -427,11 +567,41 @@ async def amain():
         check(f"{label}: no cookie is passed on, no CORS grant of the upstream's survives, nosniff is forced",
               "Set-Cookie" not in hd and hd.get("Access-Control-Allow-Credentials") is None
               and hd.get("Access-Control-Allow-Origin") == "*" and hd.get("X-Content-Type-Options") == "nosniff", str(dict(hd)))
+        check(f"{label}: E4 an upstream Referrer-Policy unsafe-url is replaced by no-referrer (the address holds the capability)",
+              hd.getall("Referrer-Policy", []) == ["no-referrer"], str(hd.getall("Referrer-Policy", [])))
         check(f"{label}: the frame script that reports address and title to the embedded browser is injected",
               b"portalFrame" in body)
     # the capability address works without any cookie, and for sub-resources and other methods
     st, hd, _ = await get(bob, f"/proxy/{web_m}/data")
     cap_base = hd["Location"].rsplit("/data", 1)[0]
+    # (1.24.2) the report script of the embedded browser is the first thing in every isolated HTML document, whatever
+    # the page's own text does, and XHTML and XML get no scripts at all (a script that runs without the report script
+    # could not be told from a page that never reports)
+    marker = b"<script>(function(){\"use strict\";var P=window.parent"
+    served = {}
+    for kind in ("comment", "early", "badutf", "upper", "bom", "nodoc", "badcharset"):
+        st, hd, body = await get(bob, f"{cap_base}/fj/{kind}")
+        served[kind] = body
+        at = body.find(marker)
+        before = body[:at]
+        check(f"E1 report script: '{kind}' page is served with the report script", st == 200 and at >= 0 and body.count(marker) == 1, f"{st} {body[:120]!r}")
+        check(f"E1 report script: '{kind}' page has nothing of its own before the script but a byte order mark, space, comments and a doctype",
+              at >= 0 and not before.replace(b"\xef\xbb\xbf", b"").replace(b"<!-- note -->", b"").strip().lower().replace(b"<!doctype html>", b""), repr(before[:80]))
+        check(f"E1 report script: '{kind}' page still has its own text", body.replace(marker, b"").count(FRAME_BODIES[kind][0][-12:]) == 1 or kind == "badutf", repr(body[-40:]))
+    body = served["comment"]
+    check("E1 report script: a doctype stays first among the elements (no quirks mode) and the page's comment follows the script",
+          body.startswith(b"<!doctype html><script>") and body.find(b"<!--<head>") > body.find(marker) >= 0, repr(body[:80]))
+    body = served["badutf"]
+    check("E1 report script: a body that is not valid text keeps its bytes (\\xff) and gets the script at byte level", b"\xff" in body and marker in body, repr(body[-60:]))
+    st, hd, body = await get(bob, f"{cap_base}/fj/utf16")
+    check("E1 report script: an UTF-16 page that decodes is injected as text", marker.decode().encode("utf-16")[2:] in body or b"p\x00o\x00r\x00t\x00a\x00l\x00F\x00" in body, repr(body[:40]))
+    for kind in ("xhtml", "xml"):
+        st, hd, body = await get(bob, f"{cap_base}/fj/{kind}")
+        csp = hd.getall("Content-Security-Policy", [])
+        check(f"E1 report script: an isolated {kind} document runs no script (the scriptless policy, not the HTML one)",
+              st == 200 and server._PROXY_SVG_CSP in csp and server._PROXY_HTML_CSP not in csp and b"portalFrame" not in body, str(csp))
+    st, hd, body = await get(owner, f"/proxy/{web_m}/fj/xhtml")
+    check("E1 report script: a trusted page of the same type keeps the page policy", st == 200 and server._PROXY_HTML_CSP in hd.getall("Content-Security-Policy", []), str(st))
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as bare_c:
         async with bare_c.get(env.base + cap_base + "/data") as r:
             check("a sub-resource under the capability needs no cookie", r.status == 200, str(r.status))
@@ -444,8 +614,44 @@ async def amain():
             check("a POST from the opaque origin goes through (the form of an isolated app)", r.status == 200 and j["method"] == "POST" and Config.SESSION_COOKIE_NAME not in j["cookie"], str(j))
         async with bare_c.options(env.base + cap_base + "/data", headers={
                 "Origin": "null", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-a"}) as r:
-            check("a preflight is answered by the portal", r.status == 204 and r.headers.get("Access-Control-Allow-Origin") == "*"
+            check("a preflight from the opaque origin is answered by the portal, with the credentialed null answer (E31)",
+                  r.status == 204 and r.headers.get("Access-Control-Allow-Origin") == "null"
+                  and r.headers.get("Access-Control-Allow-Credentials") == "true" and "Origin" in r.headers.get("Vary", "")
                   and r.headers.get("Access-Control-Allow-Headers") == "x-a", f"{r.status} {dict(r.headers)}")
+        async with bare_c.options(env.base + cap_base + "/data", headers={
+                "Origin": "https://other.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-a"}) as r:
+            check("E31: a preflight from any other origin is answered as before: *, no credentials",
+                  r.status == 204 and r.headers.get("Access-Control-Allow-Origin") == "*"
+                  and r.headers.get("Access-Control-Allow-Credentials") is None, f"{r.status} {dict(r.headers)}")
+        # (E31) a credentialed request from the opaque origin: the answer carries null + credentials, and nothing of the
+        # viewer's portal session is passed on to the upstream
+        async with bare_c.get(env.base + cap_base + "/data", headers={"Origin": "null", "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"}) as r:
+            j = await r.json()
+            check("E31: a GET under the capability from the opaque origin gets Allow-Origin null, Allow-Credentials true and Vary: Origin",
+                  r.status == 200 and r.headers.get("Access-Control-Allow-Origin") == "null"
+                  and r.headers.get("Access-Control-Allow-Credentials") == "true" and "Origin" in r.headers.get("Vary", ""), f"{r.status} {dict(r.headers)}")
+            check("E31: ... and the portal session cookie is still never passed upstream", Config.SESSION_COOKIE_NAME not in j["cookie"], str(j))
+        async with bare_c.get(env.base + cap_base + "/binary", headers={"Origin": "null"}) as r:
+            await r.read()
+            check("E31: a streamed (binary) answer gets the same headers",
+                  r.headers.get("Access-Control-Allow-Origin") == "null" and r.headers.get("Access-Control-Allow-Credentials") == "true", str(dict(r.headers)))
+        for origin in ("https://other.example", None):
+            async with bare_c.get(env.base + cap_base + "/data", headers={"Origin": origin} if origin else {}) as r:
+                await r.read()
+                check(f"E31: Origin {origin!r}: * and no credentials, with Vary: Origin",
+                      r.headers.get("Access-Control-Allow-Origin") == "*" and r.headers.get("Access-Control-Allow-Credentials") is None
+                      and "Origin" in r.headers.get("Vary", ""), str(dict(r.headers)))
+        bad_cap = cap_base[:-1] + ("A" if cap_base[-1] != "A" else "B")
+        async with bare_c.get(env.base + bad_cap + "/data", headers={"Origin": "null"}, allow_redirects=False) as r:
+            check("E31: a request without a valid capability gets none of these headers",
+                  r.status == 401 and not [n for n in r.headers if n.lower().startswith("access-control-")] and "Origin" not in r.headers.get("Vary", ""),
+                  str(dict(r.headers)))
+        async with bare_c.options(env.base + bad_cap + "/data", headers={"Origin": "null", "Access-Control-Request-Method": "POST"}, allow_redirects=False) as r:
+            check("E31: a preflight without a valid capability gets none of them either",
+                  not [n for n in r.headers if n.lower().startswith("access-control-")], f"{r.status} {dict(r.headers)}")
+        async with bare_c.get(env.base + "/api/me", headers={"Origin": "null"}) as r:
+            check("E31: a portal route outside the capability path gets none of them", r.headers.get("Access-Control-Allow-Credentials") is None
+                  and r.headers.get("Access-Control-Allow-Origin") != "null", str(dict(r.headers)))
         async with bare_c.get(env.base + cap_base[:-1] + ("A" if cap_base[-1] != "A" else "B") + "/data", allow_redirects=False) as r:
             check("a well-formed capability that does not verify is a plain 401, not a login redirect, and not cached",
                   r.status == 401 and "no-store" in r.headers.get("Cache-Control", ""), str(r.status))
@@ -608,16 +814,38 @@ async def amain():
     stale = po.mint(server.Config.JWT_SECRET, user_id=env.uid["owner"], token_id="gone", conn_uuid=br_m, now=time.time() - 10 * 3600)
     other_conn = po.mint(server.Config.JWT_SECRET, user_id=env.uid["owner"], token_id="gone", conn_uuid="someone-else")
     nav = {"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe", "Sec-Fetch-Site": "cross-site"}
+    # a navigation made by the member's browser itself carries the session cookie; one made by an opaque-origin page does not
+    sess_cookie = {"Cookie": f"{Config.SESSION_COOKIE_NAME}=" + [c.value for c in owner.cookie_jar if c.key == Config.SESSION_COOKIE_NAME][0]}
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as c3:
         async def anon(url, **kw):
             async with c3.request(kw.pop("method", "GET"), env.base + url, allow_redirects=False, **kw) as r:
                 return r.status, r.headers, await r.read()
-        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
-        check("an expired capability on a page navigation (iframe) is sent through the entry, without the capability",
-              st == 302 and hd["Location"] == f"/proxy/{br_m}/data?x=1" and "~pc1" not in hd["Location"], f"{st} {hd.get('Location')}")
-        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
+        st, hd, body = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
+        check("E2: an expired capability on a navigation without the session cookie (a link clicked in an opaque-origin page) "
+              "is a 401 'expired' page, not a redirect to the login page",
+              st == 401 and "Location" not in hd and "no-store" in hd.get("Cache-Control", "") and b"This page expired. Reload the tab." in body
+              and b"data-portal-expired" in body and b"x=1" not in body, f"{st} {hd.get('Location')} {body[:120]!r}")
+        st, hd, body = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
+        check("E2: ... and asking again is the same answer (it is not a loop)", st == 401 and b"This page expired" in body, str(st))
+        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/outside?x=1", headers={**nav, "Sec-Fetch-Site": "none"})
+        check("E2: a navigation typed or followed from outside (Sec-Fetch-Site none) with no session still goes through the entry",
+              st == 302 and hd["Location"] == f"/proxy/{br_m}/outside?x=1", f"{st} {hd.get('Location')}")
+        st, hd, body = await anon(f"/proxy/{br_m}/{stale}/doc3?x=3", headers={**nav, "Sec-Fetch-Dest": "frame"})
+        check("E2: a frame navigation (Sec-Fetch-Dest frame) with no session is still the 'expired' page", st == 401 and b"This page expired" in body, str(st))
+        st, hd, body = await anon(f"/proxy/{br_m}/{stale}/doc3?x=3", headers={**nav, "Sec-Fetch-Dest": "document"})
+        check("E2: a top-level navigation (Sec-Fetch-Dest document) with no session from another site goes through the entry, not to the 'expired' page",
+              st == 302 and hd["Location"] == f"/proxy/{br_m}/doc3?x=3" and b"This page expired" not in body, f"{st} {hd.get('Location')}")
+        st, hd, _ = await anon(hd["Location"], headers={**nav, "Sec-Fetch-Dest": "document"})
+        check("E2: ... and the entry sends the signed-out visitor to the login page (a different address, so no loop)",
+              st == 302 and "/login" in hd.get("Location", "") and "~pc1" not in hd.get("Location", ""), f"{st} {hd.get('Location')}")
+        st, hd, body = await anon(f"/proxy/{br_m}/{stale}/doc3?x=3", headers={**nav, "Sec-Fetch-Dest": "document"})
+        check("E2: ... the same stale link again at once is the plain 401 (the window guard)", st == 401 and "Location" not in hd, f"{st} {hd.get('Location')}")
+        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=2", headers={**nav, **sess_cookie})
+        check("an expired capability on a page navigation (iframe) that carries the session is sent through the entry, without the capability",
+              st == 302 and hd["Location"] == f"/proxy/{br_m}/data?x=2" and "~pc1" not in hd["Location"], f"{st} {hd.get('Location')}")
+        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=2", headers={**nav, **sess_cookie})
         check("... the same page again at once is a 401 (a re-entry that fails again is not repeated: no loop)", st == 401, str(st))
-        st, hd, _ = await anon(f"/proxy/{br_m}/{other_conn}/deep/page", headers={**nav, "Sec-Fetch-Dest": "document"})
+        st, hd, _ = await anon(f"/proxy/{br_m}/{other_conn}/deep/page", headers={**nav, **sess_cookie, "Sec-Fetch-Dest": "document"})
         check("a capability of another connection on a document navigation re-enters the same way",
               st == 302 and hd["Location"] == f"/proxy/{br_m}/deep/page", f"{st} {hd.get('Location')}")
         for label, kw in (("a script or image request", {"headers": {"Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script"}}),

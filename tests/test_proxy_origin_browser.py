@@ -67,6 +67,73 @@ async function t(name, fn){ try { out[name] = await fn(); } catch(e) { out[name]
 })();
 </script></body></html>"""
 
+# (1.24.2, E1 and E9) A page that lies about where it is, and one that asks the embedded browser to open tabs
+# outside its connection. __PROXY__ is /proxy/<browser connection>.
+FORGE = r"""<!doctype html><html><head><title>Bank</title></head><body><h1>forged</h1>
+<script>
+var P = '__PROXY__', i = 0;
+var hrefs = [P + '/https://bank.example/login', 'https://bank.example/login', P + '/~/legit-path'];
+setInterval(function(){ parent.postMessage({type: 'portalFrame', href: hrefs[i++ % 3], title: 'Bank'}, '*'); }, 250);
+</script></body></html>"""
+
+# The same lie, and then the page navigates itself once (location.replace) so the frame has a load after the first.
+# Neither the report nor the load may move the bar to another site.
+# (The second document also loads /slow.js, which answers after 0.8 s: its load event comes late, and the lie is the last
+# report before it. The first document is replaced before it finishes loading.)
+FORGE2 = r"""<!doctype html><html><head><title>Bank2</title></head><body><h1>forged again</h1>
+__SLOW__
+<script>
+var P = '__PROXY__';
+setInterval(function(){ parent.postMessage({type: 'portalFrame', href: P + '/https://bank.example/login', title: 'Bank2'}, '*'); }, 50);
+if (location.search.indexOf('again=1') < 0) setTimeout(function(){ location.replace(location.pathname + '?again=1'); }, 700);
+</script></body></html>"""
+
+FORGE_TAB = r"""<!doctype html><html><head><title>tabs</title></head><body><h1>tabs</h1>
+<script>
+var P = '__PROXY__', bad = [P + '/../../api/me', P + '/%2e%2e/%2e%2e/api/me', P + '/%2E%2e/api/me', P + '/..%2f..%2fapi/me',
+  P + '/a/../../api/me', P + '/..\\..\\api/me', 'https://bank.example/', '/api/me', P + '/./x'];
+var n = 0;
+var t = setInterval(function(){ bad.forEach(function(u){ parent.postMessage({type: 'openTab', url: u}, '*'); }); if (++n > 8) clearInterval(t); }, 250);
+setTimeout(function(){ parent.postMessage({type: 'openTab', url: P + '/~/popup'}, '*'); }, 1500);
+</script></body></html>"""
+
+# (1.24.2, E31) A page that makes credentialed requests (fetch with credentials: 'include', XHR withCredentials) to its own
+# capability address, and to one whose capability is wrong.
+CRED = r"""<!doctype html><html><head><title>cred</title></head><body><h1>cred</h1>
+<script>
+(async function(){
+  var out = {}, parts = location.pathname.split('/'), cap = parts[3];
+  var bad = cap.slice(0, -1) + (cap.slice(-1) === 'A' ? 'B' : 'A');
+  async function t(name, fn){ try { out[name] = await fn(); } catch(e) { out[name] = 'ERR ' + e.name; } }
+  await t('fetch', async function(){ var r = await fetch('/credcheck', {credentials: 'include'}); return r.status + ' ' + (await r.text()); });
+  await t('xhr', function(){ return new Promise(function(res, rej){ var x = new XMLHttpRequest(); x.open('GET', '/credcheck'); x.withCredentials = true;
+        x.onload = function(){ res(x.status + ' ' + x.responseText); }; x.onerror = function(){ rej({name: 'XHRError'}); }; x.send(); }); });
+  await t('post', async function(){ var r = await fetch('/credcheck', {method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json', 'X-A': '1'}, body: '{}'}); return r.status; });
+  await t('plain', async function(){ var r = await fetch('/credcheck'); return r.status; });
+  // the page's own fetch rewrites a path under the portal; a fetch of a fresh frame does not, so the wrong address is really asked for
+  await t('badcap', async function(){ var i = document.createElement('iframe'); i.style.display = 'none'; document.body.appendChild(i);
+        var r = await i.contentWindow.fetch(location.origin + '/' + parts[1] + '/' + parts[2] + '/' + bad + '/credcheck', {credentials: 'include'}); return r.status; });
+  fetch('/__report?tag=cred', {method: 'POST', body: JSON.stringify(out)});
+})();
+</script></body></html>"""
+
+# (1.24.2, E2) Two pages of a browser-mode site, the first with a link to the second.
+STALE1 = "<!doctype html><html><head><title>stale-one</title></head><body><a id='go' href='/stale2'>next</a></body></html>"
+STALE2 = "<!doctype html><html><head><title>stale-two</title></head><body><h1>second</h1></body></html>"
+
+# (1.24.2, E1 follow-up) A page of one site with a link to a second site (another host name, so another proxied site).
+XLINK = "<!doctype html><html><head><title>xsite-one</title></head><body><a id='go' href='http://localhost:__PORT__/xsecond'>other site</a></body></html>"
+# (1.24.2) second-site pages that try to keep the old site's address on the bar: __KIND__ names the case
+XL = "<!doctype html><html><head><title>xl-__KIND__</title></head><body><a id='go' href='http://__HOST__:__PORT__/xx/__KIND__'>go</a></body></html>"
+XX_SILENT = b"<!doctype html><html><!--<head>--><head><title>xsite-silent</title></head><body><h1>LOOKS LIKE SITE ONE</h1></body></html>"
+XX_FORGE = (b"<!doctype html><html><!--<head>--><head><title>xsite-forge</title></head><body><h1>LOOKS LIKE SITE ONE</h1>"
+            b"<script>var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/forge','/xl/forge');"
+            b"setInterval(function(){parent.postMessage({type:'portalFrame',href:h,title:'xl-forge'},'*')},200);</script></body></html>")
+XX_BADUTF = b"<!doctype html><html><head><title>xsite-badutf</title></head><body><h1>LOOKS LIKE SITE ONE \xff</h1></body></html>"
+XX_GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
+XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
+
 POPUP = "<!doctype html><script>opener && opener.postMessage('popup origin=' + window.origin, '*')</script>"
 
 APP = r"""<!doctype html><html><head><title>app-title</title><link rel="stylesheet" href="/app.css"></head><body>
@@ -106,7 +173,7 @@ def serve():
         env = await h.boot(names=("owner", "bob", "carol", "adm", "adm2"), superadmin=("adm", "adm2"))
         db = env.db
         up = web.Application()
-        state = {"uuid_web": "", "posts": []}
+        state = {"uuid_web": "", "uuid_br": "", "posts": []}
 
         async def evil(request):
             return web.Response(text=EVIL.replace("__WEB__", state["uuid_web"]), content_type="text/html")
@@ -141,6 +208,52 @@ def serve():
 
         up.router.add_get("/evil", evil)
         up.router.add_get("/", evil)
+        up.router.add_get("/forge", lambda r: web.Response(text=FORGE.replace("__PROXY__", "/proxy/" + state["uuid_br"]), content_type="text/html"))
+        async def forge2(request):
+            results.setdefault("forge2", []).append(request.query_string)
+            slow = '<script async src="/slow.js"></script>' if "again=1" in request.query_string else ""
+            return web.Response(text=FORGE2.replace("__PROXY__", "/proxy/" + state["uuid_br"]).replace("__SLOW__", slow), content_type="text/html")
+
+        async def slow_js(request):
+            await asyncio.sleep(0.8)
+            return web.Response(text="window.SLOW = 1;", content_type="application/javascript")
+
+        up.router.add_get("/forge2", forge2)
+        up.router.add_get("/slow.js", slow_js)
+        up.router.add_get("/forge-tab", lambda r: web.Response(text=FORGE_TAB.replace("__PROXY__", "/proxy/" + state["uuid_br"]), content_type="text/html"))
+        up.router.add_get("/cred", lambda r: web.Response(text=CRED, content_type="text/html"))
+        up.router.add_route("*", "/credcheck", lambda r: web.json_response({"cookie": r.headers.get("Cookie", ""), "method": r.method}))
+        up.router.add_get("/stale", lambda r: web.Response(text=STALE1, content_type="text/html"))
+        up.router.add_get("/xlink", lambda r: web.Response(text=XLINK.replace("__PORT__", str(r.url.port)), content_type="text/html"))
+        up.router.add_get("/xsecond", lambda r: web.Response(text=XSECOND, content_type="text/html"))
+        def xl(r):
+            kind = r.match_info["kind"]
+            host = "127.0.0.1" if kind == "honest" else "localhost"
+            return web.Response(text=XL.replace("__KIND__", kind).replace("__HOST__", host).replace("__PORT__", str(r.url.port)), content_type="text/html")
+
+        def xx(r):
+            kind = r.match_info["kind"]
+            body, ctype = {"silent": (XX_SILENT, "text/html"), "forge": (XX_FORGE, "text/html"), "badutf": (XX_BADUTF, "text/html; charset=utf-8"),
+                           "plain": (b"LOOKS LIKE SITE ONE", "text/plain"), "image": (XX_GIF, "image/gif"), "honest": (XX_HONEST, "text/html")}[kind]
+            return web.Response(body=body, headers={"Content-Type": ctype})
+
+        up.router.add_get("/xl/{kind}", xl)
+        up.router.add_get("/xx/{kind}", xx)
+        up.router.add_get("/stale2", lambda r: web.Response(text=STALE2, content_type="text/html"))
+
+        # (E2) every capability the portal has verified so far can be made to count as expired, as after its 6 hours
+        seen, dead = set(), set()
+        real_verify = server.proxy_origin.verify
+
+        def verify(secret, segment, *a, **kw):
+            seen.add(segment)
+            return None if segment in dead else real_verify(secret, segment, *a, **kw)
+        server.proxy_origin.verify = verify
+
+        async def expire(request):
+            dead.update(seen)
+            return web.json_response({"expired": len(dead)})
+        up.router.add_get("/__expire", expire)
         up.router.add_get("/popup", lambda r: web.Response(text=POPUP, content_type="text/html"))
         up.router.add_get("/app", page)
         up.router.add_get("/app.js", lambda r: web.Response(text="window.APPJS=1;", content_type="application/javascript"))
@@ -179,6 +292,7 @@ def serve():
         web_a = await conn("adm", "admin-web")
         br_m = await conn("owner", "member-browser", json.dumps({"browser_mode": True}))
         state["uuid_web"] = web_m
+        state["uuid_br"] = br_m
         for u, who in ((web_m, "bob"), (web_m, "adm2"), (web_a, "bob"), (br_m, "bob"), (br_m, "adm2")):
             cid = (await (await db.conn.execute("SELECT id FROM user_connections WHERE uuid = ?", (u,))).fetchone())["id"]
             await db.add_connection_share(cid, env.uid[who], env.uid["owner"], None)
@@ -302,6 +416,184 @@ def run_browser(info):
         check("embedded browser: the tab shows the page's title", "evil-title" in page.inner_text(".tab-bar"), page.inner_text(".tab-bar"))
         time.sleep(0.5)
         check("embedded browser: nothing was changed behind the viewer's back", get_json(up + "/__shares")["shares"] == shares_before)
+
+        # 3b. (E1) an isolated page that reports a forged address cannot make the bar show it
+        page.set_default_timeout(10000)
+        td = page.evaluate("targetDisplay")
+
+        def goto_bar(path):
+            # what Enter in the bar does; typing would race with a page that reports its address every 50 ms
+            # (each report rewrites the bar)
+            page.evaluate("navigateTo", td + path)
+
+        goto_bar("/forge")
+        seen = []
+        end = time.time() + 5
+        while time.time() < end:
+            seen.append(page.evaluate("(() => { const m = document.getElementById('url-reported'); "
+                                      "return [document.getElementById('url-input').value, !!m && !m.hidden, m ? m.textContent : '']; })()"))
+            time.sleep(0.1)
+        check("E1: the forging page was shown (its own path appears in the bar)", any("forge" in v[0] for v in seen), seen[-3:])
+        MARK = "reported by the page, not confirmed"
+        check("E1: a forged address of another site is never shown in the bar without the 'not confirmed' marker",
+              not any("bank.example" in v[0] and not v[1] for v in seen), [v for v in seen if "bank.example" in v[0] and not v[1]][:2])
+        check("E1: the marker carries the fixed text, never text supplied by the page", all(v[2] == MARK for v in seen), [v for v in seen if v[2] != MARK][:2])
+        check("E1: after the page reported another site the bar shows the reported address, with the marker visible",
+              any("bank.example" in v[0] and v[1] for v in seen), seen[-3:])
+        first_mark = next((i for i, v in enumerate(seen) if v[1]), len(seen))
+        later = seen[first_mark:]
+        check("E1: the marker was shown at all", first_mark < len(seen), seen[-3:])
+        check("E1: once the page reported another site the marker stays (a later report cannot clear it)", all(v[1] for v in later), [v for v in later if not v[1]][:2])
+        check("E1: from then on the bar never shows the address the portal gave the frame", not any(v[0].endswith("/forge") for v in later), [v for v in later if v[0].endswith("/forge")][:2])
+        check("E1: the page's title is still the tab title", "Bank" in page.inner_text(".tab-bar"), page.inner_text(".tab-bar"))
+
+        # 3b2. (E1) a page that reports another site and then navigates itself (so the frame has a load after the first)
+        # still cannot make the bar, the marker or open-in-new-window show that site
+        goto_bar("/forge2")
+        seen2 = []
+        end = time.time() + 5
+        while time.time() < end:
+            seen2.append(page.evaluate("(() => { const m = document.getElementById('url-reported'); "
+                                       "return [document.getElementById('url-input').value, !!m && !m.hidden, m ? m.textContent : '']; })()"))
+            time.sleep(0.1)
+        hits = results().get("forge2", [])
+        check("E1: the self-navigating forging page loaded twice (the second load is the one that must not count)",
+              "" in hits and "again=1" in hits, hits)
+        check("E1: a forged address of another site is never shown without the marker after the page navigated itself",
+              not any("bank.example" in v[0] and not v[1] for v in seen2), [v for v in seen2 if "bank.example" in v[0] and not v[1]][:2])
+        check("E1: the marker is still shown after the page navigated itself", all(v[1] for v in seen2[-20:]), seen2[-3:])
+        page.evaluate("window.__opened = []; window.open = function(u){ window.__opened.push(String(u)); return null; }; true")
+        page.evaluate("openExternal()")
+        check("E1: open-in-new-window opens nothing while the address is not confirmed, and the button says why",
+              page.evaluate("window.__opened") == [] and page.evaluate("document.getElementById('btn-external').disabled")
+              and "cannot confirm" in page.evaluate("document.getElementById('btn-external').title"), page.evaluate("window.__opened"))
+
+        # 3c. (E9) a page cannot open a tab whose address leaves its connection (dot segments, other sites)
+        n_before = page.evaluate("tabs.length")
+        goto_bar("/forge-tab")
+        time.sleep(5)
+        srcs = page.evaluate("tabs.map(t => t.iframe.getAttribute('src') || '')")
+        check("E9: no tab was opened for a path that leaves the connection or for another site",
+              not any("api/me" in x or "bank.example" in x or "/./" in x for x in srcs), srcs)
+        check("E9: the one address under the connection did open a tab (and nothing else)", page.evaluate("tabs.length") == n_before + 1,
+              (n_before, page.evaluate("tabs.length"), srcs))
+        # 3e. (E2) a link clicked in an isolated page whose capability has expired: the tab loads again, the window stays
+        goto_bar("/stale")
+        wait_for(lambda: "stale-one" in page.inner_text(".tab-bar"), 10)
+        check("E2: the first page of the site is shown", "stale-one" in page.inner_text(".tab-bar"), page.inner_text(".tab-bar"))
+        check("E2: the portal made the capabilities expire", get_json(up + "/__expire")["expired"] >= 1)
+        frame = next((f for f in page.frames if f.url.endswith("/stale")), None)
+        check("E2: the page's frame was found", frame is not None, [f.url for f in page.frames])
+        if frame is not None:
+            frame.click("#go")
+        wait_for(lambda: "stale-two" in page.inner_text(".tab-bar"), 15)
+        check("E2: the tab shows the page that was clicked, through a fresh capability", "stale-two" in page.inner_text(".tab-bar"), page.inner_text(".tab-bar"))
+        time.sleep(1.5)
+        check("E2: the window is still the embedded browser (not sent to the login page)", "/browser" in page.url and "/login" not in page.url, page.url)
+
+        ctx.close()
+
+        # 3d0. (E1) a link clicked in an isolated page to a second proxied site: the old site is never shown as if it
+        # were current. The bar shows what the page reports, with the 'not confirmed' marker; open-in-new-window opens
+        # nothing; only a navigation the portal starts (the bar) confirms the address again.
+        ctx = ctx_for("owner")
+        page = ctx.new_page()
+        page.set_default_timeout(10000)
+        page.goto(f"{base}/browser?connection={info['br_m']}")
+        wait_for(lambda: "evil-title" in page.inner_text(".tab-bar"), 10)      # the first page of the tab has loaded
+        wait_for(lambda: page.evaluate("tabs.length") >= 2, 10)                 # and has opened its popup tab, which becomes the active one
+        page.fill("#url-input", up + "/xlink")
+        page.press("#url-input", "Enter")
+        wait_for(lambda: "xsite-one" in page.inner_text(".tab-bar"), 10)
+        frame = next((f for f in page.frames if f.url.endswith("/xlink")), None)
+        check("E1: the first site's frame was found", frame is not None, [f.url for f in page.frames])
+        BAR = ("(() => { const m = document.getElementById('url-reported'); "
+               "return [document.getElementById('url-input').value, !!m && !m.hidden, m ? m.textContent : '', document.getElementById('btn-external').disabled]; })()")
+        time.sleep(1.5)
+        honest = []
+        for _ in range(8):
+            honest.append(page.evaluate(BAR))
+            time.sleep(0.15)
+        check("E1: an honest page reporting its own address under the site the portal resolved shows no marker",
+              all(v[0].endswith("/xlink") and not v[1] and not v[3] for v in honest), honest[-2:])
+        if frame is not None:
+            frame.click("#go")
+        wait_for(lambda: "xsite-two" in page.inner_text(".tab-bar"), 15)
+        samples = []
+        for _ in range(20):
+            samples.append(page.evaluate(BAR))
+            time.sleep(0.15)
+        check("E1: after a link to another site the old site is never shown without the marker",
+              not any(v[0].endswith("/xlink") and not v[1] for v in samples), [v for v in samples if v[0].endswith("/xlink") and not v[1]][:2])
+        check("E1: after the link the bar shows the address the page reports, with the marker visible and the fixed text",
+              samples[-1][0].endswith("/xsecond") and samples[-1][1] and samples[-1][2] == "reported by the page, not confirmed", samples[-1])
+        page.evaluate("window.__opened = []; window.open = function(u){ window.__opened.push(String(u)); return null; }; true")
+        page.evaluate("openExternal()")
+        check("E1: open-in-new-window does not open the old site (nor anything) while the address is not confirmed",
+              page.evaluate("window.__opened") == [] and samples[-1][3], page.evaluate("window.__opened"))
+        # only a navigation the portal starts confirms the address again
+        page.evaluate("navigateTo", up + "/xlink")
+        wait_for(lambda: "xsite-one" in page.inner_text(".tab-bar") and not page.evaluate(BAR)[1], 10)
+        time.sleep(1.5)
+        after = [page.evaluate(BAR) for _ in range(1)]
+        check("E1: a navigation started by the portal (the address bar) confirms the address again: no marker, the bar names the page, the button works",
+              after[0][0].endswith("/xlink") and not after[0][1] and not after[0][3], after)
+        ctx.close()
+
+        # 3d1. (E1) a page on another site that stays silent, forges a report, cannot be decoded, or is not a page at all
+        # must not leave the old site's address on the bar without the marker; a link inside the same site must not
+        # raise the marker.
+        def link_case(kind):
+            ctx = ctx_for("owner")
+            page = ctx.new_page()
+            page.set_default_timeout(10000)
+            page.goto(f"{base}/browser?connection={info['br_m']}")
+            wait_for(lambda: "evil-title" in page.inner_text(".tab-bar"), 10)
+            wait_for(lambda: page.evaluate("tabs.length") >= 2, 10)
+            wait_for(lambda: page.evaluate("1") and any(f.url.endswith("/popup") for f in page.frames), 10)     # the popup tab has loaded: nothing of it can overtake the address typed next
+            time.sleep(1)
+            page.fill("#url-input", up + "/xl/" + kind)
+            page.press("#url-input", "Enter")
+            frame = None
+            wait_for(lambda: page.evaluate("1") and any(f.url.endswith("/xl/" + kind) for f in page.frames), 10)
+            frame = next((f for f in page.frames if f.url.endswith("/xl/" + kind)), None)
+            check(f"E1 ({kind}): the first site's frame was found", frame is not None, page.evaluate("tabs.map(t => t.iframe.src.slice(-30) + '|' + t.title + '|' + document.getElementById('url-input').value.slice(-20))"))
+            time.sleep(1.5)
+            first = page.evaluate(BAR)
+            check(f"E1 ({kind}): before the link the bar names the first site, with no marker", first[0].endswith("/xl/" + kind) and not first[1] and not first[3], first)
+            if frame is not None:
+                frame.click("#go")
+            wait_for(lambda: page.evaluate("1") and any(("/xx/" + kind) in f.url for f in page.frames), 15)
+            time.sleep(0.4)
+            samples = []
+            for _ in range(14):
+                samples.append(page.evaluate(BAR))
+                time.sleep(0.15)
+            ctx.close()
+            return samples
+        for kind in ("silent", "forge", "badutf", "plain", "image"):
+            samples = link_case(kind)
+            check(f"E1 ({kind}): the old site's address is never on the bar without the marker after a link to another site",
+                  not any(v[0].endswith("/xl/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
+            check(f"E1 ({kind}): the marker is shown and open-in-new-window is disabled once the page has loaded", samples[-1][1] and samples[-1][3], samples[-1])
+        samples = link_case("honest")
+        check("E1 (same site): a link to another page of the same site raises no marker and the bar follows the page",
+              samples[-1][0].endswith("/xx/honest") and not samples[-1][1] and not samples[-1][3], samples[-3:])
+
+        # 3d. (E31) an isolated page can send credentialed requests to its own capability address, and only to that
+        ctx = ctx_for("bob")
+        page = ctx.new_page()
+        page.goto(f"{base}/proxy/{info['web_m']}/cred")
+        got = wait_for(lambda: results().get("cred"), 15)
+        r = (got or [{}])[-1]
+        check("E31: the credentialed page ran and reported", bool(got), r)
+        check("E31: fetch with credentials: 'include' from the opaque origin succeeds", str(r.get("fetch", "")).startswith("200 "), r.get("fetch"))
+        check("E31: XHR with withCredentials succeeds", str(r.get("xhr", "")).startswith("200 "), r.get("xhr"))
+        check("E31: a credentialed JSON POST (preflighted) succeeds", r.get("post") == 200, r.get("post"))
+        check("E31: a request without credentials still succeeds", r.get("plain") == 200, r.get("plain"))
+        check("E31: the portal session cookie never reached the upstream", info["cookie_name"] not in str(r.get("fetch", "")) + str(r.get("xhr", "")),
+              (r.get("fetch"), r.get("xhr")))
+        check("E31: a request with a wrong capability gets no CORS grant, so the page cannot read the answer", str(r.get("badcap", "")).startswith("ERR"), r.get("badcap"))
         ctx.close()
 
         # 4. an isolated page still works: sub-resources, a module script, a form, a WebSocket, fetch
@@ -341,6 +633,15 @@ def run_browser(info):
         browser.close()
 
 
+def skip(reason):
+    """No browser run is possible here. Exit 0 with a "skip:" line, unless REQUIRE_BROWSER=1 is set (the release
+    checklist sets it): then this is a failure with exit code 3, so a skipped run is never read as a pass."""
+    if os.environ.get("REQUIRE_BROWSER") == "1":
+        print(f"FAIL: REQUIRE_BROWSER=1 and this run would skip: {reason}")
+        sys.exit(3)
+    print("skip: " + reason)
+
+
 def main():
     if "--serve" in sys.argv:
         serve()
@@ -348,14 +649,14 @@ def main():
     try:
         import playwright.sync_api  # noqa: F401
     except ImportError:
-        print("skip: Playwright is not importable here")
+        skip("Playwright is not importable here")
         return
     if not Path(os.environ.get("CHROMIUM", "/usr/bin/chromium")).exists():
-        print("skip: no Chromium")
+        skip("no Chromium")
         return
     py = os.environ.get("PORTAL_TEST_PYTHON") or (str(ROOT / "venv" / "bin" / "python") if (ROOT / "venv" / "bin" / "python").exists() else "")
     if not py:
-        print("skip: no portal interpreter (set PORTAL_TEST_PYTHON)")
+        skip("no portal interpreter (set PORTAL_TEST_PYTHON)")
         return
     child = subprocess.Popen([py, __file__, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:

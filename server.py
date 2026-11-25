@@ -21122,14 +21122,19 @@ _PROXY_SVG_CSP = (
 )
 
 
-def _proxy_document_csp(content_type: str):
+def _proxy_document_csp(content_type: str, isolated: bool = False):
     """The Content-Security-Policy a proxied response gets, by its type: the permissive HTML one
     (upstream pages need their own scripts, but no worker) for HTML, XHTML and XML documents, a
-    scriptless sandbox for SVG, none for anything else."""
+    scriptless sandbox for SVG, none for anything else. An isolated page's XHTML and XML documents get
+    the scriptless sandbox too: the report script of the embedded browser (_ISOLATED_FRAME_JS) can be
+    put into HTML only, and a document that runs scripts without it could not be told from one that
+    never reports."""
     ct = (content_type or "").split(";", 1)[0].strip().lower()
     if ct == "image/svg+xml":
         return _PROXY_SVG_CSP
     if ct in ("text/html", "application/xhtml+xml", "text/xml", "application/xml") or ct.endswith("+xml"):
+        if isolated and ct != "text/html":
+            return _PROXY_SVG_CSP
         return _PROXY_HTML_CSP
     return None
 
@@ -21501,7 +21506,8 @@ def _cookies_without_portal_session(header_value: str) -> list:
     out = []
     for pair in header_value.split(";"):
         pair = pair.strip()
-        if pair and not proxy_origin.forbidden_cookie_name(pair.split("=", 1)[0], Config.SESSION_COOKIE_NAME):
+        if pair and not proxy_origin.forbidden_cookie_name(pair.split("=", 1)[0], Config.SESSION_COOKIE_NAME,
+                                                           pair.partition("=")[2]):
             out.append(pair)
     return out
 
@@ -21517,7 +21523,8 @@ def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
     passed on: one named like the portal's own session cookie.
     """
     parts = value.split(";")
-    if proxy_origin.forbidden_cookie_name(parts[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME):
+    if proxy_origin.forbidden_cookie_name(parts[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME,
+                                          parts[0].partition("=")[2]):
         return None
     path = ""
     kept = [parts[0].strip()]
@@ -21677,6 +21684,15 @@ _cap_reentries: dict = {}           # (client address, connection, path) -> mono
 _CAP_REENTRY_WINDOW = 5.0           # a second one for the same page inside this many seconds is a loop: answered 401
 _CAP_REENTRY_MAX = 2000
 
+# What a page navigation with an expired capability and no session gets (release 1.24.2): a navigation made by an
+# opaque-origin page (a link clicked in an isolated page) carries no cookie, so a redirect through the entry would end
+# at the login page inside the frame. The embedded browser recognises the marker, reloads the tab from its own
+# window (which holds the cookie) and only treats the session as ended when /api/me says so.
+_CAP_EXPIRED_PAGE = (
+    '<!doctype html><html lang="en" data-portal-expired="1"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Page expired</title></head>'
+    '<body style="font-family:sans-serif;margin:2em"><p>This page expired. Reload the tab.</p></body></html>')
+
 
 def _proxy_cap_reentry(request: web.Request, segment: str):
     """A redirect back through the entry for a page navigation whose capability no longer verifies, else None.
@@ -21687,12 +21703,27 @@ def _proxy_cap_reentry(request: web.Request, segment: str):
     (cookie), mints a fresh capability and lands on the same page, or sends a signed-out member to the login page.
     A subresource, a form post, a socket and a browser that sends no fetch metadata still get the 401, so a page's
     own requests can never be turned into a redirect loop. If the same page is sent through the entry again within
-    _CAP_REENTRY_WINDOW seconds (the fresh capability failed too) the second answer is the 401."""
+    _CAP_REENTRY_WINDOW seconds (the fresh capability failed too) the second answer is the 401.
+
+    A navigation that arrives with no session at all (no cookie, no ?token=) and is not typed or followed from
+    outside (Sec-Fetch-Site other than "none") is one an opaque-origin page made: the entry could only send it to
+    the login page inside the frame. For a frame (Sec-Fetch-Dest iframe or frame) it gets a small 401 page,
+    never cached, with no redirect. A top-level navigation (Sec-Fetch-Dest document: a stale link followed from
+    another site, or a window the page opened) is not inside a frame: it goes through the entry as before, so a
+    signed-out visitor reaches the login page and a signed-in one a fresh page. That cannot loop: the entry
+    answers a request without a capability address either with the page, a fresh capability address (which
+    this function answers with the 401 when it is asked for the same page again within the window) or a
+    redirect to the login page, which is not a capability address."""
     h = request.headers
     if (request.method not in ("GET", "HEAD") or h.get("Upgrade", "").lower() == "websocket"
             or h.get("Sec-Fetch-Mode", "").lower() != "navigate"
             or h.get("Sec-Fetch-Dest", "").lower() not in ("document", "iframe", "frame")):
         return None
+    if (not request.cookies.get(Config.SESSION_COOKIE_NAME) and not request.query.get("token")
+            and h.get("Sec-Fetch-Dest", "").lower() != "document"
+            and h.get("Sec-Fetch-Site", "").lower() != "none"):
+        return web.Response(status=401, text=_CAP_EXPIRED_PAGE, content_type="text/html",
+                            headers={"Cache-Control": "private, no-store"})
     conn_uuid = request.match_info.get("conn_id", "")
     raw = request.raw_path.split("?", 1)[0]
     prefix = f"/proxy/{conn_uuid}/{segment}"
@@ -21775,23 +21806,80 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         response = await _proxy_connection_authed(request, token, call)
         if request.get(_PROXY_ISOLATED) and not response.prepared:
             # Portal-made answers (error pages, redirects) of an isolated page get the sandbox too.
-            _proxy_isolate_headers(response.headers)
+            _proxy_isolate_headers(response.headers, request)
         return response
     finally:
         _unregister_user_proxy_call(token.user_id, call)
 
 
-def _proxy_isolate_headers(headers) -> None:
+_CORS_EXPOSE_SKIP = frozenset((
+    "set-cookie", "set-cookie2", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "trailers", "transfer-encoding", "upgrade"))
+_CORS_EXPOSE_MAX_NAMES = 64
+_CORS_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,80}$")
+
+
+def _cors_expose_names(headers) -> str:
+    """The response's own header names for Access-Control-Expose-Headers on a credentialed answer, where "*"
+    is read literally and exposes nothing: at most 64 names, never Set-Cookie or a hop-by-hop header, and none
+    of the Access-Control-* headers (those are for the browser, not the page)."""
+    seen = {}
+    for name in headers.keys():
+        low = name.lower()
+        if low in seen or low in _CORS_EXPOSE_SKIP or low.startswith("access-control-") or not _CORS_NAME_RE.match(name):
+            continue
+        seen[low] = name
+        if len(seen) >= _CORS_EXPOSE_MAX_NAMES:
+            break
+    return ", ".join(seen.values())
+
+
+def _add_vary_origin(headers) -> None:
+    """Vary: Origin on the answer, merged into the Vary the response already has (one header, no duplicate)."""
+    tokens = [t.strip() for v in headers.getall("Vary", []) for t in v.split(",") if t.strip()]
+    if any(t == "*" or t.lower() == "origin" for t in tokens):
+        return
+    headers.popall("Vary", None)
+    headers["Vary"] = ", ".join(tokens + ["Origin"])
+
+
+def _proxy_isolate_headers(headers, request=None) -> None:
     """The headers every response of an isolated page carries: the opaque-origin sandbox (added next to
     any policy already there, never instead of it), no sniffing, and CORS for the page's own requests
     (an opaque origin sends Origin: null; the capability in the URL is the credential, no cookie is
-    involved, so any origin value is answered with *)."""
+    involved, so any origin value is answered with *).
+
+    A page that makes a credentialed request (fetch with credentials: 'include', withCredentials) needs the
+    browser to be told the exact origin and that credentials are allowed, which "*" cannot say. So when the
+    request carries a verified capability (the credential this function is about) and its Origin is exactly
+    "null", the answer is Allow-Origin: null with Allow-Credentials: true, and the response's own header
+    names are listed in Expose-Headers ("*" means nothing on a credentialed answer). A sandboxed document
+    anywhere has Origin null, so this grants nothing by itself: the capability path is still the only
+    credential, the portal session cookie is never passed upstream, and a request without a verified
+    capability gets none of it. Either way the answer depends on the Origin header of the request, so a
+    request that carries a verified capability gets Vary: Origin whichever answer it gets (a cache must not
+    hand the "*" answer to a later credentialed fetch)."""
     if not any("sandbox" in v for v in headers.getall("Content-Security-Policy", [])):
         headers.add("Content-Security-Policy", proxy_origin.ISOLATED_SANDBOX)
     headers["X-Content-Type-Options"] = "nosniff"
+    # The address of an isolated page holds its capability: whatever the upstream asked for (unsafe-url), no
+    # request the page makes to another site may carry that address as Referer.
+    headers.popall("Referrer-Policy", None)
+    headers["Referrer-Policy"] = "no-referrer"
     headers.popall("Access-Control-Allow-Credentials", None)
-    headers["Access-Control-Allow-Origin"] = "*"
-    headers["Access-Control-Expose-Headers"] = "*"
+    headers.popall("Access-Control-Expose-Headers", None)
+    has_cap = request is not None and request.get(_PROXY_CAP_TOKEN) is not None
+    if has_cap and request.headers.get("Origin") == "null":
+        headers["Access-Control-Allow-Origin"] = "null"
+        headers["Access-Control-Allow-Credentials"] = "true"
+        exposed = _cors_expose_names(headers)
+        if exposed:
+            headers["Access-Control-Expose-Headers"] = exposed
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
+        headers["Access-Control-Expose-Headers"] = "*"
+    if has_cap:
+        _add_vary_origin(headers)
 
 
 def _proxy_decision(connection: dict, config: dict, viewer_id: int) -> str:
@@ -21849,14 +21937,30 @@ async def _proxy_share_notice_gate(request: web.Request, token, connection: dict
     if not is_page:
         return web.Response(status=403, text="This shared connection has not been opened from the portal yet",
                             headers={"Cache-Control": "private, no-store"})
+    if request.get(_AUTH_KIND) == "query":
+        # The notice page reads the session cookie, not a ?token=, so a redirect would end at the sign-in page,
+        # and the token would travel in the Location. Explain instead; nothing is copied into a header.
+        return web.Response(status=403, text=("This shared connection has not been opened yet. Sign in to the portal, "
+                                              "open it once and choose Continue; after that this address works."),
+                            headers={"Cache-Control": "private, no-store"})
     return web.Response(status=302, headers={"Location": _shared_notice_url(connection["uuid"], request.raw_path),
                                              "Cache-Control": "private, no-store"})
 
 
 def _safe_notice_next(connection_uuid: str, value: str) -> str:
-    """Where Continue goes: only this connection's own /proxy or /browser address."""
-    from urllib.parse import quote
+    """Where Continue goes: only this connection's own /proxy or /browser address.
+    A dot segment in the path, plain or percent-encoded, would normalise to another portal page: refused.
+    So is a control character anywhere (a tab, line feed or carriage return inside a dot segment is dropped by the
+    browser's URL parser, which would turn ".<tab>." into "..")."""
+    from urllib.parse import quote, unquote
     proxy = f"/proxy/{connection_uuid}"
+    path_part = value.split("?", 1)[0].split("#", 1)[0]
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value + unquote(path_part)):
+        return f"/browser?connection={quote(connection_uuid, safe='')}"
+    for form in (path_part, unquote(path_part)):
+        # (clean_cookie_path answers "" for a path holding a dot segment; a backslash counts as a slash)
+        if not proxy_origin.clean_cookie_path("/" + form.replace("\\", "/").lstrip("/")):
+            return f"/browser?connection={quote(connection_uuid, safe='')}"
     if value == proxy or value.startswith((proxy + "/", proxy + "?")):
         return value
     if value.startswith(f"/browser?connection={quote(connection_uuid, safe='')}"):
@@ -21990,17 +22094,37 @@ def _proxy_isolated_entry(request: web.Request, token, conn_uuid: str, request_p
 
 # Posted by the injected script of an isolated page to the embedded browser: where it is and what it is
 # called (the parent cannot read an opaque-origin frame), and it carries out back, forward and reload.
+# It also answers the parent's per-document ping (the answer carries the ping's id), which is how the parent
+# learns that the document on screen is one that runs this script. window.parent is captured first, so a
+# later script of the page cannot redirect the reports.
 _ISOLATED_FRAME_JS = (
-    '<script>(function(){"use strict";var last="";'
-    'function send(){try{var h=location.href,t=document.title||"";if(h+"|"+t!==last){last=h+"|"+t;'
-    'window.parent.postMessage({type:"portalFrame",href:h,title:t},"*")}}catch(e){}}'
+    '<script>(function(){"use strict";var P=window.parent,last="";'
+    'function post(id){try{var m={type:"portalFrame",href:location.href,title:document.title||""};'
+    'if(id)m.ping=id;P.postMessage(m,"*")}catch(e){}}'
+    'function send(){var h=location.href,t=document.title||"";if(h+"|"+t!==last){last=h+"|"+t;post("")}}'
     'send();setInterval(send,700);addEventListener("popstate",send);addEventListener("hashchange",send);'
     'addEventListener("load",send);'
-    'addEventListener("message",function(e){if(e.source!==window.parent||!e.data)return;'
-    'if(e.data.type==="portalNav"){var a=e.data.action;'
+    'addEventListener("message",function(e){if(e.source!==P||!e.data)return;var d=e.data;'
+    'if(d.type==="portalPing"){if(typeof d.id==="string")post(d.id.substring(0,64))}'
+    'else if(d.type==="portalNav"){var a=d.action;'
     'if(a==="back")history.back();else if(a==="forward")history.forward();else if(a==="reload")location.reload()}})'
     '})();</script>'
 )
+# Where the script goes: right after an optional byte order mark, white space, comments and one doctype, before
+# anything the page itself wrote, so that no comment, script or text of the page can swallow or pre-empt it (and
+# a document that starts with a doctype stays out of quirks mode). Not after the first "<head": that text can sit
+# in a comment, a script or an attribute.
+_FRAME_JS_AT = re.compile(r'\A(?:\ufeff|[ \t\r\n\f]|<!--.*?-->)*(?:<!doctype[^>]*>)?', re.I | re.S)
+_FRAME_JS_AT_B = re.compile(rb'\A(?:\xef\xbb\xbf|[ \t\r\n\f]|<!--.*?-->)*(?:<!doctype[^>]*>)?', re.I | re.S)
+
+
+def _insert_isolated_frame_js(doc):
+    """Put _ISOLATED_FRAME_JS into an HTML document, given as text or as bytes (an ASCII-compatible encoding)."""
+    if isinstance(doc, bytes):
+        at = _FRAME_JS_AT_B.match(doc).end()
+        return doc[:at] + _ISOLATED_FRAME_JS.encode("ascii") + doc[at:]
+    at = _FRAME_JS_AT.match(doc).end()
+    return doc[:at] + _ISOLATED_FRAME_JS + doc[at:]
 
 
 async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttpCall) -> web.Response:
@@ -22372,14 +22496,16 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 # edge cache (e.g. Cloudflare) store it keyed by URL alone across sessions.
                 resp_headers["Cache-Control"] = "private, no-store"
                 # Documents get a policy before the body is streamed or buffered (see _proxy_document_csp)
-                doc_csp = _proxy_document_csp(resp.headers.get("Content-Type", ""))
+                doc_csp = _proxy_document_csp(resp.headers.get("Content-Type", ""), isolated)
                 if doc_csp:
                     resp_headers["Content-Security-Policy"] = doc_csp
                 if isolated:
-                    _proxy_isolate_headers(resp_headers)
+                    _proxy_isolate_headers(resp_headers, request)
 
                 # Check if response needs URL rewriting
-                content_type = resp.headers.get("Content-Type", "")
+                content_type = resp.headers.get("Content-Type", "").lower()      # (as the policy above reads it: any letter case)
+                # an isolated HTML document runs scripts, so the report script goes into every one of them
+                inject_frame_js = isolated and doc_csp == _PROXY_HTML_CSP
                 needs_rewriting = any(t in content_type for t in ("text/html", "text/css", "javascript", "application/json"))
 
                 if not needs_rewriting:
@@ -22428,8 +22554,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                     return web.Response(status=401, text="Session revoked")
 
                 if needs_rewriting:
+                    frame_js_done = False
+                    charset = "utf-8"
                     try:
-                        charset = "utf-8"
                         if "charset=" in content_type:
                             charset = content_type.split("charset=")[1].split(";")[0].strip().strip('"\'')
                         text = response_body.decode(charset)
@@ -22717,16 +22844,20 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                 else:
                                     text = inject_js + text
 
-                        if isolated and "text/html" in content_type:
-                            head_idx = text.lower().find("<head")
-                            close_idx = text.find(">", head_idx) if head_idx >= 0 else -1
-                            if close_idx >= 0:
-                                text = text[:close_idx + 1] + _ISOLATED_FRAME_JS + text[close_idx + 1:]
-                            else:
-                                text = _ISOLATED_FRAME_JS + text
+                        if inject_frame_js:
+                            text = _insert_isolated_frame_js(text)
                         response_body = text.encode(charset)
+                        frame_js_done = True
                     except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
                         pass
+                    if inject_frame_js and not frame_js_done:
+                        # The text could not be decoded (or the charset is unknown): the page still runs scripts in
+                        # the browser, so the script (plain ASCII) goes in at byte level. Text that is not
+                        # ASCII-compatible cannot take it: that is sent as a download, not as a page.
+                        if response_body[:2] in (b"\xff\xfe", b"\xfe\xff") or re.match(r"(?:utf|ucs)[-_ ]?(?:16|32|2|4)", charset.lower()):
+                            resp_headers["Content-Disposition"] = "attachment"
+                        else:
+                            response_body = _insert_isolated_frame_js(response_body)
 
                 return web.Response(
                     status=resp.status,
@@ -22920,7 +23051,8 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                     (key, value) for key, value in resp.headers.items()
                     if key.lower() not in _SEARXNG_RESPONSE_HOP_HEADERS
                     and not (key.lower() == "set-cookie" and proxy_origin.forbidden_cookie_name(
-                        value.split(";", 1)[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME)))
+                        value.split(";", 1)[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME,
+                        value.split(";", 1)[0].partition("=")[2])))
                 # Never let a shared edge cache store authenticated content.
                 resp_headers["Cache-Control"] = "private, no-store"
                 # SVG, XHTML and XML (SearXNG's image proxy passes any image/* type from any host)
@@ -33090,6 +33222,8 @@ async def fetch_metadata_middleware(request: web.Request, handler):
     token, an API key or a ?token= parameter authenticates is not cookie-authenticated and is let
     through (checked by actually authenticating it: a bad bearer next to a cookie is still the cookie).
     A browser that sends no Sec-Fetch headers, Origin or Referer (a script, curl, OBS) is not affected.
+    A cookie request whose URL holds a ?token= is authenticated as that token's owner (authenticate_request reads the
+    query first), so it is let through as that member, while POST /logout acts on the cookie (see http_logout).
     POST /login is judged the same way even with no cookie, and no token, key or ?token= lets it through: it
     answers with Set-Cookie, and a form posted from another site (sent without the Lax cookie) must not be able
     to replace the member's session cookie.
@@ -33114,7 +33248,10 @@ async def fetch_metadata_middleware(request: web.Request, handler):
         await authenticate_request(request)
         if request.get(_AUTH_KIND) in ("bearer", "apikey", "query"):
             return await handler(request)
-    logger.warning(f"Refused a cookie-authenticated {request.method} {path} ({why})")
+    if path == "/login":
+        logger.warning(f"Refused a cross-site sign-in POST ({why})")
+    else:
+        logger.warning(f"Refused a cookie-authenticated {request.method} {path} ({why})")
     return web.json_response({"error": "Cross-site request refused"}, status=403,
                              headers={"Cache-Control": "no-store"})
 

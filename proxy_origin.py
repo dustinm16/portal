@@ -19,10 +19,14 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from typing import Optional
 from urllib.parse import urlsplit
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # The policy that makes an isolated document run in an opaque origin: no allow-same-origin, so its
 # script cannot read portal pages, use the viewer's cookies or storage, or reach the parent frame.
@@ -48,8 +52,8 @@ def is_admin_role(role, is_admin=False) -> bool:
 
 def target_fingerprint(connection: dict, config: dict) -> str:
     """What a "trusted" mark or an accepted share is bound to: the connection type, host, port and
-    scheme, and the target URL (which replaces host when it is set). A change of any of them makes
-    the stored fingerprint stop matching."""
+    scheme, and the target URL (which replaces host when it is set), and, when set, the config port, the
+    Host header and the path rewrite rules. A change of any of them makes the stored fingerprint stop matching."""
     parts = [
         str(connection.get("type") or ""),
         str(connection.get("host") or "").lower(),
@@ -57,6 +61,25 @@ def target_fingerprint(connection: dict, config: dict) -> str:
         str((config or {}).get("target_url") or "").lower(),
         "browser" if (config or {}).get("browser_mode") else "single",
     ]
+    # (1.24.2) The port in the config, the Host entry of extra_headers and the path rewrite rules also decide what
+    # a request reaches. They are added only when at least one is set, so a connection that uses none of them keeps
+    # the value stored before this change and its mark and accepted notice keep matching.
+    cfg = config or {}
+    cfg_port = str(cfg.get("port") or "")
+    extra = cfg.get("extra_headers")
+    host_header = ""
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if str(k).strip().lower() == "host":
+                host_header = str(v or "").strip().lower()
+                break
+    rules = cfg.get("path_rewrite_rules") or []
+    if cfg_port or host_header or rules:
+        try:
+            rules_text = json.dumps(rules, sort_keys=True)
+        except (TypeError, ValueError):
+            rules_text = repr(rules)
+        parts += [cfg_port, host_header, hashlib.sha256(rules_text.encode("utf-8")).hexdigest()]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -90,6 +113,11 @@ def _key(secret: str) -> bytes:
     return hashlib.sha256(b"portal-proxy-capability-v" + CAP_VERSION.encode() + b"|" + secret.encode("utf-8")).digest()
 
 
+def _seal_key(secret: str) -> bytes:
+    """AES-256 key for the capability body: its own domain string, so it differs from the MAC key."""
+    return hashlib.sha256(b"portal-proxy-capability-seal-v" + CAP_VERSION.encode() + b"|" + secret.encode("utf-8")).digest()
+
+
 def mint(secret: str, *, user_id: int, token_id: str, conn_uuid: str,
          now: Optional[float] = None, ttl: int = CAP_TTL_SECONDS) -> str:
     """The path segment (without a slash) for one viewer session and one connection.
@@ -101,8 +129,11 @@ def mint(secret: str, *, user_id: int, token_id: str, conn_uuid: str,
     until CAP_TTL_SECONDS or the end of the session. It is limited to one connection and ends with the session
     (logout, revoke, password change)."""
     exp = int((time.time() if now is None else now) + ttl)
-    body = _b64(json.dumps([int(user_id), str(token_id), str(conn_uuid), exp],
-                           separators=(",", ":")).encode("utf-8"))
+    plain = json.dumps([int(user_id), str(token_id), str(conn_uuid), exp], separators=(",", ":")).encode("utf-8")
+    # The body is encrypted (release 1.24.2): the page that reads its own address learns no member id, session id
+    # or connection from it. 12 random nonce bytes in front of the ciphertext and its GCM tag.
+    nonce = os.urandom(12)
+    body = _b64(nonce + AESGCM(_seal_key(secret)).encrypt(nonce, plain, None))
     mac = _b64(hmac.new(_key(secret), body.encode("ascii"), hashlib.sha256).digest()[:18])
     return f"{CAP_PREFIX}{body}.{mac}"
 
@@ -123,7 +154,7 @@ def split_path(path: str):
 
 def verify(secret: str, segment: str, *, conn_uuid: str, now: Optional[float] = None) -> Optional[dict]:
     """The payload {user_id, token_id} of a good capability for this connection, else None.
-    Signature, expiry and connection are checked here; that the session is still live and the
+    Signature, decryption, expiry and connection are checked here; that the session is still live and the
     viewer still has access is the caller's job (it needs the database)."""
     if not segment or len(segment) > CAP_MAX_LEN or not is_capability(segment):
         return None
@@ -134,9 +165,14 @@ def verify(secret: str, segment: str, *, conn_uuid: str, now: Optional[float] = 
     if not hmac.compare_digest(want, mac):
         return None
     try:
-        user_id, token_id, conn, exp = json.loads(_unb64(body))
+        raw = _unb64(body)
+        if len(raw) < 12 + 16:
+            return None
+        # A body in the readable 1.24.1 shape does not decrypt and is refused like an expired capability.
+        plain = AESGCM(_seal_key(secret)).decrypt(raw[:12], raw[12:], None)
+        user_id, token_id, conn, exp = json.loads(plain)
         user_id = int(user_id)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidTag):
         return None
     if conn != conn_uuid:
         return None
@@ -181,8 +217,11 @@ def cross_site_refusal(method: str, path: str, headers, own_hosts, *, websocket:
 
     Applies to POST, PUT, PATCH and DELETE and to a WebSocket upgrade. `headers` is a case-insensitive
     mapping; `own_hosts` the lower-case host[:port] names this portal answers to.
-    Refused: Sec-Fetch-Site cross-site; an Origin of "null" (a sandboxed document); with no fetch
-    metadata an Origin that is not one of our hosts; a Referer under /proxy, /browser or /search.
+    Refused: Sec-Fetch-Site cross-site; an Origin of "null" (a sandboxed document) unless the browser says
+    the request is same-origin (a form posted from a page that sends no referrer carries Origin null; a
+    sandboxed document is never same-origin); with no fetch metadata, or with Sec-Fetch-Site same-site (a
+    sibling subdomain), an Origin that is not one of our hosts;
+    a Referer under /proxy, /browser or /search.
     A browser that sends nothing at all (a script, curl, OBS) is not affected here."""
     if not websocket and method.upper() in SAFE_METHODS:
         return None
@@ -190,10 +229,13 @@ def cross_site_refusal(method: str, path: str, headers, own_hosts, *, websocket:
     if site == "cross-site":
         return "cross-site request"
     origin = (headers.get("Origin") or "").strip()
-    if origin.lower() == "null":
+    if origin.lower() == "null" and site != "same-origin":
         return "opaque origin"
     if origin and not site and _host_of(origin) not in own_hosts:
         return "foreign origin"
+    if origin and site == "same-site" and _host_of(origin) not in own_hosts:
+        # A page on a sibling subdomain of the portal's domain is same-site, not same-origin.
+        return "same-site foreign origin"
     referer = (headers.get("Referer") or "").strip()
     if referer:
         try:
@@ -216,11 +258,22 @@ def cross_site_refusal(method: str, path: str, headers, own_hosts, *, websocket:
 # Cookies
 # ---------------------------------------------------------------------------
 
-def forbidden_cookie_name(name: str, session_cookie_name: str) -> bool:
+def forbidden_cookie_name(name: str, session_cookie_name: str, value: Optional[str] = None) -> bool:
     """True for a cookie name an upstream may never set: the portal's session cookie, in any letter
     case (a browser treats names as case sensitive, a server that folds case must not be tricked).
-    The portal sets no other cookie. Other names, __Secure- ones included, are an application's own."""
-    return (name or "").strip().lower() == session_cookie_name.lower()
+    The portal sets no other cookie. Other names, __Secure- ones included, are an application's own.
+
+    `value` is what follows the first "=" of the pair. A pair with an empty name whose value holds a second
+    "=" and whose part before it, with surrounding white space removed, is the session cookie name in any
+    letter case ("=portal_session=x", "=portal_session =x", "=portal_session<TAB>=x") is read back by servers
+    as "portal_session=x", so it is refused too."""
+    clean = (name or "").strip().lower()
+    if clean == session_cookie_name.lower():
+        return True
+    if not clean and value is not None:
+        head, sep, _ = (value or "").partition("=")
+        return bool(sep) and head.strip().lower() == session_cookie_name.lower()
+    return False
 
 
 def clean_cookie_path(path: str) -> str:
