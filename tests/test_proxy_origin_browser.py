@@ -712,8 +712,8 @@ def run_browser(info):
         time.sleep(1.5)
         before = page.evaluate(BAR)
         check("E1 (first flag): the outgoing honest page shows no marker", before[0].endswith("/lg/a") and not before[1], before)
-        page.fill("#url-input", up.replace("127.0.0.1", "localhost") + "/lg/b")
-        page.press("#url-input", "Enter")
+        # (the outgoing page's reports redraw the address bar every few milliseconds, so the address is not typed)
+        page.evaluate("navigateTo", up.replace("127.0.0.1", "localhost") + "/lg/b")
         wait_for(lambda: "lg-b" in page.inner_text(".tab-bar"), 15)
         time.sleep(1.5)
         samples = []
