@@ -339,7 +339,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
             <input type="text" id="url-input" value="{{TARGET_DISPLAY}}" placeholder="Loading..." spellcheck="false" autocomplete="off">
-            <span class="url-reported" id="url-reported" hidden title="The embedded browser's address bar is a convenience, not a security indicator. The page on screen may be on another site: this address was reported by the page itself and the portal cannot confirm it. A hostile page may still show a wrong address, so before entering a password check the site's identity by opening it in a real browser tab.">reported by the page, not confirmed</span>
+            <span class="url-reported" id="url-reported" hidden title="The embedded browser's address bar is a convenience, not a security indicator. The page on screen may be on another site: this address was reported by the page itself and the portal cannot confirm it. The portal marks an address it could not confirm in two cases: a page that reports an address on another site than the one the portal requested, and a page that does not answer the portal (an image, plain text, a file, or a page that stops the portal's script). A hostile page may still show a wrong address, so before entering a password check the site's identity by opening it in a real browser tab.">reported by the page, not confirmed</span>
         </div>
 
         <div class="browser-controls">
@@ -407,7 +407,7 @@
         const REPORTED_TEXT = 'reported by the page, not confirmed';
         const REPORTED_TITLE = reportedEl.title;
         const REQUESTED_TEXT = 'requested address, not confirmed by the page';
-        const REQUESTED_TITLE = 'The page on screen did not answer the portal (an image, text, a file or a page that does not report), so this is the address the portal last requested for this tab, not one the page confirmed. The page on screen may be on another site. The embedded browser\'s address bar is a convenience, not a security indicator: before entering a password, check the site\'s identity by opening it in a real browser tab.';
+        const REQUESTED_TITLE = 'The page on screen did not answer the portal (an image, text, a file or a page that does not report), so this is the address the portal last requested for this tab, not one the page confirmed. The page on screen may be on another site. The portal marks an address it could not confirm in two cases: a page that reports an address on another site than the one the portal requested, and a page that does not answer the portal (an image, plain text, a file, or a page that stops the portal\'s script). The embedded browser\'s address bar is a convenience, not a security indicator: before entering a password, check the site\'s identity by opening it in a real browser tab.';
         // Reports from the page that was on screen before the portal started a navigation are not trusted until the
         // new page has loaded (or this long has passed: a change of the fragment alone causes no load).
         const NAV_QUIET_MS = 10000;

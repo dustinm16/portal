@@ -1939,6 +1939,8 @@ _bro242 = (ROOT / "static" / "browser.html").read_text(encoding="utf-8")
 _abt242 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
 _gui242 = (ROOT / "static" / "guides.html").read_text(encoding="utf-8")
 _LIMIT = "convenience, not a security indicator"
+_CASES = ("a page that reports an address on another site than the one the portal requested, and a page that does not answer the portal "
+          "(an image, plain text, a file, or a page that stops the portal's script)")
 _ABOUT_LIMIT = "check a site's identity by opening it in a real browser tab before entering a password"
 _bar_docs = {"Security list": _sec242, "upgrade notes": _s242, "embedded browser section": text.split("## What You Get", 1)[1].split("## Screenshots", 1)[0],
              "About page": _abt242, "guides": _gui242, "tag title": _bro242}
@@ -1946,6 +1948,12 @@ check("1.24.2: the README (Security list, embedded browser section, upgrade note
       "and to check the site's identity in a real browser tab",
       all(_LIMIT in v and "real browser tab" in v for v in _bar_docs.values())
       and all(_ABOUT_LIMIT in v for k, v in _bar_docs.items() if k != "tag title"), [k for k, v in _bar_docs.items() if _LIMIT not in v])
+check("1.24.2: every place that describes the marking lists the two cases in the same words (README Security list, embedded browser section and notes, About page, guides, both tag titles)",
+      all(_CASES.lower() in v.lower().replace("\\'", "'") for v in _bar_docs.values()) and _bro242.replace("\\'", "'").lower().count(_CASES.lower()) >= 2,
+      [k for k, v in _bar_docs.items() if _CASES.lower() not in v.lower().replace("\\'", "'")])
+check("1.24.2: the notes say what a multipart/x-mixed-replace and a text/xsl answer get, and the code does that for an isolated page only",
+      "`multipart/x-mixed-replace` or `text/xsl` answer to an isolated page gets the scriptless sandbox policy" in _s242 and "was not verified" in _s242
+      and 'if isolated and ct in ("multipart/x-mixed-replace", "text/xsl")' in (ROOT / "server.py").read_text(encoding="utf-8"))
 check("1.24.2: the notes list both tags with the exact words the page shows, and say what each state does to the bar and to Open in new tab",
       "`reported by the page, not confirmed`" in _s242 and "`requested address, not confirmed by the page`" in _s242
       and "const REPORTED_TEXT = 'reported by the page, not confirmed';" in _bro242
