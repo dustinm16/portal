@@ -1934,6 +1934,32 @@ check("1.24.2: docs/API.md and the API page carry the new fields and answers (gr
       all(n in t for t in (_a242, _h242) for n in ("granted_service_expiry", "unread_mentions", "include_uploads", "uploads_estimate", "uploads_note", "You already have 50 active API keys",
                                                       "Retry-After: 10", "Invalid host key fingerprint", "Invalid message_id", "does not resolve within 5 seconds")))
 
+# --- 1.24.2: the address bar of the embedded browser is a convenience, not a security indicator --------------------------
+_bro242 = (ROOT / "static" / "browser.html").read_text(encoding="utf-8")
+_abt242 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
+_gui242 = (ROOT / "static" / "guides.html").read_text(encoding="utf-8")
+_LIMIT = "convenience, not a security indicator"
+_ABOUT_LIMIT = "check a site's identity by opening it in a real browser tab before entering a password"
+_bar_docs = {"Security list": _sec242, "upgrade notes": _s242, "embedded browser section": text.split("## What You Get", 1)[1].split("## Screenshots", 1)[0],
+             "About page": _abt242, "guides": _gui242, "tag title": _bro242}
+check("1.24.2: the README (Security list, embedded browser section, upgrade notes), the About page, the guides and the tag's title all say the address bar is not a security indicator "
+      "and to check the site's identity in a real browser tab",
+      all(_LIMIT in v and "real browser tab" in v for v in _bar_docs.values())
+      and all(_ABOUT_LIMIT in v for k, v in _bar_docs.items() if k != "tag title"), [k for k, v in _bar_docs.items() if _LIMIT not in v])
+check("1.24.2: the notes list both tags with the exact words the page shows, and say what each state does to the bar and to Open in new tab",
+      "`reported by the page, not confirmed`" in _s242 and "`requested address, not confirmed by the page`" in _s242
+      and "const REPORTED_TEXT = 'reported by the page, not confirmed';" in _bro242
+      and "const REQUESTED_TEXT = 'requested address, not confirmed by the page';" in _bro242
+      and "Open in new tab is off" in _s242 and "Open in new tab opens that address" in _s242)
+check("1.24.2: no note says the spoofing is closed, that the bar is proof, or that a redirect is handled like a link without the limit; the old empty-bar sentence is gone",
+      not any(old in text for old in ("a hint, not proof", "is empty when it reported nothing", "two seconds after it loaded", "spoofing is closed",
+                                      "cannot be spoofed", "address bar cannot", "handled the same as a link", "address bar is secure"))
+      and "A hostile page may still find a way to show a wrong address with no tag" in _s242)
+check("1.24.2: the notes say what an isolated answer's Content-Type becomes, and the code has the one parser the notes describe",
+      "carries exactly one `Content-Type`" in _s242 and "**A missing, empty, comma-listed or unparseable `Content-Type`, and several different ones, are served as `application/octet-stream`**" in _s242
+      and "def _isolated_content_type(" in (ROOT / "server.py").read_text(encoding="utf-8")
+      and '_CT_FALLBACK = "application/octet-stream"' in (ROOT / "server.py").read_text(encoding="utf-8"))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
