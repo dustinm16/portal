@@ -1582,7 +1582,7 @@ for name, needles in {
     "the loss list: storage, cookies, service workers, nested frames": (
         "no local storage", "no `document.cookie`", "no service workers", "no frames inside"),
     "the cookie finding and what fixes it": ("no cookie of any kind", "separate host name", "chromium 156"),
-    "the credential in the address": ("signed path segment", "6 hours", "removed from logs", "your network address"),
+    "the credential in the address": ("signed path segment", "6 hours", "removed from logs", "not to your network address"),
     "the notice": ("asked once", "continue and cancel", "bearer token or api key is not asked"),
     "the seat belt is not a wall": ("seat belt, not a wall", "without a `referer`"),
     "every caller considered": ("the portal's own pages", "embedded browser", "/api/push/", "obs", "api clients"),
@@ -1620,7 +1620,7 @@ check("1.24.1: the notes say the portal keeps an isolated page's cookies, what e
       and "MAX_COOKIES = 60" in _srv241 and "MAX_VALUE_LEN = 4096" in _srv241 and "MAX_JARS = 500" in _srv241 and "MAX_PER_USER = 40" in _srv241)
 check("1.24.1: the notes say a path that starts with ~ is the application's own and only the minted shape is a credential",
       "paths that start with `~`" in _low241 and "exact" in _low241 and "~pc1." in _sec241 and _po241.CAP_PREFIX == "~pc1."
-      and _po241.is_capability(_po241.mint("s" * 32, user_id=1, token_id="t", conn_uuid="c", ip="1.2.3.4"))
+      and _po241.is_capability(_po241.mint("s" * 32, user_id=1, token_id="t", conn_uuid="c"))
       and not _po241.is_capability("~alice"))
 
 

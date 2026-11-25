@@ -56,28 +56,28 @@ def part1():
         check(f"fingerprint: a changed {label} no longer matches", po.target_fingerprint(c2, cfg2) != f0)
     check("fingerprint: unrelated config does not matter", po.target_fingerprint(conn, {"timeout": 30}) == f0)
 
-    cap = po.mint(SECRET, user_id=7, token_id="tok1", conn_uuid="cid", ip="203.0.113.5")
-    ok = po.verify(SECRET, cap, conn_uuid="cid", ip="203.0.113.5")
+    cap = po.mint(SECRET, user_id=7, token_id="tok1", conn_uuid="cid")
+    ok = po.verify(SECRET, cap, conn_uuid="cid")
     check("capability: a good one verifies and names the viewer's session", ok and ok["user_id"] == 7 and ok["token_id"] == "tok1")
     check("capability: it is a plain path segment", "/" not in cap and cap.startswith("~") and len(cap) < 200, cap)
-    check("capability: another connection is refused", po.verify(SECRET, cap, conn_uuid="other", ip="203.0.113.5") is None)
-    check("capability: another address is refused", po.verify(SECRET, cap, conn_uuid="cid", ip="203.0.113.6") is None)
-    check("capability: another secret is refused", po.verify("t" * 64, cap, conn_uuid="cid", ip="203.0.113.5") is None)
+    check("capability: another connection is refused", po.verify(SECRET, cap, conn_uuid="other") is None)
+    check("capability: it is not bound to an address (mint and verify take none): a member whose address changes keeps the page", "ip" not in po.mint.__code__.co_varnames[:po.mint.__code__.co_argcount + po.mint.__code__.co_kwonlyargcount] and "ip" not in po.verify.__code__.co_varnames[:po.verify.__code__.co_argcount + po.verify.__code__.co_kwonlyargcount])
+    check("capability: another secret is refused", po.verify("t" * 64, cap, conn_uuid="cid") is None)
     prefix = getattr(po, "CAP_PREFIX", "~")
     body, _, mac = cap[len(prefix):].partition(".")
     check("capability: a changed body is refused", po.verify(SECRET, prefix + body[:-1] + ("A" if body[-1] != "A" else "B") + "." + mac,
-                                                             conn_uuid="cid", ip="203.0.113.5") is None)
-    check("capability: a cut mac is refused", po.verify(SECRET, cap[:-3], conn_uuid="cid", ip="203.0.113.5") is None)
-    old = po.mint(SECRET, user_id=7, token_id="tok1", conn_uuid="cid", ip="203.0.113.5", now=time.time() - 10 * 3600)
-    check("capability: an expired one is refused", po.verify(SECRET, old, conn_uuid="cid", ip="203.0.113.5") is None)
-    check("capability: junk is refused", all(po.verify(SECRET, j, conn_uuid="cid", ip="1") is None
+                                                             conn_uuid="cid") is None)
+    check("capability: a cut mac is refused", po.verify(SECRET, cap[:-3], conn_uuid="cid") is None)
+    old = po.mint(SECRET, user_id=7, token_id="tok1", conn_uuid="cid", now=time.time() - 10 * 3600)
+    check("capability: an expired one is refused", po.verify(SECRET, old, conn_uuid="cid") is None)
+    check("capability: junk is refused", all(po.verify(SECRET, j, conn_uuid="cid") is None
                                              for j in ("", "~", "~.", "~a.b", "x", "~" + "A" * 900, "~alice", "~pc1.", "~pc1.a.b")))
     # (1.24.1) only the exact minted shape is a capability: a path that merely starts with "~" is the application's own
     isc = getattr(po, "is_capability", None)
     check("capability shape: a minted one is recognised", isc is not None and isc(cap), cap)
     flipped = cap[:-1] + ("A" if cap[-1] != "A" else "B")
     check("capability shape: a well-formed one with a wrong MAC is still a capability (and refused by verify)",
-          isc is not None and isc(flipped) and po.verify(SECRET, flipped, conn_uuid="cid", ip="203.0.113.5") is None)
+          isc is not None and isc(flipped) and po.verify(SECRET, flipped, conn_uuid="cid") is None)
     check("capability shape: ~alice, ~user, ~pc1, ~pc1.x, a short MAC, other characters are not capabilities",
           isc is not None and not any(isc(j) for j in ("~alice", "~user", "~", "~pc1", "~pc1.", "~pc1.x", "~pc1.abc.def",
                                                       "~pc1.ab c." + mac, "~pc2." + body + "." + mac, "pc1." + body + "." + mac,
@@ -601,6 +601,35 @@ async def amain():
                 statuses.append(r.status)
     check("45 requests of one isolated page in a minute are not counted against the logged-out limit (no 429)",
           429 not in statuses and statuses.count(200) == 45, str(sorted(set(statuses))))
+
+    # ---- a capability that no longer verifies: a page navigation goes back through the entry, nothing else does ------
+    st, hd, _ = await get(owner, f"/proxy/{br_m}/data")
+    seg = hd["Location"].split("/")[3]
+    stale = po.mint(server.Config.JWT_SECRET, user_id=env.uid["owner"], token_id="gone", conn_uuid=br_m, now=time.time() - 10 * 3600)
+    other_conn = po.mint(server.Config.JWT_SECRET, user_id=env.uid["owner"], token_id="gone", conn_uuid="someone-else")
+    nav = {"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe", "Sec-Fetch-Site": "cross-site"}
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as c3:
+        async def anon(url, **kw):
+            async with c3.request(kw.pop("method", "GET"), env.base + url, allow_redirects=False, **kw) as r:
+                return r.status, r.headers, await r.read()
+        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
+        check("an expired capability on a page navigation (iframe) is sent through the entry, without the capability",
+              st == 302 and hd["Location"] == f"/proxy/{br_m}/data?x=1" and "~pc1" not in hd["Location"], f"{st} {hd.get('Location')}")
+        st, hd, _ = await anon(f"/proxy/{br_m}/{stale}/data?x=1", headers=nav)
+        check("... the same page again at once is a 401 (a re-entry that fails again is not repeated: no loop)", st == 401, str(st))
+        st, hd, _ = await anon(f"/proxy/{br_m}/{other_conn}/deep/page", headers={**nav, "Sec-Fetch-Dest": "document"})
+        check("a capability of another connection on a document navigation re-enters the same way",
+              st == 302 and hd["Location"] == f"/proxy/{br_m}/deep/page", f"{st} {hd.get('Location')}")
+        for label, kw in (("a script or image request", {"headers": {"Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script"}}),
+                          ("a fetch", {"headers": {"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}}),
+                          ("a request with no fetch metadata", {}),
+                          ("a form post", {"method": "POST", "headers": nav, "data": b"a=1"}),
+                          ("a socket upgrade", {"headers": {**nav, "Upgrade": "websocket", "Connection": "Upgrade"}})):
+            st, hd, body = await anon(f"/proxy/{br_m}/{stale}/sub/{label.split()[1]}", **kw)
+            check(f"{label} with an expired capability is a plain 401, never a redirect", st == 401 and "Location" not in hd, f"{st} {hd.get('Location')}")
+    st, hd, _ = await get(owner, f"/proxy/{br_m}/data?x=1")
+    check("and the entry gives a signed-in member a fresh capability address for the same page",
+          st == 302 and "/~pc1." in hd["Location"] and hd["Location"].endswith("/data?x=1"), f"{st} {hd.get('Location')}")
 
     # ---- item 4: the first-open notice of a shared web connection ----------------------------------------------
     carol = env.sessions["carol"]

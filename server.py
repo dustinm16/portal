@@ -21618,14 +21618,56 @@ def _proxy_cap_response(status: int, text: str) -> web.Response:
     return web.Response(status=status, text=text, headers={"Cache-Control": "private, no-store"})
 
 
+_cap_reentries: dict = {}           # (client address, connection, path) -> monotonic time of the last re-entry redirect
+_CAP_REENTRY_WINDOW = 5.0           # a second one for the same page inside this many seconds is a loop: answered 401
+_CAP_REENTRY_MAX = 2000
+
+
+def _proxy_cap_reentry(request: web.Request, segment: str):
+    """A redirect back through the entry for a page navigation whose capability no longer verifies, else None.
+
+    The capability of an isolated page expires (6 hours) or ends with its session; a page left open that
+    navigates after that used to get a bare 401. A GET navigation (Sec-Fetch-Mode navigate, destination document,
+    iframe or frame) is instead sent to the same address without the capability: the entry re-checks the real session
+    (cookie), mints a fresh capability and lands on the same page, or sends a signed-out member to the login page.
+    A subresource, a form post, a socket and a browser that sends no fetch metadata still get the 401, so a page's
+    own requests can never be turned into a redirect loop. If the same page is sent through the entry again within
+    _CAP_REENTRY_WINDOW seconds (the fresh capability failed too) the second answer is the 401."""
+    h = request.headers
+    if (request.method not in ("GET", "HEAD") or h.get("Upgrade", "").lower() == "websocket"
+            or h.get("Sec-Fetch-Mode", "").lower() != "navigate"
+            or h.get("Sec-Fetch-Dest", "").lower() not in ("document", "iframe", "frame")):
+        return None
+    conn_uuid = request.match_info.get("conn_id", "")
+    raw = request.raw_path.split("?", 1)[0]
+    prefix = f"/proxy/{conn_uuid}/{segment}"
+    tail = raw[len(prefix):] if raw.startswith(prefix) else ""
+    if tail and not tail.startswith("/"):
+        return None
+    now = monotonic()
+    key = (get_client_ip(request), conn_uuid, tail)
+    last = _cap_reentries.get(key)
+    if last is not None and now - last < _CAP_REENTRY_WINDOW:
+        return None
+    if len(_cap_reentries) >= _CAP_REENTRY_MAX:
+        for k in [k for k, t in _cap_reentries.items() if now - t >= _CAP_REENTRY_WINDOW] or list(_cap_reentries)[:500]:
+            _cap_reentries.pop(k, None)
+    _cap_reentries[key] = now
+    location = f"/proxy/{conn_uuid}{tail or '/'}"
+    query = _proxy_query_string(request)
+    if query:
+        location += "?" + query
+    return web.Response(status=302, headers={"Location": location, "Cache-Control": "private, no-store"})
+
+
 async def _proxy_capability_token(request: web.Request, segment: str):
     """The credential of a good capability segment of /proxy/{conn_id}/~cap/..., or None.
 
-    Signature, expiry, connection and client address are checked by proxy_origin.verify; here the
+    Signature, expiry and connection are checked by proxy_origin.verify; here the
     session it was minted for must still be live and the account must still exist. It never falls
     back to a cookie or a header: a request that carries a capability is judged by it alone."""
     conn_uuid = request.match_info.get("conn_id", "")
-    payload = proxy_origin.verify(Config.JWT_SECRET, segment, conn_uuid=conn_uuid, ip=get_client_ip(request))
+    payload = proxy_origin.verify(Config.JWT_SECRET, segment, conn_uuid=conn_uuid)
     if payload is None:
         return None
     jti = payload["token_id"]
@@ -21652,8 +21694,8 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     if segment is not None:
         token = await _proxy_capability_token(request, segment)
         if not token:
-            return _proxy_cap_response(401, "This link has expired or is not valid here. "
-                                            "Open the connection again from the portal.")
+            return _proxy_cap_reentry(request, segment) or _proxy_cap_response(
+                401, "This link has expired or is not valid here. Open the connection again from the portal.")
         request[_PROXY_CAP_TOKEN] = token
         request[_PROXY_ISOLATED] = True
     else:
@@ -21881,7 +21923,7 @@ def _proxy_isolated_entry(request: web.Request, token, conn_uuid: str, request_p
         return web.Response(status=403, text="Open this connection from the portal first",
                             headers={"Cache-Control": "private, no-store"})
     cap = proxy_origin.mint(Config.JWT_SECRET, user_id=token.user_id, token_id=jti,
-                            conn_uuid=conn_uuid, ip=get_client_ip(request))
+                            conn_uuid=conn_uuid)
     raw = request.raw_path.split("?", 1)[0]
     tail = raw[len(f"/proxy/{conn_uuid}"):] if raw.startswith(f"/proxy/{conn_uuid}") else ""
     location = f"/proxy/{conn_uuid}/{cap}" + (tail or "/")
@@ -32883,7 +32925,7 @@ async def _has_valid_credential(request: web.Request) -> bool:
         # An isolated page's requests carry a capability in the path instead of any cookie.
         parts = request.path.split("/", 4)
         if len(parts) >= 4 and proxy_origin.is_capability(parts[3]):
-            payload = proxy_origin.verify(Config.JWT_SECRET, parts[3], conn_uuid=parts[2], ip=get_client_ip(request))
+            payload = proxy_origin.verify(Config.JWT_SECRET, parts[3], conn_uuid=parts[2])
             if payload and not payload["token_id"].startswith(("apikey-", "streamkey-")):
                 try:
                     if await db.is_token_valid(payload["token_id"]):

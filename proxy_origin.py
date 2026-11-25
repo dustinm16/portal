@@ -90,11 +90,18 @@ def _key(secret: str) -> bytes:
     return hashlib.sha256(b"portal-proxy-capability-v" + CAP_VERSION.encode() + b"|" + secret.encode("utf-8")).digest()
 
 
-def mint(secret: str, *, user_id: int, token_id: str, conn_uuid: str, ip: str,
+def mint(secret: str, *, user_id: int, token_id: str, conn_uuid: str,
          now: Optional[float] = None, ttl: int = CAP_TTL_SECONDS) -> str:
-    """The path segment (without a slash) for one viewer session, one connection and one address."""
+    """The path segment (without a slash) for one viewer session and one connection.
+
+    Not bound to the client address (release 1.24.1): a member's address changes in the middle of a page (mobile
+    network, IPv4 and IPv6 on different connections) and a bound capability then failed inside an open page. The
+    address buys no protection here: script in the isolated page can read its own address and already reaches
+    everything the capability reaches from the viewer's own address, and a leaked address of the capability is
+    still limited to one connection, ends with the session (logout, revoke, password change) and expires after
+    CAP_TTL_SECONDS."""
     exp = int((time.time() if now is None else now) + ttl)
-    body = _b64(json.dumps([int(user_id), str(token_id), str(conn_uuid), str(ip), exp],
+    body = _b64(json.dumps([int(user_id), str(token_id), str(conn_uuid), exp],
                            separators=(",", ":")).encode("utf-8"))
     mac = _b64(hmac.new(_key(secret), body.encode("ascii"), hashlib.sha256).digest()[:18])
     return f"{CAP_PREFIX}{body}.{mac}"
@@ -114,9 +121,9 @@ def split_path(path: str):
     return None, path
 
 
-def verify(secret: str, segment: str, *, conn_uuid: str, ip: str, now: Optional[float] = None) -> Optional[dict]:
-    """The payload {user_id, token_id} of a good capability for this connection and address, else None.
-    Signature, expiry, connection and address are checked here; that the session is still live and the
+def verify(secret: str, segment: str, *, conn_uuid: str, now: Optional[float] = None) -> Optional[dict]:
+    """The payload {user_id, token_id} of a good capability for this connection, else None.
+    Signature, expiry and connection are checked here; that the session is still live and the
     viewer still has access is the caller's job (it needs the database)."""
     if not segment or len(segment) > CAP_MAX_LEN or not is_capability(segment):
         return None
@@ -127,11 +134,11 @@ def verify(secret: str, segment: str, *, conn_uuid: str, ip: str, now: Optional[
     if not hmac.compare_digest(want, mac):
         return None
     try:
-        user_id, token_id, conn, bound_ip, exp = json.loads(_unb64(body))
+        user_id, token_id, conn, exp = json.loads(_unb64(body))
         user_id = int(user_id)
     except (ValueError, TypeError):
         return None
-    if conn != conn_uuid or bound_ip != ip:
+    if conn != conn_uuid:
         return None
     if exp < (time.time() if now is None else now):
         return None
