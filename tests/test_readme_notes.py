@@ -1888,7 +1888,7 @@ check("1.24.2 notes sit directly before the 1.24.1 notes and open with one sente
 _heads242 = ["\n**Breaking changes**\n", "\n**What you will notice**\n", "\n**Uploads in backups**\n", "\n**Database**\n", "\n**Rollback**\n", "\n**Not tested**\n"]
 check("1.24.2 notes: Breaking changes, What you will notice, Uploads in backups, Database, Rollback and Not tested, once each and in that order",
       all(_s242.count(h) == 1 for h in _heads242) and [_s242.index(h) for h in _heads242] == sorted(_s242.index(h) for h in _heads242))
-check("1.24.2 notes: no emoji, no lane named, no request spelling of an old problem",
+check("1.24.2 notes: no emoji and no lane named",
       not re.search(_EMOJI, _s242) and not re.search(r"\blane\b", _s242, re.I))
 _notice242 = _s242.split("\n**What you will notice**\n", 1)[1].split("\n**Uploads in backups**\n", 1)[0] if _m242 else ""
 check("1.24.2 notes: What you will notice is grouped by the six areas",
