@@ -164,7 +164,7 @@ XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>s
 # headers). It reports whether it ran and whether the report script of the embedded browser is in it.
 CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1>ct page</h1><script>"
           "var inj=false;for(var i=0;i<document.scripts.length;i++){if((document.scripts[i].textContent||'').indexOf('portal'+'Frame')>=0)inj=true}"
-          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj})});</script></body></html>")
+          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj,charset:document.characterSet})});</script></body></html>")
 
 POPUP = "<!doctype html><script>opener && opener.postMessage('popup origin=' + window.origin, '*')</script>"
 
@@ -282,7 +282,15 @@ def serve():
             heads = CIMultiDict([("Content-Type", "text/plain, text/html")] if kind == "comma"
                                 else [("Content-Type", "text/plain"), ("Content-Type", "text/html")] if kind == "repeat"
                                 else [("Content-Type", "text/html")])
-            return web.Response(body=CTPAGE.replace("__KIND__", kind).encode(), headers=heads)
+            body = CTPAGE.replace("__KIND__", kind)
+            if kind == "u16":       # (1.24.2) no charset in the header, a UTF-16 byte order mark in the body
+                return web.Response(body=body.encode("utf-16"), headers=heads)
+            if kind == "latin":     # (1.24.2) no charset in the header, a latin-1 byte and a meta tag in the body
+                # (bytes the proxy cannot read as text are left alone but for the report script, so this page gets no address
+                # rewriting either: it reports to an address under its own path)
+                body = body.replace("fetch('/__report", "fetch(location.pathname.split('/ct/')[0]+'/__report")
+                return web.Response(body=body.replace("<head>", '<head><meta charset="windows-1252">').replace("ct page", "ct page \u00e9").encode("latin-1"), headers=heads)
+            return web.Response(body=body.encode(), headers=heads)
         up.router.add_get("/ct/{kind}", ctpage)
         up.router.add_get("/xl/{kind}", xl)
         up.router.add_get("/xx/{kind}", xx)
@@ -692,7 +700,7 @@ def run_browser(info):
         # 3e. (1.24.2) a hostile page behind a Content-Type that the proxy reads one way and a browser another (a comma
         # list, repeated headers): it is either not rendered as HTML (a download) or it carries the injected report script.
         # The control is a plain text/html answer, which is rendered and carries the script.
-        for kind in ("html", "comma", "repeat"):
+        for kind in ("html", "comma", "repeat", "u16", "latin"):
             ctx = ctx_for("bob")
             page = ctx.new_page()
             n_before = len(results().get("ct", []))
@@ -703,7 +711,14 @@ def run_browser(info):
                 started_download = "Download is starting" in str(exc)
             time.sleep(2.0)
             got = results().get("ct", [])[n_before:]
-            if kind == "html":
+            if kind in ("u16", "latin"):
+                # (1.24.2) text/html without a charset: the proxy reads the document the way the browser does (a byte order
+                # mark decides; bytes that are not UTF-8 are kept as they are), so the report script is in the page the
+                # browser builds. (Before, the UTF-16 page was no page at all.)
+                check(f"CS browser ({kind}): a page served as text/html without a charset is rendered and carries the report script",
+                      bool(got) and got[-1].get("injected") is True and not started_download, (started_download, got))
+                print(f"note: CS browser ({kind}): the browser read the page as {got[-1].get('charset') if got else None}")
+            elif kind == "html":
                 check("CT browser: the control (one text/html) is rendered and carries the report script", got and got[-1].get("injected") is True, got)
             else:
                 check(f"CT browser ({kind}): the page is not rendered as HTML (a download), or it carries the report script",

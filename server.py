@@ -21704,6 +21704,39 @@ def _isolated_content_type(values) -> tuple:
     return media, value, charset
 
 
+def _isolated_html_reading(body: bytes, declared) -> tuple:
+    """How the proxy reads (and then writes) the text/html answer to an isolated page, so that the browser reads
+    the document the way the proxy did: (codec to decode with, codec to write with, charset to send or None,
+    whether the proxy may rewrite the text).
+    A byte order mark decides first, as it does in a browser: UTF-32 and UTF-16 are decoded and sent as UTF-8
+    without the mark (charset=utf-8), UTF-8 stays UTF-8. Otherwise a charset the upstream gave and Python knows is
+    used and sent. Otherwise the body is UTF-8 when it decodes strictly as such (sent as charset=utf-8); if it does
+    not, it is read as latin-1, a round trip that keeps every byte, and sent with no charset, so the browser chooses
+    as it would have without the proxy; the text is then left alone but for the report script."""
+    for bom, codec in ((b"\xff\xfe\x00\x00", "utf-32"), (b"\x00\x00\xfe\xff", "utf-32"),
+                       (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+        if body.startswith(bom):
+            if codec == "utf-32":
+                try:
+                    body.decode("utf-32")
+                except UnicodeDecodeError:
+                    codec = "utf-16" if body.startswith(b"\xff\xfe") else codec
+            return codec, "utf-8", "utf-8", True
+    if body.startswith(b"\xef\xbb\xbf"):
+        return "utf-8", "utf-8", "utf-8", True
+    if declared:
+        try:
+            "".encode(declared)
+            return declared, declared, declared, True
+        except (LookupError, UnicodeError, ValueError):
+            pass
+    try:
+        body.decode("utf-8")
+        return "utf-8", "utf-8", "utf-8", True
+    except UnicodeDecodeError:
+        return "latin-1", "latin-1", None, False
+
+
 def _proxy_document_csp(content_type: str, isolated: bool = False):
     """The Content-Security-Policy a proxied response gets, by its type: the permissive HTML one
     (upstream pages need their own scripts, but no worker) for HTML, XHTML and XML documents, a
@@ -23158,14 +23191,22 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 if needs_rewriting:
                     frame_js_done = False
                     charset = "utf-8"
+                    reading = None      # (isolated text/html only) see _isolated_html_reading
                     try:
-                        if isolated:
+                        if isolated and inject_frame_js:
+                            reading = _isolated_html_reading(response_body, ct_charset)
+                            charset = reading[0]
+                        elif isolated:
                             charset = ct_charset or "utf-8"
                         elif "charset=" in content_type:
                             charset = content_type.split("charset=")[1].split(";")[0].strip().strip('"\'')
                         text = response_body.decode(charset)
 
-                        if browser_mode:
+                        if reading is not None and not reading[3]:
+                            # Text the proxy could not read as text (see _isolated_html_reading): its bytes are kept,
+                            # the report script is the only thing put in.
+                            pass
+                        elif browser_mode:
                             # Browser mode: rewrite target origin → proxy_prefix (which includes origin in path)
                             text = text.replace(target_origin, proxy_prefix)
                             # Protocol-relative //host — use negative lookbehind to skip ://host inside already-rewritten URLs
@@ -23450,8 +23491,11 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
 
                         if inject_frame_js:
                             text = _insert_isolated_frame_js(text)
-                        response_body = text.encode(charset)
+                        response_body = text.encode(reading[1] if reading else charset)
                         frame_js_done = True
+                        if reading and "Content-Type" in resp_headers:
+                            # the header says what the body now is, which is what the proxy read
+                            resp_headers["Content-Type"] = "text/html" + (f"; charset={reading[2]}" if reading[2] else "")
                     except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
                         pass
                     if inject_frame_js and not frame_js_done:

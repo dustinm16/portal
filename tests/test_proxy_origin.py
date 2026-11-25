@@ -12,6 +12,7 @@ Run: venv/bin/python tests/test_proxy_origin.py
 
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -431,6 +432,25 @@ async def amain():
         "mixed": ([b"Multipart/X-Mixed-Replace; boundary=frame"], b"--frame\r\nContent-Type: text/html\r\n\r\n<script>1</script>\r\n--frame--"),
         "xsl": ([b"text/xsl"], b"<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform'/>"),
     }
+    # (1.24.2) charset reading of an isolated text/html answer: name -> (Content-Type lines, body, header expected, text the
+    # body must come out as once the report script is taken away (bytes), or None when it is the body itself)
+    cs_doc = "<!doctype html><html><head><title>caf\u00e9</title></head><body>caf\u00e9 \u20ac</body></html>"
+    cs_latin = b'<!doctype html><html><head><meta charset="windows-1252"><title>t</title></head><body>caf\xe9 \x80</body></html>'
+    charset_cases = {
+        "cs_u16le": ([b"text/html"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
+        "cs_u16be": ([b"text/html"], b"\xfe\xff" + cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
+        "cs_u32le": ([b"text/html"], b"\xff\xfe\x00\x00" + cs_doc.encode("utf-32-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
+        "cs_u16_declared": ([b"text/html; charset=windows-1252"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
+        "cs_u8bom": ([b"text/html"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
+        "cs_u8bom_declared": ([b"text/html; charset=windows-1252"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
+        "cs_1252": ([b"text/html; charset=windows-1252"], cs_latin, "text/html; charset=windows-1252", None),
+        "cs_none_utf8": ([b"text/html"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
+        "cs_none_latin": ([b"text/html"], cs_latin, "text/html", None),
+        "cs_unknown_utf8": ([b"text/html; charset=no-such-charset"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
+        "cs_unknown_latin": ([b"text/html; charset=no-such-charset"], cs_latin, "text/html", None),
+    }
+    for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
+        raw_cases[_name] = (_cts, _body)
 
     async def raw_serve(reader, writer):
         try:
@@ -629,7 +649,9 @@ async def amain():
     body = served["badutf"]
     check("E1 report script: a body that is not valid text keeps its bytes (\\xff) and gets the script at byte level", b"\xff" in body and marker in body, repr(body[-60:]))
     st, hd, body = await get(bob, f"{cap_base}/fj/utf16")
-    check("E1 report script: an UTF-16 page that decodes is injected as text", marker.decode().encode("utf-16")[2:] in body or b"p\x00o\x00r\x00t\x00a\x00l\x00F\x00" in body, repr(body[:40]))
+    check("E1 report script: an UTF-16 page (byte order mark, declared utf-16) is injected as text and sent as UTF-8 without the mark",
+          marker in body and not body.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf")) and b"\x00" not in body
+          and hd.getall("Content-Type", []) == ["text/html; charset=utf-8"], f"{hd.getall('Content-Type', [])} {body[:40]!r}")
     for kind in ("xhtml", "xml"):
         st, hd, body = await get(bob, f"{cap_base}/fj/{kind}")
         csp = hd.getall("Content-Security-Policy", [])
@@ -647,8 +669,8 @@ async def amain():
             ("repeat", OCT, False, None), ("comma", OCT, False, None), ("missing", OCT, False, None), ("empty", OCT, False, None),
             ("xhtml_comma", OCT, False, None), ("three", OCT, False, None), ("junk", OCT, False, None),
             ("odd", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
-            ("semicolon", ["text/html"], True, server._PROXY_HTML_CSP),
-            ("same_twice", ["text/html"], True, server._PROXY_HTML_CSP),
+            ("semicolon", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
+            ("same_twice", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
             ("xhtml_odd", ["application/xhtml+xml; charset=utf-8"], False, server._PROXY_SVG_CSP),
             ("svg", ["image/svg+xml"], False, server._PROXY_SVG_CSP),
             ("bytes", ["multipart/byteranges; boundary=\"abc\""], False, None),
@@ -665,6 +687,29 @@ async def amain():
             check(f"CT {kind}: the page policy follows the same type", want_csp in csp, str(csp))
         else:
             check(f"CT {kind}: no page policy (it is not a document that runs)", server._PROXY_HTML_CSP not in csp and server._PROXY_SVG_CSP not in csp, str(csp))
+    # (1.24.2) The proxy and the browser read an isolated HTML document the same way: a byte order mark decides, then a
+    # charset the proxy knows (used and sent), else UTF-8 when the bytes are valid UTF-8 (sent as such), else the bytes are
+    # kept as they are (only ASCII is inserted) and no charset is sent. The script is in every one of these answers.
+    script_b = server._ISOLATED_FRAME_JS.encode("ascii")
+    for kind, (_cts, raw_body, want_hdr, want_text) in charset_cases.items():
+        st, hd, body = await get(bob, f"{cap_raw}/ct/{kind}")
+        check(f"CS {kind}: the answer carries the report script exactly once", st == 200 and body.count(script_b) == 1, f"{st} {body[:80]!r}")
+        check(f"CS {kind}: the one Content-Type is exactly {want_hdr!r}", hd.getall("Content-Type", []) == [want_hdr], str(hd.getall("Content-Type", [])))
+        want_body = want_text if want_text is not None else raw_body
+        # (an answer the proxy reads as text also gets the portal's own address-rewriting script, which is no part of this rule)
+        plain = re.sub(rb'<script>\(function\(\)\{"use strict";.*?\}\)\(\);</script>', b"", body, flags=re.S)
+        check(f"CS {kind}: nothing but the scripts was added (every other byte is as the proxy read it)",
+              plain == want_body, f"{plain[:120]!r}")
+        if want_hdr == "text/html":
+            check(f"CS {kind}: a page that is not text to the proxy gets the report script and nothing else, byte for byte",
+                  body.replace(script_b, b"", 1) == raw_body, f"{body[:120]!r}")
+        check(f"CS {kind}: it is a page, not a download", "Content-Disposition" not in hd, str(dict(hd)))
+    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_u16le")
+    check("CS: a trusted connection gets the UTF-16 answer byte for byte, with the Content-Type it had",
+          st == 200 and body == charset_cases["cs_u16le"][1] and hd.getall("Content-Type", []) == ["text/html"], f"{hd.getall('Content-Type', [])} {body[:20]!r}")
+    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_unknown_latin")
+    check("CS: ... and one with an unknown charset keeps that charset in its header",
+          st == 200 and body == charset_cases["cs_unknown_latin"][1] and hd.getall("Content-Type", []) == ["text/html; charset=no-such-charset"], str(hd.getall("Content-Type", [])))
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/repeat")
     check("CT: a trusted connection keeps the upstream's headers as they were (both Content-Type lines pass through, no nosniff)",
           st == 200 and hd.getall("Content-Type", []) == ["text/plain", "text/html"] and "X-Content-Type-Options" not in hd, str(hd.getall("Content-Type", [])))
