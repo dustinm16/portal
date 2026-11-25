@@ -22011,7 +22011,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     proxy_prefix = f"{proxy_base}/~" if own_alias else f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
     # A connection that was only shared with this member (an administrator is not asked): the pages the proxy
     # serves are not given its scheme, host and port in the script it writes into them
-    origin_hidden = bool(connection.get("shared")) and not browser_mode and not await _is_recording_admin(token.user_id)
+    origin_hidden = shared_viewer and not browser_mode      # the viewer decision made once above (shared_viewer)
 
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
@@ -33005,6 +33005,17 @@ async def _load_proxy_limit_state() -> None:
     _proxy_buckets.clear()
 
 
+_uploads_root_cache: Optional[tuple] = None
+
+
+def _uploads_root() -> Path:
+    """The resolved static/uploads directory, worked out once (again only if STATIC_DIR itself is changed)."""
+    global _uploads_root_cache
+    if _uploads_root_cache is None or _uploads_root_cache[0] != STATIC_DIR:
+        _uploads_root_cache = (STATIC_DIR, (STATIC_DIR / "uploads").resolve())
+    return _uploads_root_cache[1]
+
+
 @web.middleware
 async def static_uploads_guard_middleware(request: web.Request, handler):
     """Nothing under static/uploads is served by the plain static route.
@@ -33017,7 +33028,7 @@ async def static_uploads_guard_middleware(request: web.Request, handler):
     if isinstance(resource, web.StaticResource):
         try:
             target = (STATIC_DIR / request.match_info.get("filename", "")).resolve()
-            uploads = (STATIC_DIR / "uploads").resolve()
+            uploads = _uploads_root()
             inside = target == uploads or target.is_relative_to(uploads)
         except (ValueError, OSError, RuntimeError):
             inside = True

@@ -117,6 +117,17 @@ async def main():
           f'href="/proxy/{uuid}/next"' in body, body[:500])
     check("the grantee's root-relative link is rewritten as before", f'src="/proxy/{uuid}/pic.png"' in body, body[:500])
 
+    # The viewer decision (is this member an administrator, so is the address hidden) is made once per proxied request.
+    real_admin_check, role_lookups = server._is_recording_admin, []
+
+    async def counting_admin_check(user_id):
+        role_lookups.append(user_id)
+        return await real_admin_check(user_id)
+    server._is_recording_admin = counting_admin_check
+    await fetch(bob)                                    # the entry redirect (no lookup) and the page itself
+    check("a grantee's proxied page looks the viewer up once, not twice", len(role_lookups) == 1, str(role_lookups))
+    server._is_recording_admin = real_admin_check
+
     # ---- browser mode (a connection that browses any site): its own site is addressed as /proxy/<id>/~/ ---------------
     buuid = await env.db.create_user_connection(env.uid["owner"], "web b", "http", "127.0.0.1", upstream.port,
                                                 json.dumps({"browser_mode": True}))

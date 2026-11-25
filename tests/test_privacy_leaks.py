@@ -133,6 +133,22 @@ async def main():
                     check(f"{who}: {label} by the static-route spelling {spelling!r} is not served",
                           st != 200 and "image" not in hd.get("Content-Type", "") and "html" not in hd.get("Content-Type", "")
                           and body != b"<script>1</script>", f"{st} {hd.get('Content-Type')}")
+        # The guard works out the uploads root once, not on every static request.
+        import pathlib as _pathlib
+        real_resolve, uploads_dir, resolved_uploads = _pathlib.Path.resolve, ROOT / "static" / "uploads", []
+
+        def counting_resolve(self, *a, **kw):
+            if self == uploads_dir:
+                resolved_uploads.append(str(self))
+            return real_resolve(self, *a, **kw)
+        _pathlib.Path.resolve = counting_resolve
+        try:
+            for _ in range(3):
+                await raw_get("bob", "/static/css/portal.css")
+        finally:
+            _pathlib.Path.resolve = real_resolve
+        check("three static requests resolve the uploads directory at most once between them (not once each)",
+              len(resolved_uploads) <= 1, str(resolved_uploads))
         for who in ("bob", "owner"):
             st, hd = await raw_get(who, "/static/css/portal.css")
             check(f"{who}: an ordinary static file is still served", st == 200 and "css" in hd.get("Content-Type", ""),
