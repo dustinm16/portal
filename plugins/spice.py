@@ -65,6 +65,8 @@ class SPICEPlugin(PluginBase):
                     "default": 5900
                 },
                 "password": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "SPICE password/ticket"
                 },

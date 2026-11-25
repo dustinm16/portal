@@ -137,6 +137,7 @@ import jobs as bg_jobs
 import hostkeys
 import session_recording
 import sshpass_rules
+import connection_secrets
 import dash_prefs
 import connection_health
 import grant_expiry
@@ -5468,7 +5469,7 @@ async def _user_targets_allowed(host, config=None, port=0) -> bool:
 
 # Connection types mapped to plugins with full config support
 # Sensitive config fields that must never be returned in API responses
-_SENSITIVE_CONFIG_FIELDS = {"password", "private_key", "private_key_path", "auth_header", "psk"}
+_SENSITIVE_CONFIG_FIELDS = connection_secrets.SECRET_KEYS      # one list: every stored secret of every connection type
 
 
 def _externalize_connection(conn: dict) -> dict:
@@ -5488,27 +5489,16 @@ def redact_connection_config(connection: dict) -> dict:
     """Redact sensitive fields from a connection dict for API responses.
 
     Replaces sensitive values with has_<field>: True flags so the frontend
-    knows a credential exists without exposing the actual value.
+    knows a credential exists without exposing the actual value. Every stored
+    secret of every connection type is on the list (connection_secrets.SECRET_KEYS).
     """
     conn = dict(connection)
     conn.pop("proxy_trusted_fp", None)         # the trust mark (a target fingerprint) is not for any caller
     conn.pop("proxy_trusted_by", None)
-    config = conn.get("config", {})
-    if isinstance(config, str):
-        try:
-            config = json.loads(config) if config else {}
-        except json.JSONDecodeError:
-            config = {}
+    config = connection_secrets.parse_config(conn.get("config", {}))
 
-    ssh_type = conn.get("type") in sshpass_rules.TYPES
-    redacted_config = {}
-    for key, value in config.items():
-        if key in _SENSITIVE_CONFIG_FIELDS:
-            if value:
-                # An SSH connection's password is the stored password: one flag, never the value.
-                redacted_config["has_stored_password" if (ssh_type and key == "password") else f"has_{key}"] = True
-        else:
-            redacted_config[key] = value
+    conn_ssh = conn.get("type") in sshpass_rules.TYPES
+    redacted_config = connection_secrets.redact(config, ssh_type=conn_ssh)
 
     conn["config"] = redacted_config
     return conn
@@ -5727,6 +5717,7 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         config = {}
     if not isinstance(config, dict):
         return web.json_response({"error": "Config must be an object"}, status=400)
+    config = connection_secrets.strip_flags(config)         # has_<secret> flags a client sent back are not config
     if "recording" in config and not await _may_set_recording(token):
         # Not an error, so a client that always sends the key keeps working: a member's value
         # is ignored and a new connection starts without the flag.
@@ -5988,6 +5979,8 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
 
     if "config" in data and not isinstance(data["config"], dict):
         return web.json_response({"error": "Config must be an object"}, status=400)
+    if isinstance(data.get("config"), dict):
+        data["config"] = connection_secrets.strip_flags(data["config"])    # flags a client sent back are not config
     if isinstance(data.get("config"), dict) and "recording" in data["config"] \
             and not await _may_set_recording(token):
         # Not an error: a member's value is ignored, so the stored flag is kept as it is.

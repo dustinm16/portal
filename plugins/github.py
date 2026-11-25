@@ -56,10 +56,14 @@ class GitHubPlugin(PluginBase):
                     "description": "GitHub OAuth App Client ID"
                 },
                 "client_secret": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "GitHub OAuth App Client Secret"
                 },
                 "personal_token": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "GitHub Personal Access Token (alternative to OAuth)"
                 },
@@ -68,6 +72,8 @@ class GitHubPlugin(PluginBase):
                     "description": "Default organization to show repos from"
                 },
                 "webhook_secret": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "Secret for validating webhooks"
                 },

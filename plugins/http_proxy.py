@@ -108,11 +108,13 @@ class HTTPProxyPlugin(PluginBase):
                 },
                 "auth_header": {
                     "type": "string",
+                    "writeOnly": True,
                     "format": "password",
                     "title": "Auth Header",
                     "description": "Authorization header value injected as the upstream Authorization header (e.g. Bearer token123)"
                 },
                 "extra_headers": {
+                    "writeOnly": True,
                     "type": "object",
                     "description": "Extra headers to add to requests"
                 },

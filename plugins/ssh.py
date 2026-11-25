@@ -71,10 +71,12 @@ class SSHPlugin(PluginBase):
                     "default": "password"
                 },
                 "private_key": {
+                    "writeOnly": True,
                     "type": "string",
                     "description": "Private key content (for key auth)"
                 },
                 "private_key_path": {
+                    "writeOnly": True,
                     "type": "string",
                     "description": "Path to private key file"
                 },

@@ -97,6 +97,8 @@ class VPNTunnelPlugin(PluginBase):
                     "default": 25
                 },
                 "pre_shared_key": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "Pre-shared key for additional security"
                 }

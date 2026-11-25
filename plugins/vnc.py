@@ -135,6 +135,8 @@ class VNCPlugin(PluginBase):
                     "default": 5900
                 },
                 "password": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "VNC password (if required)"
                 },

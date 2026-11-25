@@ -232,6 +232,8 @@ class ProxmoxPlugin(PluginBase):
                     "default": 8006
                 },
                 "api_token": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "API token (user@realm!tokenid=secret)"
                 },
@@ -240,6 +242,8 @@ class ProxmoxPlugin(PluginBase):
                     "description": "Username for password auth"
                 },
                 "password": {
+                    "writeOnly": True,
+                    "format": "password",
                     "type": "string",
                     "description": "Password for password auth"
                 },

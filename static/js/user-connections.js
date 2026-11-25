@@ -1563,6 +1563,16 @@ async function editConnection(connectionId) {
  */
 function populateDynamicConfigFields(config) {
     Object.entries(config).forEach(([key, value]) => {
+        // A stored secret is write-only: the server sends has_<field> and never the value. The field stays
+        // empty with a hint, and an empty field is not sent, so saving keeps what is stored.
+        if (key.startsWith('has_') && value) {
+            const secretInput = document.getElementById(`connection-config-${key.slice(4)}`);
+            if (secretInput) {
+                secretInput.value = '';
+                secretInput.placeholder = '(Stored - leave empty to keep it, or type a new value to replace it)';
+            }
+            return;
+        }
         const input = document.getElementById(`connection-config-${key}`);
         if (!input) return;
         if (input.dataset.jsonField) {

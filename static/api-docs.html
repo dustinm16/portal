@@ -1191,7 +1191,7 @@
                         <span class="endpoint-desc">Get connection details</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns details for a specific connection. Sensitive config fields (passwords, private keys) are redacted and replaced with <code>has_&lt;field&gt;</code> boolean flags. For a connection shared with you, and you are not an administrator, <code>host</code> and <code>port</code> are <code>null</code> and <code>config</code> holds no value but <code>has_stored_password</code> and <code>credential_mode</code> (see the list above).</p>
+                        <p>Returns details for a specific connection. Sensitive config fields (passwords, private keys and, since 1.24.1, every other stored secret: <code>api_token</code>, <code>extra_headers</code>, <code>personal_token</code>, <code>client_secret</code>, <code>webhook_secret</code>, <code>pre_shared_key</code>, <code>auth_header</code>, <code>psk</code>) are redacted for every credential, whatever its scope, and replaced with <code>has_&lt;field&gt;</code> boolean flags. For a connection shared with you, and you are not an administrator, <code>host</code> and <code>port</code> are <code>null</code> and <code>config</code> holds no value but <code>has_stored_password</code> and <code>credential_mode</code> (see the list above).</p>
                     </div>
                 </div>
 
