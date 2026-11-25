@@ -56,10 +56,22 @@ async def main():
             check(f"POST /logout from {label} is refused", r.status == 403, str(r.status))
         check(f"... and the session stays after the POST from {label}", await alive(bob, base))
 
+    # ---- a POST that carries no session cookie (a cross-site form: Lax cookies are not sent) must not delete the cookie either
+    async with aiohttp_anon() as anon:
+        for hdrs, kw, label in (({"Sec-Fetch-Site": "cross-site"}, {"data": {}}, "a cross-site form post"),
+                                ({"Sec-Fetch-Site": "same-origin"}, {"json": {}}, "a JSON post")):
+            async with anon.post(base + "/logout", headers=hdrs, allow_redirects=False, **kw) as r:
+                await r.read()
+                check(f"POST /logout without a session cookie ({label}) answers but sends no Set-Cookie",
+                      r.status in (200, 303) and not r.headers.getall("Set-Cookie", []), f"{r.status} {r.headers.getall('Set-Cookie', [])}")
+    check("... and a signed-in browser is untouched by it", await alive(bob, base))
+
     # ---- POST from the portal's own page signs out
     async with bob.post(base + "/logout", headers={"Sec-Fetch-Site": "same-origin"}, data={}, allow_redirects=False) as r:
         check("a form post (the page's button) redirects to the login page", r.status == 303 and r.headers.get("Location") == "/login",
               f"{r.status} {r.headers.get('Location')}")
+        check("... and clears the session cookie of the browser that sent it", any("portal_session=" in c and ("Max-Age=0" in c or "expires" in c.lower())
+              for c in r.headers.getall("Set-Cookie", [])), str(r.headers.getall("Set-Cookie", [])))
     check("... and the session is gone", not await alive(bob, base))
     owner = env.sessions["owner"]
     async with owner.post(base + "/logout", json={}, headers={"Sec-Fetch-Site": "same-origin"}) as r:

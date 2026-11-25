@@ -20170,12 +20170,17 @@ async def http_logout(request: web.Request) -> web.Response:
         except Exception:
             pass  # Best effort - still clear cookie
 
+    # The cookie is removed only from a browser that sent it. A form posted from another site carries no
+    # SameSite=Lax cookie, is let through by the cross-site check (which judges only requests with the cookie), and
+    # an answer that deleted the cookie would still sign that browser out while the session stays live on the server.
     if is_form:
         response = web.HTTPSeeOther("/login")
-        response.del_cookie(Config.SESSION_COOKIE_NAME)
+        if cookie:
+            response.del_cookie(Config.SESSION_COOKIE_NAME)
         raise response
     response = web.json_response({"success": True})
-    response.del_cookie(Config.SESSION_COOKIE_NAME)
+    if cookie:
+        response.del_cookie(Config.SESSION_COOKIE_NAME)
     return response
 
 
