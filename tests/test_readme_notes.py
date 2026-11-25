@@ -487,8 +487,8 @@ MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
 MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
-# ... and in 1.24.2 (the service form's Desktop preset port; the SFTP form's remove-password box): the versions the pages load now
-MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63}
+# ... and in 1.24.2 (the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages): the versions the pages load now
+MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -552,7 +552,7 @@ check("1.20.0: the cap range and the default stated are the ones in the code",
       all(re.search(p_, (ROOT / "server.py").read_text()) for p_ in (
           r"VOICE_CAP_DEFAULT, VOICE_CAP_MIN, VOICE_CAP_MAX = 8, 2, 25", r"VOICE_KICK_BLOCK = 60\.0")))
 _vj = {m for p_ in ("chat.html", "watch.html") for m in re.findall(r"/static/js/voice\.js\?v=(\d+)", (ROOT / "static" / p_).read_text())}
-check("1.20.0 states voice.js as version 15 and chat.html and watch.html load exactly that", _vj == {"15"}, str(_vj))
+check("1.20.0 states voice.js as version 15 and chat.html and watch.html load exactly that", _vj in ({"15"}, {str(MOVED_ON_1_24_2["voice.js"])}), str(_vj))
 
 # --- 1.20.0 notes: voice connection quality ---------------------------------------------
 _vq_js = (ROOT / "static" / "js" / "voice.js").read_text()
@@ -596,7 +596,7 @@ for name, needles in (
 _pages20 = {p_.name: p_.read_text(encoding="utf-8") for p_ in (ROOT / "static").glob("*.html")}
 _loaded20 = {m_ for t_ in _pages20.values() for m_ in re.findall(r"/static/js/chat-retention\.js\?v=(\d+)", t_)}
 check("1.20.0 states chat-retention.js as version 3 and the pages load exactly that",
-      _loaded20 == {"3"} and re.search(r"`chat-retention\.js` version 3", m20r.group(1) if m20r else "") is not None, str(_loaded20))
+      _loaded20 in ({"3"}, {str(MOVED_ON_1_24_2["chat-retention.js"])}) and re.search(r"`chat-retention\.js` version 3", m20r.group(1) if m20r else "") is not None, str(_loaded20))
 _srv20 = (ROOT / "server.py").read_text(encoding="utf-8")
 check("the margin and the batch size stated are the ones in the code",
       "return max(2, int(shown) // 50)" in _srv20 and "PRUNE_BATCH = 200" in _srv20)
@@ -625,7 +625,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "63"), "streams.js": ("49", "54")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0
+_moved20 = {"user-connections.js": ("56", "63"), "streams.js": ("49", "54"), "voice.js": ("15", "16"), "chat-retention.js": ("3", "4")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0 and 1.24.2 (user-connections.js, voice.js, chat-retention.js)
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0, 1.24.0 and 1.24.1)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -1064,7 +1064,7 @@ check("1.23.0: the numbers stated are the ones in the code",
       and "_SCHEDULE_TICK_SECONDS = 30" in _srv22 and "_FEED_TOKEN_LIMIT = (30, 600)" in _srv22 and "_FEED_ADDR_LIMIT = (120, 600)" in _srv22)
 check("1.23.0: the static versions stated are the ones the pages load",
       "`stream-schedule.js` is new at version 8" in _sec23 and "`streams.js` is version 51" in _sec23
-      and "/static/js/stream-schedule.js?v=8" in (ROOT / "static" / "watch.html").read_text()
+      and "/static/js/stream-schedule.js?v=9" in (ROOT / "static" / "watch.html").read_text()  # v8 then, v9 since 1.24.2
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text())  # 51 then, 53 in 1.24.0, 54 since 1.24.1
 check("1.23.0: the notes say Revoke on the calendar link asks first and the code has the question",
       "Regenerate and Revoke ask first" in _sec23 and "Yes, revoke" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
@@ -1378,7 +1378,7 @@ _st241_txt = _s241.split("- **Static files.**", 1)[1].split("- **Rollback.**", 1
 _named241 = re.findall(r"`([a-z-]+\.js)` v(\d+)", _st241_txt)
 _pages241 = "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html"))
 check("1.24.1 notes: every script version the Static files bullet names is the one a page loads",
-      len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 or f"/{n}?v={MOVED_ON_1_24_2.get(n)}" in _pages241 for n, v in _named241), str(_named241))
+      len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 or (n in MOVED_ON_1_24_2 and f"/{n}?v={MOVED_ON_1_24_2[n]}" in _pages241) for n, v in _named241), str(_named241))
 check("1.24.1 notes: the Rollback bullet says what is lost and what does not come back",
       all(n in _s241.split("- **Rollback.**", 1)[-1] if "- **Rollback.**" in _s241 else False for n in ("What is lost on 1.24.0", "What does not come back", "WEBHOOK_LOCAL_ALLOW", "jsDelivr")))
 check("1.24.1 notes: the limit of a trusted proxied application is stated in the notes, the Security list and the About page",

@@ -149,6 +149,7 @@
     function enable() {
         if (!supported()) return Promise.reject(new Error('This browser cannot receive push notifications'));
         var config;
+        var reused = false;      // the browser already held a subscription with the server's key
         /* The permission prompt starts here, synchronously, inside the click that called enable(): some
            browsers (Safari) do not count it as a user gesture after an await. The config is fetched meanwhile. */
         var asked = Notification.requestPermission();
@@ -166,7 +167,7 @@
             }
             return reg.pushManager.getSubscription().then(function (existing) {
                 if (!existing) return fresh();
-                if (keyMatches(existing, config.public_key)) return existing;
+                if (keyMatches(existing, config.public_key)) { reused = true; return existing; }
                 return existing.unsubscribe().then(fresh, fresh);     // made with a key the server no longer has
             });
         }).then(function (sub) {
@@ -175,7 +176,11 @@
                 return true;
             }, function (err) {
                 /* The server did not take the device (another account holds it, push was switched off, a server
-                   error): a browser subscription nobody can send to is undone, so the switch is honestly off. */
+                   error): a browser subscription nobody can send to is undone, so the switch is honestly off.
+                   An error without an HTTP status is a network failure: the server said nothing, so a subscription
+                   that already worked here (and the local flag) stays and the error is shown. One made just now,
+                   which the server never saw, is still undone. */
+                if (reused && (!err || !err.status)) throw err;
                 forget();
                 var undo = function () { throw err; };
                 return Promise.resolve().then(function () { return sub.unsubscribe(); }).then(undo, undo);

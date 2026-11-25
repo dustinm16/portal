@@ -2618,6 +2618,8 @@
         .live-now-strip {
             display: flex;
             flex-wrap: wrap;
+            max-height: 5rem;
+            overflow-y: auto;
             align-items: center;
             gap: 0.4rem;
             padding: 0.35rem 0.75rem;
@@ -3293,10 +3295,10 @@
     </div>
 
     <script src="/static/js/portal.js?v=52"></script>
-    <script src="/static/js/push.js?v=6"></script>
-    <script src="/static/js/voice.js?v=15"></script>
-    <script src="/static/js/chat-notify.js?v=1"></script>
-    <script src="/static/js/chat-retention.js?v=3"></script>
+    <script src="/static/js/push.js?v=7"></script>
+    <script src="/static/js/voice.js?v=16"></script>
+    <script src="/static/js/chat-notify.js?v=2"></script>
+    <script src="/static/js/chat-retention.js?v=4"></script>
     <script src="/static/js/chat-saved.js?v=6"></script>
     <script>
         // Mobile sidebar toggle
@@ -3480,7 +3482,21 @@
 
         // What an alert (sound and desktop) does for a message that is not in the room on screen
         function _playChatSound() {
-            ChatNotify.playSound({ storage: localStorage, navigator: navigator, window: window, now: Date.now, date: new Date() });
+            ChatNotify.playSound({ storage: localStorage, navigator: navigator, window: window, document: document, now: Date.now, date: new Date() });
+        }
+        // The channel alerts shown lately (channel id -> {n, at}). A mention of this member also
+        // arrives as a notification that portal.js shows under its own tag; when that follows
+        // within a few seconds the channel alert is taken away, so one mention is one alert. A
+        // direct mention of a member who is in the room has no notification: its channel alert stays.
+        let _channelAlerts = new Map();
+        function _dropChannelAlertFor(channelId) {
+            const id = Number(channelId);
+            const entry = _channelAlerts.get(id);
+            if (!entry) return;
+            _channelAlerts.delete(id);
+            if (Date.now() - entry.at <= 5000) {
+                try { entry.n.close(); } catch (e) { /* ignore */ }
+            }
         }
         function _showChannelAlert(alert, ch) {
             if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
@@ -3489,7 +3505,13 @@
                     body: alert.body, icon: '/favicon.ico', tag: alert.tag, silent: true
                 });
                 n.onclick = () => { window.focus(); n.close(); if (alert.channel) switchChannel(alert.channel); };
-                setTimeout(() => n.close(), 8000);
+                const key = ch && ch.id != null ? Number(ch.id) : null;
+                if (key !== null) _channelAlerts.set(key, { n: n, at: Date.now() });
+                setTimeout(() => {
+                    n.close();
+                    const kept = key !== null ? _channelAlerts.get(key) : null;
+                    if (kept && kept.n === n) _channelAlerts.delete(key);
+                }, 8000);
             } catch (e) { /* ignore */ }
         }
         function _pageInView() { return !document.hidden && document.hasFocus(); }
@@ -3544,6 +3566,7 @@
         // A mention notification (the in-app row the server stored)
         function onMentionNotification(n) {
             const d = (n && n.data) || {};
+            _dropChannelAlertFor(d.channel_id);
             const ch = channelsList.find(c => Number(c.id) === Number(d.channel_id));
             if (!ch) return;
             if (!(ch.name === currentChannel && currentView === 'channel')) bumpChannelUnread(ch, true);
@@ -3961,14 +3984,15 @@
                 const data = await response.json();
                 const channels = data.channels || [];
                 // Rebuild the unread counts from the server (a reconnect or a refocus may have
-                // missed frames; a count read elsewhere must go)
+                // missed frames; a count read elsewhere must go). The mention counts come from the
+                // same answer (unread_mentions), so a mention received while the page was closed
+                // shows on its channel after a reload too.
                 unreadCounts = new Map();
+                unreadMentions = new Map();
                 channels.forEach(ch => {
-                    if (ch.unread_count > 0 && !(ch.name === currentChannel && currentView === 'channel')) {
-                        unreadCounts.set(ch.name, ch.unread_count);
-                    } else {
-                        unreadMentions.delete(ch.name);
-                    }
+                    if (ch.name === currentChannel && currentView === 'channel') return;
+                    if (ch.unread_count > 0) unreadCounts.set(ch.name, ch.unread_count);
+                    if (ch.unread_mentions > 0) unreadMentions.set(ch.name, ch.unread_mentions);
                 });
                 renderChannels(channels);
                 if (!_starsMigrated) {
@@ -3985,8 +4009,25 @@
 
         const collapsedCategories = new Set(JSON.parse(localStorage.getItem('collapsedCategories') || '[]'));
 
+        // A timed mute ends by itself: the list is drawn again then, so the bell and the badge
+        // mode follow without another event. One timer, replaced on every draw.
+        let _muteRedrawTimer = null;
+        function scheduleMuteRedraw(channels) {
+            if (_muteRedrawTimer) { clearTimeout(_muteRedrawTimer); _muteRedrawTimer = null; }
+            const now = Date.now();
+            let next = 0;
+            (channels || []).forEach(ch => {
+                const t = (Number(ch && ch.muted_until) || 0) * 1000;
+                if (t > now && (!next || t < next)) next = t;
+            });
+            if (!next) return;
+            const delay = Math.min(next - now + 250, 2147483647);
+            _muteRedrawTimer = setTimeout(() => { _muteRedrawTimer = null; renderChannels(channelsList); }, delay);
+        }
+
         function renderChannels(channels) {
             channelsList = channels;
+            scheduleMuteRedraw(channels);
             const list = document.getElementById('channel-list');
 
             const regular = channels.filter(ch => !ch.is_stream_channel);
@@ -4123,6 +4164,7 @@
             _lastReadMessageId = 0;
             unreadMentions.delete(channelName);
             resetHistoryState();
+            resetMassMentionState();
 
             // Restore channel UI elements
             document.getElementById('voice-join-btn').style.display = '';
@@ -4246,6 +4288,7 @@
                     break;
                 case 'stream_status':
                     updateStreamStatus(data);
+                    refreshLiveNow();
                     break;
                 case 'stream_info':
                     // The title or game of a live stream changed: the live-now strip follows
@@ -4324,7 +4367,7 @@
                     break;
                 case 'messages_pruned':
                     // a moderator pruned a range: one frame per batch, ids only
-                    (data.ids || []).forEach(removeDeletedMessage);
+                    removeDeletedMessages(data.ids || []);
                     break;
                 case 'channel_renamed':
                     handleChannelRenamed(data);
@@ -4423,6 +4466,10 @@
                             : pendingJoin === currentChannel;
                         pendingJoin = null;
                         if (own) showChannelUnavailable();
+                    } else if (refusalRoomName(data)) {
+                        // a refusal about another room than the open one names that room, and
+                        // starts no cooldown or notice for the room that is open
+                        showToast(`${refusalRoomName(data)}: ${data.message || 'An error occurred'}`, 'error');
                     } else if (data.error_code === 'slowmode') {
                         startSlowmodeCooldown(data.cooldown_remaining || 5);
                     } else if (data.error_code === 'timeout' || data.error_code === 'muted') {
@@ -4669,7 +4716,17 @@
 
         // May this member use @here and @everyone here: any moderator level, or the channel's switch
         function canMassMention() {
+            // a mod_level or mass_mentions_changed frame of the room can still arrive while a DM is shown
+            if (currentView !== 'channel') return false;
             return channelModLevel !== 'none' || channelMassFlag;
+        }
+
+        // The rights above belong to the room that sent them (channel_info, mod_level): a DM or another room
+        // starts without them until its own frames arrive
+        function resetMassMentionState() {
+            channelModLevel = 'none';
+            channelMassFlag = false;
+            renderMassMentionButton();
         }
 
         // Staff and the owner of a stream's chat see the switch
@@ -6464,19 +6521,27 @@
         }
 
         function removeDeletedMessage(messageId) {
-            const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
-            if (el) el.remove();
-            // Mark any reply previews pointing to deleted message as deleted
-            document.querySelectorAll(`.message-reply-preview[data-reply-id="${CSS.escape(String(messageId))}"]`).forEach(rp => {
-                rp.classList.add('reply-deleted');
-                rp.removeAttribute('data-reply-id');
+            removeDeletedMessages([messageId]);
+        }
+
+        // Removes the rows of many messages, then updates the history bar and the pinned
+        // panel once (a prune frame carries up to a whole batch of ids).
+        function removeDeletedMessages(messageIds) {
+            const ids = new Set(messageIds);
+            ids.forEach(messageId => {
+                const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
+                if (el) el.remove();
+                // Mark any reply previews pointing to deleted message as deleted
+                document.querySelectorAll(`.message-reply-preview[data-reply-id="${CSS.escape(String(messageId))}"]`).forEach(rp => {
+                    rp.classList.add('reply-deleted');
+                    rp.removeAttribute('data-reply-id');
+                });
             });
-            HistoryView.buffer = HistoryView.buffer.filter(m => m.id !== messageId);
+            HistoryView.buffer = HistoryView.buffer.filter(m => !ids.has(m.id));
             updateHistoryBar();
             // Remove from pinned messages panel if present
-            const wasPinned = pinnedMessages.some(m => m.id === messageId);
-            if (wasPinned) {
-                pinnedMessages = pinnedMessages.filter(m => m.id !== messageId);
+            if (pinnedMessages.some(m => ids.has(m.id))) {
+                pinnedMessages = pinnedMessages.filter(m => !ids.has(m.id));
                 renderPinnedMessages(pinnedMessages);
             }
         }
@@ -6984,6 +7049,23 @@
         }
 
         // Toast notification helper
+        // The room a refusal frame is about, as text, when it is not the room that is open.
+        // The frame carries channel_id (an integer) when the server knows the room; a frame
+        // without it, or about the open room, or one that cannot be placed, gives ''.
+        function refusalRoomName(data) {
+            if (!data || data.channel_id === undefined || data.channel_id === null) return '';
+            const id = Number(data.channel_id);
+            if (!Number.isInteger(id)) return '';
+            if (currentView === 'channel') {
+                const openCh = channelsList.find(c => c.name === currentChannel);
+                const openId = openCh ? Number(openCh.id) : HistoryView.channelId;
+                if (openId === null || openId === undefined || Number.isNaN(Number(openId))) return '';
+                if (Number(openId) === id) return '';
+            }
+            const ch = channelsList.find(c => Number(c.id) === id);
+            return ch ? '#' + ch.name : 'another room';
+        }
+
         function showToast(message, type = 'info') {
             if (typeof Portal !== 'undefined' && Portal.toast) {
                 Portal.toast(message, type);
@@ -7157,11 +7239,18 @@
             container.scrollTop = container.scrollHeight;
         }
 
+        // The member's own choices per poll id. A poll_updated or poll_closed frame is sent to the whole room
+        // without anyone's choices (my_votes is empty), so the choices last seen are kept and the member's own
+        // votes are added to them. A frame that does carry my_votes replaces them.
+        const pollMine = new Map();
+        const pollMulti = new Map();
         function renderPollCard(poll, creatorName, createdAt) {
             const options = typeof poll.options === 'string' ? JSON.parse(poll.options) : poll.options;
             const votes = poll.votes || {};
             const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
-            const myVotes = poll.my_votes || [];
+            if (poll.my_votes && poll.my_votes.length) pollMine.set(poll.id, poll.my_votes.slice());
+            const myVotes = pollMine.get(poll.id) || [];
+            pollMulti.set(poll.id, !!poll.allow_multiple);
             const isClosed = poll.is_closed;
             const canClose = currentUser && (poll.user_id === currentUser.id || ['admin', 'superadmin', 'moderator'].includes(currentUser.role));
 
@@ -7201,6 +7290,8 @@
 
         function votePoll(pollId, optionIndex) {
             if (ws && ws.readyState === WebSocket.OPEN) {
+                const was = pollMine.get(pollId) || [];
+                pollMine.set(pollId, pollMulti.get(pollId) ? was.filter(x => x !== optionIndex).concat(optionIndex) : [optionIndex]);
                 ws.send(JSON.stringify({ type: 'vote_poll', poll_id: pollId, option_index: optionIndex }));
             }
         }
@@ -7901,6 +7992,7 @@
 
         function renderDmView(conversation, messages) {
             resetHistoryState();
+            resetMassMentionState();
             // Switch header to DM mode
             const others = (conversation.participants || []).filter(p => p.user_id !== currentUser?.id);
             const displayName = conversation.name || others.map(p => p.nickname || p.username).join(', ') || 'DM';

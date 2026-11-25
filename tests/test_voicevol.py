@@ -36,9 +36,9 @@ def check(name, ok, detail=""):
 for page in STATIC.glob("*.html"):
     text = page.read_text()
     if "js/voice.js" in text:
-        check(f"{page.name} loads voice.js v15", "js/voice.js?v=15" in text and "voice.js?v=14" not in text)
+        check(f"{page.name} loads voice.js v16", "js/voice.js?v=16" in text and "voice.js?v=15" not in text)
 check("chat.html and watch.html both load voice.js",
-      "js/voice.js?v=15" in CHAT and "js/voice.js?v=15" in WATCH)
+      "js/voice.js?v=16" in CHAT and "js/voice.js?v=16" in WATCH)
 check("the popover is built from DOM nodes and text, never from markup", "innerHTML" not in SRC and "insertAdjacentHTML" not in SRC)
 check("localStorage is only touched inside try blocks",
       all("try {" in SRC[max(0, m.start() - 400):m.start()] for m in re.finditer(r"localStorage\.(?:get|set|remove)Item", SRC)))

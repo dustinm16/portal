@@ -950,8 +950,8 @@
     </div>
 
     <script src="/static/js/portal.js?v=52"></script>
-    <script src="/static/js/push.js?v=6"></script>
-    <script src="/static/js/stream-schedule.js?v=8"></script>
+    <script src="/static/js/push.js?v=7"></script>
+    <script src="/static/js/stream-schedule.js?v=9"></script>
     <script>
         let currentUser = null;
         let currentStream = null;
@@ -1451,11 +1451,18 @@
             }
         }
 
+        const BANNED_STREAM_TEXT = 'You are banned from this stream by its owner. The ban applies to watching while signed in.';
+
         async function openStream(publicKey, streamId) {
             const identifier = publicKey || streamId;
             try {
                 const response = await fetch(`/api/streams/${identifier}`, { credentials: 'include' });
                 const data = await response.json();
+                // A member banned from this stream by its owner is told so (the same words as the watch page)
+                if (response.status === 403 && data && data.banned) {
+                    Portal.toast(BANNED_STREAM_TEXT, 'error');
+                    return;
+                }
                 currentStream = data.stream;
 
                 if (!currentStream) {

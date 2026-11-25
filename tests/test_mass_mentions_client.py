@@ -83,7 +83,7 @@ def harness(extra):
 const els = {};
 function el(id) { return els[id] || (els[id] = {id, style: {}, classList: {add(){}, remove(){}}, textContent: '', innerHTML: ''}); }
 const document = { getElementById: el };
-let channelModLevel = 'none', channelMassFlag = false;
+let channelModLevel = 'none', channelMassFlag = false, currentView = 'channel';
 let mentionDropdownVisible = false, mentionSelectedIndex = 0, mentionMatches = [], mentionStartPos = 0;
 let onlineUsers = new Map([[1, {username: 'eve', nickname: null, avatar: {}}], [2, {username: 'hereward', nickname: null, avatar: {}}]]);
 let knownChatNames = new Set(['everett']);
@@ -115,6 +115,44 @@ def test_autocomplete_offers_the_specials_only_when_allowed():
     check(names_for("none", True, "@ev")[:1] == ["everyone"], "filtered by prefix")
     check("here" not in names_for("none", True, "@ev"), "here does not match ev")
     check(names_for("none", True, "@he")[0] == "here", "here first for he")
+
+
+def test_a_view_change_forgets_the_last_room_s_mass_mention_rights():
+    """channelModLevel and channelMassFlag belong to the room that sent them: a DM or another room must not
+    inherit them (a DM would still offer @everyone)."""
+    if not shutil.which("node"):
+        print("skip: node not installed")
+        return
+    funcs = "\n".join(function_source(CHAT, n) for n in ("canMassMention", "switchChannel", "renderDmView"))
+    check("function resetMassMentionState" in CHAT, "the reset helper exists")
+    funcs += "\n" + function_source(CHAT, "resetMassMentionState") + "\n" + function_source(CHAT, "renderMassMentionButton")
+    code = """
+const els = {};
+function el(id) { return els[id] || (els[id] = {id, style: {}, classList: {add(){}, remove(){}, toggle(){}}, textContent: '', innerHTML: '', dataset: {}}); }
+const document = { getElementById: el, querySelectorAll: () => [] };
+const window = {};
+let channelModLevel = 'none', channelMassFlag = false;
+let currentChannel = 'general', currentView = 'channel', currentDmConversationId = null, _lastReadMessageId = 0, pendingJoin = null;
+const unreadMentions = new Map(), currentUser = {id: 1};
+let ws = {readyState: 1, send() {}}; const WebSocket = {OPEN: 1};
+function resetHistoryState() {} function renderDmList() {} function renderHistory() {}
+""" + funcs + """
+const out = {};
+channelModLevel = 'staff'; channelMassFlag = true; out.before = canMassMention();
+renderDmView({id: 3, type: 'direct', participants: [{user_id: 1}, {user_id: 2, username: 'bob'}]}, []);
+out.dm = canMassMention(); out.dmState = [channelModLevel, channelMassFlag, el('mass-mention-btn').style.display];
+channelModLevel = 'owner'; channelMassFlag = true;
+switchChannel('other');
+out.channel = canMassMention(); out.chState = [channelModLevel, channelMassFlag];
+// a frame of the room arrives while a DM is open: the DM still does not offer them
+currentView = 'dm'; channelModLevel = 'staff'; channelMassFlag = true; out.late = canMassMention();
+console.log(JSON.stringify(out));
+"""
+    got = json.loads(run_node(code))
+    check(got["before"] is True, got)
+    check(got["dm"] is False and got["dmState"] == ["none", False, "none"], got)
+    check(got["channel"] is False and got["chState"] == ["none", False], got)
+    check(got["late"] is False, got)
 
 
 def test_the_switch_button_and_the_toggle():

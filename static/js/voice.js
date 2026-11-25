@@ -48,6 +48,7 @@ const VoiceChat = (() => {
     let _pttTail = null;          // timer id while the release delay runs
     let _micSenders = new Map();  // user_id -> the RTCRtpSender that carries our microphone
     let _joining = false;         // join() is waiting for the microphone
+    const JOIN_MIC_TIMEOUT_MS = 30000;   // how long join() waits for an unanswered microphone prompt
     let _callEpoch = 0;           // bumped on every join and cleanup; stale async work checks it
     let _swapEpoch = 0;           // bumped on every microphone switch; the newest one wins
     let _meter = null;            // level meter state, see the voice setup section
@@ -310,10 +311,27 @@ const VoiceChat = (() => {
         _meterReleaseOwned();
         let opened;
         _joining = true;
+        // A prompt nobody answers must not block Join until the page is reloaded: after 30 s the join gives
+        // up. A stream the browser hands over after that is stopped at once, so no microphone stays open.
+        let timedOut = false;
+        let timer = null;
+        const mic = _openMic(_prefs.inputDeviceId);
+        mic.then(o => {
+            if (timedOut && o && o.stream) o.stream.getTracks().forEach(t => t.stop());
+        }, () => {});
+        const waited = new Promise((resolve, reject) => {
+            timer = setTimeout(() => {
+                timedOut = true;
+                reject(new Error('The microphone did not answer within ' + (JOIN_MIC_TIMEOUT_MS / 1000) + ' seconds'));
+            }, JOIN_MIC_TIMEOUT_MS);
+        });
         try {
-            opened = await _openMic(_prefs.inputDeviceId);
+            opened = await Promise.race([mic, waited]);
+            clearTimeout(timer);
         } catch (e) {
+            clearTimeout(timer);
             _joining = false;
+            if (timedOut) _toast('The microphone did not answer. Allow it in the browser, then try Join again.', 'error');
             console.error('[Voice] Microphone access denied:', e);
             _closePlayCtx();
             _notifyState();

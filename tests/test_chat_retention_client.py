@@ -29,7 +29,7 @@ def check(name, ok, detail=""):
 
 check("chat.html loads chat-retention.js with a version", re.search(r'src="/static/js/chat-retention\.js\?v=\d+"', CHAT) is not None)
 check("the page handles messages_pruned by removing every id",
-      "case 'messages_pruned':" in CHAT and "(data.ids || []).forEach(removeDeletedMessage)" in CHAT)
+      "case 'messages_pruned':" in CHAT and "removeDeletedMessages(data.ids || [])" in CHAT)
 check("the channel_info frame and the mod_level frame reach the script",
       "ChatRetention.onChannelInfo(data, currentUser)" in CHAT and "ChatRetention.onModLevel(channelModLevel, currentUser)" in CHAT)
 _WATCH = (STATIC / "watch.html").read_text()
@@ -38,8 +38,8 @@ check("the watch page's stream chat drops pruned messages too",
 check("a DM hides the controls", "ChatRetention.onChannelInfo(null)" in CHAT)
 check("an attachment whose file was removed is marked in the message", "data.file_removed" in CHAT and "file-removed-note" in CHAT)
 check("the script has no inline handler and no innerHTML", not re.search(r"\bon(click|change|input|submit)\s*=", JS) and "innerHTML" not in JS)
-check("the script sends credentials and uses the retention and prune routes",
-      "credentials: 'include'" in JS and "/retention'" in JS and "/prune'" in JS)
+check("the script sends through Portal.fetch and uses the retention and prune routes",
+      "root.Portal.fetch(" in JS and "root.Portal.isAdmin(" in JS and "credentials: 'include'" not in JS and "/retention'" in JS and "/prune'" in JS)
 _STREAMS = (STATIC / "js" / "streams.js").read_text()
 check("the Streams page's small chat handles messages_pruned with the list of ids",
       "data.type === 'messages_pruned'" in _STREAMS and "removeStreamChatMessages(data.ids)" in _STREAMS)

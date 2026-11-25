@@ -57,6 +57,12 @@ check("a Channel not found frame in a channel view shows the lost-channel state"
 check("sending is refused while the channel is lost",
       "if (channelUnavailable && currentView === 'channel') return;" in CHAT)
 
+_err = CHAT[CHAT.index("                case 'error':"):CHAT.index("                case 'user_timed_out':")]
+check("an error frame about another room names that room, after the lost-channel case and before the slow mode cooldown",
+      _err.index("Channel not found") < _err.index("refusalRoomName(data)") < _err.index("startSlowmodeCooldown")
+      and "showToast(`${refusalRoomName(data)}: " in _err)
+check("an error frame without a room still falls to the plain notice", "showToast(data.message || 'An error occurred', 'error');" in _err)
+
 if shutil.which("node"):
     proc = subprocess.run(["node", str(ROOT / "tests" / "chat_page_fixes_harness.js"), str(STATIC / "chat.html")],
                           capture_output=True, text=True, timeout=60)

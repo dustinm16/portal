@@ -82,6 +82,29 @@ const NOW = 1_800_000_000_000;
   const a3 = await CN.claimSound(e2);
   check('storage lock: the second within 1.5 s is refused, later ones play', a1 === true && a2 === false && a3 === true, [a1, a2, a3]);
 
+  // a tab that cannot be heard does not take the sound lock
+  {
+    let asked = 0;
+    const lockNav = { locks: { request: (name, opts, cb) => { asked++; return Promise.resolve(cb({ name })); } } };
+    const base = { navigator: lockNav, storage: store(), setTimeout: () => {} };
+    const hiddenSilent = await CN.claimSound({ ...base, document: { hidden: true }, audioState: 'suspended' });
+    check('locks: a hidden tab with a suspended audio context does not take the lock', hiddenSilent === false && asked === 0, [hiddenSilent, asked]);
+    const hiddenNone = await CN.claimSound({ ...base, document: { hidden: true } });
+    check('locks: a hidden tab with no audio context at all does not take the lock', hiddenNone === false && asked === 0, [hiddenNone, asked]);
+    const hiddenRunning = await CN.claimSound({ ...base, document: { hidden: true }, audioState: 'running' });
+    check('locks: a hidden tab whose audio context is running may take it', hiddenRunning === true && asked === 1, [hiddenRunning, asked]);
+    const visible = await CN.claimSound({ ...base, document: { hidden: false }, audioState: 'suspended' });
+    check('locks: a visible tab may take it', visible === true && asked === 2, [visible, asked]);
+    const st2 = store();
+    const sEnv = { navigator: {}, storage: st2, now: () => NOW, document: { hidden: true }, audioState: 'suspended' };
+    const sHidden = await CN.claimSound(sEnv);
+    check('storage lock: a hidden silent tab neither plays nor writes its timestamp', sHidden === false && st2.getItem('portal_chat_sound_last') === null, [sHidden, st2.getItem('portal_chat_sound_last')]);
+    const sVisible = await CN.claimSound({ ...sEnv, document: { hidden: false } });
+    check('storage lock: a visible tab plays and writes it', sVisible === true && st2.getItem('portal_chat_sound_last') === String(NOW));
+    const sRun = await CN.claimSound({ ...sEnv, now: () => NOW + 5000, audioState: 'running' });
+    check('storage lock: a hidden tab with a running context plays', sRun === true);
+  }
+
   // sound is made with WebAudio (nothing fetched)
   const made = { osc: 0, resumed: 0 };
   class FakeCtx {
@@ -131,7 +154,7 @@ const NOW = 1_800_000_000_000;
     unreadCounts: new Map(), unreadMentions: new Map(),
     appendLiveMessage: () => calls.appended++, renderChannels: () => calls.renders++, reconcileChannels: () => calls.reconcile++,
     _playChatSound: () => calls.played++, _pageInView: () => false,
-    _showChannelAlert: (a) => calls.desktop.push(a.title + '|' + a.tag), document: {}, console,
+    _showChannelAlert: (a) => calls.desktop.push(a.title + '|' + a.tag), _dropChannelAlertFor: () => {}, document: {}, console,
   };
   vm.createContext(sandbox);
   vm.runInContext([fn('bumpChannelUnread'), fn('onChannelActivity'), fn('onChannelMessageFrame'), fn('onMentionNotification')].join('\n') +
@@ -173,6 +196,89 @@ const NOW = 1_800_000_000_000;
   sandbox.currentChannel = 'loud';
   api.onChannelMessageFrame({ type: 'message', id: 2, user_id: 5, username: 'me', message: 'mine', channel: 'loud', channel_id: 4 });
   check('own messages never alert', calls.desktop.length === desktopBefore + 1 && calls.appended === appendedBefore + 1);
+
+  // 140: the list is drawn again when a timed mute ends
+  {
+    let clock = NOW, seq = 0;
+    const pending = new Map();
+    const rs = { renders: 0, last: null };
+    const sb = {
+      Date: { now: () => clock },
+      setTimeout: (f, ms) => { const id = ++seq; pending.set(id, { f, at: clock + ms, ms }); return id; },
+      clearTimeout: (id) => pending.delete(id),
+      channelsList: null,
+      renderChannels: (list) => { rs.renders++; rs.last = list; sb.channelsList = list; sb.scheduleMuteRedraw(list); },
+      Number, Math,
+    };
+    vm.createContext(sb);
+    vm.runInContext('var _muteRedrawTimer = null;\n' + fn('scheduleMuteRedraw') + '\nthis.scheduleMuteRedraw = scheduleMuteRedraw;', sb);
+    const list = [{ id: 1, name: 'a', muted_until: 0 }, { id: 2, name: 'b', muted_until: NOW / 1000 + 600 },
+                  { id: 3, name: 'c', muted_until: NOW / 1000 + 60 }, { id: 4, name: 'd', muted_until: NOW / 1000 - 5 }];
+    sb.channelsList = list;
+    sb.scheduleMuteRedraw(list);
+    check('one timer is set, for the nearest future end of a mute', pending.size === 1 && [...pending.values()][0].ms >= 60000 && [...pending.values()][0].ms < 62000,
+          JSON.stringify([...pending.values()].map(p => p.ms)));
+    sb.scheduleMuteRedraw(list);
+    check('scheduling again clears the old timer', pending.size === 1);
+    sb.scheduleMuteRedraw([{ id: 1, muted_until: 0 }, { id: 4, muted_until: NOW / 1000 - 5 }]);
+    check('no mute running: no timer', pending.size === 0);
+    sb.scheduleMuteRedraw(list);
+    clock += 61000;
+    const due = [...pending.entries()].filter(([, t]) => t.at <= clock);
+    due.forEach(([id, t]) => { pending.delete(id); t.f(); });
+    check('when the mute ends the list is drawn again', rs.renders === 1 && rs.last === list, rs.renders);
+    check('and the next mute gets its own timer', pending.size === 1 && [...pending.values()][0].at > clock);
+    sb.scheduleMuteRedraw([{ id: 1, muted_until: clock / 1000 + 10 * 86400 }]);
+    check('a far end is capped to the largest timer delay', [...pending.values()].every(t => t.ms <= 2147483647));
+  }
+
+  // 143: one mention in an All channel gives one desktop notification, not two
+  {
+    let clock = NOW;
+    const made = [];
+    class FakeNotification { constructor(title, o) { this.title = title; this.tag = o.tag; this.closed = false; made.push(this); } close() { this.closed = true; } }
+    const timers = [];
+    const chans = [{ id: 4, name: 'loud', notify_level: 'all', muted_until: 0 }, { id: 5, name: 'other', notify_level: 'all', muted_until: 0 }];
+    const sb = {
+      Notification: FakeNotification, NotificationBell: { _isEnabled: () => true }, window: { focus() {} }, switchChannel() {},
+      Date: { now: () => clock }, setTimeout: (f, ms) => timers.push([f, ms]),
+      channelsList: chans, currentChannel: 'general', currentView: 'channel', currentUser: { id: 5 }, pendingJoin: null,
+      unreadCounts: new Map(), unreadMentions: new Map(), console,
+      ChatNotify: { ...CN, isMuted: (c) => CN.isMuted(c, NOW), badgeMode: (c) => CN.badgeMode(c, NOW), alertWanted: (c, m) => CN.alertWanted(c, m, NOW) },
+      appendLiveMessage() {}, renderChannels() {}, reconcileChannels() {}, _playChatSound() {}, _pageInView: () => false,
+    };
+    vm.createContext(sb);
+    vm.runInContext('var _channelAlerts = new Map();\n' + [fn('_dropChannelAlertFor'), fn('_showChannelAlert'), fn('bumpChannelUnread'),
+                    fn('onChannelActivity'), fn('onChannelMessageFrame'), fn('onMentionNotification')].join('\n') +
+                    '\nthis.api = { onChannelActivity, onChannelMessageFrame, onMentionNotification };', sb);
+    const open = () => made.filter(n => !n.closed).length;
+    const mention = (cid, mid) => sb.api.onMentionNotification({ type: 'mention', data: { channel_id: cid, message_id: mid } });
+    // a room not joined: the activity alert, then the mention notification (portal.js shows its own)
+    sb.api.onChannelActivity({ type: 'channel_activity', channel_id: 4 });
+    check('the activity alert of an All channel is shown first', made.length === 1 && made[0].tag === 'portal-channel-4' && open() === 1);
+    clock += 300;
+    mention(4, 90);
+    check('a mention notification for that channel takes the channel alert away', open() === 0, open());
+    // the room the socket is in: the message frame, then the mention notification of an @everyone
+    made.length = 0;
+    sb.currentChannel = 'loud';
+    sb.api.onChannelMessageFrame({ type: 'message', id: 91, user_id: 8, username: 'bob', message: '@everyone hi', channel: 'loud', channel_id: 4 });
+    check('the frame of the open room raised the channel alert', made.length === 1 && open() === 1);
+    clock += 300;
+    mention(4, 91);
+    check('the mention notification of the same message leaves none of the channel alerts', open() === 0, open());
+    // no mention notification follows (a direct mention of a member who is in the room): the alert stays
+    made.length = 0;
+    sb.api.onChannelMessageFrame({ type: 'message', id: 92, user_id: 8, username: 'bob', message: '@me hi', channel: 'loud', channel_id: 4 });
+    check('without a mention notification the channel alert stays', made.length === 1 && open() === 1);
+    // a mention in another channel does not touch it
+    mention(5, 93);
+    check('a mention of another channel leaves it', open() === 1);
+    // a late mention notification (more than 5 s later) is another event
+    clock += 6000;
+    mention(4, 94);
+    check('a mention long after the alert does not close it', open() === 1);
+  }
 
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'harness ran', ok: false, detail: e.stack })); });

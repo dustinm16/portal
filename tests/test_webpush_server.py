@@ -846,8 +846,8 @@ async def main():
         # every portal page with a logout link loads the sign-out hook, at one version
         for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
             text = (ROOT / "static" / f"{page}.html").read_text()
-            check(f"{page}.html has a logout link and loads push.js", 'href="/logout"' in text and "/static/js/push.js?v=6" in text)
-        check("/search/ gets push.js too (its navbar has a logout link)", 'push.js?v=6' in (ROOT / "server.py").read_text()
+            check(f"{page}.html has a logout link and loads push.js", 'href="/logout"' in text and "/static/js/push.js?v=7" in text)
+        check("/search/ gets push.js too (its navbar has a logout link)", 'push.js?v=7' in (ROOT / "server.py").read_text()
               and 'href="/logout"' in (ROOT / "static" / "js" / "searxng-portal.js").read_text())
 
         # ------------------------------------------------------------ VAPID reset, key state, shutdown

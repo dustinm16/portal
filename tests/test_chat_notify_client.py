@@ -54,6 +54,9 @@ check("on a touch screen (hover: none) the bell is visible at reduced opacity wi
 check("the bells are bound with addEventListener after each render",
       "bindChannelBells(list);" in CHAT and "btn.addEventListener('click'" in CHAT and "btn.dataset.bellChannelId" in CHAT)
 check("the PUT goes to the notify route", "/notify`" in CHAT and "method: 'PUT'" in CHAT)
+check("the page hands its document to the sound claim, so a hidden tab can be told from a visible one",
+      "window: window, document: document, now: Date.now" in CHAT)
+check("renderChannels sets the mute-end redraw timer", re.search(r"function renderChannels\(channels\) \{\s*channelsList = channels;\s*scheduleMuteRedraw\(channels\);", CHAT) is not None)
 check("no external fetch for the sound", "new Audio(" not in CHAT and "new Audio(" not in JS)
 check("portal.js gives each desktop notification its own tag and opens the channel on click",
       "_desktopTag(notification)" in PORTAL and "data.channel_id && data.message_id" in PORTAL

@@ -23428,7 +23428,7 @@ _SEARXNG_HEAD_INJECT = (
     b'<link rel="stylesheet" href="/static/css/portal.css?v=56">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
-    b'<script src="/static/js/push.js?v=6" defer></script>'
+    b'<script src="/static/js/push.js?v=7" defer></script>'
 )
 
 
@@ -24447,11 +24447,14 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
             ch["stream_owner"] = stream.get("owner_nickname") or stream.get("owner_username", "")
     # Enrich with unread counts
     unread_counts = await db.get_unread_counts(token.user_id)
+    unread_mentions = await db.get_unread_mention_counts(token.user_id)
     notify_prefs = await _notify_prefs_for(token.user_id)
     next_cleanup = (datetime.fromtimestamp(_cleanup_next_at, timezone.utc).isoformat()
                     if _cleanup_next_at else None)
     for ch in channels:
         ch["unread_count"] = unread_counts.get(ch["id"], 0)
+        # only the channels listed here (the ones the caller may read) get a count
+        ch["unread_mentions"] = unread_mentions.get(ch["id"], 0)
         ch.update(_notify_pref_public(notify_prefs.get(ch["id"])))
         # when the channel's own retention applies (a stream's chat follows the global setting)
         # the next periodic cleanup is stated next to it

@@ -52,6 +52,7 @@ function world(opts) {
     if (url === '/api/push/config') return respond({ enabled: true, public_key: 'BP' + 'A'.repeat(85) });
     if (url === '/api/push/subscriptions' && (o.method || 'GET') === 'GET') return respond({ devices: state.devices });
     if (url === '/api/push/subscriptions' && o.method === 'POST' && JSON.parse(o.body).rebind && opts.rebindStatus) return respond({ error: 'Device not found' }, opts.rebindStatus);
+    if (url === '/api/push/subscriptions' && o.method === 'POST' && !JSON.parse(o.body).rebind && opts.postNetworkFail) return Promise.reject(new TypeError('Failed to fetch'));
     if (url === '/api/push/subscriptions' && o.method === 'POST' && !JSON.parse(o.body).rebind && opts.postStatus) return respond({ error: 'This device is held by another account' }, opts.postStatus);
     if (url === '/api/push/subscriptions' && o.method === 'POST') { state.devices = [{ id: 7, label: 'Firefox on Linux', this_session: true }]; return respond({ status: 'created' }, 201); }
     if (url.indexOf('/api/push/subscriptions/') === 0 && o.method === 'DELETE') { state.devices = []; return respond({ success: true }); }
@@ -237,6 +238,28 @@ function logoutClick(w) {
     check('a ' + code + ' from the server undoes the browser subscription, leaves the switch off and keeps the error text',
           w.state.sub && w.state.sub.unsubscribed === true && sf.checked === false && !w.store.has('portal_push_on')
           && rf.textContent.indexOf('This device is held by another account') >= 0, JSON.stringify({ sub: w.state.sub && w.state.sub.unsubscribed, checked: sf.checked, text: rf.textContent }));
+  }
+
+  // a network error (no HTTP answer at all) leaves a reused working subscription and the local flag alone; the error still shows
+  w = world({ subscribed: true, registered: true, permission: 'granted', subKey: goodKey, postNetworkFail: true, storage: [['portal_push_on', '1']] });
+  const reused = w.state.sub;
+  const netErr = await w.win.PortalPush.enable().then(() => null, e => e);
+  check('a network error during enable keeps the reused subscription and the local flag, and still rejects',
+        netErr instanceof Error && reused.unsubscribed === false && w.state.sub === reused && w.store.has('portal_push_on'),
+        JSON.stringify({ err: String(netErr), unsub: reused.unsubscribed, flag: w.store.has('portal_push_on') }));
+  // a subscription made just now that the server never saw is still undone on a network error
+  w = world({ permission: 'granted', postNetworkFail: true });
+  const netErr2 = await w.win.PortalPush.enable().then(() => null, e => e);
+  check('a network error during enable undoes a subscription made just now and clears the flag',
+        netErr2 instanceof Error && w.state.sub && w.state.sub.unsubscribed === true && !w.store.has('portal_push_on'),
+        JSON.stringify({ err: String(netErr2), unsub: w.state.sub && w.state.sub.unsubscribed }));
+  for (const code of [403, 409]) {
+    w = world({ subscribed: true, registered: true, permission: 'granted', subKey: goodKey, postStatus: code, storage: [['portal_push_on', '1']] });
+    const reused2 = w.state.sub;
+    const refused = await w.win.PortalPush.enable().then(() => null, e => e);
+    check('a ' + code + ' answer during enable still undoes the reused subscription and clears the flag',
+          refused instanceof Error && refused.status === code && reused2.unsubscribed === true && !w.store.has('portal_push_on'),
+          JSON.stringify({ err: String(refused), unsub: reused2.unsubscribed }));
   }
 
   // a re-announcement the server answers with 404: this browser is not subscribed

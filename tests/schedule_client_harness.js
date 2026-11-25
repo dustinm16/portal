@@ -288,6 +288,45 @@ const buttonWith = (root, text) => root.find(n => n.tagName === 'BUTTON' && n.te
     ed.textContent.indexOf('Start (read in the time zone chosen below)') >= 0 && ed.textContent.indexOf('your time zone') < 0);
   for (let i = 0; i < 5; i++) await tick();   // the Add click above does not return its request: let its re-read of the list finish
   take();
+  // a double click on Add to the schedule posts the entry once; Dismiss goes through the same guard
+  {
+    answers = [owner];
+    const ed1 = new N('DIV');
+    await SS.mountOwner(ed1, 7, () => {});
+    take();
+    const f2 = ed1.find(n => n.tagName === 'INPUT');
+    f2[0].value = 'Twice'; f2[1].value = '2026-12-18T21:00'; f2[2].value = 'Europe/Berlin'; f2[3].value = '60'; f2[4].checked = false;
+    answers = [{ status: 201, data: {} }, owner];
+    await press(buttonWith(ed1, 'Add to the schedule'), 2);
+    check('owner: the second click of a double click (detail 2) on Add to the schedule sends nothing', take().length === 0);
+    let open2; const gate2 = new Promise(r => { open2 = r; });
+    answers = [{ status: 201, data: {}, gate: gate2 }, owner];
+    const addBtn = buttonWith(ed1, 'Add to the schedule');
+    const a1 = press(addBtn, 1), a2 = press(addBtn, 1);
+    await tick();
+    c = take();
+    check('owner: two quick clicks on Add to the schedule post one entry', c.filter(x => x.method === 'POST').length === 1, JSON.stringify(c));
+    open2(); await a1; await a2;
+    for (let i = 0; i < 5; i++) await tick();
+    take();
+    answers = [owner];
+    const ed2 = new N('DIV');
+    await SS.mountOwner(ed2, 7, () => {});
+    take();
+    answers = [{ status: 200, data: {} }, owner];
+    await press(buttonWith(ed2, 'Dismiss'), 2);
+    check('owner: the second click of a double click (detail 2) on Dismiss sends nothing', take().length === 0);
+    let open3; const gate3 = new Promise(r => { open3 = r; });
+    answers = [{ status: 200, data: {}, gate: gate3 }, owner];
+    const disBtn = buttonWith(ed2, 'Dismiss');
+    const d1 = press(disBtn, 1), d2 = press(disBtn, 1);
+    await tick();
+    c = take();
+    check('owner: two quick clicks on Dismiss send one DELETE', c.filter(x => x.method === 'DELETE').length === 1, JSON.stringify(c));
+    open3(); await d1; await d2;
+    for (let i = 0; i < 5; i++) await tick();
+    take();
+  }
   // Delete the whole entry asks first, on its own row, and the question is not answered by the click that opened it
   await buttonWith(ed, 'Delete the whole entry').click();
   const yesDel = buttonWith(ed, 'Yes, delete the entry'), keepDel = buttonWith(ed, 'Keep the entry');

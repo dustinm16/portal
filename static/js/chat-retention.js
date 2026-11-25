@@ -168,7 +168,8 @@
     }
 
     async function send(method, url, body) {
-        var resp = await fetch(url, { method: method, credentials: 'include',
+        // Portal.fetch sends the session cookie and takes a signed-out session (401) to the login page
+        var resp = await root.Portal.fetch(url, { method: method,
             headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
         var data = null;
         try { data = await resp.json(); } catch (e) { data = null; }
@@ -339,7 +340,7 @@
         return true;
     }
 
-    function isAdmin(user) { return !!user && (user.role === 'admin' || user.role === 'superadmin'); }
+    function isAdmin(user) { return !!root.Portal.isAdmin(user); }
 
     function renderButtons() {
         if (!ensureControls()) return;

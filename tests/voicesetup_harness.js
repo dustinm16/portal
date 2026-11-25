@@ -1097,6 +1097,47 @@ async function scenario(name, fn) {
     e4.VC.stopMeter();
   });
 
+  // a microphone prompt that is never answered does not block Join for good (item 70)
+  await scenario('unanswered prompt', async () => {
+    let timer;
+    const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('no answer within 10 s')), 10000); });
+    try { await Promise.race([(async () => {
+      const env = makeEnv({ mode: 'vad' });
+      env.VC.init(env.ws, null, null, 1);
+      env.holdGum = true;
+      env.VC.join();
+      await flush();
+      env.VC.join();
+      await flush();
+      check('a second Join while the prompt waits opens nothing more', env.gumCalls.length === 1, env.gumCalls.length);
+      env.advance(25000);
+      await flush();
+      env.VC.join();
+      await flush();
+      check('before 30 seconds the prompt is still waited for', env.gumCalls.length === 1, env.gumCalls.length);
+      env.advance(6000);
+      await flush();
+      check('after 30 seconds the join gives up: not in the call and the join is released', env.VC.isInVoice() === false);
+      check('a playback context made for the join is closed again', env.openCtxs().length === 0, env.openCtxs().length);
+      env.VC.join();
+      await flush();
+      check('Join can be tried again after the timeout', env.gumCalls.length === 2, env.gumCalls.length);
+      // the first prompt is answered at last: its stream is stopped, nothing joins
+      env.pendingGum[0].release();
+      await flush();
+      check('a stream that arrives after the timeout is stopped at once (no hot microphone)', env.liveHandles().length === 0 && env.VC.isInVoice() === false,
+        env.liveHandles().length + ' ' + env.VC.isInVoice());
+      check('and nothing was sent to the server', env.types().indexOf('voice_join') < 0, env.types().join(','));
+      // the second attempt completes normally
+      env.holdGum = false;
+      env.pendingGum[1].release();
+      await flush();
+      check('the second attempt joins when its prompt is answered', env.VC.isInVoice() === true && env.types().filter(t => t === 'voice_join').length === 1, env.types().join(','));
+      env.VC.leave();
+      check('and leaving releases the microphone', env.liveHandles().length === 0);
+    })(), late]); } catch (e) { check('unanswered prompt (did not finish)', false, e && e.message); } finally { clearTimeout(timer); }
+  });
+
   await scenario('unchanged', async () => {
     const env = makeEnv({ mode: 'vad' });
     env.devs.default.level = QUIET;

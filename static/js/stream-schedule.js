@@ -318,8 +318,8 @@
                         if (done) done(s.title);
                         await load();
                     } } }),
-                    el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Dismiss', on: { click: function () {
-                        act('DELETE', base + '/suggestion');
+                    el('button', { type: 'button', class: 'btn btn-sm btn-secondary', text: 'Dismiss', on: { click: function (ev) {
+                        return once(ev, function () { return act('DELETE', base + '/suggestion'); });
                     } } })
                 ]));
             }
@@ -366,10 +366,12 @@
                 el('div', { class: 'form-group' }, [
                     el('label', { class: 'checkbox-label', 'for': weekly.id, style: { display: 'flex' } }, [weekly, el('span', { text: 'Repeats every week at this local time' })])
                 ]),
-                el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: 'Add to the schedule', on: { click: function () {
-                    act('POST', base, { title: title.value, start: start.value, tz: tz.value.trim(),
-                                        duration_min: parseInt(dur.value, 10), recurrence: weekly.checked ? 'weekly' : null },
-                        'Added to the schedule');
+                el('button', { type: 'button', class: 'btn btn-sm btn-primary', text: 'Add to the schedule', on: { click: function (ev) {
+                    return once(ev, function () {
+                        return act('POST', base, { title: title.value, start: start.value, tz: tz.value.trim(),
+                                                   duration_min: parseInt(dur.value, 10), recurrence: weekly.checked ? 'weekly' : null },
+                            'Added to the schedule');
+                    });
                 } } })
             ]));
         }

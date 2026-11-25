@@ -1,7 +1,7 @@
 """Smoke check: voice connection-quality bars and the lost-audio hint (client only).
 
 Proves what can be proven without a browser or a microphone:
-  - the chat page and the watch page are served with voice.js v15 and the bar styles;
+  - the chat page and the watch page are served with voice.js v16 and the bar styles;
   - the served voice.js passes the same Node harness as tests/test_voicequality.py
     (fake peer connections with scripted getStats, a controllable clock, page
     visibility): rising loss drops the bars within an interval and the tooltip
@@ -62,14 +62,14 @@ async def run(ctx):
                 body = await resp.text()
                 status = resp.status
             ok(f"voicequality: the {label} loads", status == 200, f"status {status}")
-            ok(f"voicequality: the {label} loads voice.js v15 with the bar styles",
-               "/static/js/voice.js?v=15" in body and "voice.js?v=14" not in body
+            ok(f"voicequality: the {label} loads voice.js v16 with the bar styles",
+               "/static/js/voice.js?v=16" in body and "voice.js?v=15" not in body
                and ".vq-bar" in body and ".vq-noaudio .vq-hint" in body, "")
-        async with s.get(f"{ctx.base_url}/static/js/voice.js?v=15") as resp:
+        async with s.get(f"{ctx.base_url}/static/js/voice.js?v=16") as resp:
             script = await resp.text()
             ctype = resp.headers.get("Content-Type", "")
             status = resp.status
-        ok("voicequality: voice.js v15 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
+        ok("voicequality: voice.js v16 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
         ok("voicequality: the served script has the scoring and no markup injection",
            "scoreQuality" in script and "readQualityStats" in script and "innerHTML" not in script, "")
 

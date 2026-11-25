@@ -8640,6 +8640,29 @@ class Database:
         rows = await cursor.fetchall()
         return {row["id"]: row["unread"] for row in rows}
 
+    async def get_unread_mention_counts(self, user_id: int) -> dict[int, int]:
+        """channel id -> number of the member's own unread mention notifications for it.
+
+        A row counts while the notification is unread and its message is newer than the member's
+        read position in that channel (a mention read in the room no longer counts after a reload).
+        The caller keeps only the channels the member may read; this query does not decide access.
+        """
+        cursor = await self.conn.execute(
+            """SELECT CAST(json_extract(n.data, '$.channel_id') AS INTEGER) AS cid, COUNT(*) AS unread
+               FROM notifications n
+               LEFT JOIN channel_read_positions rp
+                      ON rp.user_id = n.user_id
+                     AND rp.channel_id = CAST(json_extract(n.data, '$.channel_id') AS INTEGER)
+               WHERE n.user_id = ? AND n.type = 'mention' AND n.is_read = 0
+                 AND json_valid(n.data)
+                 AND json_extract(n.data, '$.channel_id') IS NOT NULL
+                 AND (json_extract(n.data, '$.message_id') IS NULL
+                      OR json_extract(n.data, '$.message_id') > COALESCE(rp.last_read_message_id, 0))
+               GROUP BY cid""",
+            (user_id,)
+        )
+        return {row["cid"]: row["unread"] for row in await cursor.fetchall()}
+
     # =========================================================================
     # Reply Chain (Threads)
     # =========================================================================

@@ -85,8 +85,19 @@
 
     /* Several tabs get the same frame: only one plays. navigator.locks (ifAvailable, held for
      * LOCK_MS) where the browser has it; otherwise a timestamp in localStorage that a tab must
-     * find older than LOCK_MS before it writes its own. Resolves true for the tab that plays. */
+     * find older than LOCK_MS before it writes its own. Resolves true for the tab that plays.
+     * A tab nobody can hear (hidden, and its audio context not running) never asks for the lock or
+     * writes the timestamp, so it cannot win the claim and stay silent. env.document is the page's
+     * document; without it every tab counts as audible. env.audioState overrides the state of the
+     * module's audio context (tests). */
+    function _audible(env) {
+        if (!env.document || !env.document.hidden) return true;
+        var state = env.audioState !== undefined ? env.audioState : (_ctx ? _ctx.state : null);
+        return state === 'running';
+    }
+
     function claimSound(env) {
+        if (!_audible(env)) return Promise.resolve(false);
         var nav = env.navigator, storage = env.storage, now = env.now ? env.now() : Date.now();
         if (nav && nav.locks && typeof nav.locks.request === 'function') {
             return new Promise(function (resolve) {

@@ -885,7 +885,7 @@
         <div class="viewer-chat" id="viewer-chat">
             <div class="viewer-chat-header">
                 <span id="chat-header-title">Stream Chat</span>
-                <div style="display:flex;gap:0.3rem;align-items:center;">
+                <div style="display:flex;flex-wrap:wrap;gap:0.3rem;align-items:center;">
                     <button class="chat-popout-btn" id="chat-popout-btn" type="button" onclick="popOutChat()" title="Open the chat in its own window">Pop out</button>
                     <button class="watch-voice-btn" id="watch-voice-btn" onclick="toggleWatchVoice()">Join Voice</button>
                     <button class="mod-settings-btn" id="mass-mention-btn" type="button" style="display: none;" onclick="toggleMassMentions()" title="Let every viewer use @here and @everyone in this chat">@everyone: off</button>
@@ -946,9 +946,9 @@
     </div>
 
     <script src="/static/js/portal.js?v=52"></script>
-    <script src="/static/js/stream-schedule.js?v=8"></script>
+    <script src="/static/js/stream-schedule.js?v=9"></script>
     <script src="/static/js/stream-health.js?v=4"></script>
-    <script src="/static/js/voice.js?v=15"></script>
+    <script src="/static/js/voice.js?v=16"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1093,6 +1093,30 @@
         }
 
         let refreshInterval = null;
+        // True while the player was started for the current live session; reset when the picture is replaced
+        // by the offline or encoding page, so the next offline-to-live change starts it once.
+        let playerStarted = false;
+        const BANNED_STREAM_TEXT = 'You are banned from this stream by its owner. The ban applies to watching while signed in.';
+
+        // The offline and encoding pages replace the video element: put it back before the player starts again.
+        function ensureVideoElement() {
+            if (document.getElementById('stream-video')) return;
+            document.getElementById('video-container').innerHTML = '<video id="stream-video" controls autoplay></video>';
+        }
+
+        // Stop the polling, the viewer heartbeat and the player (a ban or a removed stream found while watching).
+        function stopWatching() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+            stopViewerBeat();
+            if (hlsPlayer) {
+                hlsPlayer.destroy();
+                hlsPlayer = null;
+            }
+            playerStarted = false;
+        }
 
         async function loadStream() {
             try {
@@ -1110,7 +1134,7 @@
                     let why = null;
                     try { why = await response.json(); } catch (e) { /* not json */ }
                     if (why && why.banned) {
-                        showLoadError('You are banned from this stream by its owner. The ban applies to watching while signed in.');
+                        showLoadError(BANNED_STREAM_TEXT);
                         return;
                     }
                 }
@@ -1143,6 +1167,7 @@
 
                     // Set up video
                     setupVideo();
+                    playerStarted = true;
                 } else if (streamData.is_live === 2) {
                     showEncodingMessage();
                 } else {
@@ -1521,6 +1546,22 @@
                     return;
                 }
 
+                // A ban placed while the page is open, or a stream that is gone: say so and stop polling
+                if (response.status === 404) {
+                    stopWatching();
+                    showLoadError('Stream not found');
+                    return;
+                }
+                if (response.status === 403) {
+                    let why = null;
+                    try { why = await response.json(); } catch (e) { /* not json */ }
+                    if (why && why.banned) {
+                        stopWatching();
+                        showLoadError(BANNED_STREAM_TEXT);
+                        return;
+                    }
+                }
+
                 if (!response.ok) return;
 
                 const data = await response.json();
@@ -1531,9 +1572,18 @@
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
+                    // Offline (or encoding) and live again: the player and the viewer heartbeat start once
+                    if (!playerStarted) {
+                        playerStarted = true;
+                        stopViewerBeat();
+                        ensureVideoElement();
+                        setupVideo();
+                    }
                 } else if (streamData.is_live === 2) {
+                    playerStarted = false;
                     showEncodingMessage();
                 } else {
+                    playerStarted = false;
                     showOfflineMessage();
                     stopViewerBeat();
                     if (hlsPlayer) {
@@ -1675,6 +1725,7 @@
                     handleWatchMessageEdited(data);
                     break;
                 case 'error':
+                    revertSlowmode();
                     if (data.message) {
                         appendSystemMessage(`Error: ${data.message}`, true);
                     }
@@ -1740,13 +1791,24 @@
             return false;
         }
 
+        // The slow mode the server last confirmed, and whether a change is waiting for its answer
+        const slowmodeState = { seconds: 0, pending: false };
         function setSlowmodeSelect(seconds) {
+            slowmodeState.seconds = seconds || 0;
+            slowmodeState.pending = false;
             const sel = document.getElementById('slowmode-select');
-            if (sel) sel.value = String(seconds || 0);
+            if (sel) sel.value = String(slowmodeState.seconds);
+        }
+
+        // An error frame while a change is waiting means the server refused it: show the confirmed value again
+        function revertSlowmode() {
+            if (!slowmodeState.pending) return;
+            setSlowmodeSelect(slowmodeState.seconds);
         }
 
         function setSlowmode(value) {
             if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            slowmodeState.pending = true;
             chatWs.send(JSON.stringify({ type: 'set_slowmode', seconds: parseInt(value, 10) }));
         }
 
@@ -1807,7 +1869,12 @@
             chatWs.send(JSON.stringify({ type: 'create_poll', question: question.trim(), options: options }));
         }
 
+        // The member's own choices per poll id. A poll_updated or poll_closed frame is sent to the whole room
+        // without anyone's choices (my_votes is empty), so the choices last seen are kept and the member's own
+        // clicks are added to them. A frame that does carry my_votes replaces them.
+        const pollMine = new Map();
         function buildPollElement(poll) {
+            if (poll.my_votes && poll.my_votes.length) pollMine.set(poll.id, poll.my_votes.slice());
             const box = document.createElement('div');
             box.className = 'watch-poll';
             box.dataset.pollId = poll.id;
@@ -1815,7 +1882,7 @@
             q.className = 'watch-poll-question';
             q.textContent = poll.question || '';
             box.appendChild(q);
-            const mine = new Set(poll.my_votes || []);
+            const mine = new Set(pollMine.get(poll.id) || []);
             (poll.options || []).forEach((opt, i) => {
                 const b = document.createElement('button');
                 b.type = 'button';
@@ -1828,6 +1895,8 @@
                 b.append(label, count);
                 b.addEventListener('click', () => {
                     if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                        const was = pollMine.get(poll.id) || [];
+                        pollMine.set(poll.id, poll.allow_multiple ? was.filter(x => x !== i).concat(i) : [i]);
                         chatWs.send(JSON.stringify({ type: 'vote_poll', poll_id: poll.id, option_index: i }));
                     }
                 });

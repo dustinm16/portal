@@ -39,7 +39,17 @@ global.fetch = async (url, init) => {
 };
 const toasts = [];
 let confirmAnswer = true, confirmTexts = [];
-global.Portal = { toast: (m, k) => toasts.push([m, k]) };
+// like portal.js: fetch sends the session cookie and a 401 goes to the login page (and throws)
+global.location = { href: '/chat' };
+global.Portal = {
+  toast: (m, k) => toasts.push([m, k]),
+  fetch: async (url, init) => {
+    const r = await global.fetch(url, Object.assign({ credentials: 'same-origin' }, init));
+    if (r.status === 401) { global.location.href = '/login'; throw new Error('Session expired'); }
+    return r;
+  },
+  isAdmin: u => !u ? false : (u.is_admin || u.role === 'superadmin' || u.role === 'admin'),
+};
 global.confirm = (t) => { confirmTexts.push(t); return confirmAnswer; };
 global.setTimeout = (fn) => { fn(); return 0; };
 global.window = global; global.loadChannels = () => { calls.push({ url: 'loadChannels' }); };
@@ -87,6 +97,27 @@ const CR = require(path.resolve(process.argv[2]));
   CR.onChannelInfo(null);
   check('a DM hides everything', btn('prune-btn').style.display === 'none' && btn('retention-btn').style.display === 'none');
   check('the controls are bound with listeners, none inline', !Object.keys(btn('prune-btn').attrs).some(k => k.startsWith('on')) && (btn('prune-btn').listeners.click || []).length === 1);
+
+  // a legacy account (is_admin set, no admin role) is an administrator too
+  CR.onChannelInfo(info({ mod_level: 'staff' }), { id: 9, role: 'user', is_admin: 1 });
+  check('a legacy is_admin account sees Retention', btn('retention-btn').style.display === '');
+  CR.onChannelInfo(info({ mod_level: 'staff' }), { id: 9, role: 'user', is_admin: 0 });
+  check('an account with is_admin 0 and no admin role does not', btn('retention-btn').style.display === 'none');
+  CR.onChannelInfo(info({ mod_level: 'staff' }), admin);
+
+  // ---- a signed-out session goes to the login page
+  await btn('retention-btn').click();
+  {
+    const m401 = body.children[body.children.length - 1];
+    const save401 = m401.all().find(x => x.tag === 'button' && x.textContent === 'Save');
+    global.location.href = '/chat'; script = [{ status: 401, data: {} }];
+    await save401.click();
+    check('a 401 on Save redirects to the login page', global.location.href === '/login', global.location.href);
+    check('a 401 is not shown as refused', !/refused/.test(m401.textContent), m401.textContent);
+    script = [];
+    await m401.all().find(x => x.tag === 'button' && x.textContent === 'Cancel').click();
+  }
+  global.location.href = '/chat';
 
   // ---- retention dialog: shortening shows the count and needs the confirmation
   CR.onChannelInfo(info({ mod_level: 'staff', retention_days: 30 }), admin);

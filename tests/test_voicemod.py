@@ -621,7 +621,7 @@ def test_new_markup_has_no_inline_handlers_and_the_pages_load_the_new_script():
     for page, tag in ((chat, 'id="voice-lock-btn"'), (watch, 'id="wv-lock-btn"')):
         button = page[page.index(tag):].split(">", 1)[0]
         assert "onclick" not in button, button
-        assert "/static/js/voice.js?v=15" in page
+        assert "/static/js/voice.js?v=16" in page
     assert 'data-voicecap-action="save"' in (ROOT / "static" / "admin.html").read_text()
     assert "onclick" not in docs.split("/api/admin/voice")[0].rsplit("<div", 1)[1]
     # the voice script: the new frames and the honest help text

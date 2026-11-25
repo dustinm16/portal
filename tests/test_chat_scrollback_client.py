@@ -51,7 +51,7 @@ check("edit, reaction and poll updates are applied to the live buffer first",
       "function handleMessageEdited(data) {\n            bufferApplyEdit(data);" in CHAT
       and "function handleReactionUpdate(data) {\n            bufferApplyReaction(data);" in CHAT
       and "function updatePollDisplay(poll) {\n            bufferApplyPoll(poll);" in CHAT
-      and "HistoryView.buffer = HistoryView.buffer.filter(m => m.id !== messageId);" in CHAT)
+      and "HistoryView.buffer = HistoryView.buffer.filter(m => !ids.has(m.id));" in CHAT)
 check("live messages go through the buffering function", "appendLiveMessage(data);" in CHAT)
 check("a new poll goes through the live buffer too", "case 'poll_created':\n                    appendLivePoll(data);" in CHAT)
 check("search results jump to the message", "jumpToChannelMessage(sourceId, messageId)" in CHAT)
