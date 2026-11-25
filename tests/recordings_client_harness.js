@@ -204,6 +204,69 @@ const RA = global.RecordingsAdmin;
     && /Could not download: The file is gone/.test(toasts[toasts.length - 1][0]) && created.length === 1, JSON.stringify(toasts.slice(-1)));
   check('the download link is removed from the page again', body.children.length === 0);
 
+  // ---- each of the three stale checks in play() on its own ---------------------------------------------------
+  // play() awaits loadXterm(), then the fetch, then the text; after each await it drops out when the load
+  // has become stale. Every case here goes stale at exactly one of those points and asserts that nothing
+  // later happens: the case for an await also fails when only its own check is deleted (the next check
+  // would otherwise hide the missing one, so each case looks at what the missing check would let through).
+  const closeModal = () => $('rec-modal-close').listeners.click.forEach(fn => fn());
+  const liveTerms = () => terms.filter(x => !x.disposed).length;
+  closeModal();
+  const RealTerminal = global.Terminal;
+
+  // await 1: xterm.js is still loading when the modal is closed
+  global.Terminal = undefined;
+  castAnswers['40'] = deferred();
+  const headBefore = document.head.children.length;
+  await click('play', 40);
+  const scriptEl = document.head.children.slice(headBefore).find(c => c.tag === 'script');
+  check('stale-after-xterm: the player waits for xterm.js to load', !!scriptEl && typeof scriptEl.onload === 'function' && !fetches.some(f => /\/40\/cast/.test(f.url)));
+  closeModal();
+  global.Terminal = RealTerminal;
+  if (scriptEl && scriptEl.onload) scriptEl.onload();
+  castAnswers['40'].resolve(cast({ version: 2, width: 80, height: 24 }, [[0.1, 'o', 'forty']]));
+  await flush(); await flush();
+  check('stale-after-xterm: closing the modal while xterm.js loads: the cast is not even requested',
+    !fetches.some(f => /\/40\/cast/.test(f.url)), JSON.stringify(fetches.filter(f => /\/40\/cast/.test(f.url))));
+  check('stale-after-xterm: ... and no player is created', liveTerms() === 0, String(liveTerms()));
+
+  // await 2: the answer arrives after the modal was closed; its body must not be read
+  let textCalls = 0;
+  castAnswers['41'] = deferred();
+  await click('play', 41);
+  closeModal();
+  castAnswers['41'].resolve({ ok: true, status: 200, text: async () => { textCalls++; return '{"version":2,"width":80,"height":24}\n[0.1,"o","x"]\n'; } });
+  await flush(); await flush();
+  check('stale-after-fetch: an answer that arrives after the modal was closed is not read', textCalls === 0, String(textCalls));
+  check('stale-after-fetch: ... and no player is created', liveTerms() === 0, String(liveTerms()));
+
+  // await 3: the body is still being read when the modal is closed
+  const textGate = deferred();
+  const timersBefore = timers.length;
+  castAnswers['42'] = deferred();
+  await click('play', 42);
+  castAnswers['42'].resolve({ ok: true, status: 200, text: () => textGate.p });
+  await flush();
+  closeModal();
+  textGate.resolve('{"version":2,"width":80,"height":24}\n[0.1,"o","x"]\n');
+  await flush(); await flush();
+  check('stale-after-text: a body that is read after the modal was closed creates no player', liveTerms() === 0 && timers.length === timersBefore, `${liveTerms()} ${timers.length} ${timersBefore}`);
+  check('stale-after-text: ... and the status line is not rewritten', $('rec-play-status').textContent === 'Loading', $('rec-play-status').textContent);
+  // the same, but another row was started in between
+  const gate2 = deferred();
+  castAnswers['43'] = deferred(); castAnswers['44'] = deferred();
+  await click('play', 43);
+  castAnswers['43'].resolve({ ok: true, status: 200, text: () => gate2.p });
+  await flush();
+  await click('play', 44);
+  gate2.resolve('{"version":2,"width":80,"height":24}\n[0.1,"o","fortythree"]\n');
+  await flush(); await flush();
+  check('stale-after-text: a body read after Play on another row creates no player', liveTerms() === 0, String(liveTerms()));
+  castAnswers['44'].resolve(cast({ version: 2, width: 80, height: 24 }, [[0.1, 'o', 'fortyfour']]));
+  await flush(); await flush();
+  check('stale-after-text: ... and the later row plays', liveTerms() === 1 && terms.filter(x => !x.disposed)[0].written.join('') === 'fortyfour');
+  closeModal();
+
   // ---- parseCast is still exported ---------------------------------------------------------------------------------
   check('parseCast still reads a cast', RA.parseCast('{"version":2,"width":80,"height":24}\n[0.5,"o","a"]\n').events.length === 1);
 

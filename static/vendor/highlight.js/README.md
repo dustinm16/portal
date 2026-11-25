@@ -16,7 +16,7 @@ equal to the registry's `dist.integrity`). Fetched once on 2026-11-24. The files
 
 Licence: BSD-3-Clause (package.json says `BSD-3-Clause`; see `LICENSE`). Project: https://github.com/highlightjs/highlight.js
 
-The source map is not included; the last line of the script names it, which only matters to browser developer tools.
+The source map is not included. `highlight.min.js` ends without a `sourceMappingURL` comment, so nothing asks for a map and browser developer tools show no 404 for this file.
 
 `tests/test_vendor_libs.py` checks these hashes. To update: fetch the new tarball, compare it with the registry's integrity value,
 replace the files, and change the version and hashes here and in the test, the README Third-Party Components table and the `?v=` of the pages that load it.

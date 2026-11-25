@@ -350,7 +350,7 @@ async def main():
     logging.getLogger("portal.recording").removeHandler(cap)
     admin_html = (Path(__file__).resolve().parent.parent / "static" / "admin.html").read_text()
     check("the retention form has the budget field", 'id="ret-recording-max"' in admin_html
-          and "recording_max_total_mb: pInt('ret-recording-max', 2048)" in admin_html)
+          and "['ret-recording-max', 'recording_max_total_mb'," in admin_html)
 
     # ---- item 5: a session cut by a restart is closed off at the next start -----------------------
     for f in Path(rec_dir).glob("*.cast"):

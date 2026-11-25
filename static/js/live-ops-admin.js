@@ -5,7 +5,7 @@
  * Both ask first, on their own row below the stream, never under the button that was clicked; the
  * confirm button ignores a click within CONFIRM_DELAY_MS of the question opening and the second
  * click of a double click, and every action is refused while another request is in flight. The refresh
- * every REFRESH_MS does not redraw the table while a question is open.
+ * every REFRESH_MS does not redraw the table while a question is open; it only updates the figures in place.
  *
  * Only administrators get past /api/admin/live-streams (anyone else is answered 404), so the tab
  * shows itself only when the list loads. Every cell is built with textContent.
@@ -58,7 +58,7 @@
     }
 
     function mount(root, api) {
-        var state = { rows: [], asking: null, busy: false, loaded: false, timer: null };
+        var state = { rows: [], asking: null, busy: false, loaded: false, timer: null, cells: {} };
         var tbody = root.tbody, note = root.note;
 
         function visible() { return !(document.hidden === true || document.visibilityState === 'hidden'); }
@@ -114,8 +114,26 @@
             return el('tr', { class: 'live-ops-confirm-row' }, [td]);
         }
 
+        function setFigures(cells, r) {
+            cells.uptime.textContent = formatDuration(r.uptime_s);
+            cells.bitrate.textContent = formatRate(r.bitrate_bps);
+            cells.viewers.textContent = String(r.viewers);
+            cells.relays.textContent = String(r.relays_running) + ' running';
+            cells.recording.textContent = r.recording ? 'recording' : 'no';
+        }
+
+        /* The figures of the rows already on the page, in place and as text only: no row, button or question is
+         * rebuilt, so a click that is on its way is not lost. */
+        function refreshFigures() {
+            state.rows.forEach(function (r) {
+                var cells = state.cells[r.id];
+                if (cells) setFigures(cells, r);
+            });
+        }
+
         function draw() {
             clear(tbody);
+            state.cells = {};
             if (state.asking && !state.rows.some(function (r) { return r.id === state.asking.id; })) state.asking = null;
             if (!state.rows.length) {
                 tbody.appendChild(el('tr', {}, [el('td', { colspan: '8', text: state.loaded ? 'No stream is live.' : 'Loading' })]));
@@ -129,12 +147,15 @@
                 if (busy) { stopB.setAttribute('disabled', 'disabled'); endB.setAttribute('disabled', 'disabled'); }
                 acts.appendChild(stopB);
                 acts.appendChild(endB);
+                var cells = {
+                    uptime: el('td', {}), bitrate: el('td', {}), viewers: el('td', {}),
+                    relays: el('td', {}), recording: el('td', {})
+                };
+                state.cells[r.id] = cells;
+                setFigures(cells, r);
                 var tr = el('tr', {}, [
                     el('td', { text: r.name }), el('td', { text: r.owner }),
-                    el('td', { text: formatDuration(r.uptime_s) }), el('td', { text: formatRate(r.bitrate_bps) }),
-                    el('td', { text: String(r.viewers) }),
-                    el('td', { text: String(r.relays_running) + ' running' }),
-                    el('td', { text: r.recording ? 'recording' : 'no' }), acts
+                    cells.uptime, cells.bitrate, cells.viewers, cells.relays, cells.recording, acts
                 ]);
                 tbody.appendChild(tr);
                 if (state.asking && state.asking.id === r.id) tbody.appendChild(confirmRow(r));
@@ -151,9 +172,11 @@
             } catch (e) {
                 note.textContent = 'Could not load the live streams.';
             }
-            /* An open question keeps its row and its buttons as they are: the list is read again, but nothing is drawn
-             * until the question is answered or cancelled (a stream that has ended meanwhile closes it, as draw does). */
-            if (state.asking && state.rows.some(function (r) { return r.id === state.asking.id; })) return;
+            /* An open question keeps its row and its buttons as they are: the list is read again, but the table is not
+             * drawn again until the question is answered or cancelled (a stream that has ended meanwhile closes it, as
+             * draw does). The figures of the rows keep moving: only their text is replaced. A stream that started or
+             * ended meanwhile appears or goes when the question is closed. */
+            if (state.asking && state.rows.some(function (r) { return r.id === state.asking.id; })) { refreshFigures(); return; }
             draw();
         }
 

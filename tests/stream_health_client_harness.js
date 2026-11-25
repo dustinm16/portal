@@ -194,5 +194,38 @@ class N {
     await c2.load();
     check('a stream that ended meanwhile closes its question', tb.find(n => n.className === 'live-ops-confirm').length === 0 && tb.textContent.includes('No stream is live.'));
   });
+  // ---- the figures keep moving while a question is open
+  await withDeadline('the figures of the rows keep moving while a question is open', async () => {
+    let rows3 = [
+      { id: 1, name: 'First', owner: 'a', uptime_s: 60, bitrate_bps: 1000000, viewers: 1, relays_running: 0, recording: false },
+      { id: 2, name: 'Second', owner: 'b', uptime_s: 120, bitrate_bps: null, viewers: 2, relays_running: 1, recording: false },
+    ];
+    const api3 = async () => ({ ok: true, data: { streams: rows3 } });
+    const tb = new N('TBODY');
+    const c3 = ctx.LiveOpsAdmin.mount({ tbody: tb, note: new N('P'), isShown: () => true }, api3);
+    await c3.load();
+    const btn = (t) => tb.find(n => n.tagName === 'BUTTON' && n.textContent === t);
+    await btn('End now')[0].fire('click');                      // ask about the first stream
+    const yes = btn('Yes, end the stream')[0], endSecond = btn('End now')[1], stopSecond = btn('Stop relays')[1], keep = btn('Keep it as it is')[0];
+    const cb = tb.find(n => n.tagName === 'INPUT')[0];
+    const confirmRow = tb.find(n => n.className === 'live-ops-confirm-row')[0];
+    const row2 = tb.children.find(tr => tr.find && tr.find(n => n === endSecond).length);
+    rows3 = [
+      Object.assign({}, rows3[0], { uptime_s: 3700, viewers: 5, bitrate_bps: 2500000 }),
+      Object.assign({}, rows3[1], { uptime_s: 7300, viewers: 9, relays_running: 2, recording: true }),
+    ];
+    await c3.load();
+    const text = tb.textContent, t2 = row2.textContent;
+    check('another row shows the new viewers, uptime, relays and recording while the question is open', t2.includes('2 h 1 min') && t2.includes('not collected9') && t2.includes('2 running') && t2.includes('running' + 'recording'), t2);
+    check('the open row shows its new figures too', text.includes('1 h 1 min') && text.includes('2.50 Mbit/s'), text);
+    check('the old figures are gone', !text.includes('2 min 0 s') && !text.includes('1 min 0 s'), text);
+    check('the question and its buttons are the same elements', tb.find(n => n === yes).length === 1 && tb.find(n => n === keep).length === 1 && tb.find(n => n === cb).length === 1 && tb.find(n => n === confirmRow).length === 1);
+    check('the buttons of the other row are the same elements and the row is not rebuilt', tb.find(n => n === endSecond).length === 1 && tb.find(n => n === stopSecond).length === 1 && tb.children.includes(row2));
+    check('the question still keeps its guard time and its place', c3.state.asking && c3.state.asking.id === 1 && tb.find(n => n.className === 'live-ops-confirm').length === 1);
+    clock += 700;
+    const first = yes.fire('click', { detail: 1 });
+    await first;
+    check('the confirm button still works after the figures moved', c3.state.asking === null);
+  });
   console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

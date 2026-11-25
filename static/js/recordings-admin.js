@@ -11,8 +11,8 @@
 (function () {
     'use strict';
 
-    const XTERM_JS = '/static/vendor/xterm/xterm.js?v=1';
-    const XTERM_CSS = '/static/vendor/xterm/xterm.css?v=1';
+    const XTERM_JS = '/static/vendor/xterm/xterm.js?v=5.3.0';
+    const XTERM_CSS = '/static/vendor/xterm/xterm.css?v=5.3.0';
     const PAGE = 25;
     const MAX_GAP = 2.0;          // seconds: a long pause in the session is cut to this when playing
     const MAX_COLS = 500;         // the player never opens a terminal larger than this, whatever the file says

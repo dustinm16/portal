@@ -416,11 +416,11 @@ def test_spam_filter_rules_are_reported_as_not_enforced():
     assert reasons[1] and reasons[2] is None, reasons
 
 
-def test_admin_form_keeps_a_stored_spam_filter_config_and_states_the_comma_rule():
+def test_admin_form_keeps_a_stored_spam_filter_config_and_states_the_one_per_line_rule():
     import shutil
     import subprocess
     admin = (ROOT / "static" / "admin.html").read_text()
-    assert "patterns are separated by commas, so a pattern cannot contain a comma" in admin
+    assert "Enter one word or pattern per line; a pattern may contain a comma" in admin
     if not shutil.which("node"):
         return
     start = admin.index("function getAutomodConfig() {")

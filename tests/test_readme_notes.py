@@ -487,8 +487,9 @@ MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
 MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
-# ... and in 1.24.2 (the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages): the versions the pages load now
-MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4}
+# ... and in 1.24.2 (the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages; the Live streams figures that keep moving while a question is open and the xterm version of the Recordings script): the versions the pages load now
+MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4,
+                   "live-ops-admin.js": 5, "recordings-admin.js": 5}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -525,7 +526,7 @@ for name, needles in (("recording is off unless the flag is exactly true, 1, '1'
     check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
 _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 # user-connections.js moved on to 59 in 1.22.0 and 62 in 1.24.1: the 1.20.0 notes keep the version of their release
-for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 62)):
+for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 5), ("user-connections.js", 56, 62)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
           loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))}, {str(MOVED_ON_1_24_2.get(js))}), str(loaded))
@@ -625,7 +626,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "63"), "streams.js": ("49", "54"), "voice.js": ("15", "16"), "chat-retention.js": ("3", "4")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0 and 1.24.2 (user-connections.js, voice.js, chat-retention.js)
+_moved20 = {"user-connections.js": ("56", "63"), "streams.js": ("49", "54"), "voice.js": ("15", "16"), "chat-retention.js": ("3", "4"), "recordings-admin.js": ("4", "5")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0 and 1.24.2 (user-connections.js, voice.js, chat-retention.js, recordings-admin.js)
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0, 1.24.0 and 1.24.1)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -1317,7 +1318,7 @@ check("1.24.0: the static versions stated are the ones the pages load",
       "`stream-health.js` is new at version 4" in _sec240 and "`live-ops-admin.js` is new at version 3" in _sec240
       and "`streams.js` is version 53" in _sec240
       and "/static/js/stream-health.js?v=4" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text()  # 3 then, 4 since 1.24.1
+      and "/static/js/live-ops-admin.js?v=5" in (ROOT / "static" / "admin.html").read_text()  # 3 then, 4 since 1.24.1, 5 since 1.24.2
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
 _docs24 = (ROOT / "static" / "api-docs.html").read_text()
@@ -1421,7 +1422,7 @@ check("1.24.1: the static versions stated are the ones the pages load",
       "`user-connections.js` v62" in _sec241 and "`streams.js` v54" in _sec241 and "`live-ops-admin.js` v4" in _sec241
       and "user-connections.js?v=63" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
-      and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text())
+      and "/static/js/live-ops-admin.js?v=5" in (ROOT / "static" / "admin.html").read_text())  # 4 then, 5 since 1.24.2
 # Counting failed sign-ins per IPv6 /64 was reverted in the lane and is not part of 1.24.1: nowhere may it be claimed.
 # (The alert burst and the security log key an IPv6 source by its /64 since earlier releases; those sentences do not
 # name the blocking of failed sign-ins and are not looked at here.)
@@ -1752,6 +1753,130 @@ check("1.24.1: the notes say a browser-mode connection's stored headers go only 
       and "send_secrets" in _srv241 and "configured_origin" in _srv241)
 check("1.24.1: the notes say a linked uploads folder keeps working, and the route accepts a file inside the folder's own resolved location",
       "symbolic link to another disk keeps working" in _sec241r and 'rel_path.partition("/")' in _srv241)
+
+# --- 1.24.2 documentation: what the 1.24.1 notes did not say (E5, E14, E25, E39, E33, E48) -------------------------
+_sec_e = _sec241r
+_sec_e_cookies = _sec_e.split("- **Cookies are kept by the portal, not by the browser", 1)[-1].split("\n- **", 1)[0]
+_sec_e_security = text.split("\n## Security\n", 1)[1].split("\n## ", 1)[0]
+_e5 = "sites opened in one browser-mode connection can read each other's signed-in pages"
+check("E5: the 1.24.1 notes, the Security list and the About page say sites of one browser-mode connection read each other's signed-in pages",
+      _e5 in _sec_e_cookies.lower() and _e5 in _sec_e_security.lower() and _e5 in _about241r.lower()
+      and "later feature" in _sec_e_cookies.lower())
+_sec_e_after = _sec_e.split("**What you should do after upgrading**", 1)[-1].split("**Breaking changes**", 1)[0]
+_sec_e_stale = _sec_e.split("- **A stale isolated page finds its way back.**", 1)[-1].split("\n- **", 1)[0]
+check("E14: the stale-page entry and the upgrade steps say a tab open at upgrade has no capability and must be reloaded",
+      "already open on a shared web connection when 1.24.1 was installed" in _sec_e_stale and "no capability" in _sec_e_stale
+      and "reload proxied tabs after upgrading" in _sec_e_after.lower() and "reload proxied tabs after upgrading" in _sec_e_stale.lower())
+_sec_e_rb = _sec_e.split("- **Rollback.**", 1)[-1].split("- **Not tested.**", 1)[0]
+check("E25: the Rollback bullet names the stored headers, the cookie-less sign-out, the trust columns in answers and the open ~/x tab",
+      all(n in _sec_e_rb for n in ("`auth_header` and `extra_headers` to every site again", "a cookie-less `POST /logout` deletes the cookie again",
+                                   "`proxy_trusted_fp` and `proxy_trusted_by`", "asks its upstream for `~/x`")))
+_sec_e_libs = _sec_e.split("- **Page scripts no longer come from a CDN.**", 1)[-1].split("\n- **", 1)[0]
+check("E39: the libraries bullet and the Security list say the GitHub page's README images are fetched from their hosts, and the page-view sentence is about the libraries",
+      "the github page" in _sec_e_libs.lower() and "every image host" in _sec_e_libs.lower()
+      and "every image host that a repository's readme names" in _sec_e_security.lower()
+      and "loading the libraries no longer tells a third party" in _sec_e_security.lower()
+      and "a page view no longer tells a third party" not in text.lower())
+_voice_line = [l for l in text.split("\n") if l.startswith("Voice rooms hold at most 8 people")]
+_apimd_e = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_exc = "a timeout that a stream owner or stream mod placed through an anonymous post does not end a running call"
+check("E48: the voice paragraph, docs/API.md and the API page name the exception for a timeout placed through an anonymous post",
+      len(_voice_line) == 1 and _exc in _voice_line[0].lower() and _exc in _apimd_e.lower()
+      and _exc in re.sub(r"</?code>", "", _apihtml241r).lower())
+check("E48: the join sentence names administrators and global moderators, and the stale 'not tested' voice clause is gone",
+      "the stream's owner, its stream mods, administrators and global moderators are let in as always" in _sec_e.lower()
+      and "neither was a voice call" not in text)
+check("E33: the notes say a bearer token or API key client of an isolated connection gets no upstream Set-Cookie",
+      "program clients (a bearer token or an api key) of an isolated connection receive no upstream `set-cookie`" in _sec_e_cookies.lower()
+      and "keep the cookies themselves" in _sec_e_cookies.lower())
+
+# --- 1.24.2 documentation: the 1.19.0 notes (149, 150) ----------------------------------------------------------------
+_m119 = re.search(r"### Upgrade notes for 1\.19\.0\n(.*?)(?=\n### Upgrade notes for 1\.20\.0|\n## )", text, re.S)
+_sec119 = _m119.group(1) if _m119 else ""
+_rb119 = _sec119.split("- **Rollback.**", 1)[-1].split("\n- **", 1)[0]
+_db119 = _sec119.split("- **Database.** Added automatically", 1)[-1].split("\n- **", 1)[0]
+check("149: the 1.19.0 Rollback bullet says 1.18.0 has no /sw.js or manifest route, so a registered worker gets a 404, and that clearing site data removes it",
+      "no `/sw.js`" in _rb119 and "`/manifest.webmanifest`" in _rb119 and "404" in _rb119 and "clearing the site data" in _rb119.lower())
+_db_py = (ROOT / "database.py").read_text(encoding="utf-8")
+check("150: the 1.19.0 Database bullet lists the index and the announced_at column that database.py creates",
+      "idx_push_subscriptions_user" in _db119 and "announced_at" in _db119 and "one `CREATE INDEX IF NOT EXISTS`" in _db119
+      and "idx_push_subscriptions_user ON push_subscriptions" in _db_py and "announced_at TEXT" in _db_py
+      and "one `ALTER TABLE ... ADD COLUMN` and three `CREATE TABLE IF NOT EXISTS` statements, each repeatable" not in _db119)
+
+# --- 181: the head probe is exempt from the free-space margin ------------------------------------------------------------
+import vod_play as _vod_play_181
+_apimd_181 = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_srv_181 = (ROOT / "server.py").read_text(encoding="utf-8")
+_probe_src_181 = _srv_181.split("async def _vod_session_probe_head(", 1)[1].split("\nasync def ", 1)[0]
+_play_181 = _apimd_181.split("#### GET /api/vods/play/{path}.mp4", 1)[1].split("\n---\n", 1)[0]
+check("181: docs/API.md says the head probe (256 KB, HEAD_BYTES) is exempt from the free-space margin that playback jobs keep, and the code agrees",
+      _vod_play_181.HEAD_BYTES == 256 * 1024 and "VOD_PLAY_FREE_MARGIN_BYTES" not in _probe_src_181 and "min_free" not in _probe_src_181
+      and "the first-bytes probe of a session (`HEAD_BYTES`, 256 KB per chunk) is exempt from that margin" in _play_181)
+
+# --- 51: the PROBE_BLOCK_STRIKES comment in .env.example describes stored blocks ----------------------------------------
+_env_51 = (ROOT / ".env.example").read_text(encoding="utf-8")
+_probe_51 = _env_51.split("# Optional (off by default): block clients requesting scanner-only paths", 1)[1].split("# PROBE_BLOCK_STRIKES=0", 1)[0]
+_probe_51 = re.sub(r"\s*\n#\s*", " ", _probe_51)
+_srv_51 = (ROOT / "server.py").read_text(encoding="utf-8")
+check("51: the .env.example comment says probe blocks are stored, temporary, longer on a repeat, listed in the admin blocked-IP list and survive a restart",
+      "held in memory" not in _probe_51 and "not listed" not in _probe_51 and "restart the portal to" not in _probe_51
+      and "stored in the database" in _probe_51 and "listed in the blocked-IP list" in _probe_51
+      and "survives a restart" in _probe_51 and "longer after each repeat" in _probe_51 and "server.py unblock" in _probe_51
+      and "_persist_probe_ban" in _srv_51 and '"probe"' in _srv_51.split("async def _persist_probe_ban(", 1)[1][:400])
+
+# --- 1.24.2 documentation of what the other lanes built (docs-other-lanes) --------------------------------------------
+_d_apimd = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_d_apihtml = re.sub(r"</?(?:code|strong|em)>", "", (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))
+_d_notes = _sec241r
+_d_403 = _d_notes.split("- **Some calls from a proxied page now answer `403`.**", 1)[-1].split("\n- **", 1)[0]
+check("E7: the 403 bullet, docs/API.md and the API page say a cookie-carrying state change from another hostname of the portal's own domain is refused, and that sibling subdomains must not host member content",
+      "another hostname of the portal's own domain" in _d_403 and "sibling subdomain" in _d_403.lower()
+      and "`HOSTNAME` and `STREAM_HOSTNAME`" in _d_403 and "Cross-site request refused" in _d_403
+      and "must not host content that members control" in _d_403
+      and "another hostname of the portal's own domain" in _d_apimd.split("A login POST that the browser marks cross-site", 1)[1][:1200]
+      and "another hostname of the portal's own domain" in _d_apimd.split("**Proxied pages (1.24.1).**", 1)[1][:4000]
+      and "another hostname of the portal's own domain" in _d_apihtml.split("Isolated pages are served at /proxy/{id}/~pc1.{token}/", 1)[1][:3500])
+
+_d_cap = _d_notes.split("- **The address of an isolated page holds a credential.**", 1)[-1].split("\n- **", 1)[0]
+check("E34: the capability bullet, docs/API.md and the API page say the body of the address is encrypted, holds no readable id, is longer, and that pages open at upgrade need one reload",
+      "the body of the credential is encrypted" in _d_cap and "cannot read a member id, a session id or a connection id" in _d_cap
+      and "about 40 characters longer" in _d_cap and "needs one reload" in _d_cap
+      and "an encrypted, signed path segment" in _d_apimd.split("**Proxied pages (1.24.1).**", 1)[1][:1500]
+      and "an encrypted, signed path segment" in _d_apihtml.split("Isolated pages are served at /proxy/{id}/~pc1.{token}/", 1)[1][:400])
+
+_d_cors = _d_notes.split("- **Isolated pages can make credentialed requests to their own address.**", 1)[-1].split("\n- **", 1)[0] \
+    if "- **Isolated pages can make credentialed requests to their own address.**" in _d_notes else ""
+check("E31: the notes, docs/API.md and the API page say what an isolated page can do with credentialed requests: its own address only, Allow-Origin null, Vary: Origin, cookies kept by the portal, session cookie never sent on",
+      "Access-Control-Allow-Origin: null" in _d_cors and "Vary: Origin" in _d_cors and "the portal session cookie is never sent to the connection" in _d_cors
+      and "without a valid capability" in _d_cors and "SignalR" in _d_cors
+      and "Access-Control-Allow-Origin: null" in _d_apimd.split("**Proxied pages (1.24.1).**", 1)[1][:5200]
+      and "Vary: Origin" in _d_apimd.split("**Proxied pages (1.24.1).**", 1)[1][:5200]
+      and "Access-Control-Allow-Origin: null" in _d_apihtml.split("Isolated pages are served at /proxy/{id}/~pc1.{token}/", 1)[1][:4500])
+
+_d_stale = _d_notes.split("- **A stale isolated page finds its way back.**", 1)[-1].split("\n- **", 1)[0]
+check("E2: the stale-page entry, docs/API.md and the API page say a page left open after its address expired reloads in the embedded browser and shows 'This page expired. Reload the tab.' in a plain tab",
+      "A page left open in an isolated tab or in the embedded browser stops working after its address expires (6 hours or sign-out)" in _d_stale
+      and "makes the embedded browser reload the tab at the same page" in _d_stale and "This page expired. Reload the tab." in _d_stale
+      and "only when `/api/me` answers `401`" in _d_stale
+      and "This page expired. Reload the tab." in _d_apimd.split("**Proxied pages (1.24.1).**", 1)[1][:6500]
+      and "This page expired. Reload the tab." in _d_apihtml.split("Isolated pages are served at /proxy/{id}/~pc1.{token}/", 1)[1][:5200])
+
+_d_budget = text.split("- **Disk budget.** The recordings folder has a total budget", 1)[-1].split("\n- **", 1)[0]
+_d_retention = _d_apimd.split("`recording_max_total_mb` (default `2048`, `0` = no limit, at most 10000000) is the budget", 1)[-1].split("**Auth**", 1)[0]
+_d_retention_html = _d_apihtml.split("recording_max_total_mb (default 2048, 0 = no limit, at most 10000000) is the budget", 1)[-1].split("Response Example", 1)[0]
+check("163: the disk budget bullet, docs/API.md and the API page say a running recording re-checks the budget and floor every 1 MB and overshoots by about 1 MB, and no longer name 50 MB",
+      all("about 1 MB" in t and "recording truncated: size limit reached" in t and "50 MB" not in t for t in (_d_budget, _d_retention, _d_retention_html)))
+
+_d_push = _d_apimd.split("`PUT /api/admin/push` takes any of", 1)[-1][:1400]
+_d_push_html = _d_apihtml.split("PUT takes any of enabled, allowed_hosts", 1)[-1][:1200]
+check("154: docs/API.md and the API page say a bearer client may send allowed_hosts unchanged, a changed list still needs a browser session, and an invalid host answers 400",
+      all("unchanged" in t and "an invalid host name answers `400`".replace("`", "") in t.replace("`", "") for t in (_d_push, _d_push_html)))
+
+_d_tok = _d_apimd.split("#### GET /api/tokens", 1)[1].split("#### GET /api/me/sessions", 1)[0]
+_d_tok_html = _d_apihtml.split("/api/tokens List active tokens", 1)[1].split("Sessions", 1)[0] if "/api/tokens List active tokens" in _d_apihtml else ""
+_d_tok_html = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _d_apihtml.split('<span class="endpoint-path">/api/tokens</span>', 1)[1].split("<!-- Sessions -->", 1)[0]))
+check("9: docs/API.md and the API page say GET /api/tokens returns session_id and POST /api/token/revoke accepts it for the caller's own tokens, with the full token id still working",
+      all("session_id" in t and "own tokens only" in t and "full token id still works" in t and "404" in t for t in (_d_tok, _d_tok_html)))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

@@ -35,7 +35,15 @@ const CFG = { retention_chat_days: '7', retention_chat_max_days: '3650', retenti
   retention_security_events_days: '180', cleanup_interval_hours: '6', auto_vacuum: 'true' };
 const IDS = { 'ret-vod-min-free': 'vod_min_free_gb', 'ret-vod-backlog': 'vod_max_backlog_gb', 'ret-vod-play-cache': 'vod_play_cache_mb', 'ret-vod-orphan-age': 'vod_orphan_max_age_days' };
 
-function fill(v) { for (const id of Object.keys(IDS)) getEl(id).value = v[id] === undefined ? String(CFG[IDS[id]]) : String(v[id]); }
+const PLAIN = { 'ret-chat-days': 'retention_chat_days', 'ret-chat-max': 'retention_chat_max_days', 'ret-dm-days': 'retention_dm_days',
+  'ret-notif-days': 'retention_notifications_days', 'ret-activity-max': 'retention_activity_max', 'ret-svc-logs': 'retention_service_logs_max',
+  'ret-device-metrics': 'retention_device_metrics_days', 'ret-recordings': 'retention_recordings_days', 'ret-recording-max': 'recording_max_total_mb',
+  'ret-security-events': 'retention_security_events_days', 'ret-interval': 'cleanup_interval_hours' };
+function fill(v) {
+  for (const id of Object.keys(IDS)) getEl(id).value = v[id] === undefined ? String(CFG[IDS[id]]) : String(v[id]);
+  for (const id of Object.keys(PLAIN)) getEl(id).value = v[id] === undefined ? String(CFG[PLAIN[id]]) : String(v[id]);
+  getEl('ret-vacuum').checked = true;
+}
 async function save(v) {
   fill(v || {}); calls.length = 0; toasts.length = 0;
   await sandbox.saveRetentionConfig();
@@ -67,6 +75,22 @@ const err = (id) => getEl(id + '-err').textContent;
   check('the gigabyte fields accept fractions', c && c.body.vod_min_free_gb === 0.5 && c.body.vod_max_backlog_gb === 0.25 && err('ret-vod-min-free') === '' && err('ret-vod-play-cache') === '', JSON.stringify(c));
   c = await save({ 'ret-vod-min-free': '0', 'ret-vod-play-cache': '0', 'ret-vod-orphan-age': '0' });
   check('zero is allowed (switches a check off)', c && c.body.vod_min_free_gb === 0 && c.body.vod_play_cache_mb === 0 && c.body.vod_orphan_max_age_days === 0);
+
+  // an emptied field is refused with its name, never replaced by a default
+  for (const id of Object.keys(PLAIN)) {
+    getEl(id).focused = 0;
+    c = await save({ [id]: '' });
+    check('an emptied ' + id + ' sends nothing and says so', c === null && toasts.length === 1 && toasts[0][1] === 'error' && /Enter a number for /.test(toasts[0][0]), JSON.stringify([c, toasts]));
+    check('the emptied ' + id + ' gets the focus', getEl(id).focused === 1);
+  }
+  c = await save({ 'ret-chat-days': '', 'ret-interval': '' });
+  check('with several fields empty the first one is named and focused', c === null && /Chat Message Retention/.test(toasts[0][0]) && getEl('ret-chat-days').focused === 2 && getEl('ret-interval').focused === 1, JSON.stringify(toasts));
+  c = await save({ 'ret-dm-days': '0', 'ret-recordings': '0' });
+  check('zero in a plain field is still sent', c && c.body.retention_dm_days === 0 && c.body.retention_recordings_days === 0 && toasts.every((t) => t[1] !== 'error'), JSON.stringify(c));
+  c = await save({ 'ret-chat-days': '12' });
+  check('a filled form sends every plain field as typed', c && c.body.retention_chat_days === 12 && c.body.cleanup_interval_hours === 6 && c.body.retention_activity_max === 500, JSON.stringify(c));
+  c = await save({ 'ret-vod-backlog': '', 'ret-interval': '' });
+  check('a bad VOD field is still reported first, next to its field', c === null && /number/.test(err('ret-vod-backlog')) && toasts.length === 0);
 
   // the form is drawn again from the configuration the server returns
   answer = { status: 200, data: { updated: true, config: Object.assign({}, CFG, { vod_play_cache_mb: '1000000', vod_min_free_gb: '0.5' }) } };

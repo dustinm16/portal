@@ -41,29 +41,51 @@ def check(name, passed, detail=""):
 
 
 VENDOR = ROOT / "static" / "vendor"
-# library directory -> (version the pages ask for, sha512 of the npm tarball, as the registry's dist.integrity)
+# library directory -> (version the pages ask for, sha512 of the npm tarball as the registry's dist.integrity,
+# main file, sha256 of that file). The values are pinned here as well as in the README of each library, so
+# changing a vendored file or a README row alone fails; both were copied from the READMEs (the registry
+# cannot be asked offline).
 LIBS = {
-    "hls.js": ("1.5.17", "wA66nnYFvQa1o4DO/BFgLNRKnBTVXpNeldGRBJ2Y0SvFtdwvFKCbqa9zhHoZLoxHhZ+jYsj3aIBkWQQCPNOhMw=="),
-    "xterm": ("5.3.0", "8QqjlekLUFTrU6x7xck1MsPzPA571K5zNqWm0M0oroYEWVOptZ0+ubQSkQ3uxIEhcIHRujJy6emDWX4A7qyFzg=="),
-    "xterm-addon-fit": ("0.8.0", None),
-    "chart.js": ("4.4.7", None),
-    "highlight.js": ("11.12.0", None),
-    "marked": ("18.3.0", None),
-    "dompurify": ("3.5.0", None),
-    "novnc": ("1.4.0", None),
+    "hls.js": ("1.5.17",
+        "wA66nnYFvQa1o4DO/BFgLNRKnBTVXpNeldGRBJ2Y0SvFtdwvFKCbqa9zhHoZLoxHhZ+jYsj3aIBkWQQCPNOhMw==",
+        "hls.min.js", "484054e8cd03d3f6d1781fb7f402bdc318d8a4c527f933a95c624e27cc9a9470"),
+    "xterm": ("5.3.0",
+        "8QqjlekLUFTrU6x7xck1MsPzPA571K5zNqWm0M0oroYEWVOptZ0+ubQSkQ3uxIEhcIHRujJy6emDWX4A7qyFzg==",
+        "xterm.js", "f0aea0f75f48559013ae6643c2479dd737d26da42d5524e6d2b70915ae6523c7"),
+    "xterm-addon-fit": ("0.8.0",
+        "yj3Np7XlvxxhYF/EJ7p3KHaMt6OdwQ+HDu573Vx1lRXsVxOcnVJs51RgjZOouIZOczTsskaS+CpXspK81/DLqw==",
+        "xterm-addon-fit.js", "10f3194c5f17c1786fb7d5db865c1ec8539b6736a318063fd38bdaaf7c46848f"),
+    "chart.js": ("4.4.7",
+        "pwkcKfdzTMAU/+jNosKhNL2bHtJc/sSmYgVbuGTEDhzkrhmyihmP7vUc/5ZK9WopidMDHNe3Wm7jOd/WhuHWuw==",
+        "chart.umd.js", "2812cb8825fdc57469eb2f7bb055e9429244e599920511ee477e828499b632cb"),
+    "highlight.js": ("11.12.0",
+        "KvOKXODaiFmId9xaq3xc5xCL66wVLUuOngDbO9B/kewbFTqdGbn2nJxNhN3H5R1cgDTVj6R8vH0zgiNDEGjpDw==",
+        "highlight.min.js", "8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53"),
+    "marked": ("18.3.0",
+        "ed8zmPXlBb3UfGXN5iHMQyMhFpdqLgoV5umUXx/Q1R+FW3q8VpqpyoKUwlENL9appo2UMvNLURDVaT3AMOryGA==",
+        "marked.umd.js", "f8c7f128939415995e2219e8a84bec42fab27f5980d22e361339e6901da5eadf"),
+    "dompurify": ("3.5.0",
+        "LYC0ZkE8P1V42JsRYTwMdme/2ET8SpOc5AA2eOFjP/IadvRd2fwiT4TVz5vkfy0XUx12aS2UaRkTnfVPNOv9vw==",
+        "purify.min.js", "f69a46022ab1f53e969c8ebbca98172c8995785a9b3be72ea4a12d25b1a1bf67"),
+    "novnc": ("1.4.0",
+        "kW6ALMc5BuH08e/ond/I1naYcfjc19JYMN1EdtmgjjjzPGCjW8fMtVM3MwM6q7YLRjPlQ3orEvoKMgSS7RkEVQ==",
+        "core/rfb.js", "f497c8b080f76aee1667a3c41db61be178f93e9ce4c39d150b8bcdbefdc2b0ca"),
 }
 ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|.*?`([0-9a-f]{64})`\s*\|\s*$")
 
 check("the vendored libraries are exactly the expected ones",
       sorted(p.name for p in VENDOR.iterdir() if p.is_dir()) == sorted(LIBS), str(sorted(p.name for p in VENDOR.iterdir())))
-for lib, (ver, integrity) in sorted(LIBS.items()):
+for lib, (ver, integrity, main, main_sha256) in sorted(LIBS.items()):
     d = VENDOR / lib
     readme = (d / "README.md").read_text(encoding="utf-8") if (d / "README.md").is_file() else ""
     check(f"{lib}: a README names the version {ver}", f"{ver} (vendored)" in readme and f"@{ver}" in readme)
     check(f"{lib}: the README says the tarball came from registry.npmjs.org and has the sha512",
           "https://registry.npmjs.org/" in readme and "sha512" in readme)
-    if integrity:
-        check(f"{lib}: the README carries the registry's sha512 of the tarball", integrity in readme)
+    check(f"{lib}: the README carries the registry's sha512 of the tarball", integrity in readme)
+    check(f"{lib}: the README lists {main} with the pinned sha256", f"`{main}`" in readme and main_sha256 in readme
+          and any(line.lstrip().startswith(f"| `{main}`") and main_sha256 in line for line in readme.splitlines()))
+    check(f"{lib}: {main} on disk has the pinned sha256",
+          (d / main).is_file() and hashlib.sha256((d / main).read_bytes()).hexdigest() == main_sha256)
     listed = {}
     for line in readme.splitlines():
         m = ROW.match(line)
@@ -90,7 +112,7 @@ for page, lib, path, ver in refs:
     if lib == "codemirror":
         continue
     check(f"{page} -> vendor/{lib}/{path}: the file exists and its ?v= is the library version",
-          lib in LIBS and (VENDOR / lib / path).is_file() and (ver == LIBS[lib][0] or (lib == "xterm" and ver in ("1", LIBS[lib][0]))),
+          lib in LIBS and (VENDOR / lib / path).is_file() and ver == LIBS[lib][0],
           f"{lib} {path} v={ver}")
 want_pages = {
     "live.html": "hls.js", "watch.html": "hls.js", "streams.html": "hls.js", "vod-player.html": "hls.js",
@@ -214,6 +236,20 @@ check("the policy still has its other directives (base-uri, form-action, media-s
       all(k in directives for k in ("base-uri", "form-action", "media-src")), csp)
 server_src = (ROOT / "server.py").read_text(encoding="utf-8")
 check("server.py names no CDN host at all", "jsdelivr" not in server_src.lower())
+
+# --- source maps (E20): the READMEs say what the scripts really do ---------------------------------------------------
+_hl = VENDOR / "highlight.js"
+_hl_js = (_hl / "highlight.min.js").read_text(encoding="utf-8")
+_hl_readme = (_hl / "README.md").read_text(encoding="utf-8")
+check("E20: highlight.min.js names no source map, and its README does not say its last line names one",
+      "sourceMappingURL" not in _hl_js and "the last line of the script names it" not in _hl_readme
+      and "ends without a `sourceMappingURL` comment" in _hl_readme)
+_mapped = sorted(str(p.relative_to(VENDOR)) for p in VENDOR.rglob("*.js") if p.is_file()
+                 if re.search(r"sourceMappingURL=\S+\.map\s*$", p.read_text(encoding="utf-8", errors="replace")[-400:]))
+_vendor_readme = (VENDOR / "README.md").read_text(encoding="utf-8") if (VENDOR / "README.md").is_file() else ""
+check("E20: the vendor README names every script that ends with a sourceMappingURL comment and says the .map files are not shipped",
+      len(_mapped) == 6 and all(f"`{m}`" in _vendor_readme for m in _mapped) and "not shipped" in _vendor_readme
+      and not any(VENDOR.rglob("*.map")), str(_mapped))
 
 if failures:
     print(f"\ntest_vendor_libs: {len(failures)} FAILED: " + "; ".join(failures))
