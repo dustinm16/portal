@@ -1371,6 +1371,23 @@ def _archive_has_uploads(manifest: dict) -> bool:
     return isinstance(up, dict) and bool(up.get("included"))
 
 
+def _linked_upload_folders(root: str) -> list:
+    """Real paths of the top-level folders of the live uploads root that are links to a folder: the backup
+    walk follows them, so they are live folders as much as the root itself."""
+    out = []
+    try:
+        with os.scandir(root) as it:
+            for e in it:
+                try:
+                    if e.is_symlink() and e.is_dir():
+                        out.append(os.path.realpath(e.path))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
 def _check_uploads_target(into: str) -> Path:
     """The folder uploads are restored into: not the live installation, no link, not writable by others."""
     p = Path(into).expanduser().absolute()
@@ -1383,6 +1400,9 @@ def _check_uploads_target(into: str) -> Path:
     live_uploads = _uploads_root()      # static/uploads may itself be a link to another disk: still the live folder
     if _inside(str(target), live_uploads):
         raise BackupError("Refusing to restore into the live installation")
+    for linked in _linked_upload_folders(live_uploads):     # a top-level folder that is a link to another disk
+        if _inside(str(target), linked) or _inside(linked, str(target)):
+            raise BackupError("Refusing to restore into the live installation")
     if os.path.lexists(target):
         st = os.lstat(target)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):

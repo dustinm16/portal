@@ -635,6 +635,33 @@ def test_restore_refuses_the_live_uploads_behind_a_link():
         check("... and nothing there changed", tree(disk) == before)
 
 
+def test_restore_refuses_the_live_folder_behind_a_linked_subfolder():
+    with Sandbox() as sb:
+        sb.fill()
+        sb.put("avatars/me.png", b"OLD-AVATAR")
+        info = sb.archive(include_uploads=True)
+        big = sb.base / "big"
+        big.mkdir()
+        shutil.move(str(sb.uploads / "avatars"), str(big / "avatars"))
+        (sb.uploads / "avatars").symlink_to(big / "avatars")    # one top-level folder lives on another disk
+        before = tree(big)
+        for target in (big, big / "avatars"):
+            try:
+                bm.restore_uploads(info["path"], str(target), overwrite=True)
+                refused = False
+            except bm.BackupError as e:
+                refused = "live installation" in str(e)
+            check(f"a restore into or above a linked live subfolder is refused ({target.name})", refused)
+        check("... and nothing there changed", tree(big) == before)
+        fresh = sb.base / "fresh"
+        try:
+            bm.restore_uploads(info["path"], str(fresh))
+            ok = True
+        except bm.BackupError:
+            ok = False
+        check("... while a new folder elsewhere is still accepted", ok)
+
+
 def main():
     for name, fn in sorted((n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)):
         with_deadline(name, fn)
