@@ -96,6 +96,28 @@ async def main():
     await db._migrate_orphaned_stream_channels()
     listed2 = json.loads(await db.get_setting("orphaned_stream_channels"))
     check("a second run changes nothing", listed2 == listed)
+    # An administrator who deliberately made a handled channel public again does not see it reverted at the next start
+    await db.conn.execute("UPDATE chat_channels SET visibility = 'public' WHERE id = ?", (left,))
+    await db.conn.commit()
+    await db._migrate_orphaned_stream_channels()
+    check("a channel an administrator made public again stays public at the next start",
+          (await db.get_chat_channel(left))["visibility"] == "public", str((await db.get_chat_channel(left))["visibility"]))
+    listed3 = json.loads(await db.get_setting("orphaned_stream_channels"))
+    check("the list for administrators still names it (the list is not wiped by the skipped pass)",
+          sorted(x["id"] for x in listed3) == sorted([left, left_private]), str(listed3))
+    handled = json.loads(await db.get_setting("orphaned_stream_channels_handled"))
+    check("the handled channels are recorded by id and name", {(x["id"], x["name"]) for x in handled} == {(left, "stream-olduser-901"), (left_private, "stream-olduser-902")}, str(handled))
+    # a leftover that appears later is still handled once
+    later = await raw_channel("stream-olduser-905", "Chat for Show by olduser", None)
+    await db._migrate_orphaned_stream_channels()
+    check("a new leftover is made private by the next pass", (await db.get_chat_channel(later))["visibility"] == "private")
+    check("and the earlier one is still left alone", (await db.get_chat_channel(left))["visibility"] == "public")
+    # an id reused under another name is not mistaken for a handled one
+    await db.conn.execute("DELETE FROM chat_channels WHERE id = ?", (left_private,))
+    await db.conn.execute("INSERT INTO chat_channels (id, name, description, created_by, visibility) VALUES (?, 'stream-olduser-906', 'Chat for Show by olduser', NULL, 'public')", (left_private,))
+    await db.conn.commit()
+    await db._migrate_orphaned_stream_channels()
+    check("a reused id under a new name is handled as new", (await db.get_chat_channel(left_private))["visibility"] == "private")
     # no message is deleted by the pass
     cur = await db.conn.execute("SELECT COUNT(*) FROM chat_messages WHERE channel_id = ?", (c3,))
     check("the pass deletes no history", (await cur.fetchone())[0] == 1)

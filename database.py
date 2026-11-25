@@ -1701,18 +1701,36 @@ class Database:
                 if await cur2.fetchone():
                     continue
                 found.append(row)
-            for row in found:
+            # A channel is handled once: its id and name are recorded, and a later start never touches its
+            # visibility again, so an administrator who made one public on purpose does not see it reverted.
+            # (The id alone is not the key: a reused id under another name is a new channel.)
+            cur3 = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'orphaned_stream_channels_handled'")
+            stored = await cur3.fetchone()
+            try:
+                handled = json.loads(stored["value"]) if stored and stored["value"] else []
+            except (ValueError, TypeError):
+                handled = []
+            handled_keys = {(h.get("id"), h.get("name")) for h in handled if isinstance(h, dict)}
+            fresh = [r for r in found if (r["id"], r["name"]) not in handled_keys]
+            for row in fresh:
                 if (row["visibility"] or "public") != "private":
                     await self._connection.execute(
                         "UPDATE chat_channels SET visibility = 'private' WHERE id = ?", (row["id"],))
+            if fresh:
+                handled = [h for h in handled if isinstance(h, dict)] + [{"id": r["id"], "name": r["name"]} for r in fresh]
+                await self._connection.execute(
+                    "INSERT INTO settings (key, value) VALUES ('orphaned_stream_channels_handled', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(handled[-5000:]),))
+            # The list for administrators is every channel that still carries the signature, handled or not
             listed = json.dumps([{"id": r["id"], "name": r["name"]} for r in found][:200])
             await self._connection.execute(
                 "INSERT INTO settings (key, value) VALUES ('orphaned_stream_channels', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (listed,))
             await self._connection.commit()
-            if found:
+            if fresh:
                 logger.warning("Stream chat channels left by deleted accounts were made private (administrators "
-                               "can read or delete them): " + ", ".join(f"{r['id']}:{r['name']}" for r in found[:50]))
+                               "can read or delete them): " + ", ".join(f"{r['id']}:{r['name']}" for r in fresh[:50]))
         except Exception as e:
             logger.warning(f"Orphaned stream channel check skipped: {type(e).__name__}: {e}")
 
