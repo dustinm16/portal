@@ -166,6 +166,14 @@ CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1
           "var inj=false;for(var i=0;i<document.scripts.length;i++){if((document.scripts[i].textContent||'').indexOf('portal'+'Frame')>=0)inj=true}"
           "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj,charset:document.characterSet})});</script></body></html>")
 
+# (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and
+# load again and again (as a single page app does), on one site; the portal then navigates the tab to another honest page on
+# another site, which answers late, so the outgoing page is still on screen and still reporting for a while.
+LG_A = ("<!doctype html><html><head><title>lg-a</title></head><body>outgoing"
+        "<script>var n=0;setInterval(function(){document.title='lg-a'+(n++);"
+        "window.dispatchEvent(new Event('hashchange'));window.dispatchEvent(new Event('load'))},20)</script></body></html>")
+LG_B = "<!doctype html><html><head><title>lg-b</title></head><body>incoming</body></html>"
+
 POPUP = "<!doctype html><script>opener && opener.postMessage('popup origin=' + window.origin, '*')</script>"
 
 APP = r"""<!doctype html><html><head><title>app-title</title><link rel="stylesheet" href="/app.css"></head><body>
@@ -276,6 +284,12 @@ def serve():
             raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}" + ("?r=1" if r.match_info["kind"] in ("pforge", "psrc", "popen") else ""))
 
         up.router.add_get("/xr/{kind}", xr)
+
+        async def lg(r):
+            if r.match_info["kind"] == "b":
+                await asyncio.sleep(1.5)
+            return web.Response(text=LG_A if r.match_info["kind"] == "a" else LG_B, content_type="text/html")
+        up.router.add_get("/lg/{kind}", lg)
 
         def ctpage(r):
             kind = r.match_info["kind"]
@@ -680,6 +694,35 @@ def run_browser(info):
                       and len(opened) == 1 and opened[0].endswith("/xr/" + kind), (samples[-1], opened))
             else:
                 check(f"E1 (redirect, {kind}): the marker is shown and open-in-new-window is disabled", samples[-1][1] and samples[-1][3] and opened == [], (samples[-1], opened))
+
+        # 3d0. (1.24.2) only the one report sent before any script of a document carries the first flag: the reports an honest
+        # page sends later (a load, popstate or hashchange it fires) must not count in the quiet time after the portal started a
+        # navigation, or the outgoing page's report would tag the next, honest page of another site
+        ctx = ctx_for("owner")
+        page = ctx.new_page()
+        page.set_default_timeout(10000)
+        page.goto(f"{base}/browser?connection={info['br_m']}")
+        wait_for(lambda: "evil-title" in page.inner_text(".tab-bar"), 10)
+        wait_for(lambda: page.evaluate("tabs.length") >= 2, 10)
+        wait_for(lambda: page.evaluate("1") and any(f.url.endswith("/popup") for f in page.frames), 10)
+        time.sleep(1)
+        page.fill("#url-input", up + "/lg/a")
+        page.press("#url-input", "Enter")
+        wait_for(lambda: any(f.url.endswith("/lg/a") for f in page.frames), 10)
+        time.sleep(1.5)
+        before = page.evaluate(BAR)
+        check("E1 (first flag): the outgoing honest page shows no marker", before[0].endswith("/lg/a") and not before[1], before)
+        page.fill("#url-input", up.replace("127.0.0.1", "localhost") + "/lg/b")
+        page.press("#url-input", "Enter")
+        wait_for(lambda: "lg-b" in page.inner_text(".tab-bar"), 15)
+        time.sleep(1.5)
+        samples = []
+        for _ in range(10):
+            samples.append(page.evaluate(BAR))
+            time.sleep(0.15)
+        check("E1 (first flag): the page the portal navigated to is shown, with no marker, although the outgoing page kept reporting during the load",
+              "lg-b" in page.inner_text(".tab-bar") and all(v[0].endswith("/lg/b") and not v[1] and not v[3] for v in samples), samples[-2:])
+        ctx.close()
 
         # 3d. (E31) an isolated page can send credentialed requests to its own capability address, and only to that
         ctx = ctx_for("bob")
