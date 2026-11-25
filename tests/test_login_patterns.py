@@ -36,7 +36,11 @@ if not node:
 
 text = (ROOT / "static" / "login.html").read_text(encoding="utf-8")
 patterns = [html.unescape(m.group(1)) for m in re.finditer(r"""\bpattern="([^"]*)\"""", text)]
-check("login.html has pattern attributes", len(patterns) >= 3, str(len(patterns)))
+check("login.html has pattern attributes", len(patterns) >= 2, str(len(patterns)))
+# The server decides what a valid sign-in name is (older accounts may hold a dot or an at sign), so the
+# browser must not block the sign-in field on a pattern of its own.
+_signin = re.search(r'<input[^>]*id="login-username"[^>]*>', text, re.S)
+check("the sign-in name field has no pattern of its own", bool(_signin) and "pattern=" not in _signin.group(0))
 
 NAMES_OK = ["abc", "A_b-c", "user_name-1", "a-b", "-ab", "ab-", "x" * 30]
 NAMES_BAD = ["ab", "a b", "a.b", "x" * 31, "a/b", ""]

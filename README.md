@@ -950,7 +950,7 @@ Most noticeable first.
 
 - Hashing a password (sign-in, registration, password change, turning off two-factor, an administrator's reset) runs off the event loop, at most 4 at a time, so it no longer stalls chat and streaming; answers are unchanged.
 - The household check for failed sign-ins reads the sign-in addresses through an index, which the first start builds (see **Database**).
-- The browser-side user name check on the sign-in and register pages works again in Chromium; valid names are unchanged.
+- The browser-side user name check on the register page works again in Chromium; valid names are unchanged. The sign-in field has no pattern of its own, so an older account whose name holds a dot, an at sign or a space can still sign in; the server decides.
 
 *Connections*
 
