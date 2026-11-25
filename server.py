@@ -33090,8 +33090,9 @@ async def fetch_metadata_middleware(request: web.Request, handler):
     token, an API key or a ?token= parameter authenticates is not cookie-authenticated and is let
     through (checked by actually authenticating it: a bad bearer next to a cookie is still the cookie).
     A browser that sends no Sec-Fetch headers, Origin or Referer (a script, curl, OBS) is not affected.
-    POST /login is judged the same way even with no cookie: it answers with Set-Cookie, and a form posted
-    from another site (sent without the Lax cookie) must not be able to replace the member's session cookie.
+    POST /login is judged the same way even with no cookie, and no token, key or ?token= lets it through: it
+    answers with Set-Cookie, and a form posted from another site (sent without the Lax cookie) must not be able
+    to replace the member's session cookie.
     The proxy itself (/proxy, /search, /browser) is not judged here: what a proxied application posts
     to its own address is its own business, and an isolated page's requests are cross-site by design.
     This is a seat belt: script running unsandboxed on the portal origin (trusted content) can still
@@ -33107,9 +33108,12 @@ async def fetch_metadata_middleware(request: web.Request, handler):
                                           websocket=is_ws)
     if why is None:
         return await handler(request)
-    await authenticate_request(request)
-    if request.get(_AUTH_KIND) in ("bearer", "apikey", "query"):
-        return await handler(request)
+    # /login is never authenticated by a credential it carries: a ?token= on a form's action URL must not
+    # let a cross-site form through to a handler that answers with Set-Cookie.
+    if path != "/login":
+        await authenticate_request(request)
+        if request.get(_AUTH_KIND) in ("bearer", "apikey", "query"):
+            return await handler(request)
     logger.warning(f"Refused a cookie-authenticated {request.method} {path} ({why})")
     return web.json_response({"error": "Cross-site request refused"}, status=403,
                              headers={"Cache-Control": "no-store"})

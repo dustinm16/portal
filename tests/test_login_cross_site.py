@@ -37,6 +37,17 @@ async def main():
                     check(f"POST /login ({kind}) from {label} is refused with no Set-Cookie",
                           r.status == 403 and not r.headers.getall("Set-Cookie", []),
                           f"{r.status} {r.headers.getall('Set-Cookie', [])}")
+        # a valid session JWT in the action URL, a bearer header or an API-key header does not exempt /login
+        jwt = next(c.value for c in env.sessions["bob"].cookie_jar if c.key == "portal_session")
+        for url, extra, label in ((f"/login?token={jwt}", {}, "a ?token= session JWT in the form's URL"),
+                                  ("/login", {"Authorization": f"Bearer {jwt}"}, "a bearer header")):
+            for origin in ("https://evil.example", "null"):
+                hdrs = {"Sec-Fetch-Site": "cross-site", "Origin": origin, **extra}
+                async with s.post(base + url, headers=hdrs, data=form, allow_redirects=False) as r:
+                    await r.read()
+                    check(f"POST /login from Origin {origin} with {label} is refused with no Set-Cookie",
+                          r.status == 403 and not r.headers.getall("Set-Cookie", []),
+                          f"{r.status} {r.headers.getall('Set-Cookie', [])}")
         async with s.post(base + "/login", headers={"Sec-Fetch-Site": "cross-site"}, data={"username": "bob", "password": "wrong"},
                           allow_redirects=False) as r:
             await r.read()
