@@ -1,12 +1,13 @@
-"""The one-time clean-up of a stored "recording" flag on the connections of accounts that are not
+"""The clean-up (at every start) of a stored "recording" flag on the connections of accounts that are not
 administrators: a member could store it on 1.19.0 where it did nothing, and a later promotion would
-silently have started recording.
+silently have started recording. It runs at every start, so a flag stored after a rollback to 1.19.0
+(the settings marker already exists) is removed after the next upgrade as well.
 
 Run: venv/bin/python tests/test_recording_flag_migration.py
 
 Scratch database only. A row is changed only when its owner is not an administrator and its
 config holds the key; the format (encrypted or plain) is kept; an undecodable row is skipped and its
-id is logged; the migration records that it ran and does not run again.
+id is logged; the migration writes its settings marker (old code reads it) but does not depend on it.
 """
 
 import asyncio
@@ -121,19 +122,28 @@ async def main():
             row = await cur.fetchone()
             check("the migration records that it ran", row is not None and row["value"] == "1")
 
-            # a flag set after the upgrade is never touched again
+            # a flag stored after the marker exists (a rollback to 1.19.0 and back) is removed at the next start
             again = await add(d, member, "again", encrypt_config(json.dumps({"recording": True})))
         finally:
             await d.close()
             logging.getLogger("portal.database").removeHandler(cap)
         d = Database(path)
         await d.connect()
-        check("a second start does not run it again",
-              json.loads(decrypt_config(await stored(d, again))).get("recording") is True)
+        left = json.loads(decrypt_config(await stored(d, again)))
+        check("a second start removes a flag stored after the marker exists", "recording" not in left, str(left))
+        cur = await d.conn.execute("SELECT value FROM settings WHERE key = ?", (FLAG,))
+        row = await cur.fetchone()
+        check("the settings marker is still written", row is not None and row["value"] == "1")
+        cur = await d.conn.execute("SELECT config FROM user_connections WHERE id = ?", (ids["admin"],))
+        check("an administrator's flag still stays at the second start",
+              json.loads(decrypt_config((await cur.fetchone())["config"])).get("recording") is True)
         await d.close()
 
 
-asyncio.run(main())
+try:
+    asyncio.run(asyncio.wait_for(main(), 90))
+except asyncio.TimeoutError:
+    check("the test finished within its deadline", False)
 if failures:
     print(f"\ntest_recording_flag_migration: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

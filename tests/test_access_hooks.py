@@ -158,6 +158,36 @@ async def main():
     row = sqlite3.connect(db.db_path).execute("SELECT enabled FROM webhooks WHERE id = ?", (h_cli["id"],)).fetchone()
     check("the command line's demotion also switches the hook off", row is not None and row[0] == 0, str(row))
 
+    # A retry of a stream event is judged on the stream as it is now, system hooks of a third-party format
+    # included; a generic system hook is not asked.
+    await db.connect()          # the command line's demotion closed the connection
+    sid = await db.create_user_stream(ids["sa"], "show", "live_" + "a" * 24, public_key="pub_" + "a" * 24, is_public=True)
+    h_dc = await db.create_webhook(None, "dc", "outgoing", url="https://hooks.example.test/dc",
+                                   events=["stream.live", "stream.offline"], kind="system", fmt="discord")
+    h_gen = await db.create_webhook(None, "gen", "outgoing", url="https://hooks.example.test/gen",
+                                    events=["stream.live", "stream.offline"], kind="system")
+    dc = await db.get_webhook_for_delivery(h_dc["id"])
+    gen = await db.get_webhook_for_delivery(h_gen["id"])
+    check("setup: a system hook in the discord format and a generic one",
+          dc["kind"] == "system" and dc["format"] == "discord" and gen["kind"] == "system" and gen["format"] == "generic")
+    payload = {"stream_id": sid}
+    pub = {"stream_public": True}
+    check("a retry for a public stream goes to the third-party system hook",
+          await server._webhook_resend_allowed(dc, "stream.live", pub, payload))
+    await db.update_user_stream(sid, is_public=False)
+    check("a retry after the stream turned private is refused for the third-party system hook",
+          not await server._webhook_resend_allowed(dc, "stream.live", pub, payload))
+    check("the same retry still goes to the generic system hook",
+          await server._webhook_resend_allowed(gen, "stream.live", pub, payload))
+    await db.conn.execute("DELETE FROM user_streams WHERE id = ?", (sid,))
+    await db.conn.commit()
+    check("a retry for a deleted stream is refused for the third-party system hook",
+          not await server._webhook_resend_allowed(dc, "stream.offline", pub, payload))
+    check("... and still goes to the generic system hook",
+          await server._webhook_resend_allowed(gen, "stream.offline", pub, payload))
+    check("a third-party system hook still gets events that are not stream events",
+          await server._stream_event_still_public(dc, "message.created", {}))
+
 
 try:
     asyncio.run(asyncio.wait_for(main(), DEADLINE))

@@ -35,9 +35,12 @@ _TRUNCATION_RESERVE = 128  # room kept free below the cap for the closing marker
 
 # Disk budget. The total is a running count (header and every written line, reconciled by one
 # walk of the folder at startup, after the retention pass and after an administrator's delete),
-# so starting a session never walks the folder. Sessions that run at the same time can overshoot
-# the budget by up to RECORDING_MAX_BYTES each. An older recording is never deleted to make room.
+# so starting a session never walks the folder. A running recording checks the total and the
+# free-space floor again after every BUDGET_CHECK_BYTES it writes and stops (the session goes on)
+# when either is over, so sessions that run at the same time overshoot the budget by at most one
+# block each. An older recording is never deleted to make room.
 DEFAULT_MAX_TOTAL_MB = 2048          # setting recording_max_total_mb; 0 = no limit
+BUDGET_CHECK_BYTES = 1024 * 1024     # a running recording re-checks the budget after this many bytes
 FREE_FLOOR_BYTES = 1024 ** 3         # refuse under min(1 GiB, 5 percent of the filesystem) free
 FREE_FLOOR_FRACTION = 0.05
 WARN_INTERVAL_SECONDS = 600          # one warning per reason per ten minutes
@@ -91,8 +94,8 @@ def _warn_once(reason: str, message: str) -> None:
     logger.warning(message)
 
 
-async def budget_refusal(directory) -> Optional[str]:
-    """The reason a new recording must not start (budget used up, or too little free space), else None."""
+async def _max_total_mb() -> int:
+    """The setting recording_max_total_mb (0 = no limit); the default when it is missing or invalid."""
     try:
         raw = await db.get_setting("recording_max_total_mb")
         max_mb = int(raw) if raw is not None else DEFAULT_MAX_TOTAL_MB
@@ -100,6 +103,16 @@ async def budget_refusal(directory) -> Optional[str]:
             max_mb = DEFAULT_MAX_TOTAL_MB
     except (TypeError, ValueError):
         max_mb = DEFAULT_MAX_TOTAL_MB
+    return max_mb
+
+
+async def budget_refusal(directory) -> Optional[str]:
+    """The reason a new recording must not start (budget used up, or too little free space), else None."""
+    return _budget_reason(directory, await _max_total_mb())
+
+
+def _budget_reason(directory, max_mb: int) -> Optional[str]:
+    """The reason the recordings folder is over its budget or short of free space, else None (no waiting)."""
     if max_mb and _total_bytes >= max_mb * 1024 * 1024:
         return (f"the recordings folder holds {_total_bytes // (1024 * 1024)} MB, "
                 f"at the limit of {max_mb} MB (setting recording_max_total_mb)")
@@ -215,6 +228,9 @@ class AsciicastRecorder:
         self.filename: Optional[str] = None
         self.size = 0
         self.truncated = False
+        self._dir: Optional[str] = None       # the recordings folder, for the budget re-check
+        self._max_mb = 0                      # recording_max_total_mb read at the start
+        self._unchecked = 0                   # bytes written since the budget was last checked
         self._fd: Optional[int] = None
         self._active = False
 
@@ -252,6 +268,8 @@ class AsciicastRecorder:
             if refusal:
                 _warn_once("budget", f"Recording refused, the session goes on unrecorded: {refusal}")
                 return None
+            self._dir = str(directory)
+            self._max_mb = await _max_total_mb()
             filepath = directory / filename
             db.live_recording_files.add(filename)  # before the file exists
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_NOFOLLOW
@@ -325,8 +343,15 @@ class AsciicastRecorder:
             logger.error(f"Recording {self.filename} stopped, write failed: {e}")
             self._active = False
             self._close_fd()
+            return
+        self._unchecked += len(line)
+        if self._unchecked >= BUDGET_CHECK_BYTES and self._dir is not None:
+            self._unchecked = 0
+            reason = _budget_reason(self._dir, self._max_mb)
+            if reason:
+                self._truncate(elapsed, f"the recordings budget is used up: {reason}")
 
-    def _truncate(self, elapsed: float) -> None:
+    def _truncate(self, elapsed: float, why: Optional[str] = None) -> None:
         """Stop at the size limit and close the file with a marker event ("m"),
         so a viewer can tell the recording was cut. The marker fits in the room
         kept free below the cap; if it does not, the file just ends."""
@@ -341,7 +366,10 @@ class AsciicastRecorder:
         except OSError as e:
             logger.warning(f"Recording {self.filename}: could not write the truncation marker: {e}")
         self._close_fd()
-        logger.info(f"Recording {self.filename} reached the size limit of {self.max_bytes} bytes and stopped")
+        if why:
+            logger.warning(f"Recording {self.filename} stopped at {self.size} bytes, the session goes on: {why}")
+        else:
+            logger.info(f"Recording {self.filename} reached the size limit of {self.max_bytes} bytes and stopped")
 
     async def finish(self) -> None:
         """Close the file and store the final size and duration."""

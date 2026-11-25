@@ -331,15 +331,27 @@ async def run(ctx):
         if big is None:
             ctx.ok("recordings: a session that outputs more than the cap still records", False, "no file")
             return
-        await asyncio.sleep(1.0)
-        size = big.stat().st_size
-        with open(big, "rb") as f:
-            f.seek(max(0, size - 400))
-            tail = f.read().splitlines()
-        try:
-            last = json.loads(tail[-1])
-            marker_ok = last[1] == "m" and "truncated" in last[2]
-        except (ValueError, IndexError):
-            marker_ok = False
+        # The recorder may still be writing when the session output ends: read the size and the tail until the
+        # truncation marker is the last line or the size has not changed over 0.3 s (limit 15 s), not after a fixed wait.
+        def read_state():
+            size = big.stat().st_size
+            with open(big, "rb") as f:
+                f.seek(max(0, size - 400))
+                tail = f.read().splitlines()
+            try:
+                last = json.loads(tail[-1])
+                marker = last[1] == "m" and "truncated" in last[2]
+            except (ValueError, IndexError):
+                marker = False
+            return size, tail, marker
+        size, tail, marker_ok = read_state()
+        deadline = asyncio.get_running_loop().time() + 15
+        while not marker_ok and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.3)
+            again = read_state()
+            stable = again[0] == size
+            size, tail, marker_ok = again
+            if stable:
+                break
         ctx.ok("recordings: the file stops at the 50 MB cap", cap - 4096 < size <= cap, f"size {size}")
         ctx.ok("recordings: a capped file ends with a truncation marker event", marker_ok, str(tail[-1:])[:200])

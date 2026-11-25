@@ -1773,18 +1773,16 @@ class Database:
         administrator (role admin or superadmin, as the server reads it).
 
         On 1.19.0 a member could store the key; it did nothing there, but a later promotion would
-        silently have started recording. Runs once (settings row `recording_member_flags_cleared`),
-        after the config encryption migrations, so a config is read the way it is stored. Only rows
+        silently have started recording. Runs at every start (it is idempotent and rewrites only rows that
+        hold the key), so a flag stored after a rollback to 1.19.0 does not survive the next upgrade; the
+        settings row `recording_member_flags_cleared` is still written for old code. Runs after the config
+        encryption migrations, so a config is read the way it is stored. Only rows
         that hold the key are rewritten, in the format they had (encrypted or plain JSON), so 1.19.0
         still reads them. A row that cannot be decoded is skipped and its id logged; any other
         failure leaves the setting unset and the migration runs at the next start.
         """
         key = "recording_member_flags_cleared"
         try:
-            cursor = await self._connection.execute("SELECT value FROM settings WHERE key = ?", (key,))
-            row = await cursor.fetchone()
-            if row and row["value"] == "1":
-                return
             cursor = await self._connection.execute(
                 "SELECT c.id, c.config FROM user_connections c LEFT JOIN users u ON u.id = c.user_id "
                 "WHERE c.config IS NOT NULL AND c.config != '{}' "
@@ -7829,11 +7827,12 @@ class Database:
         """Delete a chat message (optionally verify ownership)."""
         return await self._delete_one_message("chat_messages", "channel", message_id, user_id)
 
-    # A channel whose own retention_days applies: it has a positive value (0 or less, only by a manual edit,
-    # is no value) and is not a stream's own chat.
+    # A channel whose own retention_days applies: it has a value of at least one day (0 or less or a fraction
+    # of a day, only by a manual edit, is no value: the same rule as server._own_retention_value) and is not
+    # a stream's own chat.
     # A stream chat keeps following the global setting even if a stale value is stored on it.
     _OWN_RETENTION_SQL = (
-        "retention_days > 0 AND (is_default = 1 OR id NOT IN "
+        "retention_days >= 1 AND (is_default = 1 OR id NOT IN "
         "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
 
     async def cleanup_old_chat_messages(self, days: int = 7, stats: dict = None,
@@ -7861,7 +7860,7 @@ class Database:
         """Channels with a file_retention_days value that are not a stream's own chat."""
         cursor = await self.conn.execute(
             "SELECT id, name, retention_days, file_retention_days FROM chat_channels "
-            "WHERE file_retention_days > 0 AND (is_default = 1 OR id NOT IN "
+            "WHERE file_retention_days >= 1 AND (is_default = 1 OR id NOT IN "
             "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
         return [dict(r) for r in await cursor.fetchall()]
 
@@ -8156,7 +8155,33 @@ class Database:
                 self._new_file_stats(None))
         return True
 
+    # The run that is in flight (None when idle) and the `delete` argument it was started with.
+    _orphan_sweep_task: Optional[asyncio.Task] = None
+    _orphan_sweep_delete: Optional[bool] = None
+
     async def sweep_orphan_chat_uploads(self, delete: Optional[bool] = None) -> dict:
+        """Find chat upload files that no row refers to (see _sweep_orphan_chat_uploads_once).
+
+        Only one scan runs at a time: a call made while one is running (a repeated click, or a click
+        during the daily pass) waits for it and receives its report instead of starting another one.
+        A caller that is cancelled leaves the run to the others; the marker is cleared when the run
+        ends, whatever the outcome."""
+        running = self._orphan_sweep_task
+        if running is not None and not running.done() and self._orphan_sweep_delete == delete:
+            return await asyncio.shield(running)
+        task = asyncio.ensure_future(self._sweep_orphan_chat_uploads_once(delete))
+        self._orphan_sweep_task, self._orphan_sweep_delete = task, delete
+
+        def _ended(t: asyncio.Task) -> None:
+            if self._orphan_sweep_task is t:
+                self._orphan_sweep_task = None
+            if not t.cancelled():
+                t.exception()          # an error is delivered to the callers; never "never retrieved"
+
+        task.add_done_callback(_ended)
+        return await asyncio.shield(task)
+
+    async def _sweep_orphan_chat_uploads_once(self, delete: Optional[bool] = None) -> dict:
         """Find chat upload files that no row refers to.
 
         Looks only at generated-name regular files directly inside the chat
@@ -8863,7 +8888,8 @@ class Database:
     # Activity log operations
     async def log_activity(self, user_id: int, username: str, action: str,
                            detail: str = None, ip_address: str = None) -> None:
-        """Log a user activity event. Deduplicates within 5 minutes and auto-prunes to 50 entries."""
+        """Log a user activity event. Deduplicates within 5 minutes. The table is trimmed only by
+        cleanup_old_activity_log (the retention pass)."""
         # Skip if identical event (same user + action + detail) happened within 5 minutes
         cursor = await self.conn.execute(
             """SELECT id FROM activity_log
@@ -8878,12 +8904,6 @@ class Database:
             """INSERT INTO activity_log (user_id, username, action, detail, ip_address)
                VALUES (?, ?, ?, ?, ?)""",
             (user_id, username, action, detail, ip_address)
-        )
-        # Prune old entries beyond 50
-        await self.conn.execute(
-            """DELETE FROM activity_log WHERE id NOT IN (
-                SELECT id FROM activity_log ORDER BY created_at DESC LIMIT 50
-            )"""
         )
         await self.conn.commit()
 

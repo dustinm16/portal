@@ -14,7 +14,8 @@ setting (the settings the child changes are put back); no admin password is need
 Proves: the owner gets an MP4 with the index first that answers Range, a second request is served
 without another ffmpeg, Opus audio is 415 with a reason, another member and a member without storage get
 404, a traversal path is refused, a cap of 0 answers 503 and empties the cache, a chunk too large for the
-cap is download only, the cache folder is 0700 with 0600 files and the staged server made its own.
+cap is download only, a job below the free-space floor plus margin is refused (with a small margin and a
+free-space stub) and runs at it, the cache folder is 0700 with 0600 files and the staged server made its own.
 
 Not proven here: a browser, a phone, a real remote storage, Cloudflare.
 """
@@ -143,6 +144,34 @@ async def main():
             await db.set_setting("vod_play_cache_mb", "0.05")
             r6 = await get(good, "owner")
             out["too_large"] = r6.status
+            # the free-space margin: a small non-zero one and a free-space stub; below floor + margin a job is
+            # refused before anything is pulled or converted, at floor + margin it runs
+            await db.set_setting("vod_play_cache_mb", "50")
+            server._vod_play_jobs.clear()
+            margin = 1024 * 1024
+            async def settle():
+                j = {}
+                for _ in range(150):
+                    sr = await client.get("/api/vods/play-status/" + good + ".mp4", headers={"X-U": str(ids["owner"])})
+                    j = await sr.json()
+                    if j.get("state") in ("ready", "failed"):
+                        break
+                    await asyncio.sleep(0.2)
+                return j
+            n = len(spawned)
+            with mock.patch.object(server, "VOD_PLAY_FREE_MARGIN_BYTES", margin):
+                with mock.patch.object(vod_staging, "free_bytes", lambda path: margin - 1):
+                    r7 = await get(good, "owner")
+                    await r7.read()
+                    j7 = await settle()
+                out["margin_refused"] = [j7.get("state"), "free disk space" in (j7.get("error") or ""), len(spawned) == n,
+                                         [f for f in os.listdir(cache_dir) if f.endswith(".mp4")] == []]
+                server._vod_play_jobs.clear()
+                with mock.patch.object(vod_staging, "free_bytes", lambda path: margin + 10 * 1024 ** 3):
+                    r8 = await get(good, "owner")
+                    await r8.read()
+                    j8 = await settle()
+                out["margin_enough"] = [j8.get("state"), len(spawned) > n]
             await client.close()
     finally:
         for k, v in saved.items():
@@ -215,6 +244,11 @@ async def run(ctx):
             ctx.ok("vodplay: a cap of 0 answers 503 playback_off and empties the cache",
                    r["off"] == [503, "playback_off"] and r["emptied"] is True, str(r["off"]))
             ctx.ok("vodplay: a chunk larger than the cap allows is download only", r["too_large"] == 415, str(r["too_large"]))
+            ctx.ok("vodplay: with a small non-zero margin and a free-space stub, a job below floor plus margin is refused "
+                   "(disk space message), starts no conversion and caches nothing",
+                   r["margin_refused"] == ["failed", True, True, True], str(r["margin_refused"]))
+            ctx.ok("vodplay: with floor plus margin free the same job runs and is ready",
+                   r["margin_enough"] == ["ready", True], str(r["margin_enough"]))
 
         if ids:
             async with ctx.http() as s:

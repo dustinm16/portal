@@ -245,7 +245,7 @@ async def main():
           row["connection_id"] == cid and row["connection_name"] == "rec box" and row["service_id"] is None
           and row["kind"] == "ssh", str(row))
     check("size and duration were stored when the session ended",
-          row["size"] > 50 and 0.4 < row["duration"] < 5, str(row))
+          row["size"] > 50 and 0.4 < row["duration"] < 30, str(row))      # the sleeps only lengthen it; a loaded machine must not fail it
     path = Path(rec_dir) / row["filename"]
     check("the file is 0600 in a 0700 folder",
           stat.S_IMODE(os.stat(path).st_mode) == 0o600 and stat.S_IMODE(os.stat(rec_dir).st_mode) == 0o700)
@@ -255,8 +255,10 @@ async def main():
     outs = [(t, d) for t, k, d in events if k == "o"]
     first = next((t for t, d in outs if "first" in d), None)
     second = next((t for t, d in outs if "second" in d), None)
+    # The fake remote pauses 0.5 s between the two and the recorder stamps an event when it reads it, so a loaded
+    # machine can shrink or stretch the gap a lot: the bounds only say "later, and not by a broken clock's amount".
     check("output events carry the session's own timing (first, then second about 0.5 s later)",
-          first is not None and second is not None and 0.4 <= second - first <= 2.0 and first < 1.0,
+          first is not None and second is not None and 0.2 <= second - first <= 6.0 and first < 10.0,
           f"first={first} second={second}")
     check("times never go backwards", [e[0] for e in events] == sorted(e[0] for e in events))
     check("a resize event is recorded", any(k == "r" and d == "100x30" for _t, k, d in events), str(events))

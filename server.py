@@ -26,6 +26,7 @@ import subprocess
 import logging
 import mimetypes
 import os
+import posixpath
 import secrets
 import shutil
 import stat as _stat
@@ -8915,6 +8916,7 @@ async def http_live_page(request: web.Request) -> web.Response:
 VOD_SEGMENT_DURATION = 300  # seconds per chunk (5 minutes)
 VOD_SFTP_START_TIMEOUT = 10  # seconds for the SFTP subsystem to start on a connected, verified SSH session
 VOD_SFTP_META_TIMEOUT = 30  # seconds for one SFTP stat, mkdir or listdir: a remote that hangs must not hold a pass
+VOD_READ_TIMEOUT = 30.0  # seconds one read of a remote VOD file may take in the download and zip routes
 VOD_ROUTE_DEADLINE = 60.0  # seconds for everything a download, zip or delete request does before it answers or starts its response (the proxy gives up at 100)
 VOD_UPLOAD_TICK = 30        # seconds between two uploader passes (the uploader's own pass; the disk guard has its own task and tick)
 VOD_STOP_Q_WAIT = 20        # seconds ffmpeg gets to finish after "q" before the signal ladder starts
@@ -8997,6 +8999,7 @@ _vod_guard_seq = 0
 # an encoder that keeps reconnecting is refused each time, but the log gets one row per hour.
 VOD_SKIP_LOG_WINDOW = 3600
 _vod_skip_logged: dict = {}
+VOD_GUARD_NOTICE_MAX_AGE = 86400   # seconds a guard notice stays visible in My VODs
 
 
 async def _vod_guard_limits() -> tuple:
@@ -9029,8 +9032,18 @@ async def _vod_guard_check(own_dir: Optional[str] = None, owner_id: Optional[int
     min_free, max_backlog, _age = await _vod_guard_limits()
     if not (min_free or max_backlog):
         return None
+    owner_root = None
+    if owner_id is not None and max_backlog:
+        # folders recorded under an earlier storage root are kept by the sweep, not delivered: they do
+        # not count against the owner. An unreadable or missing root counts everything, as before.
+        try:
+            storage = await db.get_vod_storage(owner_id)
+            owner_root = str(storage["remote_path"]) if storage and storage.get("remote_path") else None
+        except Exception as e:
+            logger.debug(f"VOD guard could not read the storage root of user {owner_id}: {e}")
     return await asyncio.to_thread(
-        vod_staging.guard_verdict, VOD_TEMP_DIR, min_free, max_backlog, _vod_live_dirs(), own_dir, owner_id)
+        vod_staging.guard_verdict, VOD_TEMP_DIR, min_free, max_backlog, _vod_live_dirs(), own_dir, owner_id,
+        owner_root)
 
 
 async def _vod_guard_note(kind: str, user_id: int, stream_id, stream_name: str, verdict: tuple,
@@ -9145,7 +9158,18 @@ def _clean_log_name(name) -> str:
 
 def _vod_guard_public(user_id: int) -> Optional[dict]:
     """What My VODs may show an owner about the guard (no paths): the owner's most recent active notice."""
-    mine = [st for st in list(_vod_guard_state.values()) if st.get("user_id") == user_id]
+    now = datetime.now(timezone.utc)
+    mine = []
+    for key, st in list(_vod_guard_state.items()):
+        try:
+            age = (now - datetime.fromisoformat(st["at"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            age = None
+        if age is None or age >= VOD_GUARD_NOTICE_MAX_AGE:
+            if _vod_guard_state.get(key) is st:
+                del _vod_guard_state[key]          # a notice older than a day (or without a time) is gone
+        elif st.get("user_id") == user_id:
+            mine.append(st)
     if not mine:
         return None
     state = max(mine, key=lambda st: st["seq"])
@@ -9700,6 +9724,9 @@ async def _vod_note_removed_folder(meta: dict, folder: str, size: int, why: str,
 # alone and the local one is delivered next to it. A chunk that was already uploaded when the
 # portal stopped before it could delete the local copy is therefore delivered a second time
 # under a new number: a duplicate is the price of never losing or replacing a chunk.
+# After listing a remote folder the sweep also removes the hidden .live_*.part and .sweep_*.part files
+# (regular files only) that are more than 24 hours old, in a folder no recording uses, at most
+# VOD_PART_CLEAN_PER_PASS per pass; a removed part no longer counts in the numbering.
 # Each upload goes to a unique temporary name, is renamed without replacing anything, its remote
 # size is checked against the local size, and only then the local chunk is removed.
 # One folder at a time, at most VOD_SWEEP_PASS_CAP_BYTES per pass (the rest waits for the next
@@ -9710,11 +9737,29 @@ async def _vod_note_removed_folder(meta: dict, folder: str, size: int, why: str,
 
 VOD_SWEEP_PASS_CAP_BYTES = 4 * 1024 ** 3
 VOD_SWEEP_PAUSE = 1.0
+VOD_PART_MAX_AGE = 24 * 3600      # seconds a hidden .live_*.part / .sweep_*.part must be untouched before the sweep removes it
+VOD_PART_CLEAN_PER_PASS = 50      # at most this many stale part files are removed in one sweep pass
+_VOD_STALE_PART_RE = re.compile(r"\.(?:live|sweep)_[^/\x00]+\.part")
+VOD_PART_REVISIT_KEY = "vod_part_revisit"     # setting: remote folders the sweep delivered into, to look at again after a day
+VOD_PART_REVISIT_MAX = 200                    # entries kept (the newest ones)
+VOD_PART_REVISIT_GIVE_UP = 30 * 24 * 3600     # an entry is dropped this long after the folder was first noted
 VOD_SWEEP_CLEANUP_TIMEOUT = 5.0   # seconds the removal of a part file may take when the sweep is cancelled
 # remote folder -> highest chunk number the sweep took, so a recording that starts meanwhile
-# for the same remote folder numbers above it. Kept for the life of the process (a few entries):
-# a recording may read it after the pass that took the number has ended.
+# for the same remote folder numbers above it. A recording may read it after the pass that took the
+# number has ended, so an entry goes only when no recording uses or is starting in that folder
+# (_vod_prune_sweep_claims, after the sweep of a folder and at the end of a pass); a recording that
+# starts later lists the remote folder itself and sees what was delivered.
 _vod_sweep_claims: dict = {}
+
+
+def _vod_prune_sweep_claims() -> None:
+    """Drop the claims of remote folders that no recording uses. No await inside: a recording that starts
+    registers its folder as busy before its first await, so it is either seen here or reads the claim."""
+    in_use = _vod_remote_dirs_in_use()
+    if "*" in in_use:
+        return
+    for remote_dir in [d for d in _vod_sweep_claims if d not in in_use]:
+        del _vod_sweep_claims[remote_dir]
 
 
 def _vod_sweep_dry_run(storage: Optional[dict]) -> bool:
@@ -9758,6 +9803,18 @@ def _vod_remote_dir_in_use(remote_dir: str) -> bool:
     return remote_dir in dirs or "*" in dirs
 
 
+_vod_kept_logged: set = set()      # names of kept folders already reported at WARNING (dropped when the folder is gone)
+
+
+def _vod_log_kept(name: str, message: str) -> None:
+    """A folder the sweep keeps is reported once at WARNING; every later pass says it at INFO."""
+    if name in _vod_kept_logged:
+        logger.info(message)
+    else:
+        _vod_kept_logged.add(name)
+        logger.warning(message)
+
+
 async def recover_vod_staging(session_dirs: Optional[list] = None) -> None:
     """Deliver chunks that an earlier run left in the staging folder (the boot sweep).
 
@@ -9776,9 +9833,12 @@ async def recover_vod_staging(session_dirs: Optional[list] = None) -> None:
         return
     _vod_recovery_running = True
     budget = {"left": VOD_SWEEP_PASS_CAP_BYTES}
+    revisit = session_dirs is None
     try:
         if session_dirs is None:
             session_dirs = await asyncio.to_thread(vod_staging.list_session_dirs, VOD_TEMP_DIR)
+            _vod_root_mismatch_logged.intersection_update(os.path.basename(d) for d in session_dirs)
+            _vod_kept_logged.intersection_update(os.path.basename(d) for d in session_dirs)
         for session_dir in session_dirs:
             if session_dir in _vod_busy_dirs or any(
                 rec.get("session_dir") == session_dir for rec in list(active_recordings.values())
@@ -9793,7 +9853,15 @@ async def recover_vod_staging(session_dirs: Optional[list] = None) -> None:
                 raise
             except Exception as e:  # one folder's failure must not end the pass for the others
                 logger.error(f"VOD sweep failed for {os.path.basename(session_dir)}: {e}")
+        if revisit:
+            try:
+                await _vod_revisit_part_dirs({})
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"VOD sweep: the check for old part files failed: {e!r}")
     finally:
+        _vod_prune_sweep_claims()
         _vod_recovery_running = False
 
 
@@ -9820,17 +9888,17 @@ async def _vod_recover_one(session_dir: str, budget: Optional[dict] = None) -> N
                 session_dir, f"it has no usable session record and is older than {max_age} days",
                 dry_run=bool(Config.STAGE_MODE))
         else:
-            logger.warning(
-                f"VOD sweep: {name} has no usable session record and cannot be delivered; it is kept "
-                f"(upload the chunks by hand if you need them)")
+            _vod_log_kept(
+                name, f"VOD sweep: {name} has no usable session record and cannot be delivered; it is kept "
+                      f"(upload the chunks by hand if you need them)")
         return
     gone = await _vod_has_destination(meta["user_id"])
     if gone:
         # no undelivered recording is deleted without the grace period of a folder without a record
         if not (max_age and vod_staging.is_stale(session_dir, max_age=max_age * 86400)):
-            logger.warning(
-                f"VOD sweep: {name} cannot be delivered ({gone}); it is kept until it is older than "
-                f"vod_orphan_max_age_days (0 = never)")
+            _vod_log_kept(
+                name, f"VOD sweep: {name} cannot be delivered ({gone}); it is kept until it is older than "
+                      f"vod_orphan_max_age_days (0 = never)")
             return
         removed = _vod_remove_orphan(
             session_dir, f"{gone} and it is older than {max_age} days", dry_run=bool(Config.STAGE_MODE))
@@ -9839,6 +9907,16 @@ async def _vod_recover_one(session_dir: str, budget: Optional[dict] = None) -> N
         return
     if _vod_remote_dir_in_use(meta["remote_session_dir"]):
         logger.debug(f"VOD sweep: {name} waits, a recording is writing to the same remote folder")
+        return
+    outside: list = []
+    if not await _vod_remote_dir_in_current_root(session_dir, meta, outside) and outside:
+        # kept, never delivered to the old root; it ages out like a folder whose storage is gone
+        if max_age and vod_staging.is_stale(session_dir, max_age=max_age * 86400):
+            why = "its remote folder is outside the current storage root"
+            removed = _vod_remove_orphan(
+                session_dir, f"{why} and it is older than {max_age} days", dry_run=bool(Config.STAGE_MODE))
+            if removed:
+                await _vod_note_removed_folder(meta, name, removed[1], why, max_age)
         return
     try:
         storage = await db.get_vod_storage(meta["user_id"])
@@ -9857,20 +9935,77 @@ async def _vod_recover_one(session_dir: str, budget: Optional[dict] = None) -> N
         await _vod_sweep_deliver(session_dir, meta, chunks, budget)
     except Exception as e:
         logger.error(f"VOD sweep upload error for {name}: {e}")
+    finally:
+        _vod_prune_sweep_claims()      # this folder's sweep is over: its claim stays only while a recording uses it
     _vod_cleanup_session_dir(session_dir)
 
 
-async def _vod_sweep_deliver(session_dir: str, meta: dict, chunks: list, budget: dict) -> None:
-    """Upload the chunks of one session folder under new remote numbers (rules above)."""
+_vod_root_mismatch_logged: set = set()
+
+
+def _vod_path_inside(root: str, path: str) -> bool:
+    """Whether the remote `path` is `root` or lies below it, after posixpath.normpath on both."""
+    return vod_staging.path_inside(root, path)
+
+
+async def _vod_remote_dir_in_current_root(session_dir: str, meta: dict, outside: Optional[list] = None) -> bool:
+    """Whether the sidecar's remote folder lies inside the owner's current storage remote_path.
+
+    A caller that passes the list *outside* gets True appended when the root was read and the folder is
+    definitely outside it (not when the root could not be read).
+    """
+    name = os.path.basename(session_dir)
     remote_dir = meta["remote_session_dir"]
+    try:
+        storage = await db.get_vod_storage(meta["user_id"])
+        root = str(storage["remote_path"]) if storage and storage.get("remote_path") else None
+    except Exception as e:
+        logger.warning(f"VOD sweep: {name} not delivered, the storage root of user {meta['user_id']} "
+                       f"could not be read: {e}")
+        return False
+    if root is None:
+        logger.warning(f"VOD sweep: {name} not delivered, user {meta['user_id']} has no storage root")
+        return False
+    if _vod_path_inside(root, remote_dir):
+        _vod_root_mismatch_logged.discard(name)
+        return True
+    if outside is not None:
+        outside.append(True)
+    if name not in _vod_root_mismatch_logged:
+        _vod_root_mismatch_logged.add(name)
+        logger.warning(
+            f"VOD sweep: {name} is kept and not delivered: its remote folder {remote_dir} is outside the "
+            f"current storage root {root}")
+    return False
+
+
+async def _vod_sweep_deliver(session_dir: str, meta: dict, chunks: list, budget: dict) -> None:
+    """Upload the chunks of one session folder under new remote numbers (rules above).
+
+    Only into the owner's current storage root: a sidecar written under an earlier root is kept
+    locally and nothing is delivered (one log line per folder, not per pass).
+    """
+    remote_dir = meta["remote_session_dir"]
+    if not await _vod_remote_dir_in_current_root(session_dir, meta):
+        return
     conn, sftp, error = await _connect_vod_sftp(meta["user_id"])
     if error:
         logger.warning(f"VOD sweep: {os.path.basename(session_dir)} not delivered, SFTP connect failed: {error}")
         return
     try:
         await _sftp_makedirs(sftp, remote_dir)
-        top = vod_staging.highest_remote_index(
-            await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT))
+        names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)
+        await _vod_note_part_revisit(meta["user_id"], remote_dir)
+        if not _vod_remote_dir_in_use(remote_dir):
+            try:
+                gone = await _vod_clean_stale_parts(sftp, meta["user_id"], remote_dir, names, budget)
+                names = [n for n in names if n not in gone]    # a removed part no longer holds a number
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:      # the clean-up is a courtesy: the delivery goes on without it
+                logger.warning(f"VOD sweep: stale part files in {os.path.basename(session_dir)}'s remote folder "
+                               f"were not cleaned: {e!r}")
+        top = vod_staging.highest_remote_index(names)
         for local in chunks:
             if budget["left"] <= 0:
                 break
@@ -9885,6 +10020,152 @@ async def _vod_sweep_deliver(session_dir: str, meta: dict, chunks: list, budget:
                 break  # this folder failed; keep it for the next pass
             budget["left"] -= size
             await asyncio.sleep(VOD_SWEEP_PAUSE)
+    finally:
+        conn.close()
+
+
+async def _vod_clean_stale_parts(sftp, user_id: int, remote_dir: str, names: list, budget: dict) -> set:
+    """Remove the hidden part files a crash left in the owner's session folder; returns the names removed.
+
+    Only entries named .live_*.part or .sweep_*.part that are regular files (never a link or a folder), whose
+    modification time is more than VOD_PART_MAX_AGE old, directly inside *remote_dir*, a folder that no
+    recording uses and that lies inside the owner's storage root; at most VOD_PART_CLEAN_PER_PASS per pass
+    (counted in *budget*). Every SFTP call has the metadata time limit. Nothing else is ever removed.
+    """
+    removed: set = set()
+    candidates = sorted(n for n in names if _VOD_STALE_PART_RE.fullmatch(str(n)))
+    if not candidates or budget.get("parts", VOD_PART_CLEAN_PER_PASS) <= 0:
+        return removed
+    storage = await db.get_vod_storage(user_id)
+    if not storage or not storage.get("remote_path"):
+        return removed
+    await _vod_remote_confine_dir(sftp, str(storage["remote_path"]), remote_dir)   # no link leads out of the root
+    now = time()
+    for name in candidates:
+        if budget.get("parts", VOD_PART_CLEAN_PER_PASS) <= 0:
+            break
+        path = f"{remote_dir}/{name}"
+        try:
+            attrs = await asyncio.wait_for(sftp.lstat(path), VOD_SFTP_META_TIMEOUT)
+            perms, mtime = attrs.permissions, attrs.mtime
+            if perms is None or not _stat.S_ISREG(perms) or mtime is None or now - mtime <= VOD_PART_MAX_AGE:
+                continue
+            if _vod_remote_dir_in_use(remote_dir):      # checked again right before the removal
+                break
+            await asyncio.wait_for(sftp.remove(path), VOD_SFTP_META_TIMEOUT)
+        except asyncssh.SFTPNoSuchFile:
+            continue
+        except asyncssh.SFTPError as e:
+            logger.debug(f"VOD sweep: stale part file {path} could not be removed: {e!r}")
+            continue
+        budget["parts"] = budget.get("parts", VOD_PART_CLEAN_PER_PASS) - 1
+        removed.add(name)
+        logger.info(f"VOD sweep: removed stale part file {path} ({attrs.size} bytes, older than "
+                    f"{VOD_PART_MAX_AGE // 3600} hours)")
+    return removed
+
+
+async def _vod_load_part_revisit() -> list:
+    """The saved list of {u, d, at, first} entries; anything unreadable is an empty list."""
+    try:
+        data = json.loads(await db.get_setting(VOD_PART_REVISIT_KEY) or "[]")
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and isinstance(e.get("u"), int) and isinstance(e.get("d"), str)
+            and isinstance(e.get("at"), (int, float)) and isinstance(e.get("first"), (int, float))]
+
+
+async def _vod_save_part_revisit(entries: list) -> None:
+    entries = sorted(entries, key=lambda e: e["at"])[-VOD_PART_REVISIT_MAX:]
+    await db.set_setting(VOD_PART_REVISIT_KEY, json.dumps(entries))
+
+
+async def _vod_note_part_revisit(user_id: int, remote_dir: str) -> None:
+    """Remember that the sweep delivered into *remote_dir*: a part file a crash left there is still too young
+    to remove now, and nothing else lists the folder once its local backlog is gone, so a later pass
+    looks again (_vod_revisit_part_dirs). Best effort, never raises."""
+    try:
+        entries = await _vod_load_part_revisit()
+        now = time()
+        for e in entries:
+            if e["u"] == user_id and e["d"] == remote_dir:
+                e["at"] = now
+                break
+        else:
+            entries.append({"u": user_id, "d": remote_dir, "at": now, "first": now})
+        await _vod_save_part_revisit(entries)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug(f"VOD sweep could not note {remote_dir} for a later part file check: {e!r}")
+
+
+async def _vod_revisit_part_dirs(budget: dict) -> None:
+    """Look again at remote folders the sweep delivered into more than VOD_PART_MAX_AGE ago and remove the
+    stale part files there (same rules as _vod_clean_stale_parts: folder in no use, inside the owner's current
+    root, name pattern, age). An entry goes when the folder is clean, gone, outside the root or the owner's
+    storage is gone; it stays when the storage could not be reached or the folder is in use. A stage
+    instance that does not reach the real storage only reports (the sweep's own dry-run rule)."""
+    entries = await _vod_load_part_revisit()
+    now = time()
+    keep, changed = [], False
+    for entry in entries:
+        user_id, remote_dir = entry["u"], entry["d"]
+        if now - entry["first"] > VOD_PART_REVISIT_GIVE_UP:
+            changed = True
+            continue
+        if now - entry["at"] < VOD_PART_MAX_AGE or budget.get("parts", VOD_PART_CLEAN_PER_PASS) <= 0:
+            keep.append(entry)
+            continue
+        try:
+            drop = await _vod_revisit_one(entry, budget)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"VOD sweep: the part file check of {remote_dir} failed: {e!r}")
+            drop = False
+        if drop is None:               # looked at, parts remain that are not removable yet: ask again in a day
+            entry["at"] = now
+            changed = True
+            keep.append(entry)
+        elif drop:
+            changed = True
+        else:
+            keep.append(entry)
+    if changed:
+        await _vod_save_part_revisit(keep)
+
+
+async def _vod_revisit_one(entry: dict, budget: dict) -> Optional[bool]:
+    """True: the entry is done. False: keep it unchanged. None: keep it and look again in a day."""
+    user_id, remote_dir = entry["u"], entry["d"]
+    if _vod_remote_dir_in_use(remote_dir):
+        return False
+    try:
+        storage = await db.get_vod_storage(user_id)
+    except Exception as e:
+        logger.debug(f"VOD sweep could not read the storage of user {user_id}: {e}")
+        return False
+    if not storage or not storage.get("remote_path"):
+        return True
+    if not vod_staging.path_inside(str(storage["remote_path"]), remote_dir):
+        return True
+    if _vod_sweep_dry_run(storage):
+        return False
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        logger.debug(f"VOD sweep: part file check of {remote_dir} skipped, SFTP connect failed: {error}")
+        return False
+    try:
+        try:
+            names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)
+        except asyncssh.SFTPNoSuchFile:
+            return True
+        gone = await _vod_clean_stale_parts(sftp, user_id, remote_dir, names, budget)
+        left = [n for n in names if n not in gone and _VOD_STALE_PART_RE.fullmatch(str(n))]
+        return None if left else True
     finally:
         conn.close()
 
@@ -10868,11 +11149,14 @@ async def _webhook_current_for_event(webhook_id: int, event: str, meta: dict | N
 
 
 async def _stream_event_still_public(webhook: dict, event: str, payload: dict) -> bool:
-    """Before every attempt to deliver stream.live / stream.offline to a hook that is not a
-    system hook: read the stream again, and refuse when it is no longer public (made private
-    or deleted since the event was fired; a retry minutes later must not tell a member's hook
-    about it). System hooks are not asked. Anything but a stream event passes. Fails closed."""
-    if event not in webhook_formats.STREAM_EVENTS or (webhook.get("kind") or "user") == "system":
+    """Before every attempt to deliver stream.live / stream.offline to a hook: read the stream
+    again, and refuse when it is no longer public (made private or deleted since the event was
+    fired; a retry minutes later must not tell a member's hook, or a third-party format such as
+    Discord, about it). A system hook of the generic format is not asked. Anything but a stream
+    event passes. Fails closed."""
+    if event not in webhook_formats.STREAM_EVENTS:
+        return True
+    if (webhook.get("kind") or "user") == "system" and (webhook.get("format") or "generic") == "generic":
         return True
     try:
         stream = await db.get_user_stream(_row_id(str((payload or {}).get("stream_id"))))
@@ -12559,6 +12843,7 @@ def _stream_state_forget(stream_id: int) -> None:
     _end_claims.pop(stream_id, None)
     _relay_stop_held.discard(stream_id)
     _recorder_errors.pop(stream_id, None)
+    _vod_guard_state.pop(stream_id, None)       # the owner's VOD notice about a stream that no longer exists
     _ingest_forget(stream_id)
 
 
@@ -14717,6 +15002,24 @@ async def http_list_vods(request: web.Request) -> web.Response:
         conn.close()
 
 
+class _vod_read_open:
+    """Open a remote VOD file for reading in the download and zip routes. Closing it has a time limit, so a
+    storage that stopped answering does not hold the request open at the end either."""
+
+    def __init__(self, sftp, path: str):
+        self._cm = sftp.open(path, "rb")
+
+    async def __aenter__(self):
+        return await self._cm.__aenter__()
+
+    async def __aexit__(self, *exc):
+        try:
+            await asyncio.wait_for(self._cm.__aexit__(*exc), VOD_SFTP_META_TIMEOUT)
+        except Exception as e:      # best effort: the connection is closed by the caller anyway
+            logger.debug(f"VOD file close failed or timed out: {e!r}")
+        return False
+
+
 async def http_download_vod(request: web.Request) -> web.Response:
     """Stream-download a VOD file from remote SFTP storage.
 
@@ -14765,15 +15068,26 @@ async def http_download_vod(request: web.Request) -> web.Response:
         response_started = True
 
         CHUNK_SIZE = 262144  # 256 KB
-        async with sftp.open(remote_path, "rb") as f:
+        async with _vod_read_open(sftp, remote_path) as f:
             while True:
-                chunk = await f.read(CHUNK_SIZE)
+                chunk = await asyncio.wait_for(f.read(CHUNK_SIZE), VOD_READ_TIMEOUT)
                 if not chunk:
                     break
                 await response.write(chunk)
 
         await response.write_eof()
         return response
+    except asyncio.TimeoutError:
+        logger.error(f"VOD download for user {token.user_id}: the storage stopped answering mid-file, "
+                     f"the download is ended")
+        if response_started:
+            # the body is shorter than its Content-Length: closing the connection is what tells the client the
+            # download was cut (a kept-alive connection would leave it waiting for the rest)
+            response.force_close()
+            if request.transport is not None:
+                request.transport.close()
+            return response
+        return web.json_response({"error": "The storage did not answer in time"}, status=502)
     except asyncssh.SFTPError as e:
         logger.error(f"VOD download SFTP error for user {token.user_id}: {e}")
         if response_started:
@@ -14886,6 +15200,7 @@ async def _vod_stream_archive(request, token, sftp, storage: dict, files: list, 
 
     for filepath in files:
         remote_path = f"{remote_root}/{filepath}"
+        total_size = 0       # data bytes of this entry already sent
         try:
             # checked per file and before its header is written: a link that leaves the owner's root is
             # skipped, and the first bytes of the response are not held back by checking every name first
@@ -14913,17 +15228,16 @@ async def _vod_stream_archive(request, token, sftp, storage: dict, files: list, 
 
             # Stream file data from SFTP, computing CRC as we go
             crc = 0
-            total_size = 0
             CHUNK_SIZE = 262144
-            async with sftp.open(remote_path, "rb") as f:
+            async with _vod_read_open(sftp, remote_path) as f:
                 while True:
-                    chunk = await f.read(CHUNK_SIZE)
+                    chunk = await asyncio.wait_for(f.read(CHUNK_SIZE), VOD_READ_TIMEOUT)
                     if not chunk:
                         break
                     crc = binascii.crc32(chunk, crc) & 0xFFFFFFFF
-                    total_size += len(chunk)
                     await send(chunk)
-            offset += total_size
+                    total_size += len(chunk)
+                    offset += len(chunk)       # counted as it is sent: an error later in the entry keeps it right
 
             # Data descriptor (with signature)
             desc = struct.pack('<4sIII',
@@ -14942,12 +15256,18 @@ async def _vod_stream_archive(request, token, sftp, storage: dict, files: list, 
             return response
         except asyncio.TimeoutError:
             logger.error(f"VOD archive for user {token.user_id}: the storage did not answer in time at "
-                         f"{filepath}, the archive is stopped")   # only the check before an entry waits: no entry is cut
+                         f"{filepath}, the archive is stopped")
             break
         except _VodPlayRemoteError:
             logger.warning(f"Skipping VOD file in archive {filepath}: not a file inside the VOD root")
             continue
         except (asyncssh.SFTPError, OSError) as e:
+            if total_size:
+                # data of this entry is already in the stream: it is not complete and the archive ends here,
+                # with the central directory of the complete entries (the bytes sent are counted in offset)
+                logger.warning(f"VOD archive for user {token.user_id}: {filepath} failed after {total_size} "
+                               f"bytes ({e}), the archive is stopped")
+                break
             logger.warning(f"Skipping VOD file in archive {filepath}: {e}")
             continue
 
@@ -16025,7 +16345,9 @@ async def _vod_session_playlist(user_id: int, storage: dict, folder: str,
             return _vod_play_reply({"error": probe.get("error") or "The session could not be measured",
                                     "state": "failed"}, probe.get("status") or 500)
         if probe is None or probe["state"] == "ready":
-            if len([p for p in _vod_session_probes.values() if p["finished"] is None]) >= VOD_SESSION_PROBE_MAX:
+            running = [p for p in _vod_session_probes.values() if p["finished"] is None]
+            # one running probe per member (another session of theirs waits), and a cap over all members
+            if len(running) >= VOD_SESSION_PROBE_MAX or any(p["owner"] == user_id for p in running):
                 if prefix is None:
                     return _vod_play_reply({"error": "The server is busy measuring sessions; try again shortly"},
                                            503, retry_after=10)

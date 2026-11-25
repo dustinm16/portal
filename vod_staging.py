@@ -11,6 +11,7 @@ import ipaddress
 import json
 import logging
 import os
+import posixpath
 import pwd
 import re
 import shutil
@@ -465,11 +466,24 @@ def backlog_bytes(session_dir: str, live: bool = False) -> int:
     return sum(_chunk_size(f) for f in files)
 
 
-def total_backlog_bytes(root: str, live_dirs=(), owner_id: Optional[int] = None) -> int:
+def path_inside(root: str, path: str) -> bool:
+    """Whether the remote `path` is `root` or lies below it, after posixpath.normpath on both."""
+    root, path = posixpath.normpath(root), posixpath.normpath(path)
+    if root == ".":
+        return not path.startswith("/") and path != ".." and not path.startswith("../")
+    prefix = root if root.endswith("/") else root + "/"
+    return path == root or path.startswith(prefix)
+
+
+def total_backlog_bytes(root: str, live_dirs=(), owner_id: Optional[int] = None,
+                        owner_root: Optional[str] = None) -> int:
     """Bytes waiting in all session folders under *root*, or, with *owner_id*, in that owner's folders only.
 
     A folder belongs to the user named in its session record; a folder without a usable record
     belongs to nobody and is left out of an owner's count (the free-space floor still covers it).
+    With *owner_root* (the owner's current storage root) a folder whose record names a remote folder
+    outside that root is left out too: the sweep keeps it and delivers nothing, so it must not
+    hold the owner's new recordings back.
     """
     live = {os.path.abspath(d) for d in live_dirs}
     total = 0
@@ -478,12 +492,14 @@ def total_backlog_bytes(root: str, live_dirs=(), owner_id: Optional[int] = None)
             meta = read_sidecar(d)
             if not meta or meta.get("user_id") != owner_id:
                 continue
+            if owner_root and not path_inside(owner_root, meta["remote_session_dir"]):
+                continue
         total += backlog_bytes(d, os.path.abspath(d) in live)
     return total
 
 
 def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_dir: Optional[str] = None,
-                  owner_id: Optional[int] = None):
+                  owner_id: Optional[int] = None, owner_root: Optional[str] = None):
     """Why a recording must not run (or start), as (code, text), or None when all is well.
 
     *min_free* and *max_backlog* are bytes, 0 switches that check off. *live_dirs* are the
@@ -507,7 +523,7 @@ def guard_verdict(root: str, min_free: int, max_backlog: int, live_dirs=(), own_
                 return ("session_backlog",
                         f"{format_size(own)} of this recording is waiting to be uploaded "
                         f"(limit {format_size(max_backlog)})")
-        total = total_backlog_bytes(root, live_dirs, owner_id)
+        total = total_backlog_bytes(root, live_dirs, owner_id, owner_root)
         if total > max_backlog:
             whose = "of your recordings" if owner_id is not None else "of recordings"
             return ("total_backlog",
