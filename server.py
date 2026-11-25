@@ -9203,14 +9203,13 @@ def _vod_guard_public(user_id: int) -> Optional[dict]:
     """What My VODs may show an owner about the guard (no paths): the owner's most recent active notice."""
     now = datetime.now(timezone.utc)
     mine = []
-    for key, st in list(_vod_guard_state.items()):
+    for st in list(_vod_guard_state.values()):
         try:
             age = (now - datetime.fromisoformat(st["at"])).total_seconds()
         except (KeyError, TypeError, ValueError):
             age = None
         if age is None or age >= VOD_GUARD_NOTICE_MAX_AGE:
-            if _vod_guard_state.get(key) is st:
-                del _vod_guard_state[key]          # a notice older than a day (or without a time) is gone
+            continue            # a notice older than a day (or without a time) is not shown; the entry stays (stream health reads it)
         elif st.get("user_id") == user_id:
             mine.append(st)
     if not mine:

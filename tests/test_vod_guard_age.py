@@ -79,6 +79,18 @@ def test_deleting_a_stream_clears_its_notice():
         server._vod_guard_state.clear()
 
 
+def test_showing_notices_does_not_delete_the_other_entries():
+    server._vod_guard_state.clear()
+    try:
+        server._vod_guard_state[5] = _note(1, 1, 30)
+        server._vod_guard_state[6] = _note(2, 2, 40, kind="refused")
+        server._vod_guard_state["user3"] = _note(3, 3, 1)
+        server._vod_guard_public(1)
+        assert set(server._vod_guard_state) == {5, 6, "user3"}, sorted(map(str, server._vod_guard_state))
+    finally:
+        server._vod_guard_state.clear()
+
+
 def _deadline(signum, frame):
     print("FAIL: test_vod_guard_age timed out", flush=True)
     os._exit(1)
