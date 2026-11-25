@@ -29,11 +29,16 @@ from auth import create_user  # noqa: E402
 from config import Config  # noqa: E402
 
 
+_STATIC_COPY = None
+
+
 def _isolate_static():
     """Point the app at a temporary copy of static/ so nothing a test uploads (chat files, thumbnails, emotes) is
     written into the checkout. The files are copied (a link would let a test change the checkout, and the static
     route does not follow links); static/uploads starts empty. The whole folder is removed at exit."""
     root = Path(tempfile.mkdtemp(prefix="portal-test-static-"))
+    global _STATIC_COPY
+    _STATIC_COPY = root
     atexit.register(shutil.rmtree, root, True)
     real = Path(server.STATIC_DIR)
     (root / "static").mkdir()
@@ -155,6 +160,8 @@ def run(main, deadline):
         print(f"\nFAIL: the test did not run to the end ({type(e).__name__}: {e})", flush=True)
         sys.stdout.flush()
         sys.stderr.flush()
+        if _STATIC_COPY is not None:
+            shutil.rmtree(_STATIC_COPY, ignore_errors=True)     # os._exit skips the atexit clean-up
         os._exit(1)
 
 

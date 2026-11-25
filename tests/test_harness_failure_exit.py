@@ -24,6 +24,10 @@ h.run(main, 30)
 print("NOT REACHED")
 """
 
+import glob
+import tempfile
+PATTERN = str(Path(tempfile.gettempdir()) / "portal-test-static-*")
+before = set(glob.glob(PATTERN))
 try:
     cp = subprocess.run([sys.executable, "-c", BODY % str(HERE)], capture_output=True, text=True, timeout=60)
     hung = False
@@ -34,6 +38,7 @@ check("a test that raises after boot does not hang", not hung)
 if cp is not None:
     check("... it exits with a failure code", cp.returncode == 1, str(cp.returncode))
     check("... and says why", "a check blew up" in cp.stdout + cp.stderr and "NOT REACHED" not in cp.stdout)
+check("... and leaves no copy of static/ behind", set(glob.glob(PATTERN)) <= before, str(set(glob.glob(PATTERN)) - before))
 if failures:
     print("\ntest_harness_failure_exit: FAILED: " + "; ".join(failures))
     sys.exit(1)
