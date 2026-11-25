@@ -1,0 +1,66 @@
+{
+ "_note": "Captured against MediaMTX v1.21.3 on scratch ports with a real RTMP publisher (ffmpeg, path live/livekey) and two real offline headless Chromium WHEP viewers. The WHEP 201 answer carries the session's API id in the ID header; the last segment of Location is a different value (the session secret) and the kick route answers 404 for it.",
+ "whep_201_headers": [
+  {
+   "Content-Type": "application/sdp",
+   "ID": "b3ae9814-4a3b-4916-81ec-17fac3ed4ed0",
+   "Location": "/live/livekey/whep/904930a8-d082-4db2-94d1-9f8729a08673"
+  },
+  {
+   "Content-Type": "application/sdp",
+   "ID": "3b83ac5f-a297-411e-8a8c-c44237dacc52",
+   "Location": "/live/livekey/whep/3f55810c-7565-4a03-95fd-2a4efa64c5cc"
+  }
+ ],
+ "webrtcsessions_list_item": {
+  "id": "<ID header of the first viewer>",
+  "created": "2026-11-24T22:25:00.761095704Z",
+  "remoteAddr": "127.0.0.1:34258",
+  "peerConnectionEstablished": true,
+  "localCandidate": "host/udp/127.0.0.1/18189",
+  "remoteCandidate": "prflx/udp/127.0.0.1/60850",
+  "state": "read",
+  "path": "live/livekey",
+  "query": "",
+  "user": "",
+  "expiresAt": null,
+  "userAgent": "Python-urllib/3.11",
+  "inboundBytes": 812,
+  "inboundRTPPackets": 0,
+  "inboundRTPPacketsLost": 0,
+  "inboundRTPPacketsJitter": 0,
+  "inboundRTCPPackets": 4,
+  "outboundBytes": 3737,
+  "outboundRTPPackets": 4,
+  "outboundRTCPPackets": 1,
+  "outboundFramesDiscarded": 0,
+  "bytesReceived": 812,
+  "bytesSent": 3737,
+  "rtpPacketsReceived": 0,
+  "rtpPacketsSent": 4,
+  "rtpPacketsLost": 0,
+  "rtpPacketsJitter": 0,
+  "rtcpPacketsReceived": 4,
+  "rtcpPacketsSent": 1
+ },
+ "list_ids_equal_ID_headers": true,
+ "kick_by_location_tail": [
+  404,
+  "{\"status\":\"error\",\"error\":\"session not found\"}"
+ ],
+ "kick_by_ID_header": {
+  "status": 200,
+  "body": {
+   "status": "ok"
+  }
+ },
+ "kick_again": {
+  "status": 404,
+  "body": {
+   "status": "error",
+   "error": "session not found"
+  }
+ },
+ "viewer_a_state_after_kick": "connected",
+ "viewer_b_state_after_kick": "connected"
+}

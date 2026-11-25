@@ -487,6 +487,11 @@ async def audit_rows(w, action):
 
 
 def admin_req(w, user, sid, path, body=None):
+    """The page's request: End now and Stop relays need {"confirm": true}. body="bare" sends none."""
+    if body == "bare":
+        body = {}
+    else:
+        body = {"confirm": True, **(body or {})}
     return req(w, user, sid, "POST", path, body, route="admin/streams")
 
 

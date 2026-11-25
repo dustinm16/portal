@@ -147,12 +147,18 @@ async def run(ctx):
         ok("the stream is still live", d and d["stream"]["is_live"] == 1, str(st))
 
         st, d, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/stop-relays", json={})
+        ok("Stop relays without confirm is 400 and nothing happens", st == 400, str(st))
+        st, d, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/stop-relays", json={"confirm": True})
         ok("Stop relays answers", st == 200 and d and d["success"] is True and d["stopped"] == 0, f"{st} {d}")
         st, d, _ = await call(adm, "GET", "/api/admin/audit-log?action=stream_stop_relays&limit=200")
         rows = [e for e in (d or {}).get("entries", d.get("logs", []) if d else []) if e.get("target_id") == sid]
         ok("Stop relays wrote one audit entry", len(rows) == 1, f"{st} {len(rows)} {list((d or {}).keys())}")
 
-        st, d, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={"regenerate_key": True})
+        st, _, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={"regenerate_key": True})
+        ok("End now without confirm is 400 and nothing happens", st == 400, str(st))
+        st, d, _ = await call(owner, "GET", f"/api/streams/{sid}")
+        ok("the stream is still live after the refused End now", d and d["stream"]["is_live"] == 1, str(st))
+        st, d, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={"confirm": True, "regenerate_key": True})
         ok("End now answers and does not contact a media server on the stage",
            st == 200 and d and d["success"] is True and d["publisher_disconnected"] is False and "staged" in (d.get("disconnect_note") or ""), f"{st} {d}")
         st, d2, _ = await call(owner, "GET", f"/api/streams/{sid}")
@@ -168,7 +174,7 @@ async def run(ctx):
                "An administrator ended your stream. The stream key was replaced: the encoder needs the new key from the stream settings."
                " The encoder could not be disconnected and may still be sending.")
            and key not in raw.decode(), f"{st} {notes}")
-        st, _, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={})
+        st, _, _ = await call(adm, "POST", f"/api/admin/streams/{sid}/end", json={"confirm": True})
         ok("ending a stream that is not live is 409", st == 409, str(st))
         st, d, _ = await call(owner, "GET", f"/api/streams/{sid}/health")
         ok("the health of an offline stream says so", st == 200 and d["live"] is False and d["ingest"]["available"] is False, str(st))

@@ -444,6 +444,11 @@ def test_changes_drop_cached_decisions():
                                   transport=Transport())
         before = len(server._playback_auth_cache)
         assert before > 0
+        req.json = lambda: _coro({"end_live_session": True})       # the stream is live: replacing the key ends it
+
+        async def _no_kick(path):
+            return {"kicked": False, "reason": "test", "source": None}
+        server._mediamtx_kick_publisher = _no_kick
         resp = await server.http_regenerate_stream_key(req)
         assert resp.status == 200
         assert not [v for v in server._playback_auth_cache.values() if v[2] == sid]

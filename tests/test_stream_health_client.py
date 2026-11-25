@@ -50,7 +50,7 @@ check("watch.html colours the warning levels with the theme's warning and danger
 check("the health button is hidden until the page decides", 'id="health-btn" style="display: none;"' in watch
       and "Number(streamData.user_id) === Number(currentUser.id)" in watch and "Portal.isAdmin(currentUser)" in watch)
 check("admin.html has the Live streams tab and loads live-ops-admin.js", 'id="tab-btn-livestreams"' in admin
-      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=3" in admin)
+      and 'id="tab-livestreams"' in admin and "/static/js/live-ops-admin.js?v=4" in admin)
 check("the question row wraps inside the table: a scoped rule gives its cell normal white-space",
       re.search(r"#live-ops-body \.live-ops-confirm-row\s*>\s*td\s*\{[^}]*white-space:\s*normal", admin) is not None)
 for name in ("stream-health.js", "live-ops-admin.js"):

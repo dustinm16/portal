@@ -387,11 +387,11 @@ function renderApiKeys() {
                     <span class="badge ${statusClass}">${statusText}</span>
                     ${key.stale ? '<span class="badge badge-warning" title="Not used for 90 days. Revoke it if it is no longer needed.">Stale</span>' : ''}
                     ${!isRevoked ? `
-                        <button class="btn btn-sm btn-warning" onclick="confirmRevokeApiKey(${key.id}, '${escapeHtml(key.name).replace(/'/g, "\\'")}')" title="Revoke key">
+                        <button class="btn btn-sm btn-warning" data-api-key-action="revoke" data-api-key-id="${Number(key.id)}" title="Revoke key">
                             Revoke
                         </button>
                     ` : ''}
-                    <button class="btn btn-sm btn-danger" onclick="confirmDeleteApiKey(${key.id}, '${escapeHtml(key.name).replace(/'/g, "\\'")}')" title="Delete key">
+                    <button class="btn btn-sm btn-danger" data-api-key-action="delete" data-api-key-id="${Number(key.id)}" title="Delete key">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
@@ -400,6 +400,24 @@ function renderApiKeys() {
             </tr>
         `;
     }).join('');
+
+    // The buttons carry only the key's id; the name is read from the loaded list and reaches the
+    // page through textContent (a key name is free text and never goes into markup or a handler).
+    if (!tbody.dataset.keyActions) {
+        tbody.dataset.keyActions = '1';
+        tbody.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-api-key-action]');
+            if (!button || !tbody.contains(button)) return;
+            const keyId = Number(button.dataset.apiKeyId);
+            const key = apiKeys.find((k) => k.id === keyId);
+            const keyName = key ? key.name : '';
+            if (button.dataset.apiKeyAction === 'revoke') {
+                confirmRevokeApiKey(keyId, keyName);
+            } else if (button.dataset.apiKeyAction === 'delete') {
+                confirmDeleteApiKey(keyId, keyName);
+            }
+        });
+    }
 }
 
 /**

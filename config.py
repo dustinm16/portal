@@ -55,6 +55,12 @@ class Config:
     # Cloudflare are always exempt without being listed.
     NEVER_BAN_CIDRS: str = os.getenv("NEVER_BAN_CIDRS", "")
 
+    # Destinations a webhook with allow_private may reach although a service the portal runs (MediaMTX,
+    # the search backend, any managed service) listens there: host:port entries, IP addresses only (an
+    # IPv6 address in brackets), comma or space separated. Empty by default: such a service is refused.
+    # The portal's own listening ports are refused whatever is listed.
+    WEBHOOK_LOCAL_ALLOW: str = os.getenv("WEBHOOK_LOCAL_ALLOW", "")
+
     # Opt-in: temporarily block clients that probe for files the portal never
     # serves (.env, .git/config, *.php, ...) after this many hits. 0 (the
     # default) leaves it off. Blocks are per IP, so a shared NAT is blocked

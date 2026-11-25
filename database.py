@@ -1653,6 +1653,63 @@ class Database:
         # One-time: a member's connection no longer carries a stored "recording" flag
         await self._migrate_member_recording_flags()
 
+        await self._migrate_orphaned_stream_channels()
+
+        # A hook of a member who is not an administrator (demoted earlier) is switched off, kept
+        try:
+            n = await self.disable_webhooks_of_non_admins()
+            if n:
+                logger.info(f"Switched off {n} webhook(s) whose owner is not an administrator")
+        except Exception as e:
+            logger.warning(f"Webhook owner clean-up skipped: {type(e).__name__}")
+
+    async def _migrate_orphaned_stream_channels(self) -> None:
+        """Make the chat channels that deleting a user left behind private, and list them (idempotent).
+
+        Before 1.24.1 deleting an account removed its streams but not the stream chat channels, which stayed
+        as ordinary public channels with the history of a stream that may have been private. A stream channel
+        was created with the name stream-<username>-<stream id>, the description "Chat for <stream> by
+        <username>" and the stream's owner as creator. A channel is taken for such a leftover only when it is
+        not a default channel, no stream uses it, the stream id in its name no longer exists (ids are never
+        reused), its creator is gone (the deleted account) and name and description carry the same username.
+        A member could create a public channel with such a name, so nothing is deleted here: a match becomes
+        private (administrators still read it, the history is kept) and the list is stored in the setting
+        `orphaned_stream_channels` ([{"id", "name"}]) and logged, for an administrator to delete or keep.
+        """
+        import re as _re
+        try:
+            cursor = await self._connection.execute(
+                "SELECT c.id, c.name, c.description, c.visibility FROM chat_channels c "
+                "WHERE c.is_default = 0 AND c.name LIKE 'stream-%' "
+                "AND (c.created_by IS NULL OR c.created_by NOT IN (SELECT id FROM users)) "
+                "AND NOT EXISTS (SELECT 1 FROM user_streams s WHERE s.chat_channel_id = c.id)")
+            found = []
+            for row in await cursor.fetchall():
+                m = _re.fullmatch(r"stream-(.+)-(\d+)", row["name"] or "")
+                if not m:
+                    continue
+                desc = row["description"] or ""
+                if not (desc.startswith("Chat for ") and desc.endswith(" by " + m.group(1))):
+                    continue
+                cur2 = await self._connection.execute("SELECT 1 FROM user_streams WHERE id = ?", (int(m.group(2)),))
+                if await cur2.fetchone():
+                    continue
+                found.append(row)
+            for row in found:
+                if (row["visibility"] or "public") != "private":
+                    await self._connection.execute(
+                        "UPDATE chat_channels SET visibility = 'private' WHERE id = ?", (row["id"],))
+            listed = json.dumps([{"id": r["id"], "name": r["name"]} for r in found][:200])
+            await self._connection.execute(
+                "INSERT INTO settings (key, value) VALUES ('orphaned_stream_channels', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (listed,))
+            await self._connection.commit()
+            if found:
+                logger.warning("Stream chat channels left by deleted accounts were made private (administrators "
+                               "can read or delete them): " + ", ".join(f"{r['id']}:{r['name']}" for r in found[:50]))
+        except Exception as e:
+            logger.warning(f"Orphaned stream channel check skipped: {type(e).__name__}: {e}")
+
     async def _migrate_member_recording_flags(self) -> None:
         """Remove the "recording" key from the config of every connection whose owner is not an
         administrator (role admin or superadmin, as the server reads it).
@@ -5590,12 +5647,13 @@ class Database:
     PUSH_STALE_DAYS = 30
 
     # A device whose registering session is no longer live (it expired, or its row is gone, or none was
-    # recorded) and that no live session has announced for PUSH_STALE_DAYS: nothing is sent to it and the
-    # periodic cleanup deletes it. A live session's device is never stale, however long ago it was announced.
+    # recorded, or it never expires, which a browser session does not) and that no live session has announced for
+    # PUSH_STALE_DAYS: nothing is sent to it and the periodic cleanup deletes it. A device on a session that
+    # expires later is never stale, however long ago it was announced.
     _PUSH_STALE_SQL = """COALESCE(push_subscriptions.announced_at, push_subscriptions.created_at) < datetime('now', ?)
         AND (push_subscriptions.token_id IS NULL OR NOT EXISTS (
             SELECT 1 FROM tokens t WHERE t.token_id = push_subscriptions.token_id AND t.revoked = 0
-              AND (t.expires_at IS NULL OR t.expires_at >= ?)))"""
+              AND t.expires_at >= ?))"""
 
     async def _delete_stale_push_subscriptions(self) -> int:
         """Delete the devices _PUSH_STALE_SQL describes, without committing."""
@@ -10571,15 +10629,59 @@ class Database:
         row = await cursor.fetchone()
         return (row[0] or None) if row else None
 
+    # A hook of a member is the member's own only while the member is an administrator (only an administrator
+    # can create one). Read from the users table at every send, so a role changed by the command line, which
+    # runs in another process, takes effect at once. A system hook (no owner) passes; a user hook whose owner
+    # row is gone does not.
+    _WEBHOOK_OWNER_OK_SQL = (
+        "(w.kind = 'system' OR EXISTS (SELECT 1 FROM users u WHERE u.id = w.user_id "
+        "AND (u.is_admin = 1 OR u.role IN ('admin', 'superadmin'))))")
+    WEBHOOK_OWNER_GONE_REASON = "The owner is no longer an administrator"
+
     async def get_webhook_for_delivery(self, webhook_id: int) -> Optional[dict]:
         """Full webhook for the delivery engine: decrypted url, HMAC secret and
-        per-format credentials (`format_config` as a dict). Never sent to an API."""
+        per-format credentials (`format_config` as a dict). Never sent to an API.
+        `owner_may_send` is False for a user hook whose owner is not an administrator now."""
         cursor = await self.conn.execute(
-            "SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+            f"SELECT w.*, {self._WEBHOOK_OWNER_OK_SQL} AS owner_may_send FROM webhooks w WHERE w.id = ?",
+            (webhook_id,))
         row = await cursor.fetchone()
         if not row:
             return None
-        return self._webhook_full(row)
+        out = self._webhook_full(row)
+        out["owner_may_send"] = bool(out.get("owner_may_send"))
+        return out
+
+    async def user_is_administrator(self, user_id) -> bool:
+        """True when the user exists and is an administrator or superadmin now (the rule that lets
+        somebody own a hook)."""
+        if user_id is None:
+            return False
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM users WHERE id = ? AND (is_admin = 1 OR role IN ('admin', 'superadmin'))", (user_id,))
+        return await cursor.fetchone() is not None
+
+    async def disable_webhooks_of_user(self, user_id: int) -> int:
+        """Switch off the user hooks of one member (kept, with the reason as the last failure text).
+        Returns how many were enabled."""
+        cursor = await self.conn.execute(
+            "UPDATE webhooks SET enabled = 0, last_failure_at = datetime('now'), last_failure_reason = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = 'user' AND enabled = 1",
+            (encrypt_config(self.WEBHOOK_OWNER_GONE_REASON), user_id))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def disable_webhooks_of_non_admins(self) -> int:
+        """Start-up pass (idempotent): switch off the enabled user hooks whose owner is not an
+        administrator now. Hooks of administrators and system hooks are not touched."""
+        cursor = await self.conn.execute(
+            "UPDATE webhooks SET enabled = 0, last_failure_at = datetime('now'), last_failure_reason = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE kind = 'user' AND enabled = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM users u WHERE u.id = webhooks.user_id "
+            "AND (u.is_admin = 1 OR u.role IN ('admin', 'superadmin')))",
+            (encrypt_config(self.WEBHOOK_OWNER_GONE_REASON),))
+        await self.conn.commit()
+        return cursor.rowcount
 
     @classmethod
     def _webhook_full(cls, row) -> dict:
@@ -10637,7 +10739,8 @@ class Database:
         """Get enabled outgoing webhooks that receive `event` (the event-class
         rules in webhook_formats.event_subscribed apply). Full rows, for delivery."""
         cursor = await self.conn.execute(
-            "SELECT * FROM webhooks WHERE type = 'outgoing' AND enabled = 1")
+            "SELECT w.* FROM webhooks w WHERE w.type = 'outgoing' AND w.enabled = 1 AND "
+            + self._WEBHOOK_OWNER_OK_SQL)
         results = []
         for row in await cursor.fetchall():
             # Decide on the plain columns first: url, secret and format_config are

@@ -521,7 +521,7 @@ async def test_the_owner_is_told_the_key_was_replaced(w, mtx):
     sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
     async with Spy(w):
         assert (await publish_hook(w, key)).status == 200
-        st, body = await end_now(w, sid, {})
+        st, body = await end_now(w, sid, {"regenerate_key": True})
         assert st == 200 and body["key_replaced"] is True and body["publisher_disconnected"] is True
         assert await owner_notice(w, sid) == BASE + KEY_SENTENCE
 
@@ -531,7 +531,7 @@ async def test_the_owner_is_told_when_the_encoder_could_not_be_disconnected(w, m
     sid, key = w.streams["private"]["id"], w.streams["private"]["live"]
     async with Spy(w):
         assert (await publish_hook(w, key)).status == 200
-        st, body = await end_now(w, sid, {})
+        st, body = await end_now(w, sid, {"regenerate_key": True})
         assert st == 200 and body["publisher_disconnected"] is False, body
         assert await owner_notice(w, sid) == BASE + KEY_SENTENCE + STILL_SENDING
         for forbidden in (key, "SRT", "admin_", "198.51"):

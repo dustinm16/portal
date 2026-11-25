@@ -119,7 +119,8 @@ def test_credential_check_covers_sessions_keys_and_accounts():
 
                 def tok(jti, user=uid):
                     return TokenPayload({"sub": str(user), "jti": jti, "scopes": ["*"], "iat": 0})
-                assert await server._credential_still_valid(tok("streamkey-1")) is True
+                # since 1.24.1: no route signs a stream key in, so a socket that carries one is not valid
+                assert await server._credential_still_valid(tok("streamkey-1")) is False
                 assert await server._credential_still_valid(tok("streamkey-1", user=9999)) is False
                 assert await server._credential_still_valid(tok("no-such-session")) is False
                 assert await server._credential_still_valid(tok("apikey-12345")) is False

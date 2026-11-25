@@ -162,7 +162,7 @@ class N {
   await ctl.run({ detail: 1 });
   release(); await first;
   const ends = calls.filter(c => c.kind === 'end');
-  check('one request only, with the choice of the box, while one is in flight', ends.length === 1 && ends[0].id === 7 && ends[0].body.regenerate_key === false, JSON.stringify(ends));
+  check('one request only, with the choice of the box, while one is in flight', ends.length === 1 && ends[0].id === 7 && ends[0].body.regenerate_key === false && ends[0].body.confirm === true, JSON.stringify(ends));
   hold = null;
   await clickable('Stop relays').fire('click');
   check('Stop relays asks first too', tbody.find(n => n.className === 'live-ops-confirm')[0].textContent.includes('relays') && calls.filter(c => c.kind === 'stop-relays').length === 0);

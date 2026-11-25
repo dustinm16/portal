@@ -650,7 +650,7 @@ async def other_routes_body(env):
 async def webhook_body(env):
     """A message an incoming webhook posts is shown to a viewer of the chat, so the overlay shows it too: live and in the
     history it is given on connect, under the name viewers see ("[hook] name")."""
-    hook = await env.db.create_webhook(env.ids["owner"], "Deploy bot", "incoming", channel_id=env.cid)
+    hook = await env.db.create_webhook(env.ids["adm"], "Deploy bot", "incoming", channel_id=env.cid)
     path = "/api/webhooks/incoming/" + hook["token"]
     st, _b = await env.call("POST", None, path, json={"content": "build 41 passed", "username": "CI"})
     check("the incoming webhook accepted the first message", st == 200, st)

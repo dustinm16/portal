@@ -392,7 +392,7 @@ async def _credential_still_valid(token) -> bool:
             return False
         jti = str(token.token_id or "")
         if jti.startswith("streamkey-"):
-            return True    # a stream key is not a session; its sockets are only closed with the account
+            return False   # no route signs a stream key in: a socket that carries one is not valid
         if jti.startswith("apikey-"):
             key_id = int(jti[len("apikey-"):])
             for key in await db.get_user_api_keys(token.user_id):
@@ -869,6 +869,18 @@ def _own_endpoints() -> tuple[frozenset, frozenset]:
                 listening.add((c.laddr.ip, c.laddr.port))
     except Exception as e:
         logger.debug(f"Own listening sockets could not be read: {type(e).__name__}")
+    # What the portal started (MediaMTX, the SearXNG backend, other managed services) listens on this
+    # host as well: those entries carry a third field so a listed destination can be let through.
+    try:
+        for child in psutil.Process().children(recursive=True):
+            try:
+                for c in child.net_connections(kind="inet"):
+                    if c.status == psutil.CONN_LISTEN and c.laddr:
+                        listening.add((c.laddr.ip, c.laddr.port, "service"))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        logger.debug(f"Listening sockets of the portal's child processes could not be read: {type(e).__name__}")
     try:
         for infos in psutil.net_if_addrs().values():
             for info in infos:
@@ -905,8 +917,14 @@ def _own_endpoint_blocked(address: str, port: int, endpoints=None) -> bool:
         ip = mapped
     listening, own_addrs = endpoints if endpoints is not None else _own_endpoints()
     is_own = ip.is_loopback or ip in own_addrs
-    for bind, bport in listening:
+    # A service the portal runs (not the portal's own socket) can be named by the administrator
+    listed = _webhook_local_listed(ip, port)
+    for entry in listening:
+        bind, bport = entry[0], entry[1]
+        service = len(entry) > 2
         if bport != port:
+            continue
+        if service and listed:
             continue
         if bind in ("0.0.0.0", "::", ""):
             if is_own:
@@ -920,11 +938,67 @@ def _own_endpoint_blocked(address: str, port: int, endpoints=None) -> bool:
             continue
         if bip == ip:
             return True
+    # A port a managed service is configured with, even when it is not running now
+    if is_own and port in _managed_service_ports and not listed:
+        return True
     return False
 
 
+_managed_service_ports: frozenset = frozenset()
+
+
+def _webhook_local_listed(ip, port: int) -> bool:
+    """True when WEBHOOK_LOCAL_ALLOW (.env, host:port entries, IP addresses only; an IPv6 address in
+    brackets) names this destination. Never lets a hook reach the portal's own listening socket."""
+    for item in re.split(r"[,\s]+", Config.WEBHOOK_LOCAL_ALLOW or ""):
+        if not item:
+            continue
+        host, sep, prt = item.rpartition(":")
+        if not sep or not prt.isdigit():
+            continue
+        try:
+            entry_ip = ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            continue
+        mapped = getattr(entry_ip, "ipv4_mapped", None)
+        if (mapped or entry_ip) == ip and int(prt) == port:
+            return True
+    return False
+
+
+def _ports_of_service_row(row: dict) -> set:
+    """The ports a managed service row names: its port, its ports list and the *_port keys of its config."""
+    out = set()
+
+    def add(v):
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return
+        if 0 < v < 65536:
+            out.add(v)
+    add(row.get("port"))
+    ports = row.get("ports")
+    for item in ports if isinstance(ports, list) else []:
+        add(item.get("port") if isinstance(item, dict) else item)
+    cfg = row.get("config")
+    for k, v in (cfg.items() if isinstance(cfg, dict) else []):
+        if isinstance(k, str) and (k == "port" or k.endswith("_port")):
+            add(v)
+    return out
+
+
 async def _own_endpoints_async() -> tuple[frozenset, frozenset]:
-    """_own_endpoints() read in a thread: psutil and the host name lookups block."""
+    """_own_endpoints() read in a thread: psutil and the host name lookups block. Also refreshes
+    the ports the managed service rows name (read from the database here, where it is awaited)."""
+    global _managed_service_ports
+    try:
+        ports = set()
+        for row in await db.get_services_by_type("managed"):
+            ports |= _ports_of_service_row(row)
+        _managed_service_ports = frozenset(ports)
+    except Exception as e:
+        logger.debug(f"Managed service ports could not be read: {type(e).__name__}")
     return await asyncio.to_thread(_own_endpoints)
 
 
@@ -1194,6 +1268,15 @@ def _host_addresses() -> frozenset:
     return _host_addr_cache[1]
 
 
+# Python calls 6to4 (2002::/16) and Teredo (2001::/32) "private", but they are addresses anybody on the
+# internet can send from. For the exemption from automatic blocks they count as public.
+_TUNNEL_NETS = (ipaddress.ip_network("2002::/16"), ipaddress.ip_network("2001::/32"))
+
+
+def _is_tunnel_address(addr) -> bool:
+    return addr.version == 6 and any(addr in n for n in _TUNNEL_NETS)
+
+
 def _never_ban_reason(ip: str, admin_nets=None) -> Optional[str]:
     """Why `ip` must never be blocked automatically, or None when it may be.
 
@@ -1207,7 +1290,7 @@ def _never_ban_reason(ip: str, admin_nets=None) -> Optional[str]:
         return "not a valid address"
     if addr.is_loopback:
         return "loopback"
-    if addr.is_private or addr.is_link_local:
+    if (addr.is_private or addr.is_link_local) and not _is_tunnel_address(addr):
         return "private network"
     if _is_trusted_proxy(str(addr)):
         return "trusted proxy or Cloudflare"
@@ -1226,7 +1309,7 @@ def _never_ban_effective() -> list:
     cf_label = "Cloudflare ranges (" + _cf_source + (f", fetched {_cf_fetched_at}" if _cf_fetched_at else "") + ")"
     return [
         {"source": "loopback", "label": "Loopback (always)", "entries": ["127.0.0.0/8", "::1"]},
-        {"source": "private", "label": "Private and link-local networks, and the other ranges Python treats as private (always)",
+        {"source": "private", "label": "Private and link-local networks (always); 6to4 and Teredo addresses are not exempt",
          "entries": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"]},
         {"source": "host", "label": "This host's own addresses (always)", "entries": host},
         {"source": "cloudflare", "label": cf_label + " (always)", "entries": [str(n) for n in _cf_networks]},
@@ -1390,6 +1473,9 @@ async def _count_login_failure(ip: str, user_id: Optional[int] = None) -> None:
         now = monotonic()
         cfg = _login_ban_cfg
         window = cfg["find_minutes"] * 60
+        # Failures are counted per exact address, because a block is per exact address: counting an IPv6 /64
+        # together would ban only the address that happened to reach the limit and leave the rest free.
+        # Rotating through the addresses of one /64 is therefore not limited (see the 1.24.1 notes).
         hits = _login_fails.get(canon)
         if hits is None:
             while len(_login_fails) >= _LOGIN_TABLE_MAX:
@@ -2558,6 +2644,34 @@ async def _stream_user_auth(request: web.Request):
     if not has_full_user_scope(token):
         return None, full_scope_required_response()
     return token, None
+
+
+async def _connection_user_auth(request: web.Request):
+    """(token, None) for a request that may change, share or open the caller's connections, or
+    (None, response). The connections hold stored credentials, so a write needs the user's whole
+    authority like the stream routes: a browser session, or a token or API key with "*" (403
+    otherwise, for an administrator's key limited to one service or to read access too).
+
+    One more credential passes: the default key of a member who is not an administrator. It is
+    always made with exactly the member's two session scopes (apikey_policy.LIMITED_SCOPES), so it
+    carries no more than that member's own session and keeps working. The same two scopes on an
+    administrator's key are a deliberate limit and are refused. Every write, share and connect
+    route of /api/connections starts here (tests/test_access_connections.py lists them)."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    if has_full_user_scope(token) or await _is_member_default_key(token):
+        return token, None
+    return None, full_scope_required_response()
+
+
+async def _is_member_default_key(token) -> bool:
+    if not str(token.token_id or "").startswith("apikey-"):
+        return False
+    scopes = set(token.scopes or ())
+    if not scopes or not scopes <= set(_FULL_USER_SCOPES) or not set(_FULL_USER_SCOPES) <= scopes:
+        return False
+    return await get_user_role_from_token(token) not in ("admin", "superadmin")
 
 
 # Argon2 is deliberately expensive (CPU and 64 MiB each). API key checks run it
@@ -5552,9 +5666,9 @@ async def _is_recording_admin(user_id) -> bool:
 
 async def http_create_user_connection(request: web.Request) -> web.Response:
     """Create a new user connection."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     # Check if non-admin users are allowed to create connections
     if not token.has_scope("admin") and not token.has_scope("*"):
@@ -5788,11 +5902,16 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     return web.json_response(_externalize_connection(exposed))
 
 
+# Connection types that store a secret of their own in the config (not the SSH credential rules),
+# and the config keys that hold it. The plugin sends each to the configured host.
+_OWN_SECRET_KEYS = {"spice": ("password",), "proxmox": ("password", "api_token")}
+
+
 async def http_update_user_connection(request: web.Request) -> web.Response:
     """Update a user connection."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     conn_uuid = request.match_info.get("id")
     if not conn_uuid:
@@ -5902,6 +6021,15 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
                 else:
                     data["config"], password_cleared = sshpass_rules.apply_leaving(
                         existing_config, config, data["config"])
+            elif old_type in _OWN_SECRET_KEYS and (target_changed or new_type != old_type):
+                # SPICE and Proxmox keep their own secrets in the config (the password, and for
+                # Proxmox the API token). A new host, port or type is a new place to send them, so
+                # each is kept only when this request carries a new one.
+                for _key in _OWN_SECRET_KEYS[old_type]:
+                    if not (isinstance(config.get(_key), str) and config[_key]):
+                        if isinstance(existing_config.get(_key), str) and existing_config[_key]:
+                            password_cleared = True
+                        data["config"] = {k: v for k, v in data["config"].items() if k != _key}
 
     # Enforce config size limit
     config_check = data.get("config", {})
@@ -5946,9 +6074,9 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
 
 async def http_delete_user_connection(request: web.Request) -> web.Response:
     """Delete a user connection."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     conn_uuid = request.match_info.get("id")
     if not conn_uuid:
@@ -5972,9 +6100,9 @@ async def http_set_connection_prefs(request: web.Request) -> web.Response:
     (their own or one shared with them): folder, tags, open_mode, pinned. Fields not named keep
     their value. A connection the caller cannot reach answers exactly like one that does not
     exist, before the body is read."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
     conn_uuid = request.match_info.get("id")
     if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
@@ -6008,9 +6136,9 @@ async def http_set_connection_prefs(request: web.Request) -> web.Response:
 
 async def http_toggle_connection_pin(request: web.Request) -> web.Response:
     """Toggle pin status for a connection."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     conn_uuid = request.match_info.get("id")
     if not conn_uuid:
@@ -6054,9 +6182,9 @@ async def http_get_connection_types(request: web.Request) -> web.Response:
 
 async def http_connect_user_connection(request: web.Request) -> web.Response:
     """Get connection details for launching a user connection."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     conn_uuid = request.match_info.get("id")
     if not conn_uuid:
@@ -6199,9 +6327,9 @@ async def http_list_connection_shares(request: web.Request) -> web.Response:
 
 async def http_add_connection_shares(request: web.Request) -> web.Response:
     """Share a connection with one or more users by username (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
     conn_uuid = request.match_info.get("id", "")
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
@@ -6241,9 +6369,9 @@ async def http_add_connection_shares(request: web.Request) -> web.Response:
 
 async def http_remove_connection_share(request: web.Request) -> web.Response:
     """Revoke a share. Owner may revoke anyone; a grantee may pass 'me'."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _connection_user_auth(request)
+    if refusal is not None:
+        return refusal
     conn_uuid = request.match_info.get("id", "")
     grantee_raw = request.match_info.get("grantee", "")
 
@@ -7162,6 +7290,23 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
     return web.json_response({"error": "Failed to update stream"}, status=500)
 
 
+async def _drop_stream_channel(channel_id) -> bool:
+    """Delete the chat channel a deleted stream had, unless it is a default channel (delete_chat_channel
+    refuses those) or another stream still uses it, and tell the sockets in its room. Used when a stream is
+    deleted and for every stream of a deleted account: a channel left behind is an ordinary public channel
+    whose history was the chat of a stream that may have been private."""
+    if not channel_id or await db.count_streams_for_chat_channel(channel_id):
+        return False
+    channel = await db.get_chat_channel(channel_id)
+    if not channel or not await db.delete_chat_channel(channel_id):
+        return False
+    name = channel["name"]
+    if name in chat_rooms:
+        await broadcast_to_channel(name, {"type": "channel_deleted", "channel": name})
+        chat_rooms.pop(name, None)
+    return True
+
+
 async def http_delete_user_stream(request: web.Request) -> web.Response:
     """Delete a stream (owner only)."""
     token, refusal = await _stream_user_auth(request)
@@ -7187,7 +7332,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     success = await db.delete_user_stream(stream_id, user_id=token.user_id)
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
-    _stream_access_changed(stream_id)
+    _stream_access_changed(stream_id, kick="everyone")
     _overlay_close_stream(stream_id)    # its overlay token went with it (cascade); the sockets end now
     _viewers.finish(stream_id)          # a deleted stream has no audience and no live session
     _stream_state_forget(stream_id)     # nor a session, an end claim, a relay hold or a recorder error in memory
@@ -7196,16 +7341,20 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
         # into other members' feed now that no non-public stream carries the name
         await db.relabel_private_stream_activity(stream["user_id"], [stream.get("name")])
 
-    # Delete the chat channel with its stream, unless it is a default channel or
-    # another stream still uses it (delete_chat_channel refuses default channels)
-    if stream.get("chat_channel_id") and not await db.count_streams_for_chat_channel(stream["chat_channel_id"]):
-        await db.delete_chat_channel(stream["chat_channel_id"])
+    # Delete the chat channel with its stream (see _drop_stream_channel)
+    await _drop_stream_channel(stream.get("chat_channel_id"))
 
     return web.json_response({"success": True})
 
 
 async def http_regenerate_stream_key(request: web.Request) -> web.Response:
-    """Regenerate stream key (owner only)."""
+    """Regenerate stream key (owner only).
+
+    While the stream is live this also ends the live session, the way an administrator's End now
+    does (the publisher is disconnected on the path the session published on, relays stop, the
+    recording is finished and kept), because the old key would otherwise keep publishing. It needs
+    {"end_live_session": true} in the body; without it a live stream answers 409 with "live": true
+    and nothing changes."""
     token, refusal = await _stream_user_auth(request)
     if refusal is not None:
         return refusal
@@ -7215,13 +7364,46 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
         stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    end_live = isinstance(body, dict) and body.get("end_live_session") is True
+
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream.get("user_id") != token.user_id:
+        return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
     new_key = generate_stream_key()
+    if stream.get("is_live") == 1:
+        if not end_live:
+            return web.json_response(
+                {"error": "This stream is live. Replacing the key ends the live session: send "
+                          '"end_live_session": true to confirm', "live": True}, status=409)
+        session = _stream_sessions.get(stream_id)
+        claim = await _claim_end(stream_id, session)
+        if claim is None:
+            return web.json_response({"error": "This stream is already being ended"}, status=409)
+        try:
+            stream = await db.get_user_stream(stream_id)        # read again under the claim
+            if stream and stream.get("is_live") == 1 and stream.get("user_id") == token.user_id:
+                kick, key_set = await _end_live_session_now(
+                    stream, session, claim, regenerate=True, new_key=new_key)
+                await _stream_end_session(stream, session, claim)
+                logger.info(f"Stream {stream_id} ended by its owner replacing the key (kick: {kick.get('kicked')})")
+                return web.json_response({
+                    "stream_key": new_key, "ended_live_session": True,
+                    "publisher_disconnected": bool(kick.get("kicked")), "disconnect_note": kick.get("reason")})
+        finally:
+            if not claim.get("handed_over"):
+                _release_end(stream_id, claim)
+        # it stopped being live while the claim was taken: the plain replacement below
 
     success = await db.regenerate_stream_key(stream_id, new_key, user_id=token.user_id)
     if success:
         _stream_access_changed(stream_id)
-        return web.json_response({"stream_key": new_key})
+        await _close_stream_key_sockets(token.user_id, stream_id)
+        return web.json_response({"stream_key": new_key, "ended_live_session": False})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
 
@@ -7244,7 +7426,7 @@ async def http_regenerate_public_key(request: web.Request) -> web.Response:
 
     success = await db.regenerate_public_key(stream_id, new_key, user_id=token.user_id)
     if success:
-        _stream_access_changed(stream_id)
+        _stream_access_changed(stream_id, kick="anonymous")      # whoever came in by the old link
         return web.json_response({"public_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
@@ -9801,6 +9983,18 @@ def _session_path(stream_id: int) -> Optional[str]:
     return session["path"] if session and not session["ended"] else None
 
 
+def _stream_id_by_session_path(path: str) -> Optional[int]:
+    """The stream whose running (not ended) session publishes on the MediaMTX path `path`, however the hook spells
+    it ("live/<key>" or "<key>"), or None. Used when the key in the path no longer names a stream."""
+    if not isinstance(path, str) or not path:
+        return None
+    spellings = {path, path.removeprefix("live/"), "live/" + path.removeprefix("live/")}
+    for stream_id, session in list(_stream_sessions.items()):
+        if not session.get("ended") and session.get("path") in spellings:
+            return stream_id
+    return None
+
+
 def _session_current(stream_id: int, session) -> bool:
     """True while `session` (the value of _stream_sessions when an end began; None when there was none)
     is still the stream's session. Every step of ending a session asks this before it changes anything
@@ -10511,7 +10705,7 @@ async def _webhook_current_for_event(webhook_id: int, event: str, meta: dict | N
     outgoing, subscribed (subscription and event classes) and, for a non-generic
     format, the event is visible to a third party. Otherwise None."""
     w = await db.get_webhook_for_delivery(webhook_id)
-    if (w and w.get("enabled") and w["type"] == "outgoing"
+    if (w and w.get("enabled") and w["type"] == "outgoing" and w.get("owner_may_send")
             and webhook_formats.event_subscribed(
                 w["events"], event, kind=w["kind"], fmt=w["format"])
             and (w["format"] == "generic" or await _third_party_may_see(event, meta))
@@ -11162,6 +11356,10 @@ async def http_update_webhook(request: web.Request) -> web.Response:
 
     if not isinstance(body, dict):
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if body.get("enabled") and not await db.user_is_administrator(webhook.get("user_id")):
+        # A hook switched off because its owner stopped being an administrator stays off
+        return web.json_response(
+            {"error": "The owner of this webhook is not an administrator, so it cannot be enabled"}, status=409)
     updates = {}
     if webhook["type"] == "outgoing":
         full = await db.get_webhook_for_delivery(webhook_id)
@@ -11535,6 +11733,8 @@ async def http_incoming_webhook(request: web.Request) -> web.Response:
     webhook = await db.get_webhook_by_token(token_str)
     if not webhook or webhook["type"] != "incoming" or not webhook.get("enabled"):
         return web.json_response({"error": "Not found"}, status=404)
+    if (webhook.get("kind") or "user") == "user" and not await db.user_is_administrator(webhook.get("user_id")):
+        return web.json_response({"error": "Not found"}, status=404)       # its owner is not an administrator now
 
     # Per-token rate limit
     now = monotonic()
@@ -11813,6 +12013,11 @@ async def http_stream_event(request: web.Request) -> web.Response:
                 stream = None
         else:
             stream = await db.get_stream_by_key(stream_key)
+        if not stream:
+            # The key may have been replaced while the publisher stayed connected: the live session
+            # still knows the path it publishes on
+            sid = _stream_id_by_session_path(path)
+            stream = await db.get_user_stream(sid) if sid is not None else None
         if stream:
             stream_id = stream["id"]
 
@@ -11926,7 +12131,7 @@ def _webrtc_forget_playback(stream_id: int) -> int:
 
 
 def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
-                           viewers: str = "", owner_id: Optional[int] = None) -> None:
+                           viewers: str = "", owner_id: Optional[int] = None, kick: str = "") -> None:
     """Call when a stream's visibility, open-link flag, share key or publish key
     changed, or the stream was deleted: viewers are asked again at once. A change
     that cannot take anybody's right away (a rename) passes drop_sessions=False
@@ -11937,6 +12142,11 @@ def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
     _playback_cache_forget(stream_id=stream_id)
     _forget_activity_for_stream(stream_id)      # the chat's activity memo follows the stream
     if drop_sessions:
+        # Playback that is already flowing goes straight to MediaMTX: those who lost access are disconnected
+        # there (kick "anonymous" / "everyone" is for a rotated share link and a deleted stream)
+        mode = {"all": "all", "anonymous": "anonymous"}.get(viewers) or kick
+        if mode:
+            _whep_kick_spawn(_whep_kick_plan(stream_id, mode=mode, owner_id=owner_id))
         _webrtc_forget_playback(stream_id)
     if viewers in ("all", "anonymous"):
         _viewers.remove_except_owner(stream_id, owner_id, anonymous_only=viewers == "anonymous")
@@ -11947,10 +12157,28 @@ def _stream_member_lost_access(stream_id: int, user_id: int) -> None:
     not counted any more and their WHEP session records are forgotten."""
     _playback_cache_forget(stream_id=stream_id)
     _forget_activity_for_stream(stream_id)
+    _whep_kick_spawn(_whep_kick_plan(stream_id, user_id=user_id, mode="user"))
     _viewers.remove_user(stream_id, user_id)
     for k in [k for k, v in _webrtc_sessions.items()
               if v[0] == "whep" and v[1] == stream_id and len(v) > 4 and v[4] == user_id]:
         del _webrtc_sessions[k]
+
+
+async def _account_lost_access(user_id: int, new_role: Optional[str] = None) -> None:
+    """An account was deleted (new_role None) or demoted to `new_role`: the WebRTC (WHEP) playback it holds
+    is disconnected at MediaMTX and its session records are forgotten. For a demotion only the streams the
+    account can no longer read under the new role are touched (the others are still its to watch)."""
+    streams = {v[1] for v in _webrtc_sessions.values() if v[0] == "whep" and len(v) > 4 and v[4] == user_id}
+    for sid in streams:
+        if new_role is not None:
+            try:
+                stream = await db.get_user_stream(sid)
+                if stream is not None and _stream_read_allowed(
+                        stream, user_id, new_role, False, await db.is_user_banned_from_stream(sid, user_id)):
+                    continue
+            except Exception:
+                logger.debug("could not re-check a viewer's access after a role change", exc_info=True)
+        _stream_member_lost_access(sid, user_id)
 
 
 def _playback_fingerprint(request: web.Request) -> str:
@@ -12492,6 +12720,56 @@ async def _mediamtx_kick_publisher(mtx_path: str) -> dict:
         return {"kicked": False, "reason": "media server did not answer", "source": None}
 
 
+async def _end_live_session_now(stream: dict, session, claim: dict, *, regenerate: bool,
+                                new_key: Optional[str] = None) -> tuple[dict, bool]:
+    """The part of ending a live session that an administrator's End now and an owner's key
+    regeneration share (the caller holds the end claim, has checked that the stream is live and
+    finishes with _stream_end_session, which releases the claim; this marks the claim "handed_over"
+    just before it returns, so the caller's finally knows whether it still has to release it):
+    replace the stream key when asked (the old key is refused at publish from here on), disconnect the
+    publisher on the path the session published on (the session's remembered path, not the current
+    key), stop the relays, and ask a recorder that could not be cut off to finish. Recordings are never
+    deleted. Returns (kick result, whether the key was replaced)."""
+    stream_id = stream["id"]
+    async with _stream_state_lock:
+        mtx_path = _session_path(stream_id) or _live_path(_rtmp_stream_paths.get(stream_id) or stream["stream_key"])
+    new_key_set = False
+    if regenerate:
+        # First: from here on the old credential is refused at publish
+        new_key_set = await db.regenerate_stream_key(stream_id, new_key or generate_stream_key())
+        await db.revoke_rtmp_tokens_for_stream(stream_id)
+        _stream_access_changed(stream_id)
+        await _close_stream_key_sockets(stream["user_id"], stream_id)
+    kick = await _mediamtx_kick_publisher(mtx_path)
+    async with _stream_state_lock:
+        _rtmp_stream_paths.pop(stream_id, None)
+        grace = _disconnect_grace_tasks.pop(stream_id, None)
+    if grace and not grace.done():
+        grace.cancel()
+    # The relays end now (a non-forced stop waits up to 30 s for each, inside this request). The recorder is
+    # finished the normal way by the caller; when the publisher could not be disconnected its source never ends, so it
+    # is asked to finish (ffmpeg "q": the chunk is closed properly) and the session ends as usual.
+    await stop_stream_relays(stream_id, force=True)
+    rec = active_recordings.get(stream_id)
+    if rec is not None and not kick.get("kicked") and rec.get("process") is not None:
+        task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
+        _live_ops_tasks.add(task)
+        task.add_done_callback(_live_ops_tasks.discard)
+    claim["handed_over"] = True             # _stream_end_session releases the claim when the end is over
+    return kick, new_key_set
+
+
+async def _close_stream_key_sockets(user_id: int, stream_id: int) -> int:
+    """Close the sockets a credential made from this stream's key opened (token id "streamkey-<stream id>").
+    No route signs a stream key in any more, so none should exist; this keeps the promise that replacing
+    the key ends whatever the old key opened."""
+    try:
+        return await close_user_websockets(user_id, only_token_id=f"streamkey-{stream_id}")
+    except Exception as e:
+        logger.warning(f"Could not close stream-key sockets of stream {stream_id}: {type(e).__name__}")
+        return 0
+
+
 async def _live_ops_gate(request: web.Request, listing: bool = False):
     """(user, None) for an administrator with a browser session or a full-scope token, else (None, response).
     Non-administrators get 404, scoped tokens and every API key 403: these actions end other people's
@@ -12565,10 +12843,27 @@ async def _live_ops_audit(admin: dict, action: str, stream: dict, **details) -> 
         return False
 
 
+async def _live_ops_body(request: web.Request):
+    """(body, None) for an End now or Stop relays request that carries an explicit {"confirm": true},
+    else (None, a 400): a bare POST, a replayed one or an empty body does nothing. The admin page
+    sends it with the answer to its question."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        return None, web.json_response(
+            {"error": 'This action needs {"confirm": true} in the request body'}, status=400)
+    return body, None
+
+
 async def http_admin_stream_stop_relays(request: web.Request) -> web.Response:
     """POST /api/admin/streams/{id}/stop-relays: stop the stream's relays (not the stream). They stay
     stopped until the stream ends: the relay monitor and the auto-restart are held back."""
     admin, refused = await _live_ops_gate(request)
+    if refused:
+        return refused
+    _body, refused = await _live_ops_body(request)
     if refused:
         return refused
     stream, refused = await _live_ops_stream(request)
@@ -12594,7 +12889,7 @@ async def http_admin_stream_stop_relays(request: web.Request) -> web.Response:
 
 
 async def http_admin_stream_end(request: web.Request) -> web.Response:
-    """POST /api/admin/streams/{id}/end {regenerate_key?: bool (default true)}: disconnect the publisher,
+    """POST /api/admin/streams/{id}/end {confirm: true, regenerate_key?: bool (default false)}: disconnect the publisher,
     optionally replace the stream key and revoke the temporary RTMP tokens so the encoder cannot come
     back with the old credential, then run the normal end of a session (relays stop, the recording is
     finished and uploaded, viewers are told). Recordings are never deleted. The owner gets a notification that
@@ -12603,16 +12898,13 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
     admin, refused = await _live_ops_gate(request)
     if refused:
         return refused
+    body, refused = await _live_ops_body(request)
+    if refused:
+        return refused
     stream, refused = await _live_ops_stream(request)
     if refused:
         return refused
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    regenerate = body.get("regenerate_key", True) is not False
+    regenerate = body.get("regenerate_key") is True      # absent means keep the key
     if stream.get("is_live") != 1:
         return web.json_response({"error": "The stream is not live"}, status=409)
     stream_id = stream["id"]
@@ -12622,7 +12914,6 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
     claim = await _claim_end(stream_id, session)
     if claim is None:
         return web.json_response({"error": "This stream is already being ended"}, status=409)
-    handed_over = False
     try:
         stream = await db.get_user_stream(stream_id)    # read again under the claim
         if not stream or stream.get("is_live") != 1:
@@ -12630,33 +12921,10 @@ async def http_admin_stream_end(request: web.Request) -> web.Response:
         if not await _live_ops_audit(admin, "stream_end_now", stream, regenerate_key=regenerate):
             return web.json_response({"error": "The action could not be recorded, nothing was done"}, status=500)
 
-        async with _stream_state_lock:
-            mtx_path = _session_path(stream_id) or _live_path(_rtmp_stream_paths.get(stream_id) or stream["stream_key"])
-        new_key_set = False
-        if regenerate:
-            # First: from here on the old credential is refused at publish
-            new_key_set = await db.regenerate_stream_key(stream_id, generate_stream_key())
-            await db.revoke_rtmp_tokens_for_stream(stream_id)
-            _stream_access_changed(stream_id)
-        kick = await _mediamtx_kick_publisher(mtx_path)
-        async with _stream_state_lock:
-            _rtmp_stream_paths.pop(stream_id, None)
-            grace = _disconnect_grace_tasks.pop(stream_id, None)
-        if grace and not grace.done():
-            grace.cancel()
-        # The relays end now (a non-forced stop waits up to 30 s for each, inside this request). The recorder is
-        # finished the normal way below; when the publisher could not be disconnected its source never ends, so it
-        # is asked to finish (ffmpeg "q": the chunk is closed properly) and the session ends as usual.
-        await stop_stream_relays(stream_id, force=True)
-        rec = active_recordings.get(stream_id)
-        if rec is not None and not kick.get("kicked") and rec.get("process") is not None:
-            task = asyncio.create_task(_vod_graceful_stop(rec["process"]))
-            _live_ops_tasks.add(task)
-            task.add_done_callback(_live_ops_tasks.discard)
-        handed_over = True                  # _stream_end_session releases the claim when the end is over
+        kick, new_key_set = await _end_live_session_now(stream, session, claim, regenerate=regenerate)
         await _stream_end_session(stream, session, claim)
     finally:
-        if not handed_over:
+        if not claim.get("handed_over"):
             _release_end(stream_id, claim)
     try:
         await send_notification(stream["user_id"], "stream_ended", "Your stream was ended",
@@ -12939,13 +13207,107 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
                              headers={"Retry-After": str(_THUMBNAIL_RETRY_AFTER)})
 
 
+_WHEP_KICK_PAGES = 10
+
+
+def _whep_kick_plan(stream_id: int, *, user_id: Optional[int] = None, mode: str,
+                    owner_id: Optional[int] = None) -> dict:
+    """What to disconnect, read from the portal's own WHEP records before they are forgotten.
+    mode "user": the recorded sessions of `user_id`. "anonymous": the recorded sessions with no member
+    behind them. "all": every playback session of the stream except the owner's recorded ones (the stream
+    was made private). "everyone": every one, owner included (the stream is deleted). The two last also
+    ask MediaMTX which sessions read the stream's paths, so a viewer whose record was pushed out by the
+    64 per stream cap is not left playing."""
+    ids, paths, keep = set(), set(), set()
+    for v in _webrtc_sessions.values():
+        if v[0] != "whep" or v[1] != stream_id:
+            continue
+        api_id = v[5] if len(v) > 5 else None
+        paths.add(v[2])
+        if not api_id:
+            continue
+        uid = v[4] if len(v) > 4 else None
+        if mode == "user" and uid == user_id:
+            ids.add(api_id)
+        elif mode == "anonymous" and uid is None:
+            ids.add(api_id)
+        elif mode in ("all", "everyone"):
+            if mode == "all" and owner_id is not None and uid == owner_id:
+                keep.add(api_id)
+            else:
+                ids.add(api_id)
+    return {"stream_id": stream_id, "ids": ids, "keep": keep, "paths": paths,
+            "list_all": mode in ("all", "everyone")}
+
+
+async def _whep_kick_run(plan: dict) -> int:
+    """Disconnect the planned WHEP sessions through MediaMTX's webrtcsessions kick route (the portal's own
+    MediaMTX, loopback API; nothing is contacted by a staged instance). Returns how many were kicked.
+    Never raises: a failure is logged without addresses."""
+    if Config.STAGE_MODE or not (plan["ids"] or plan["list_all"]):
+        return 0
+    try:
+        cfg = await _get_mediamtx_config()
+        if not cfg:
+            return 0
+        base = _mediamtx_api_base(cfg)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE          # the loopback API uses the portal's own self-signed certificate
+        ids = set(plan["ids"])
+        timeout = aiohttp.ClientTimeout(total=_MEDIAMTX_API_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=ctx)) as http:
+            if plan["list_all"]:
+                paths = set(plan["paths"])
+                try:
+                    stream = await db.get_user_stream(plan["stream_id"])
+                except Exception:
+                    stream = None
+                if stream and stream.get("stream_key"):
+                    paths |= {stream["stream_key"], "live/" + stream["stream_key"]}
+                for page in range(_WHEP_KICK_PAGES):
+                    async with http.get(f"{base}/v3/webrtcsessions/list?page={page}&itemsPerPage=100") as resp:
+                        if resp.status != 200:
+                            break
+                        data = await resp.json(content_type=None)
+                    for item in (data or {}).get("items") or []:
+                        if (isinstance(item, dict) and item.get("path") in paths and item.get("state") == "read"
+                                and isinstance(item.get("id"), str)):
+                            ids.add(item["id"])
+                    if page + 1 >= int((data or {}).get("pageCount") or 0):
+                        break
+            ids -= plan["keep"]
+            kicked = 0
+            for sid in ids:
+                if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", sid):
+                    continue
+                async with http.post(f"{base}/v3/webrtcsessions/kick/{sid}") as resp:
+                    kicked += 1 if resp.status == 200 else 0       # 404: it ended on its own
+            return kicked
+    except Exception as e:
+        logger.warning(f"Could not disconnect WHEP viewers who lost access: {type(e).__name__}")
+        return 0
+
+
+def _whep_kick_spawn(plan: dict) -> None:
+    """Run _whep_kick_run in the background (the callers are synchronous and must not wait for MediaMTX)."""
+    if not (plan["ids"] or plan["list_all"]):
+        return
+    try:
+        task = asyncio.get_running_loop().create_task(_whep_kick_run(plan))
+    except RuntimeError:
+        return                                   # no event loop: nothing is running to kick
+    _live_ops_tasks.add(task)
+    task.add_done_callback(_live_ops_tasks.discard)
+
+
 # Server-side record of WebRTC sessions opened through the WHIP/WHEP proxies:
 # session_id -> (kind "whip"|"whep", stream_id, MediaMTX path, created time).
 # The session proxy decides how to route and what to authorise from this record,
 # never from anything the client puts in the URL. In-memory only: after a portal
 # restart, sessions opened earlier are unknown and are refused (MediaMTX expires
 # them on its own).
-_webrtc_sessions: dict[str, tuple] = {}     # (kind, stream_id, path, created, user_id or None)
+_webrtc_sessions: dict[str, tuple] = {}     # (kind, stream_id, path, created, user_id or None, MediaMTX API id or None)
 _WEBRTC_SESSION_MAX = 4096
 _WEBRTC_SESSION_TTL = 7 * 24 * 3600
 # Per stream and kind. Playback sessions need only a playback key and no login,
@@ -12956,7 +13318,7 @@ _WEBRTC_SESSION_MAX_PER_STREAM = {"whep": 64, "whip": 16}
 
 
 def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str,
-                             user_id: Optional[int] = None) -> None:
+                             user_id: Optional[int] = None, api_id: Optional[str] = None) -> None:
     """Record a session opened via the proxy; prune expired and excess entries."""
     if not session_id:
         return
@@ -12973,7 +13335,7 @@ def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_pat
         if victim is None:
             victim = next(iter(_webrtc_sessions))
         del _webrtc_sessions[victim]
-    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now, user_id)
+    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now, user_id, api_id)
 
 
 async def _authorize_webrtc_session(request: web.Request, key: str, session_id: str
@@ -13055,8 +13417,10 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                     if location:
                         # Extract session ID from location
                         session_id = location.split("/")[-1]
+                        # MediaMTX names the session for its API in the ID header; the last part of
+                        # Location is another value (tests/fixtures/mediamtx-1.21.3/webrtc_whep_sessions_kick.json)
                         _webrtc_session_remember(session_id, "whep", stream["id"], private_key,
-                                                 request.get("viewer_user_id"))
+                                                 request.get("viewer_user_id"), resp.headers.get("ID"))
                         # Use the same key type that was used to access
                         location = f"/api/stream/{key}/webrtc/session/{session_id}"
                     _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
@@ -17243,6 +17607,9 @@ async def http_sftp_vod_rename(request: web.Request) -> web.Response:
 
 async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     """Helper: get user connection and establish SFTP. Returns (conn, sftp, error_response)."""
+    # The file routes use the connection's stored credentials: the same credential rule as /connect.
+    if not (has_full_user_scope(token) or await _is_member_default_key(token)):
+        return None, None, full_scope_required_response()
     conn_uuid = request.match_info.get("conn_id", "")
     if not conn_uuid:
         return None, None, web.json_response({"error": "Invalid connection ID"}, status=400)
@@ -19161,6 +19528,13 @@ async def handle_user_connection_ws(
         return
 
     conn_uuid = match.group(1)
+
+    # The socket uses the connection's stored credentials: the same credential rule as /connect.
+    # Every /ws path that reaches a user connection comes through here.
+    if not (has_full_user_scope(token) or await _is_member_default_key(token)):
+        await ws.send_json({"type": "error", "message": "Forbidden - a full-access credential is required"})
+        await ws.close(code=4003, message=b"Forbidden")
+        return
 
     # Fetch connection (ensures user owns it)
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
@@ -21131,6 +21505,14 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     call = _ProxyHttpCall(request)
     _register_user_proxy_call(token.user_id, call, token.token_id)
     try:
+        # The proxy sends the connection's stored auth_header and extra_headers upstream: the same
+        # credential rule as /connect, the file routes and the socket. After the registration above
+        # (the role lookup awaits). A WebSocket upgrade is refused here too, before it is accepted.
+        # A request that carries a capability is judged by it alone: the capability is made only by a
+        # request that passed this check (proxy entry, never from an API key or stream key), and its
+        # own credential carries the scope "proxy:isolated", which is not a user scope.
+        if not request.get(_PROXY_ISOLATED) and not (has_full_user_scope(token) or await _is_member_default_key(token)):
+            return full_scope_required_response()
         response = await _proxy_connection_authed(request, token, call)
         if request.get(_PROXY_ISOLATED) and not response.prepared:
             # Portal-made answers (error pages, redirects) of an isolated page get the sandbox too.
@@ -21258,11 +21640,9 @@ async def http_shared_app_page(request: web.Request) -> web.Response:
 
 async def http_accept_share_notice(request: web.Request) -> web.Response:
     """POST /api/connections/{id}/notice: the recipient's "Continue" for a shared web connection, kept per viewer."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-    if not has_full_user_scope(token):
-        return full_scope_required_response()
+    token, err = await _connection_user_auth(request)
+    if err:
+        return err
     connection = await db.get_accessible_connection(request.match_info.get("id", ""), token.user_id)
     if not connection or not connection.get("shared"):
         return web.json_response({"error": "Not a shared connection"}, status=404)
@@ -31186,12 +31566,17 @@ async def http_update_user_role(request: web.Request) -> web.Response:
         )
 
     await db.set_user_role(user_id, new_role)
+    if new_role not in ("admin", "superadmin"):
+        # Only an administrator can have hooks: a member's are switched off (kept), and delivery
+        # also refuses them whatever their stored state (Database._WEBHOOK_OWNER_OK_SQL).
+        await db.disable_webhooks_of_user(user_id)
 
     # Revoke all tokens - user must re-authenticate with new role scopes
     await db.revoke_user_tokens(user_id)
     # API keys carry the scopes of the role they were created under.
     await db.revoke_user_api_keys(user_id)
     await close_user_websockets(user_id)
+    await _account_lost_access(user_id, new_role)     # WebRTC playback of streams they can no longer read
 
     logger.info(f"Role changed for user {target_user['username']} from {target_role} to {new_role} by user {token.user_id}")
 
@@ -31258,12 +31643,21 @@ async def http_delete_user(request: web.Request) -> web.Response:
     # The connections the account owns go with it, and their shares with them: the ids are
     # read first, to end what grantees hold open through those shares afterwards.
     owned_connection_ids = await db.list_owned_connection_ids(user_id)
-    cursor = await db.conn.execute("SELECT id FROM user_streams WHERE user_id = ?", (user_id,))
-    owned_stream_ids = [r["id"] for r in await cursor.fetchall()]
+    cursor = await db.conn.execute("SELECT id, chat_channel_id FROM user_streams WHERE user_id = ?", (user_id,))
+    owned_streams = await cursor.fetchall()
+    owned_stream_ids = [r["id"] for r in owned_streams]
+    owned_stream_channels = [r["chat_channel_id"] for r in owned_streams if r["chat_channel_id"]]
 
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
+    for cid in owned_stream_channels:
+        # the chat of each of their streams goes with it, like deleting the stream does
+        try:
+            await _drop_stream_channel(cid)
+        except Exception as e:
+            logger.warning(f"Could not delete stream channel {cid} of deleted user {user_id}: {type(e).__name__}")
     for sid in owned_stream_ids:
+        _whep_kick_spawn(_whep_kick_plan(sid, mode="everyone"))     # before the records go
         _stream_state_forget(sid)
     _vod_play_purge(owner=user_id)      # their cached playback copies go with the account
     # The user's streams went with the account
@@ -31274,6 +31668,10 @@ async def http_delete_user(request: web.Request) -> web.Response:
         await close_user_websockets(user_id)
     except Exception as e:
         logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
+    try:
+        await _account_lost_access(user_id)          # their WebRTC playback of other people's streams
+    except Exception as e:
+        logger.warning(f"Could not disconnect WebRTC playback of deleted user {user_id}: {type(e).__name__}")
     # Grantees' terminals, relays and proxied calls on the owner's connections end (4010),
     # and so does anything the deleted account still held open as a grantee.
     try:
@@ -34300,6 +34698,8 @@ async def set_admin_cli(username: str, remove: bool = False) -> None:
         (new_status, new_role, user["id"])
     )
     await db.conn.commit()
+    if remove:
+        await db.disable_webhooks_of_user(user["id"])
     # Existing sessions carry the old role's scopes; force a fresh login.
     await db.revoke_user_tokens(user["id"])
     await db.revoke_user_api_keys(user["id"])

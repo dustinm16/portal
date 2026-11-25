@@ -735,7 +735,7 @@ async def main():
         # a device of a session that merely expired is bounded: 30 days without an announcement by a live session
         from datetime import datetime, timedelta, timezone
         past = datetime.now(timezone.utc) - timedelta(days=2)
-        await w.db.create_token(aid, "t-live", FULL, name="web_session")
+        await w.db.create_token(aid, "t-live", FULL, name="web_session", expires_at=datetime.now(timezone.utc) + timedelta(days=30))
         await w.db.create_token(aid, "t-expired", FULL, name="web_session", expires_at=past)
         await w.db.create_token(aid, "t-vanished", FULL, name="web_session")
         stale = {}

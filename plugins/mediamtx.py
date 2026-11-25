@@ -189,10 +189,11 @@ class MediaMTXPlugin(PluginBase):
                 "webrtc_supported": True
             })
         except Exception as e:
+            # The detail names the host and port of the media server: it stays in the log
             logger.error(f"Failed to get streams: {e}")
             await ws.send_json({
                 "type": "error",
-                "message": f"Failed to connect to MediaMTX: {e}"
+                "message": "Failed to connect to MediaMTX"
             })
             return
 

@@ -99,11 +99,11 @@ class World:
                 golive_audience="everyone")      # these tests are about everyone-audience streams
         self.keys = {"pub": LIVE_KEY, "priv": "live_" + "Q" * 24}
         self.pubkeys = {"pub": PUB_KEY, "priv": "pub_" + "R" * 24}
-        # a system generic hook, a member's own generic hook, a system discord hook
+        # a system generic hook, a user hook (its owner must be an administrator to receive anything), a system discord hook
         self.hooks = {
             "sys": await d.create_webhook(None, "sys", "outgoing", url=HOOK_URL, events=["stream.live", "stream.offline"],
                                           kind="system", created_by=self.ids["admin"]),
-            "member": await d.create_webhook(self.ids["m1"], "mine", "outgoing", url=HOOK_URL, events=["stream.live"]),
+            "member": await d.create_webhook(self.ids["admin"], "mine", "outgoing", url=HOOK_URL, events=["stream.live"]),
             "discord": await d.create_webhook(None, "disc", "outgoing", url="https://discord.com/api/webhooks/1/abc",
                                               events=["stream.live"], kind="system", fmt="discord",
                                               include_details=True, created_by=self.ids["admin"]),

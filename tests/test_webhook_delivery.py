@@ -147,6 +147,7 @@ async def main():
     await db.conn.execute("INSERT INTO users (username, password_hash) VALUES ('owner', 'x')")
     await db.conn.commit()
     uid = (await (await db.conn.execute("SELECT id FROM users WHERE username='owner'")).fetchone())["id"]
+    await db.set_user_role(uid, "admin")      # only an administrator owns a hook that is delivered
     Config.TOTP_ISSUER = "Test Portal"
 
     # The receiver below listens in this very process, which the real discovery of

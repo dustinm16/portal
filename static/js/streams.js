@@ -441,7 +441,7 @@ async function showStreamDetails(streamId) {
                 </div>
 
                 <div class="form-actions">
-                    <button class="btn btn-warning" onclick="regenerateStreamKey(${stream.id})">Regenerate Key</button>
+                    <button class="btn btn-warning" onclick="regenerateStreamKey(${stream.id}, ${stream.is_live === 1})">Regenerate Key</button>
                     <button class="btn btn-warning" onclick="regeneratePublicKey(${stream.id})">Rotate Share Link</button>
                     ${stream.rtmp_enabled ? `<button class="btn btn-primary" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>` : ''}
                     <button class="btn btn-secondary" onclick="closeModal('stream-details-modal')">Close</button>
@@ -909,15 +909,25 @@ async function deleteThumbnail(streamId) {
 /**
  * Regenerate stream key
  */
-async function regenerateStreamKey(streamId) {
-    if (!confirm('Are you sure? This will invalidate your current stream key.')) {
+async function regenerateStreamKey(streamId, isLive) {
+    const LIVE_TEXT = 'This stream is live. Replacing the key ends the live session now: the encoder is disconnected, ' +
+        'the relays stop, the recording is finished and kept, and you must set the encoder up again with the new key. Continue?';
+    if (!confirm(isLive ? LIVE_TEXT : 'Are you sure? This will invalidate your current stream key.')) {
         return;
     }
 
     try {
-        const response = await Portal.fetch(`/api/streams/${streamId}/regenerate-key`, {
-            method: 'POST'
-        });
+        let endLive = !!isLive;
+        let response = await sendRegenerateKey(streamId, endLive);
+        if (response.status === 409 && !endLive) {
+            // It went live since the page was drawn: the server asks for the confirmation it needs
+            const body = await response.clone().json().catch(() => ({}));
+            if (body && body.live) {
+                if (!confirm(LIVE_TEXT)) return;
+                endLive = true;
+                response = await sendRegenerateKey(streamId, true);
+            }
+        }
 
         if (response.ok) {
             showStreamDetails(streamId);
@@ -929,6 +939,14 @@ async function regenerateStreamKey(streamId) {
         console.error('Failed to regenerate key:', error);
         Portal.toast('Failed to regenerate key', 'error');
     }
+}
+
+function sendRegenerateKey(streamId, endLive) {
+    return Portal.fetch(`/api/streams/${streamId}/regenerate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ end_live_session: !!endLive })
+    });
 }
 
 /**

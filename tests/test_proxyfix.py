@@ -550,6 +550,7 @@ async def fake_auth(request):
     class T:
         user_id = 1
         token_id = "t"
+        scopes = ["*"]
     return T()
 
 

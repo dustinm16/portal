@@ -79,7 +79,7 @@
             draw();
             var res, data = {};
             try {
-                res = await api(a.action === 'end' ? 'end' : 'stop-relays', a.id, a.action === 'end' ? { regenerate_key: !!a.regenerate } : {});
+                res = await api(a.action === 'end' ? 'end' : 'stop-relays', a.id, a.action === 'end' ? { confirm: true, regenerate_key: !!a.regenerate } : { confirm: true });
                 data = res.data || {};
             } catch (e) {
                 res = { ok: false };

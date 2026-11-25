@@ -198,8 +198,8 @@ sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to)
 index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
-check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0, in 1.23.0 and in 1.24.0)",
-      stated == {"48"} and real_v == "53", f"stated {stated}, index.html {real_v}")
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0, in 1.23.0, in 1.24.0 and in 1.24.1)",
+      stated == {"48"} and real_v == "54", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
@@ -484,8 +484,9 @@ check("the old 'enable desktop alerts' star sentence is gone from the chat part"
 MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
 # ... and in 1.23.0 (saved messages lane): an older release's notes keep the version of their day
 MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
-# ... and in 1.24.1 (the share dialog's note on a trusted web connection)
-MOVED_ON_1_24 = {"user-connections.js": 61}
+# ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
+# replaced; the Live streams script that sends confirm)
+MOVED_ON_1_24 = {"user-connections.js": 61, "streams.js": 54, "live-ops-admin.js": 4}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -622,8 +623,8 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "61"), "streams.js": ("49", "53")}  # stated in 1.20.0, loaded since 1.24.1, 1.23.0 and 1.24.0
-check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0 and 1.24.0)",
+_moved20 = {"user-connections.js": ("56", "61"), "streams.js": ("49", "54")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0
+check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0, 1.24.0 and 1.24.1)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
 for name, needles in (
@@ -1062,7 +1063,7 @@ check("1.23.0: the numbers stated are the ones in the code",
 check("1.23.0: the static versions stated are the ones the pages load",
       "`stream-schedule.js` is new at version 8" in _sec23 and "`streams.js` is version 51" in _sec23
       and "/static/js/stream-schedule.js?v=8" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())  # 51 then, 53 since 1.24.0
+      and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text())  # 51 then, 53 in 1.24.0, 54 since 1.24.1
 check("1.23.0: the notes say Revoke on the calendar link asks first and the code has the question",
       "Regenerate and Revoke ask first" in _sec23 and "Yes, revoke" in (ROOT / "static" / "js" / "stream-schedule.js").read_text())
 check("1.23.0: the notes say the editor's Delete the whole entry asks first and the code has the question",
@@ -1314,8 +1315,8 @@ check("1.24.0: the static versions stated are the ones the pages load",
       "`stream-health.js` is new at version 4" in _sec240 and "`live-ops-admin.js` is new at version 3" in _sec240
       and "`streams.js` is version 53" in _sec240
       and "/static/js/stream-health.js?v=4" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/live-ops-admin.js?v=3" in (ROOT / "static" / "admin.html").read_text()
-      and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text())
+      and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text()  # 3 then, 4 since 1.24.1
+      and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
 _docs24 = (ROOT / "static" / "api-docs.html").read_text()
 check("1.24.0: every new route is in the API reference and on the API page",
@@ -1353,6 +1354,42 @@ check("1.24.0: the rollback item does not call a rollback fully safe and gives t
       and "1.23.1" in _rb240 and "1.23.0" not in _rb240
       and "moderator" in _rb240 and "private" in _rb240)
 
+# --- 1.24.1: access lane (security release) --------------------------------------------------------
+m241 = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0\n)", text, re.S)
+_sec241 = m241.group(1) if m241 else ""
+_low241 = _sec241.lower()
+check("1.24.1 authorisation notes sit directly before the 1.24.0 notes", bool(m241))
+check("1.24.1 authorisation notes carry no emoji", not re.search(_EMOJI, _sec241))
+for name, needles in {
+    "the three groups and the closing sections": ("breaking changes", "behaviour changes", "**database**", "**static files**", "**rollback**", "**not tested**"),
+    "end now and stop relays": ("`\"confirm\": true`", "`400`", "`regenerate_key` of end now no longer defaults to true", "stop-relays"),
+    "connections need the whole authority": ("whole authority", "`403`", "member's default key", "`/connect`", "`get`) is unchanged", "`/proxy/{conn_id}`", "`auth_header` and `extra_headers`"),
+    "regenerate while live": ("\"end_live_session\": true", "`409`", "path the session was published on", "recording is finished and kept"),
+    "hooks of a demoted administrator": ("the owner is no longer an administrator", "read at every send", "`server.py set-admin --remove`", "system hooks", "`404`"),
+    "webrtc kick": ("webrtcsessions/kick", "64 per stream", "staged instance"),
+    "channels of a deleted account": ("chat channel of each of its streams", "`orphaned_stream_channels`", "made **private**", "nothing is deleted"),
+    "small hardening": ("per ipv6 /64", "no expiry", "6to4 and teredo", "spice or proxmox", "`stored_password_cleared: true`", "`textcontent`",
+                        "fixed sentence", "no default of a blocking feature changes"),
+    "the allow_private rule": ("`webhook_local_allow=127.0.0.1:8081`", "never the portal's own port", "after 10 in a row", "child of the portal"),
+    "not tested": ("no browser", "no real encoder", "fake of mediamtx's api", "mediamtx v1.21.3", "fake exception", "fake page", "checked by reading the source only"),
+}.items():
+    check(f"1.24.1 authorisation states: {name}", all(n in _low241 for n in needles), str([n for n in needles if n not in _low241]))
+check("1.24.1: the static versions stated are the ones the pages load",
+      "`user-connections.js` is version 61" in _sec241 and "`streams.js` version 54" in _sec241 and "`live-ops-admin.js` version 4" in _sec241
+      and "user-connections.js?v=61" in (ROOT / "static" / "index.html").read_text()
+      and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
+      and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text())
+_api241 = (ROOT / "docs" / "API.md").read_text()
+_html241 = (ROOT / "static" / "api-docs.html").read_text()
+check("1.24.1: the API reference and the API page state each changed contract",
+      all(n in _api241 for n in ('`{"confirm": true', "end_live_session", "`WEBHOOK_LOCAL_ALLOW`", "Since 1.24.1 the same holds for the `password` of a `spice`", "Since 1.24.1 the owner's role", "Credentials (1.24.1)", "reverse proxy `/proxy/{conn_id}`"))
+      and all(n in _html241 for n in ('{"confirm": true', "end_live_session", "WEBHOOK_LOCAL_ALLOW", "Since 1.24.1 the <code>password</code> of a <code>spice</code>", "Since 1.24.1 the owner's role", "Credentials (1.24.1)", "reverse proxy <code>/proxy/{conn_id}</code>")))
+check("1.24.1: the 1.24.0 sentence that names the audit actions is still in the API reference",
+      "`stream_end_now`, `stream_stop_relays`, `stream_overlay_create` and `stream_overlay_revoke` (1.24.0)" in _api241)
+check("1.24.1: the setting the notes name is the one the code writes and the example file names the allow-list",
+      "orphaned_stream_channels" in (ROOT / "database.py").read_text(encoding="utf-8")
+      and "WEBHOOK_LOCAL_ALLOW" in (ROOT / "config.py").read_text() and "WEBHOOK_LOCAL_ALLOW" in (ROOT / ".env.example").read_text())
+
 # --- 1.24.0: chat overlay for an OBS browser source ---------------------------------------------------
 import overlay_chat as _ov24  # noqa: E402
 
@@ -1373,7 +1410,7 @@ check("1.24.0 states the limits the code has",
       and "_OVERLAY_FAIL_LIMIT = (10, 600)" in (ROOT / "server.py").read_text(encoding="utf-8"), "")
 check("1.24.0 states the static versions the pages load",
       "`overlay.js` is new at version 3 and `overlay.css` at version 1" in _sec24 and "`stream-overlay-settings.js` is new at version 3" in _sec24
-      and "`streams.js` is version 53" in _sec24 and "/static/js/streams.js?v=53" in (ROOT / "static" / "index.html").read_text()
+      and "`streams.js` is version 53" in _sec24 and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
       and "overlay.js?v=3" in (ROOT / "static" / "overlay.html").read_text() and "stream-overlay-settings.js?v=3" in (ROOT / "static" / "index.html").read_text())
 check("1.24.0 says the overlay link ends with the credentials, as the calendar link does, and that webhook lines and the history replacement are as the code does",
       all(n in _sec24 for n in ("when an administrator signs the owner out everywhere", "closes their sockets within 30 seconds",

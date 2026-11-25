@@ -116,7 +116,8 @@ async def main():
 
     sysh = await db.create_webhook(None, P["pre"] + "sys", "outgoing", url="https://93.184.216.34/h",
                                    events=["stream.live"], kind="system", created_by=P["users"]["adm"])
-    mine = await db.create_webhook(P["users"]["member"], P["pre"] + "mine", "outgoing",
+    # a user hook: since 1.24.1 only an administrator's receives anything, so its owner is the administrator
+    mine = await db.create_webhook(P["users"]["adm"], P["pre"] + "mine", "outgoing",
                                    url="https://93.184.216.34/m", events=["stream.live"])
     out = {"sys": sysh["id"], "mine": mine["id"]}
 
