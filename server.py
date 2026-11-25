@@ -10197,7 +10197,7 @@ async def _vod_revisit_one(entry: dict, budget: dict) -> Optional[bool]:
     conn, sftp, error = await _connect_vod_sftp(user_id)
     if error:
         logger.debug(f"VOD sweep: part file check of {remote_dir} skipped, SFTP connect failed: {error}")
-        return False
+        return None     # asked again in a day, not at every pass: a dead host would cost a connect timeout each time
     try:
         try:
             names = await asyncio.wait_for(sftp.listdir(remote_dir), VOD_SFTP_META_TIMEOUT)

@@ -105,6 +105,19 @@ def test_a_part_that_is_still_young_at_the_revisit_is_asked_again_a_day_later():
     assert len(entries) == 1 and entries[0]["at"] > entries[0]["first"] + DAY * 0.9, entries
 
 
+def test_a_storage_that_cannot_be_reached_is_asked_again_a_day_later_not_at_every_pass():
+    async def down(user_id):
+        return None, None, "Connection failed"
+    patcher = mock.patch.object(server, "_connect_vod_sftp", down)
+    try:
+        _first, second, _saved, after = _scenario(extra=lambda remote: patcher.start(), days=2)
+    finally:
+        patcher.stop()
+    assert PART in second, "nothing can be removed while the storage is down"
+    entries = json.loads(after)
+    assert len(entries) == 1 and entries[0]["at"] > entries[0]["first"] + DAY * 1.5, entries
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
