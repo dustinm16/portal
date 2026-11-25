@@ -4693,7 +4693,7 @@ ws.send(JSON.stringify({
                         <span class="endpoint-desc">Send test event</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Send a <code>webhook.test</code> event to verify your webhook endpoint is working. Owner or admin required.</p>
+                        <p>Send a <code>webhook.test</code> event to verify your webhook endpoint is working. Owner or admin required. Since 1.24.1 it answers <code>400</code> and sends nothing for a user hook whose owner is no longer an administrator, the rule delivery already follows.</p>
                     </div>
                 </div>
 

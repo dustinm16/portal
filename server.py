@@ -11532,6 +11532,11 @@ async def http_test_webhook(request: web.Request) -> web.Response:
     full_wh = await db.get_webhook_for_delivery(webhook_id)
     if not full_wh:
         return web.json_response({"error": "Could not load webhook for test"}, status=500)
+    # The owner rule of delivery: a hook sends only while its owner is an administrator now (read at this
+    # moment), however the caller got here
+    if not full_wh.get("owner_may_send"):
+        return web.json_response(
+            {"error": "The hook's owner is no longer an administrator, so it sends nothing"}, status=400)
 
     return await _run_webhook_test(full_wh, user)
 

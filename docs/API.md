@@ -4419,7 +4419,7 @@ Delivery records (`event`, `response_status`, `success`, `attempt`, `duration_ms
 
 #### POST /api/webhooks/{id}/test
 
-Needs a full-scope credential (a browser session or an all-scope token or key; a narrowly scoped key gets `403`), because it triggers a delivery. Sends one sample message in the hook's format (event `webhook.test`) and waits for the receiver. Answers `{"message", "format", "sent", "success", "status", "error"}`: `status` is the receiver's HTTP status code (a 429 is reported at once, without waiting). The Test button of a hook that is disabled answers 400.
+Needs a full-scope credential (a browser session or an all-scope token or key; a narrowly scoped key gets `403`), because it triggers a delivery. Sends one sample message in the hook's format (event `webhook.test`) and waits for the receiver. Answers `{"message", "format", "sent", "success", "status", "error"}`: `status` is the receiver's HTTP status code (a 429 is reported at once, without waiting). The Test button of a hook that is disabled answers 400. Since 1.24.1 it also answers `400` (and sends nothing) for a user hook whose owner is no longer an administrator, the rule delivery already follows; it is read when the test is made.
 
 #### POST /api/webhooks/{id}/regenerate-secret
 
