@@ -9014,10 +9014,19 @@ class Database:
         await self.conn.execute("DELETE FROM ip_ban_history WHERE ip_address = ?", (ip_address,))
         await self.conn.commit()
 
+    # Most ip_unblocked (expired) events one sweep writes singly; the rest of a flood is one summary row.
+    SWEEP_EVENT_CAP = 50
+
     async def sweep_auto_bans(self) -> int:
         """Delete expired automatic ban rows, escalation history older than BAN_REPEAT_DAYS and
         sign-in addresses older than LOGIN_ADDRESS_DAYS. Manual rows are never touched.
+        Every expired block that is deleted is recorded as an ip_unblocked security event (result
+        expired), at most SWEEP_EVENT_CAP singly and one summary row for the rest.
         Returns the number of block rows deleted."""
+        expiring = await (await self.conn.execute(
+            """SELECT ip_address, kind FROM blocked_ips
+               WHERE source = 'auto' AND kind IN ('login', 'probe')
+                 AND expires_at IS NOT NULL AND expires_at <= datetime('now') ORDER BY id""")).fetchall()
         cursor = await self.conn.execute(
             """DELETE FROM blocked_ips
                WHERE source = 'auto' AND kind IN ('login', 'probe')
@@ -9035,7 +9044,27 @@ class Database:
         await self.conn.execute(
             "DELETE FROM block_refs WHERE created_at <= datetime('now', ?)", (f"-{self.BLOCK_REF_DAYS} days",))
         await self.conn.commit()
+        await self._record_expired_blocks(expiring)
         return removed
+
+    async def _record_expired_blocks(self, expiring) -> None:
+        """Write the ip_unblocked (expired) events of one sweep. The blocks are already gone: a failure
+        here is logged and never undoes or fails the sweep."""
+        try:
+            make = secevents.SecurityEventLog._row
+            for r in expiring[:self.SWEEP_EVENT_CAP]:
+                row = make("ip_unblocked", r["ip_address"], None, None, None, "expired",
+                           {"target_ip": r["ip_address"], "kind": "expired", "block_kind": r["kind"]})
+                row["count"], row["agg_key"] = 1, None
+                await self.insert_security_event(row)
+            more = len(expiring) - self.SWEEP_EVENT_CAP
+            if more > 0:
+                row = make("ip_unblocked", None, None, None, None, "expired",
+                           {"kind": "expired", "more": more})
+                row["count"], row["agg_key"] = more, None
+                await self.insert_security_event(row)
+        except Exception as e:
+            logger.warning("Could not record expired IP blocks: %s", type(e).__name__)
 
     async def remove_auto_bans_in(self, nets) -> list:
         """Delete automatic (login and probe) block rows for addresses inside `nets` and

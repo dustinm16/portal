@@ -8,8 +8,8 @@ Two write paths, chosen by event name:
 
 * Events an outsider can trigger at will (wrong passwords, bad 2FA codes,
   probe and rate-limit trips) are *aggregated*. They are counted in memory per
-  (ip, event, result, minute) and flushed in one transaction every few seconds
-  and at shutdown, as an upsert on ``agg_key`` that adds to ``count``. A flood
+  (ip, event, result, minute, and the member when the event names one) and
+  flushed in one transaction every few seconds and at shutdown, as an upsert on ``agg_key`` that adds to ``count``. A flood
   therefore costs one row per source per minute and a bounded number of
   writes, however many requests it sends. An IPv6 source counts as its /64, and
   one minute creates at most MINUTE_MAX_KEYS rows across all flushes: further
@@ -358,9 +358,10 @@ class SecurityEventLog:
             key = (row["ip"], event, row["result"] or "", minute)
             if event == KEY_EVENT:
                 key = self._key_event_key(key, row, details, minute)
-            elif event not in AGGREGATED and row["user_id"] is not None:
-                # An event over the immediate cap (see write): two accounts behind one
-                # address are counted apart, so a count is never filed under another account.
+            elif row["user_id"] is not None:
+                # An event over the immediate cap (see write), or an aggregated one that names a
+                # member: two accounts behind one address are counted apart, so a count is never
+                # filed under another account.
                 key += (f"u{row['user_id']}",)
             entry = self._agg.get(key)
             if entry is None:

@@ -446,6 +446,40 @@ def test_a_removal_that_lands_between_the_context_reads_never_leaves_a_stale_ver
     run(body)
 
 
+def test_when_every_context_read_races_a_change_no_verdict_is_stored():
+    """The context returned after three raced reads is not stored and carries the generation it was
+    read under, and _signal_channel_activity hands that generation (not the current one) to
+    _activity_may_read, so the verdict made from it is never stored either."""
+    async def body(env):
+        async def scenario():
+            d = env.db
+            ids = await base.users(d)
+            gen = await general(d)
+            pvt = await base.private_channel(d, ids, members=("alice", "bob"))
+            channel = await d.get_chat_channel(pvt)
+            bob = await env.sock(ids["bob"])
+            await bob.join(gen)
+            real = d.get_channel_member_ids
+            state = {"n": 0}
+
+            async def racing(channel_id):
+                state["n"] += 1
+                old = await real(channel_id)
+                server._forget_activity_verdicts(channel_id)    # access changed while the read ran
+                return old
+            d.get_channel_member_ids = racing
+            try:
+                assert await server._signal_channel_activity(channel, ids["alice"]) == 1, "a member was not told"
+                assert state["n"] == 3, "every one of the three reads raced: %d" % state["n"]
+                assert pvt not in server._activity_context, "a context read under a moved generation was stored"
+                assert not server._activity_verdicts.get(pvt), \
+                    "a verdict made from a context of an old generation was stored: %r" % server._activity_verdicts.get(pvt)
+            finally:
+                d.get_channel_member_ids = real
+        await asyncio.wait_for(scenario(), 30)
+    run(body)
+
+
 def test_verdicts_follow_the_context_memo_and_are_cleared_by_stream_id():
     async def body(env):
         d = env.db

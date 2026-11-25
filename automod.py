@@ -197,8 +197,13 @@ def regex_worker_failures(runner, rule_type: str, config) -> int:
     return runner.worker_failures_in_last_hour()
 
 
-def validate_automod_config(rule_type: str, config) -> str | None:
-    """Return an error message for an unacceptable rule config, or None."""
+def validate_automod_config(rule_type: str, config, old_config=None) -> str | None:
+    """Return an error message for an unacceptable rule config, or None.
+
+    old_config is the stored config of the rule being edited (a word filter). A regex rule saved before
+    the pattern cap may hold more than REGEX_MAX_PATTERNS patterns: a save that leaves that pattern list
+    as it is passes the cap, so an unrelated edit of the rule is not refused. A list that grew or
+    changed, and every new rule, is held to the cap."""
     if not isinstance(config, dict):
         return "config must be an object"
     if rule_type != "word_filter":
@@ -210,7 +215,9 @@ def validate_automod_config(rule_type: str, config) -> str | None:
     if mode not in MATCH_MODES:
         return f"match_mode must be one of: {', '.join(MATCH_MODES)}"
     if mode == "regex":
-        if len(words) > REGEX_MAX_PATTERNS:
+        unchanged = (isinstance(old_config, dict) and old_config.get("match_mode", "contains") == "regex"
+                     and old_config.get("words") == words)
+        if len(words) > REGEX_MAX_PATTERNS and not unchanged:
             return f"at most {REGEX_MAX_PATTERNS} patterns per regex rule"
         for w in words:
             problem = regex_problem(w)

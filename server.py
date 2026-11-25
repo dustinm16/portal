@@ -7318,6 +7318,18 @@ _STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
                                    "golive_audience", "game"})
 
 
+async def _discard_unbound_channel(channel_id) -> None:
+    """Delete the chat channel a legacy stream's update created when that update did not go through, so
+    no stream-<user>-<id> channel is left bound to nothing. Only the channel made in this request is
+    passed in; a failure here is logged and does not hide the failure of the update."""
+    if not channel_id:
+        return
+    try:
+        await _drop_stream_channel(channel_id)
+    except Exception as e:
+        logger.warning("Could not remove the unused chat channel %s of a failed stream update: %s", channel_id, e)
+
+
 async def http_update_user_stream(request: web.Request) -> web.Response:
     """Update a stream (owner only)."""
     token, refusal = await _stream_user_auth(request)
@@ -7357,6 +7369,7 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         return web.json_response({"error": problem}, status=400)
 
     # Create chat channel if one doesn't exist (for legacy streams)
+    created_channel_id = None
     if not stream.get("chat_channel_id"):
         user = await db.get_user_by_id(token.user_id)
         channel_name = f"stream-{user['username']}-{stream_id}"
@@ -7366,6 +7379,7 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             created_by=token.user_id
         )
         data["chat_channel_id"] = chat_channel_id
+        created_channel_id = chat_channel_id
 
     # A stream switched from public to private must not keep a playback key that
     # may have been shared while it was public.
@@ -7373,7 +7387,13 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         "is_public" in data and not data["is_public"] and bool(stream.get("is_public"))
     )
 
-    success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
+    try:
+        success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
+    except Exception:
+        await _discard_unbound_channel(created_channel_id)
+        raise
+    if not success:
+        await _discard_unbound_channel(created_channel_id)
     if success:
         # Viewers are asked again at once; a viewer who lost access gets no new
         # playlist or segment from here on.
@@ -7797,7 +7817,7 @@ def _role_lifts_any_ban(role: str) -> bool:
 
 
 async def http_get_stream_bans(request: web.Request) -> web.Response:
-    """Get all bans for a stream (stream owner only)."""
+    """Get all bans for a stream (the stream owner, the stream mods of its chat and staff)."""
     token, refusal = await _stream_user_auth(request)
     if refusal is not None:
         return refusal
@@ -23836,9 +23856,10 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
             except (ValueError, KeyError, TypeError) as e:
                 logger.warning(f"Failed to create automod action: {e}")
             await audit_log(
-                "automod_trigger", 0, "AutoMod",
+                # filed under the member the rule acted on: audit_log.actor_id must name a real account
+                "automod_trigger", user_id, "AutoMod",
                 target_id=user_id, target_type="user",
-                details=json.dumps({"rule": rule["name"], "action": rule["action"]}),
+                details=json.dumps({"rule": rule["name"], "action": rule["action"], "automatic": True}),
                 channel_id=channel_id, channel_name=channel_name
             )
             return {
@@ -24194,12 +24215,15 @@ async def _mass_mention_recipients(channel, kind: str, sender_id: int, stream) -
         pool.append(c)
     prefs = await db.get_channel_notify_prefs(channel["id"], [c["id"] for c in pool])
     now = _notify_clock()
+    # the stream's bans and a private channel's members are read once, not once per candidate
+    banned_ids = await db.get_banned_user_ids(stream["id"]) if stream else None
+    member_ids = await db.get_channel_member_ids(channel["id"]) if private else None
     out, capped = [], False
     for c in pool:
         level, muted_until = prefs.get(c["id"], ("default", 0))
         if level == "none" or (muted_until and muted_until > now):
             continue
-        if not await _can_read_channel(channel, c["id"], c["role"], stream):
+        if not await _can_read_channel(channel, c["id"], c["role"], stream, banned_ids, member_ids):
             continue
         if len(out) >= MASS_MENTION_CAP:
             capped = True
@@ -25642,6 +25666,7 @@ async def http_get_relay_platforms(request: web.Request) -> web.Response:
 # Link preview cache: url -> (preview_data, timestamp) — bounded to 256 entries
 _LINK_PREVIEW_CACHE_MAX = 256
 _link_preview_cache: dict[str, tuple[dict, float]] = {}
+_LINK_PREVIEW_DNS_TIMEOUT = 5.0  # seconds a member-posted host name may take to resolve
 _LINK_PREVIEW_TTL = 3600  # 1 hour
 
 
@@ -25713,13 +25738,17 @@ async def http_link_preview(request: web.Request) -> web.Response:
     except ValueError:
         pass
     # DNS resolution check: validate resolved IPs are not private/internal
+    # (off the event loop, with a time limit: a slow resolver must not stall the portal)
     import socket
     try:
-        resolved = socket.getaddrinfo(hostname, None)
+        resolved = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(hostname, None), _LINK_PREVIEW_DNS_TIMEOUT)
         for family, stype, proto, canonname, sockaddr in resolved:
             ip_str = sockaddr[0]
             if is_blocked_host(ip_str):
                 return web.json_response({"error": "URL resolves to blocked address"}, status=403)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Could not resolve hostname in time"}, status=400)
     except socket.gaierror:
         return web.json_response({"error": "Could not resolve hostname"}, status=400)
 
@@ -26098,7 +26127,7 @@ async def _socket_may_act_in(ws, channel, user_id: int, user_role: str, notify: 
     if access:
         return True
     if notify:
-        await ws.send_json({"type": "error", "message": access.message})
+        await ws.send_json({"type": "error", "message": access.message, "channel_id": channel["id"]})
     return False
 
 
@@ -27983,7 +28012,13 @@ async def http_update_automod_rule(request: web.Request) -> web.Response:
                 new_config = json.loads(existing["config"]) if isinstance(existing["config"], str) else existing["config"]
             except (json.JSONDecodeError, TypeError):
                 new_config = {}
-        config_error = automod.validate_automod_config(data.get("type", existing["type"]), new_config)
+        old_config = None
+        if existing["type"] == "word_filter":
+            try:
+                old_config = json.loads(existing["config"]) if isinstance(existing["config"], str) else existing["config"]
+            except (json.JSONDecodeError, TypeError):
+                old_config = None
+        config_error = automod.validate_automod_config(data.get("type", existing["type"]), new_config, old_config)
         if config_error:
             return web.json_response({"error": config_error}, status=400)
         if "config" in data:
@@ -28126,10 +28161,12 @@ async def http_add_channel_member(request: web.Request) -> web.Response:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be a JSON object"}, status=400)
 
     try:
-        target_id = int(data.get("user_id", 0))
-    except (ValueError, TypeError):
+        target_id = _ws_id(data.get("user_id", 0))
+    except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "Invalid user_id"}, status=400)
 
     target = await db.get_user_by_id(target_id)
@@ -28330,6 +28367,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     chat_msg_times: list[float] = []
     # Typing signals: at most one per second is handled on a socket
     chat_typing_last = [None]
+    # Voice moderation frames: VOICE_MOD_LIMIT per VOICE_MOD_WINDOW seconds on a socket
+    voice_mod_times: list[float] = []
 
     logger.info(f"[Chat] User {username} connected")
 
@@ -28873,8 +28912,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id or not emoji or len(emoji) > 36:
                             continue
                         try:
-                            message_id = int(message_id)
-                        except (ValueError, TypeError):
+                            message_id = _ws_id(message_id)
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id"})
                             continue
                         # Verify message belongs to current channel
                         msg = await db.get_chat_message(message_id)
@@ -28909,8 +28949,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id or not new_text:
                             continue
                         try:
-                            message_id = int(message_id)
-                        except (ValueError, TypeError):
+                            message_id = _ws_id(message_id)
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id"})
                             continue
                         if len(new_text) > 4000:
                             continue
@@ -29747,6 +29788,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             voice_room = joined_room
 
                     elif msg_type in VOICE_MOD_FRAMES:
+                        # a per-socket limit before any lookup (generous: normal moderation is a few frames)
+                        now_vm = monotonic()
+                        voice_mod_times[:] = [t for t in voice_mod_times if now_vm - t < VOICE_MOD_WINDOW]
+                        if len(voice_mod_times) >= VOICE_MOD_LIMIT:
+                            await ws.send_json({"type": "error", "message": "Rate limit exceeded"})
+                            continue
+                        voice_mod_times.append(now_vm)
                         await _voice_moderate(ws, user_id, user_role, username, voice_room, msg_type, data)
 
                     elif msg_type == "voice_leave":
@@ -29940,8 +29988,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     elif msg_type == "dm_message":
                         # Send a DM message
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
@@ -30039,8 +30088,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "dm_typing":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
@@ -30054,9 +30104,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "dm_delete":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                            message_id = int(data.get("message_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                            message_id = _ws_id(data.get("message_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
@@ -30073,9 +30124,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "dm_react":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                            message_id = int(data.get("message_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                            message_id = _ws_id(data.get("message_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         emoji = data.get("emoji", "")
                         if not emoji or len(emoji) > 36:
@@ -30098,9 +30150,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "dm_edit":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                            message_id = int(data.get("message_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                            message_id = _ws_id(data.get("message_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         new_text = data.get("message", "").strip()
                         if not new_text or len(new_text) > 4000:
@@ -30133,25 +30186,27 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "dm_mark_read":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                            message_id = int(data.get("message_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                            message_id = _ws_id(data.get("message_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         if await db.is_dm_participant(conv_id, user_id):
                             await db.update_dm_read_position(user_id, conv_id, message_id)
 
                     elif msg_type == "dm_history":
                         try:
-                            conv_id = int(data.get("conversation_id", 0))
-                        except (ValueError, TypeError):
+                            conv_id = _ws_id(data.get("conversation_id", 0))
+                        except (ValueError, TypeError, OverflowError):
+                            await ws.send_json({"type": "error", "message": "Invalid id"})
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
                         before_id = data.get("before_id")
                         if before_id:
                             try:
-                                before_id = int(before_id)
-                            except (ValueError, TypeError):
+                                before_id = _ws_id(before_id)
+                            except (ValueError, TypeError, OverflowError):
                                 before_id = None
                         messages = await db.get_dm_messages(conv_id, limit=50, before_id=before_id)
                         msg_ids = [m["id"] for m in messages]
@@ -30800,6 +30855,8 @@ async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id:
                 dead.add(raw)
         if dead and uid in dm_user_connections:
             dm_user_connections[uid] -= dead
+            if not dm_user_connections[uid]:
+                del dm_user_connections[uid]
 
 
 async def _send_dm_to_user(user_id: int, message: dict):
@@ -30815,6 +30872,8 @@ async def _send_dm_to_user(user_id: int, message: dict):
             dead.add(raw)
     if dead and user_id in dm_user_connections:
         dm_user_connections[user_id] -= dead
+        if not dm_user_connections[user_id]:
+            del dm_user_connections[user_id]
 
 
 async def broadcast_users_list(channel: str):
@@ -31747,6 +31806,8 @@ async def _voice_drop_for_penalty(user_id: int, channel) -> None:
         logger.warning(f"[Voice] Could not remove user {user_id} from voice after a penalty: {e}")
 
 
+VOICE_MOD_LIMIT = 20       # voice moderation frames one socket may send ...
+VOICE_MOD_WINDOW = 10.0    # ... within this many seconds
 VOICE_MOD_FRAMES = ("voice_kick", "voice_server_mute", "voice_server_unmute",
                     "voice_lock_room", "voice_unlock_room")
 

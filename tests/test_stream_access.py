@@ -597,7 +597,8 @@ def test_a_member_banned_from_a_stream_is_refused_on_every_playback_route():
         assert (await statuses(pub, "member"))["http_stream_info"] == 200
         assert (await statuses(pub, "member"))["http_stream_hls_proxy"] == 200
         ban_id = await w.db.create_stream_ban(pub["id"], w.users["member"], w.users["owner"], "spam")
-        # the route that bans clears the cache; here the helper does what the routes do
+        # the routes that ban and unban clear the cache (test_the_ban_and_unban_routes_clear_the_playback_cache_themselves
+        # drives them); this test checks the playback routes, so the helper stands in for them here
         server._playback_cache_forget(stream_id=pub["id"])
         got = await statuses(pub, "member")
         assert set(got.values()) == {404}, got
@@ -637,6 +638,58 @@ def test_a_member_banned_from_a_stream_is_refused_on_every_playback_route():
         assert (await statuses(pub, "member"))["http_stream_hls_proxy"] == 200
         assert (await detail(pub["id"], "member")).status == 200
     run(body)
+
+
+def test_the_ban_and_unban_routes_clear_the_playback_cache_themselves():
+    """The routes, not a helper called by the test, make a ban and a lifted ban take effect on the
+    next request: the cached 200 of a member who was watching is gone at once."""
+    async def body(w):
+        pub = w.streams["public"]
+        sid, member = pub["id"], w.users["member"]
+
+        def cached_for_stream():
+            return [k for k, v in server._playback_auth_cache.items() if v[2] == sid]
+
+        async def info(user="member"):
+            return (await server.http_stream_info(w.req(pub["pub"], user))).status
+
+        async def route(handler, method, owner_cookie, tail, **match):
+            raw = json.dumps(match.pop("body", {})).encode()
+            req = make_mocked_request(
+                method, f"/api/streams/{sid}/bans{tail}",
+                headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={owner_cookie}",
+                         "Content-Type": "application/json"},
+                match_info={"id": str(sid), **{k: str(v) for k, v in match.items()}}, transport=Transport())
+            req._read_bytes = raw       # the body, as request.read() would have returned it
+            return await handler(req)
+
+        async def watching():
+            assert await info() == 200
+            assert cached_for_stream(), "the member's allowed decision is cached"
+
+        owner = w.cookie["owner"]
+        # the ban route: a cached 200 is dropped by the route itself
+        await watching()
+        resp = await route(server.http_create_stream_ban, "POST", owner, "", body={"user_id": member, "reason": "x"})
+        assert resp.status == 201, (resp.status, resp.body)
+        assert not cached_for_stream(), "the ban route left the cached decision"
+        assert await info() == 404
+        # the unban route by member id: the cached refusal is dropped, the member watches at once
+        assert cached_for_stream(), "the refusal is cached"
+        resp = await route(server.http_remove_stream_ban, "DELETE", owner, f"/{member}", user_id=member)
+        assert resp.status == 200, (resp.status, resp.body)
+        assert not cached_for_stream(), "the unban route left the cached refusal"
+        assert await info() == 200
+        # and the unban route by ban id
+        resp = await route(server.http_create_stream_ban, "POST", owner, "", body={"user_id": member})
+        assert resp.status == 201, (resp.status, resp.body)
+        ban_id = json.loads(resp.body)["ban_id"]
+        assert await info() == 404 and cached_for_stream()
+        resp = await route(server.http_remove_stream_ban_by_id, "DELETE", owner, f"/id/{ban_id}", ban_id=ban_id)
+        assert resp.status == 200, (resp.status, resp.body)
+        assert not cached_for_stream(), "the by-id route left the cached refusal"
+        assert await info() == 200
+    run(lambda w: asyncio.wait_for(body(w), 60))
 
 
 def test_the_decision_carries_the_ban():

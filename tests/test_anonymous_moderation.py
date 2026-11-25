@@ -296,7 +296,7 @@ def test_a_ban_made_from_an_anonymous_post_does_not_name_the_author_to_the_moder
 def test_a_timeout_made_from_an_anonymous_post_ends_nobody_s_call_whoever_wrote_it():
     """1.24.1: a timeout placed through an anonymous post gives the observers of the call and the room nothing that
     names or singles out the author: no voice_user_left with their id, no users list, whoever they are (an ordinary
-    member in the call under their name, the owner, an administrator). The penalty is read at their next join."""
+    member in the call under their name, the owner, an administrator, another stream mod, a global moderator). The penalty is read at their next join."""
     async def body(env):
         d = env.db
         server.voice_state.clear()          # module state: an earlier test's calls and penalty denies are not this world's
@@ -307,7 +307,7 @@ def test_a_timeout_made_from_an_anonymous_post_ends_nobody_s_call_whoever_wrote_
         await mod.send(type="voice_join")
         await mod.until("voice_state")
         outcomes = {}
-        for who in ("member", "streamer", "admin_author"):
+        for who in ("member", "streamer", "admin_author", "othermod", "moderator_author"):
             author = await env.ws(ids[who])
             await author.join(cid)
             await author.send(type="voice_join")
@@ -339,6 +339,10 @@ def test_a_timeout_made_from_an_anonymous_post_ends_nobody_s_call_whoever_wrote_
             await d.conn.execute("DELETE FROM chat_timeouts")
             await d.conn.commit()
         await mod.close()
+        # nobody is told apart: every author, the other stream mod and the global moderator included, gets the
+        # same frames
+        assert set(outcomes) == {"member", "streamer", "admin_author", "othermod", "moderator_author"}, outcomes
+        assert len({tuple(v) for v in outcomes.values()}) == 1, outcomes
     run(body)
 
 

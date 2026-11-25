@@ -326,6 +326,26 @@ def test_a_banned_member_cannot_edit_on_the_open_socket():
     run(body)
 
 
+def test_a_refusal_frame_names_the_channel_it_is_about():
+    """A client with several rooms open cannot otherwise tell which one refused."""
+    async def body(env):
+        d = env.db
+        ids = await users(d)
+        cid = await private_channel(d, ids)
+        mine = await d.create_chat_message(cid, ids["alice"], "alice", "my old message")
+        alice = await env.sock(ids["alice"])
+        await alice.join(cid)
+        await d.remove_channel_member(cid, ids["alice"])
+        for frame in ({"type": "delete", "message_id": mine},
+                      {"type": "pin_message", "message_id": mine}):
+            m = alice.mark()
+            await alice.send(**frame)
+            err = await alice.wait(lambda e: e.get("type") == "error", m)
+            assert err and err["message"] == "This channel is private", (frame, alice.events[m:])
+            assert err.get("channel_id") == cid and isinstance(err["channel_id"], int), (frame, err)
+    run(body)
+
+
 # ---------------------------------------------------------------------------
 # item 2: a socket that lost access is put out of the room
 

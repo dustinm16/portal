@@ -39,7 +39,7 @@ _SINGLE = frozenset(("before", "after"))
 
 # Same pattern the chat page uses to turn text into a link.
 _LINK_RE = re.compile(r"https?://[^\s<]+")
-_TOKEN_RE = re.compile(r'-?[A-Za-z]+:\S*|"[^"]*"|\S+')
+_TOKEN_RE = re.compile(r'-?[A-Za-z]+:(?:"[^"]*"|\S*)|"[^"]*"|\S+')
 _OPERATOR_TOKEN_RE = re.compile(r'^(-?)([A-Za-z]+):(.*)$', re.S)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Characters that mean something in an FTS5 expression outside quotes; they
@@ -146,6 +146,8 @@ def parse_search_query(q: str, *, from_=None, has=None, before=None, after=None)
         m = _OPERATOR_TOKEN_RE.match(tok)
         if m and not tok.startswith('"'):
             neg, name, value = m.group(1) == "-", m.group(2), m.group(3)
+            if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]      # from:"Mom Smith": the quotes keep the spaces in the value
             known = name.lower() in OPERATORS
             # Unknown names count as operators only with a value that is not
             # the start of an address (https://...), so "Note:" and URLs stay text.

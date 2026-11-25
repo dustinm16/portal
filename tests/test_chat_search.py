@@ -219,6 +219,24 @@ def test_parser_refusals():
             assert "has: value" in str(e) or "Unknown search operator" in str(e)
 
 
+def test_parser_quoted_operator_value():
+    p = parse_search_query('from:"Mom Smith" dinner')
+    assert p.from_users == ["Mom Smith"] and p.words == ["dinner"], (p.from_users, p.words)
+    p = parse_search_query('-from:"Bob Jones" in:"General Chat" has:link')
+    assert p.not_from_users == ["Bob Jones"] and p.in_channels == ["general chat"] and p.has == ["link"]
+    p = parse_search_query('from:mom "two words"')
+    assert p.from_users == ["mom"] and p.phrases == [["two", "words"]]
+    p = parse_search_query('Note: "milk eggs" see https://example.com/a')
+    assert not p.has_operators and p.phrases[0] == ["Note"] and ["milk", "eggs"] in p.phrases
+    assert not parse_search_query('"from:mom smith"').has_operators
+    try:
+        parse_search_query('from:""')
+    except SearchQueryError:
+        pass
+    else:
+        raise AssertionError("an empty quoted value must be refused")
+
+
 def test_parser_keeps_times_and_addresses_as_text():
     for q, words in (("meet at 12:30", ["meet", "at", "12", "30"]),
                      ("see https://example.com/a?b=1", ["see", "https", "//example.com/a?b=1"]),
