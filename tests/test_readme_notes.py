@@ -1379,6 +1379,11 @@ check("1.24.1 notes: every script version the Static files bullet names is the o
       len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 for n, v in _named241), str(_named241))
 check("1.24.1 notes: the Rollback bullet says what is lost and what does not come back",
       all(n in _s241.split("- **Rollback.**", 1)[-1] if "- **Rollback.**" in _s241 else False for n in ("What is lost on 1.24.0", "What does not come back", "WEBHOOK_LOCAL_ALLOW", "jsDelivr")))
+check("1.24.1 notes: the limit of a trusted proxied application is stated in the notes, the Security list and the About page",
+      "proxy only applications you trust" in _s241.lower()
+      and "proxy only applications you trust" in text.split("\n## Security\n")[-1].split("\n## Backups", 1)[0].lower()
+      and "proxy only applications you trust" in (ROOT / "static" / "about.html").read_text(encoding="utf-8").lower()
+      and "Proxied content runs in a sandboxed iframe" not in (ROOT / "static" / "about.html").read_text(encoding="utf-8"))
 check("1.24.1 notes: no ready-made request spellings of the upload or header problems are published",
       not re.search(r"%2e|%2F|uploads%2|/\./uploads|x/\.\./uploads|max-age=0|fresh frame", _s241 + (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
                     + (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"), re.I))

@@ -2490,6 +2490,7 @@
                 <ul>
                     <li>Portal handles TLS termination — browser-to-Portal is always encrypted</li>
                     <li>Portal session cookies and auth headers are stripped from upstream requests</li>
+                    <li>A web connection shared with another member, and every page of a browser-mode connection, opens in an isolated sandbox that cannot act as the viewer in Portal; the application has no local storage, no <code>document.cookie</code> and no frames there, and its cookie logins are kept by Portal. Pages of an administrator's connection (not in browser mode), of a connection the viewer owns and of one a superadmin marked trusted run on Portal&#39;s own address with the viewer's session, so proxy only applications you trust.</li>
                     <li>Browser-mode targets cannot access localhost or private IPs</li>
                     <li>Connection IDs use opaque tokens — no sequential enumeration possible</li>
                     <li>The embedded browser window returns to the login page when the session ends (logout in any tab)</li>
