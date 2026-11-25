@@ -7386,7 +7386,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     success = await db.delete_user_stream(stream_id, user_id=token.user_id)
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
-    _stream_access_changed(stream_id, kick="everyone")
+    _stream_access_changed(stream_id, kick="everyone", stream_key=stream.get("stream_key"))   # the row is gone: the key was read first
     _overlay_close_stream(stream_id)    # its overlay token went with it (cascade); the sockets end now
     _viewers.finish(stream_id)          # a deleted stream has no audience and no live session
     _stream_state_forget(stream_id)     # nor a session, an end claim, a relay hold or a recorder error in memory
@@ -12194,7 +12194,8 @@ def _webrtc_forget_playback(stream_id: int) -> int:
 
 
 def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
-                           viewers: str = "", owner_id: Optional[int] = None, kick: str = "") -> None:
+                           viewers: str = "", owner_id: Optional[int] = None, kick: str = "",
+                           stream_key: Optional[str] = None) -> None:
     """Call when a stream's visibility, open-link flag, share key or publish key
     changed, or the stream was deleted: viewers are asked again at once. A change
     that cannot take anybody's right away (a rename) passes drop_sessions=False
@@ -12209,7 +12210,9 @@ def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
         # there (kick "anonymous" / "everyone" is for a rotated share link and a deleted stream)
         mode = {"all": "all", "anonymous": "anonymous"}.get(viewers) or kick
         if mode:
-            _whep_kick_spawn(_whep_kick_plan(stream_id, mode=mode, owner_id=owner_id))
+            # `stream_key`: a deleted stream's key, read before its row went, so its MediaMTX paths are
+            # known when the row can no longer be read
+            _whep_kick_spawn(_whep_kick_plan(stream_id, mode=mode, owner_id=owner_id, stream_key=stream_key))
         _webrtc_forget_playback(stream_id)
     if viewers in ("all", "anonymous"):
         _viewers.remove_except_owner(stream_id, owner_id, anonymous_only=viewers == "anonymous")
@@ -13274,33 +13277,75 @@ _WHEP_KICK_PAGES = 10
 
 
 def _whep_kick_plan(stream_id: int, *, user_id: Optional[int] = None, mode: str,
-                    owner_id: Optional[int] = None) -> dict:
+                    owner_id: Optional[int] = None, stream_key: Optional[str] = None) -> dict:
     """What to disconnect, read from the portal's own WHEP records before they are forgotten.
     mode "user": the recorded sessions of `user_id`. "anonymous": the recorded sessions with no member
-    behind them. "all": every playback session of the stream except the owner's recorded ones (the stream
-    was made private). "everyone": every one, owner included (the stream is deleted). The two last also
-    ask MediaMTX which sessions read the stream's paths, so a viewer whose record was pushed out by the
-    64 per stream cap is not left playing."""
-    ids, paths, keep = set(), set(), set()
+    behind them. "all": every playback session of the stream except those of members who may still watch
+    it (the stream was made private: its owner and administrators, decided in _whep_kick_run from their role
+    now). "everyone": every one, owner included (the stream is deleted). The two last also ask MediaMTX
+    which sessions read the stream's paths, so a viewer whose record was pushed out by the 64 per stream cap
+    (or lost in a restart) is not left playing. `stream_key` is the stream's key when its row is about to
+    go (deleted stream or account), so the paths are known without reading the row."""
+    ids, paths, keep, recorded = set(), set(), set(), []
+    if stream_key:
+        paths |= {stream_key, "live/" + stream_key}
     for v in _webrtc_sessions.values():
         if v[0] != "whep" or v[1] != stream_id:
             continue
         api_id = v[5] if len(v) > 5 else None
+        uid = v[4] if len(v) > 4 else None
         paths.add(v[2])
+        recorded.append((api_id or None, uid))
         if not api_id:
             continue
-        uid = v[4] if len(v) > 4 else None
         if mode == "user" and uid == user_id:
             ids.add(api_id)
         elif mode == "anonymous" and uid is None:
             ids.add(api_id)
-        elif mode in ("all", "everyone"):
-            if mode == "all" and owner_id is not None and uid == owner_id:
+        elif mode == "everyone":
+            ids.add(api_id)
+        elif mode == "all":
+            if owner_id is not None and uid == owner_id:
                 keep.add(api_id)
             else:
                 ids.add(api_id)
-    return {"stream_id": stream_id, "ids": ids, "keep": keep, "paths": paths,
-            "list_all": mode in ("all", "everyone")}
+    return {"stream_id": stream_id, "ids": ids, "keep": keep, "paths": paths, "mode": mode,
+            "recorded": recorded, "list_all": mode in ("all", "everyone")}
+
+
+async def _whep_keepers(plan: dict) -> tuple:
+    """For a stream made private: (api ids to spare, True when the MediaMTX sweep must be skipped).
+    A recorded viewer is spared when the one read rule (_stream_read_allowed, the stream as it is now: not
+    public) still lets that member watch, so the owner and administrators are not cut off. A spared member's
+    session that has no MediaMTX id cannot be told apart from the others in the list MediaMTX gives (it names
+    no member), so the sweep of unrecorded sessions is skipped then: only recorded sessions of members who
+    lost access are kicked."""
+    spare, blind = set(), False
+    try:
+        stream = await db.get_user_stream(plan["stream_id"])
+    except Exception:
+        stream = None
+    if not stream:
+        return spare, blind
+    stream = dict(stream, is_public=0)
+    roles = {}
+    for api_id, uid in plan["recorded"]:
+        if uid is None:
+            continue
+        if uid not in roles:
+            try:
+                user = await db.get_user_by_id(uid)
+                role = (user.get("role") or ("admin" if user.get("is_admin") else "user")) if user else None
+                roles[uid] = bool(user) and _stream_read_allowed(
+                    stream, uid, role, False, await db.is_user_banned_from_stream(plan["stream_id"], uid))
+            except Exception:
+                roles[uid] = False             # unknown: treated as having lost access
+        if roles[uid]:
+            if api_id:
+                spare.add(api_id)
+            else:
+                blind = True
+    return spare, blind
 
 
 async def _whep_kick_run(plan: dict) -> int:
@@ -13310,6 +13355,8 @@ async def _whep_kick_run(plan: dict) -> int:
     if Config.STAGE_MODE or not (plan["ids"] or plan["list_all"]):
         return 0
     try:
+        spare, blind = (await _whep_keepers(plan)) if plan.get("mode") == "all" else (set(), False)
+        plan = dict(plan, keep=set(plan["keep"]) | spare, list_all=plan["list_all"] and not blind)
         cfg = await _get_mediamtx_config()
         if not cfg:
             return 0
@@ -31851,6 +31898,14 @@ async def http_delete_user(request: web.Request) -> web.Response:
     cursor = await db.conn.execute("SELECT id, chat_channel_id FROM user_streams WHERE user_id = ?", (user_id,))
     owned_streams = await cursor.fetchall()
     owned_stream_ids = [r["id"] for r in owned_streams]
+    owned_stream_keys = {}      # read before the rows go, for the MediaMTX paths of their viewers (the key is encrypted at rest)
+    for _sid in owned_stream_ids:
+        try:
+            _row = await db.get_user_stream(_sid)
+            if _row and _row.get("stream_key"):
+                owned_stream_keys[_sid] = _row["stream_key"]
+        except Exception:
+            logger.debug("could not read a stream key before deleting its account", exc_info=True)
     owned_stream_channels = [r["chat_channel_id"] for r in owned_streams if r["chat_channel_id"]]
 
     # Delete user and all associated data via ORM
@@ -31862,7 +31917,7 @@ async def http_delete_user(request: web.Request) -> web.Response:
         except Exception as e:
             logger.warning(f"Could not delete stream channel {cid} of deleted user {user_id}: {type(e).__name__}")
     for sid in owned_stream_ids:
-        _whep_kick_spawn(_whep_kick_plan(sid, mode="everyone"))     # before the records go
+        _whep_kick_spawn(_whep_kick_plan(sid, mode="everyone", stream_key=owned_stream_keys.get(sid)))     # before the records go
         _stream_state_forget(sid)
     _vod_play_purge(owner=user_id)      # their cached playback copies go with the account
     # The user's streams went with the account
