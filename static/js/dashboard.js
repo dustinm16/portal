@@ -267,6 +267,10 @@ function renderServices() {
     emptyState.style.display = 'none';
 
     grid.innerHTML = filteredServices.map(service => createServiceCard(service)).join('');
+    // The time left on a grant that ends (text only, drawn with textContent)
+    grid.querySelectorAll('.service-grant-left').forEach(el => {
+        el.textContent = serviceGrantLeft(currentUser, el.dataset.grantLeft);
+    });
     if (window.ConnOrganiser) ConnOrganiser.applyServiceFilter();
 
     // Add click handlers
@@ -288,6 +292,19 @@ function renderServices() {
             Portal.openService(service);
         });
     });
+}
+
+/**
+ * The time left on the viewer's grant of a service, in the words the connection cards use for an
+ * expiring share ("12 days left"). Empty when /api/me carries no end time for it: an administrator,
+ * a grant that never ends, or an answer from a server that does not send granted_service_expiry.
+ */
+function serviceGrantLeft(user, serviceId) {
+    const exp = user && user.granted_service_expiry;
+    if (!exp || Portal.isAdmin(user)) return '';
+    const sec = exp[serviceId];
+    if (typeof sec !== 'number' || typeof formatGrantRemaining !== 'function') return '';
+    return formatGrantRemaining(sec);
 }
 
 /**
@@ -393,6 +410,7 @@ function createServiceCard(service) {
                 </div>
                 ${updateChip}
                 ${resourceChip}
+                ${serviceGrantLeft(currentUser, service.id) ? `<span class="service-grant-left" data-grant-left="${service.id}" style="font-size:0.7rem;color:var(--text-muted);" title="How long your access to this service lasts"></span>` : ''}
             </div>
             ${actionRow}
         </div>

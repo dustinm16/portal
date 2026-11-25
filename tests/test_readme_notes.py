@@ -272,7 +272,7 @@ check("1.18.0: the sweeper interval and the close code stated are the ones in th
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0, user-connections.js and dashboard.js again in 1.22.0)",
       re.search(r"user-connections\.js\?v=(59|62|63)", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
-      and re.search(r"dashboard\.js\?v=60", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
+      and re.search(r"dashboard\.js\?v=(60|61)", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
 check("1.18.0: the admin.js and portal.css versions stated are the ones the 1.18.0 pages loaded (admin.js moved on in 1.19.0, portal.css in 1.22.0)",
       re.search(r"js/admin\.js\?v=(39|[4-9]\d)", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
@@ -481,15 +481,15 @@ check("the chat part of What You Get describes levels, mute, badges and mass men
 check("the old 'enable desktop alerts' star sentence is gone from the chat part",
       "Enable desktop alerts to get browser notifications" not in text)
 # Scripts whose version moved on in 1.22.0: an older release's notes state the version of their day.
-MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
+MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56, "dashboard.js": 60}
 # ... and in 1.23.0 (saved messages lane): an older release's notes keep the version of their day
 MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
 MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
-# ... and in 1.24.2 (the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages; the Live streams figures that keep moving while a question is open and the xterm version of the Recordings script): the versions the pages load now
+# ... and in 1.24.2 (the time left on a granted service's card, the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages; the Live streams figures that keep moving while a question is open and the xterm version of the Recordings script): the versions the pages load now
 MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4,
-                   "live-ops-admin.js": 5, "recordings-admin.js": 5}
+                   "live-ops-admin.js": 5, "recordings-admin.js": 5, "dashboard.js": 61}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -944,7 +944,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 4), ("dashboard.js", 60), ("user-connections.js", 63), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 4), ("dashboard.js", MOVED_ON_1_24_2["dashboard.js"]), ("user-connections.js", 63), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))
@@ -1006,7 +1006,8 @@ check("1.22.0: every script and style version the Static files bullet names is t
       all(re.search(rf"{re.escape(f)}\?v={v}\b", "".join(_pages22.values()) + (ROOT / "static" / "js" / "portal.js").read_text()
                     + _srv_text)
                     or (f in MOVED_ON_1_23 and str(MOVED_ON_1_22.get(f)) == v)
-                    or (f in MOVED_ON_1_24 and str(MOVED_ON_1_22.get(f)) == v) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
+                    or (f in MOVED_ON_1_24 and str(MOVED_ON_1_22.get(f)) == v)
+                    or (f in MOVED_ON_1_24_2 and str(MOVED_ON_1_22.get(f)) == v) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
       and len(re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet)) >= 11)
 check("1.22.0: the screenshots section shows the new pictures and each file exists",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in (
