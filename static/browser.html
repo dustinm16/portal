@@ -339,7 +339,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
             <input type="text" id="url-input" value="{{TARGET_DISPLAY}}" placeholder="Loading..." spellcheck="false" autocomplete="off">
-            <span class="url-reported" id="url-reported" hidden title="The page on screen may have moved to another site. This address was reported by the page itself and the portal cannot confirm it. Enter an address or use the home button to make the portal load a page itself.">reported by the page, not confirmed</span>
+            <span class="url-reported" id="url-reported" hidden title="The embedded browser's address bar is a convenience, not a security indicator. The page on screen may be on another site: this address was reported by the page itself and the portal cannot confirm it. A hostile page may still show a wrong address, so before entering a password check the site's identity by opening it in a real browser tab.">reported by the page, not confirmed</span>
         </div>
 
         <div class="browser-controls">
@@ -400,7 +400,14 @@
         const reportedEl = document.getElementById('url-reported');
         const externalBtn = document.getElementById('btn-external');
         const EXTERNAL_TITLE = 'Open in new tab';
-        const EXTERNAL_UNCONFIRMED_TITLE = 'Not available: the portal cannot confirm which site this page is on. Enter an address to load a page the portal knows.';
+        const EXTERNAL_UNCONFIRMED_TITLE = 'Not available: the page has reported that it is on another site and the portal cannot confirm which one. Enter an address to load a page the portal knows.';
+        // The tag has two states. "reported": a report of the page names another site (evidence). "requested": the page
+        // did not answer the portal at all (an image, text, a file, a page that does not report): the bar then shows the
+        // address the portal last requested for the tab, which the page has not confirmed.
+        const REPORTED_TEXT = 'reported by the page, not confirmed';
+        const REPORTED_TITLE = reportedEl.title;
+        const REQUESTED_TEXT = 'requested address, not confirmed by the page';
+        const REQUESTED_TITLE = 'The page on screen did not answer the portal (an image, text, a file or a page that does not report), so this is the address the portal last requested for this tab, not one the page confirmed. The page on screen may be on another site. The embedded browser\'s address bar is a convenience, not a security indicator: before entering a password, check the site\'s identity by opening it in a real browser tab.';
         // Reports from the page that was on screen before the portal started a navigation are not trusted until the
         // new page has loaded (or this long has passed: a change of the fragment alone causes no load).
         const NAV_QUIET_MS = 10000;
@@ -564,32 +571,38 @@
             if (!markOnly) t.lastRep = rep;
             if (proxyHostKey(rep.split(/[?#]/)[0]) !== proxyHostKey(known.split(/[?#]/)[0])) t.unconfirmed = true;
         }
-        // What the address bar may show for a frame: { path, unconfirmed }. A page the portal can read is shown as
-        // it is. An isolated page cannot be read: the bar shows the address the portal gave the frame, replaced by
+        // What the address bar may show for a frame: { path, unconfirmed, evidence }. A page the portal can read is shown
+        // as it is. An isolated page cannot be read: the bar shows the address the portal gave the frame, replaced by
         // the address the page reports only while that names the same site as the portal's own address (a page of
         // the site cannot become another site by lying about its path). Once the page has reported another site
-        // the tab is "unconfirmed": the bar then shows only what the page last reported under this connection (an
-        // empty bar when it reported nothing usable), marked as reported by the page and not confirmed, and never
-        // the portal's own, now out of date, address.
+        // the tab is "unconfirmed" with evidence: the bar then shows only what the page last reported under this
+        // connection (an empty bar when it reported nothing usable), marked as reported by the page and not confirmed,
+        // and never the portal's own, now out of date, address. A page that has not answered the portal's ping and
+        // has not reported another site is "unconfirmed" without evidence: the bar shows the address the portal last
+        // requested for the tab, still marked, so that an image, plain text or a file the member opened is not left
+        // with an empty bar. Nothing here is a security indicator: a page can still choose what it shows.
         function frameAddress(iframe) {
             try {
                 const loc = iframe.contentWindow.location;
-                return { path: stripCap(loc.pathname) + loc.search + loc.hash, unconfirmed: false };
+                return { path: stripCap(loc.pathname) + loc.search + loc.hash, unconfirmed: false, evidence: false };
             } catch {}
             const t = frameTab(iframe);
             // A page the portal did not start has not yet answered the portal's ping (see startHandshake): nothing
-            // it says or does not say is known, so no address is shown and the tab is marked.
+            // it says or does not say is known, so the tab is marked.
             // The exception is a page the portal started: while its answer is awaited (a short time) the address the
             // portal gave the frame stays, and the answer then confirms it or marks another site.
-            if (browserMode && t && t.pending && !(t.pendingKnown && Date.now() - t.pendingKnown < PING_GRACE_MS)) return { path: '', unconfirmed: true };
-            if (browserMode && t && t.unconfirmed) return { path: t.lastRep || '', unconfirmed: true };
+            if (browserMode && t && t.pending && !(t.pendingKnown && Date.now() - t.pendingKnown < PING_GRACE_MS)) {
+                if (t.unconfirmed) return { path: t.lastRep || '', unconfirmed: true, evidence: true };
+                return { path: knownFramePath(iframe) || '', unconfirmed: true, evidence: false };
+            }
+            if (browserMode && t && t.unconfirmed) return { path: t.lastRep || '', unconfirmed: true, evidence: true };
             const known = knownFramePath(iframe);
             const rep = (t && t.href) ? reportedFramePath(t.href) : null;
-            const own = known === null ? null : { path: known, unconfirmed: false };
+            const own = known === null ? null : { path: known, unconfirmed: false, evidence: false };
             if (rep === null) return own;
-            if (!browserMode) return { path: rep, unconfirmed: false };
+            if (!browserMode) return { path: rep, unconfirmed: false, evidence: false };
             if (known !== null && known.startsWith(proxyBase + '/') && proxyHostKey(known.split(/[?#]/)[0]) === proxyHostKey(rep.split(/[?#]/)[0])) {
-                return { path: rep, unconfirmed: false };
+                return { path: rep, unconfirmed: false, evidence: false };
             }
             return own;
         }
@@ -864,9 +877,16 @@
             const shown = frameAddress(frame);
             if (shown !== null) urlInput.value = shown.path ? proxyPathToDisplay(shown.path) : '';
             const unconfirmed = browserMode && shown !== null && shown.unconfirmed;
+            // Open in new tab is off only while a report names another site; for a page that is merely silent it opens
+            // the address the portal requested (when there is one it can open).
+            const blocked = unconfirmed && (shown.evidence || requestedAddress(frame) === null);
             reportedEl.hidden = !unconfirmed;
-            externalBtn.disabled = unconfirmed;
-            externalBtn.title = unconfirmed ? EXTERNAL_UNCONFIRMED_TITLE : EXTERNAL_TITLE;
+            if (unconfirmed) {
+                reportedEl.textContent = shown.evidence ? REPORTED_TEXT : REQUESTED_TEXT;
+                reportedEl.title = shown.evidence ? REPORTED_TITLE : REQUESTED_TITLE;
+            }
+            externalBtn.disabled = blocked;
+            externalBtn.title = blocked ? EXTERNAL_UNCONFIRMED_TITLE : EXTERNAL_TITLE;
 
             // Update tab title
             const tab = getActiveTab();
@@ -950,11 +970,29 @@
             setFrameSrc(frame, displayToProxyPath(display));
         }
 
+        // The address the portal last requested for a frame, in a form a real browser tab can open (the real address of
+        // the site, or the portal's own entry path for a member who is not told the target), or null.
+        function requestedAddress(iframe) {
+            const known = knownFramePath(iframe);
+            if (known === null || !known.startsWith(proxyBase + '/')) return null;
+            if (targetHidden) return window.location.origin + known;
+            const display = proxyPathToDisplay(known);
+            return /^https?:\/\//i.test(display) ? display : null;
+        }
+
         function openExternal() {
             const own = getActiveTab();
-            // The address on screen is only what the page claims; opening it, or the address the portal gave the
-            // frame, would open a site the page on screen may not be on.
+            // A report of the page names another site: opening the address on the bar, or the address the portal gave
+            // the frame, would open a site the page on screen may not be on.
             if (own && own.unconfirmed) return;
+            const frame = getActiveFrame();
+            const shown = frame ? frameAddress(frame) : null;
+            if (browserMode && shown && shown.unconfirmed) {
+                // The page did not answer: open what the portal itself requested for this tab, not what is typed in the bar.
+                const addr = requestedAddress(frame);
+                if (addr !== null) window.open(addr, '_blank');
+                return;
+            }
             if (browserMode && !targetHidden) {
                 const display = urlInput.value;
                 if (display.startsWith('http://') || display.startsWith('https://'))
@@ -963,7 +1001,6 @@
                     window.open('https://' + display, '_blank');
                 return;
             }
-            const frame = getActiveFrame();
             try {
                 window.open(frame.contentWindow.location.href, '_blank');
             } catch {

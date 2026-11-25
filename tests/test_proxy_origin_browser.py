@@ -556,6 +556,9 @@ def run_browser(info):
         check("E1: the first site's frame was found", frame is not None, [f.url for f in page.frames])
         BAR = ("(() => { const m = document.getElementById('url-reported'); "
                "return [document.getElementById('url-input').value, !!m && !m.hidden, m ? m.textContent : '', document.getElementById('btn-external').disabled]; })()")
+        OPEN_EXTERNAL = ("(() => { window.__opened = []; window.open = function(u){ window.__opened.push(String(u)); return null; }; "
+                         "document.getElementById('url-input').value = 'https://typed.example/'; openExternal(); return window.__opened; })()")
+        SILENT_KINDS = ("plain", "image")      # not HTML: no injected script, so no report and no answer to the ping
         time.sleep(1.5)
         honest = []
         for _ in range(8):
@@ -616,14 +619,24 @@ def run_browser(info):
             for _ in range(14):
                 samples.append(page.evaluate(BAR))
                 time.sleep(0.15)
+            opened = page.evaluate(OPEN_EXTERNAL)
             ctx.close()
-            return samples
+            return samples, opened
         for kind in ("silent", "forge", "badutf", "plain", "image", "pforge", "psrc", "popen"):
-            samples = link_case(kind)
+            samples, opened = link_case(kind)
             check(f"E1 ({kind}): the old site's address is never on the bar without the marker after a link to another site",
                   not any(v[0].endswith("/xl/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
-            check(f"E1 ({kind}): the marker is shown and open-in-new-window is disabled once the page has loaded", samples[-1][1] and samples[-1][3], samples[-1])
-        samples = link_case("honest")
+            if kind in SILENT_KINDS:
+                # (1.24.2) the page is not HTML and never answers: the bar shows the address the portal last requested, with the tag
+                # (never empty), and Open in new tab opens exactly that address
+                check(f"E1 ({kind}): a page that never answers shows the address the portal requested, tagged, not an empty bar",
+                      samples[-1][1] and samples[-1][0].endswith("/xl/" + kind) and samples[-1][2] == "requested address, not confirmed by the page"
+                      and all(v[0] and (v[1] or not v[0].endswith("/xl/" + kind)) for v in samples), samples[-1])
+                check(f"E1 ({kind}): ... and open-in-new-window stays enabled and opens the requested address", not samples[-1][3]
+                      and len(opened) == 1 and opened[0].endswith("/xl/" + kind) and opened[0].startswith("http://"), (samples[-1], opened))
+            else:
+                check(f"E1 ({kind}): the marker is shown and open-in-new-window is disabled once the page has loaded", samples[-1][1] and samples[-1][3] and opened == [], (samples[-1], opened))
+        samples, _ = link_case("honest")
         check("E1 (same site): a link to another page of the same site raises no marker and the bar follows the page",
               samples[-1][0].endswith("/xx/honest") and not samples[-1][1] and not samples[-1][3], samples[-3:])
 
@@ -646,13 +659,19 @@ def run_browser(info):
             for _ in range(8):
                 samples.append(page.evaluate(BAR))
                 time.sleep(0.15)
+            opened = page.evaluate(OPEN_EXTERNAL)
             ctx.close()
-            return samples
+            return samples, opened
         for kind in ("silent", "notitle", "image", "pforge", "psrc", "popen"):
-            samples = redirect_case(kind)
+            samples, opened = redirect_case(kind)
             check(f"E1 (redirect, {kind}): after a typed address was answered by a redirect to another site the old address is never on the bar without the marker",
                   not any(v[0].endswith("/xr/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
-            check(f"E1 (redirect, {kind}): the marker is shown and open-in-new-window is disabled", samples[-1][1] and samples[-1][3], samples[-1])
+            if kind in SILENT_KINDS:
+                check(f"E1 (redirect, {kind}): a page that never answers shows the typed address, tagged as not confirmed, and open-in-new-window opens that address",
+                      samples[-1][1] and samples[-1][0].endswith("/xr/" + kind) and not samples[-1][3]
+                      and len(opened) == 1 and opened[0].endswith("/xr/" + kind), (samples[-1], opened))
+            else:
+                check(f"E1 (redirect, {kind}): the marker is shown and open-in-new-window is disabled", samples[-1][1] and samples[-1][3] and opened == [], (samples[-1], opened))
 
         # 3d. (E31) an isolated page can send credentialed requests to its own capability address, and only to that
         ctx = ctx_for("bob")
