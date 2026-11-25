@@ -15098,13 +15098,14 @@ async def http_list_vods(request: web.Request) -> web.Response:
 
 class _vod_read_open:
     """Open a remote VOD file for reading in the download and zip routes. Closing it has a time limit, so a
-    storage that stopped answering does not hold the request open at the end either."""
+    storage that stopped answering does not hold the request open at the start or at the end."""
 
     def __init__(self, sftp, path: str):
         self._cm = sftp.open(path, "rb")
 
     async def __aenter__(self):
-        return await self._cm.__aenter__()
+        # the open has the same time limit as a read: a storage that hangs on open ends the request
+        return await asyncio.wait_for(self._cm.__aenter__(), VOD_READ_TIMEOUT)
 
     async def __aexit__(self, *exc):
         try:

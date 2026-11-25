@@ -585,6 +585,34 @@ def test_remote_folder_calls_give_up_when_the_remote_hangs():
     assert took < 1.5, took
 
 
+def test_opening_a_remote_file_gives_up_when_the_remote_hangs():
+    class HungOpen:
+        async def __aenter__(self):
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Sftp:
+        def open(self, path, mode):
+            return HungOpen()
+
+    async def go():
+        loop = asyncio.get_event_loop()
+        t0 = loop.time()
+        timed_out = False
+        with mock.patch.object(server, "VOD_READ_TIMEOUT", 0.2):
+            try:
+                async with server._vod_read_open(Sftp(), "/a/b.mkv"):
+                    pass
+            except asyncio.TimeoutError:
+                timed_out = True
+        return timed_out, loop.time() - t0
+
+    timed_out, took = asyncio.run(asyncio.wait_for(go(), 5))
+    assert timed_out and took < 1.5, (timed_out, took)
+
+
 def test_the_my_vods_page_shows_the_notice_and_the_admin_page_has_the_settings():
     vods = (ROOT / "static" / "js" / "vods.js").read_text()
     index = (ROOT / "static" / "index.html").read_text()
