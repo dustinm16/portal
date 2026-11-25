@@ -11114,7 +11114,7 @@ def _message_deleted_webhook_payload(message_id: int, channel: str, deleted_by: 
 
 
 # Events whose sender needs to know whether a receiver took them: fire_webhook_event waits for
-# the first attempt of each delivery and returns how many were accepted, not how many started.
+# each delivery (its retries that end within the wait included) and returns how many were accepted, not how many started.
 # The update announcement is marked as made only then; it is checked once a day, so a delivery
 # that failed is tried again by the next check. The wait is shorter than the 30 s the alert
 # module gives its fire call, and never cuts a delivery (and its retries) short.
@@ -11123,8 +11123,8 @@ _WEBHOOK_CONFIRM_WAIT = 25.0
 
 
 async def _webhook_count_accepted(tasks: list) -> int:
-    """How many of these delivery tasks ended with their first attempt accepted by the receiver.
-    A task that is still working (waiting out a retry) has not been accepted. The tasks are
+    """How many of these delivery tasks ended accepted by the receiver (on the first attempt or on a retry that
+    ends within the wait). A task that is still waiting out a later retry has not been accepted. The tasks are
     never cancelled here: what is not finished carries on in the background."""
     accepted = 0
     pending = set(tasks)
@@ -11498,8 +11498,11 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
             # non-generic format the third-party visibility of the event) again.
             w = await _webhook_current_for_event(webhook_id, event, meta)
             if w:
-                await _deliver_webhook(w, event, payload, attempt + 1, meta=meta,
-                                       waits_used=waits, drops=drops)
+                # the result is the last request made: a retry that the receiver accepted is the answer
+                retried = await _deliver_webhook(w, event, payload, attempt + 1, meta=meta,
+                                                 waits_used=waits, drops=drops)
+                if isinstance(retried, dict):
+                    return retried
         except Exception:
             pass
     return result

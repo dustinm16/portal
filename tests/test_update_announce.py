@@ -149,6 +149,23 @@ async def body(tmp):
     await db.disable_webhook(b)
     await db.reset_webhook_failures(a)
 
+    # ---- a hook that answers 500 once and takes the first retry: that is accepted, announced once
+    status["/a"] = 500
+    fresh()
+    await db.reset_webhook_failures(a)
+
+    async def recovering_sleep(_s):
+        status["/a"] = 204          # the receiver is back by the time the first retry is sent
+        await asyncio.sleep(0)
+    server._webhook_sleep = recovering_sleep
+    before = hits["/a"]
+    n = await asyncio.wait_for(alerts.note_updates(DATA), 20)
+    await settle()
+    check("500 then accepted on the first retry: announced and remembered",
+          n == 1 and "9.9.9" in settings.get(alerts.UPDATE_STATE_KEY, "") and hits["/a"] == before + 2, (n, settings, hits))
+    server._webhook_sleep = fast_sleep
+    status["/a"] = 500
+
     # ---- the wait must not cut the retry chain short
     status["/a"] = 500
     fresh()
