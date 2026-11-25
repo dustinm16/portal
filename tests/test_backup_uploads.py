@@ -514,36 +514,29 @@ def test_estimate_and_settings():
 
 
 def test_old_archives_and_rollback_note():
-    """An archive made by 1.24.1 or earlier (no "uploads" key in the manifest) restores unchanged
-    through the command line of this release; the admin card says archives with uploads need 1.24.2."""
+    """An archive made by the real 1.24.1 (tests/fixtures/portal-backup-v1.24.1.tar.gz, made by that release with
+    toy data: manifest without an "uploads" key) restores unchanged through the command line of this release;
+    the admin card says archives with uploads need 1.24.2."""
     import subprocess
+    fixture = ROOT / "tests" / "fixtures" / "portal-backup-v1.24.1.tar.gz"
     base = Path(tempfile.mkdtemp(prefix="bkold_"))
     try:
-        members = {
-            "portal.db": _tiny_db_bytes(base),
-            ".env": b"JWT_SECRET=abc\nPORT=8461\n",
-            ".encryption_salt": b"\x01\x02salt",
-        }
-        files = {n: {"sha256": hashlib.sha256(d).hexdigest(), "size": len(d)} for n, d in members.items()}
-        manifest = {"format": 1, "created_at": "2026-01-01T00:00:00+00:00", "portal_version": "v1.24.1", "files": files}
-        arc = base / "portal-backup-20260101-000000.tar.gz"
-        with tarfile.open(arc, "w:gz") as tar:
-            for name, data in [("manifest.json", json.dumps(manifest).encode())] + list(members.items()):
-                ti = tarfile.TarInfo(name)
-                ti.size = len(data)
-                tar.addfile(ti, io.BytesIO(data))
-        res = bm.restore_archive(str(arc), str(base / "viafn"))
+        with tarfile.open(fixture, "r:gz") as tar:
+            manifest = json.loads(tar.extractfile("manifest.json").read())
+            members = {m.name: tar.extractfile(m).read() for m in tar if m.name != "manifest.json"}
+        check("the fixture is an archive of 1.24.1 without uploads",
+              manifest["portal_version"] == "v1.24.1" and "uploads" not in manifest
+              and not any(n.startswith("uploads/") for n in members), str(manifest.get("portal_version")))
+        res = bm.restore_archive(str(fixture), str(base / "viafn"))
         check("an archive of 1.24.1 restores through the function", sorted(res["files"]) == sorted(members), str(res))
         out = base / "viacli"
         env = dict(os.environ, JWT_SECRET="x" * 64)
-        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(arc), "--into", str(out)],
+        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(fixture), "--into", str(out)],
                             cwd=str(base), env=env, capture_output=True, text=True, timeout=60)
         check("the command line of this release restores an archive of 1.24.1 unchanged",
-              cp.returncode == 0 and (out / "portal.db").read_bytes() == members["portal.db"]
-              and (out / ".env").read_bytes() == members[".env"]
-              and (out / ".encryption_salt").read_bytes() == members[".encryption_salt"]
+              cp.returncode == 0 and all((out / n).read_bytes() == d for n, d in members.items())
               and not (out / "static").exists(), f"rc={cp.returncode} {cp.stdout[-200:]} {cp.stderr[-300:]}")
-        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(arc), "--uploads-into", str(base / "up")],
+        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(fixture), "--uploads-into", str(base / "up")],
                             cwd=str(base), env=env, capture_output=True, text=True, timeout=60)
         check("an archive without uploads is refused for the uploads restore and writes nothing",
               cp.returncode == 1 and "holds no uploads" in cp.stderr and not (base / "up").exists(), cp.stderr[-200:])
@@ -554,16 +547,6 @@ def test_old_archives_and_rollback_note():
     near = html[i:i + 4000]
     check("the Backups card says archives with uploads cannot be restored by 1.24.1 or earlier",
           "cannot be restored by version 1.24.1 or earlier" in near and "1.24.2 or later" in near)
-
-
-def _tiny_db_bytes(base: Path) -> bytes:
-    p = base / "tiny.db"
-    conn = sqlite3.connect(str(p))
-    conn.execute("CREATE TABLE t (a)")
-    conn.execute("INSERT INTO t VALUES (1)")
-    conn.commit()
-    conn.close()
-    return p.read_bytes()
 
 
 def test_link_into_backups_and_restore_targets():
@@ -600,6 +583,27 @@ def test_link_into_backups_and_restore_targets():
         finally:
             os.geteuid = saved
         check("a restore target owned by another account is refused and nothing is written", refused and not os.listdir(real))
+        # a target that does not exist yet needs a parent that is ours; --into with uploads needs a target that is ours
+        saved = os.geteuid
+        os.geteuid = lambda: saved() + 1
+        try:
+            fresh = sb.base / "fresh-name"
+            for label, call in (
+                ("a new uploads target whose parent belongs to another account",
+                 lambda: bm.restore_uploads(info["path"], str(fresh))),
+                ("a database restore with uploads into a folder of another account",
+                 lambda: bm.restore_archive(info["path"], str(sb.base / "fresh2"), uploads=True)),
+            ):
+                try:
+                    call()
+                    refused = False
+                except bm.BackupError as e:
+                    refused = "another account" in str(e)
+                check(f"{label} is refused", refused and not fresh.exists() and not (sb.base / "fresh2").exists())
+            res = bm.restore_archive(info["path"], str(sb.base / "fresh3"))
+            check("the database-only restore does not look at the owner", "portal.db" in res["files"])
+        finally:
+            os.geteuid = saved
         # the folder is opened without following a link even when the check before it was passed
         h = bm._UploadsRestore(str(sb.base / "lnk"))
         h.index = {}

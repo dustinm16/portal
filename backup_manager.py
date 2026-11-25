@@ -1391,12 +1391,26 @@ def _check_uploads_target(into: str) -> Path:
             um._require_safe_dest_dir(target)
         except RuntimeError as e:
             raise BackupError(str(e)) from None
-        if st.st_uid != os.geteuid():
-            # Another account that owns the folder could plant links in it that point anywhere.
-            raise BackupError(f"Refusing to restore into {target}: it belongs to another account")
     elif not target.parent.is_dir():
         raise BackupError(f"Parent directory does not exist: {target.parent}")
+    _require_own_target(target)
     return target
+
+
+def _require_own_target(target: Path) -> None:
+    """Uploads are written below links the administrator may have placed, so the folder they go into must
+    not be one another account controls: the target (or, while it does not exist yet, its parent) has to
+    belong to the user running the restore, and the parent must not be open to others for renaming."""
+    if os.path.lexists(target):
+        owner_path = target
+    else:
+        owner_path = target.parent
+        try:
+            um._require_safe_dest_dir(owner_path)
+        except RuntimeError as e:
+            raise BackupError(str(e)) from None
+    if os.lstat(owner_path).st_uid != os.geteuid():
+        raise BackupError(f"Refusing to restore into {target}: {owner_path} belongs to another account")
 
 
 def restore_uploads(archive: str, into: str, overwrite: bool = False) -> dict:
@@ -1450,6 +1464,8 @@ def restore_archive(archive: str, into: str, uploads: bool = False, overwrite: b
     if not src.is_file():
         raise BackupError(f"Archive not found: {archive}")
     target, created = _check_target(into)
+    if uploads:
+        _require_own_target(target)     # the uploads follow links; the database-only path is unchanged
 
     handler = None
     with tarfile.open(src, "r:gz") as tar:
