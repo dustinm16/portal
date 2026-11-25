@@ -1879,6 +1879,61 @@ _d_tok_html = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _d_apihtml.split('<spa
 check("9: docs/API.md and the API page say GET /api/tokens returns session_id and POST /api/token/revoke accepts it for the caller's own tokens, with the full token id still working",
       all("session_id" in t and "own tokens only" in t and "full token id still works" in t and "404" in t for t in (_d_tok, _d_tok_html)))
 
+# --- 1.24.2: the release notes of the fix release, checked against the code they describe -------------------------------
+_m242 = re.search(r"### Upgrade notes for 1\.24\.2\n(.*?)(?=\n### Upgrade notes for 1\.24\.1\n)", text, re.S)
+_s242 = _m242.group(1) if _m242 else ""
+check("1.24.2 notes sit directly before the 1.24.1 notes and open with one sentence that calls it a fix release of about 120 fixes",
+      bool(_m242) and _s242.lstrip().split("\n", 1)[0].startswith("1.24.2 is a fix release: about 120 small fixes")
+      and "optional member uploads in backup archives" in _s242.lstrip().split("\n", 1)[0])
+_heads242 = ["\n**Breaking changes**\n", "\n**What you will notice**\n", "\n**Uploads in backups**\n", "\n**Database**\n", "\n**Rollback**\n", "\n**Not tested**\n"]
+check("1.24.2 notes: Breaking changes, What you will notice, Uploads in backups, Database, Rollback and Not tested, once each and in that order",
+      all(_s242.count(h) == 1 for h in _heads242) and [_s242.index(h) for h in _heads242] == sorted(_s242.index(h) for h in _heads242))
+check("1.24.2 notes: no emoji, no lane named, no request spelling of an old problem",
+      not re.search(_EMOJI, _s242) and not re.search(r"\blane\b", _s242, re.I))
+_notice242 = _s242.split("\n**What you will notice**\n", 1)[1].split("\n**Uploads in backups**\n", 1)[0] if _m242 else ""
+check("1.24.2 notes: What you will notice is grouped by the six areas",
+      all(g in _notice242 for g in ("*Proxied pages and the embedded browser*", "*Sign-in, sessions and API keys*", "*Connections*", "*Chat and moderation*",
+                                    "*Streams and VOD*", "*Alerts, webhooks and push*", "*Admin pages*")))
+_srv242 = (ROOT / "server.py").read_text(encoding="utf-8")
+_bm242 = (ROOT / "backup_manager.py").read_text(encoding="utf-8")
+_am242 = (ROOT / "automod.py").read_text(encoding="utf-8")
+check("1.24.2 notes: the numbers stated are the ones in the code (50 live API keys, 30 session calls a minute with Retry-After 10, 20 voice frames in 10 seconds, "
+      "100 regex patterns, 1.1 times the uploads, 5 seconds for a link preview name, 4 password hashes at once)",
+      "API_KEYS_PER_USER = 50" in _srv242 and "50 live API keys" in _s242 and "_SESSION_REVOKE_LIMIT = 30" in _srv242 and "30 calls in a minute" in _s242
+      and "VOICE_MOD_LIMIT = 20" in _srv242 and "VOICE_MOD_WINDOW = 10.0" in _srv242 and "20 `voice_kick`" in _s242 and "in 10 seconds" in _s242
+      and "REGEX_MAX_PATTERNS = 100" in _am242 and "at most 100 patterns" in _s242
+      and "UPLOADS_SPACE_FACTOR = 1.1" in _bm242 and "1.1 times the size of the uploads folder" in _s242
+      and "_LINK_PREVIEW_DNS_TIMEOUT = 5.0" in _srv242 and "longer than 5 seconds to resolve" in _s242
+      and "PASSWORD_HASH_WORKERS = 4" in (ROOT / "auth.py").read_text(encoding="utf-8") and "at most 4 at a time" in _s242)
+check("1.24.2 notes: the restore command line is the one in the code, and the notes say 1.24.1 cannot restore an archive with uploads",
+      all(f in _srv242 for f in ('"--with-uploads"', '"--uploads-into"', '"--overwrite"')) and all(f in _s242 for f in ("`--with-uploads`", "`--uploads-into DIR`", "`--overwrite`"))
+      and "cannot be restored by 1.24.1 or earlier" in _s242 and "otherwise the command exits with 2" in _s242)
+_db242 = _s242.split("\n**Database**\n", 1)[1].split("\n**Rollback**\n", 1)[0] if _m242 else ""
+check("1.24.2 notes: the Database item names the one index and the two settings rows that the code has, and says no column or table is added",
+      "idx_tokens_ip" in (ROOT / "database.py").read_text(encoding="utf-8") and "`idx_tokens_ip`" in _db242
+      and "`backup_include_uploads`" in _db242 and "VOD_PART_REVISIT_KEY = \"vod_part_revisit\"" in _srv242 and "`vod_part_revisit`" in _db242
+      and "No column and no table is added" in _db242 and "there is no trigger" in _db242)
+_loaded242 = {}
+for _f, _v in re.findall(r"`([a-z-]+\.js)` v(\d+)", _db242):
+    _loaded242[_f] = _v
+check("1.24.2 notes: every script version the Static files item states is the one the pages load",
+      len(_loaded242) >= 9 and all(f"/{_f}?v={_v}" in "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")) for _f, _v in _loaded242.items()),
+      str(_loaded242))
+_rb242 = _s242.split("\n**Rollback**\n", 1)[1].split("\n**Not tested**\n", 1)[0] if _m242 else ""
+check("1.24.2 notes: Rollback names the encrypted address, the activity log cut to 50, the refused archive with uploads and the trust marks",
+      all(n in _rb242 for n in ("needs a reload", "cut back to 50 rows", "refused by the 1.24.1 `restore-archive`", "Trust marks")))
+_sec242 = text.split("## Security", 1)[1].split("## Backups and Rollback", 1)[0]
+_bk242 = text.split("## Backups and Rollback", 1)[1].split("### Upgrade notes for 1.10.8", 1)[0]
+check("1.24.2: the Security list says the isolated address is encrypted, and the Backups section describes the uploads setting and the restore flags",
+      "address of an isolated page is encrypted" in _sec242 and "**Include member uploads**" in _bk242 and "--uploads-into" in _bk242
+      and "uploads` is now a part of the archive" not in _bk242 and "Include member uploads" in text.split("docs/screenshots/admin-backups.png", 1)[1][:400])
+_a242 = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_h242 = (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8")
+check("1.24.2: docs/API.md and the API page carry the new fields and answers (granted_service_expiry, unread_mentions, include_uploads, uploads_estimate, uploads_note, "
+      "the 50 key cap, the session limit, the invalid host key fingerprint)",
+      all(n in t for t in (_a242, _h242) for n in ("granted_service_expiry", "unread_mentions", "include_uploads", "uploads_estimate", "uploads_note", "You already have 50 active API keys",
+                                                      "Retry-After: 10", "Invalid host key fingerprint", "Invalid message_id", "does not resolve within 5 seconds")))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

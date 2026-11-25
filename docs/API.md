@@ -106,7 +106,7 @@ Does not sign out (release 1.24.1): a link, an image tag or a navigation, from a
 **Response:** `200` HTML page, or redirect to `/login`
 
 #### POST /logout
-End the current session. The chat sockets opened with this session are closed (code 4001), its voice call ends and its in-flight proxied downloads are cut; the account's other sessions are not affected. This is the way for a script to end a cookie session, unchanged (a call authenticated only by a bearer token or an API key answers `200` and ends nothing). With `{"endpoint": "<push endpoint>"}` in the JSON body (never in the URL) it also removes the caller's own push device with that endpoint, even one an earlier session of the member registered; an endpoint of another member removes nothing. Any other body is ignored. **Response:** `200 {"success": true}` and the session cookie is cleared. A browser form post (the page above) is answered with `303` to `/login` instead. A cookie-authenticated POST that the browser marks cross-site, or that comes from a proxied page or a sandboxed page, is refused with `403`.
+End the current session. The chat sockets opened with this session are closed (code 4001), its voice call ends and its in-flight proxied downloads are cut; the account's other sessions are not affected. This is the way for a script to end a cookie session, unchanged (a call authenticated only by a bearer token or an API key answers `200` and ends nothing). With `{"endpoint": "<push endpoint>"}` in the JSON body (never in the URL) it also removes the caller's own push device with that endpoint, even one an earlier session of the member registered; an endpoint of another member removes nothing. Any other body is ignored. **Response:** `200 {"success": true}` and the session cookie is cleared. A browser form post (the page above) is answered with `303` to `/login` instead. A cookie-authenticated POST that the browser marks cross-site, or that comes from a proxied page or a sandboxed page, is refused with `403`. Since 1.24.2, when a session cookie is sent together with a bearer token, an API key or `?token=`, it is the session of the cookie that ends, not the other credential's.
 
 ---
 
@@ -245,7 +245,7 @@ Needs a browser session or an all-scope (`*`) credential. A stream key or a narr
 ---
 
 #### DELETE /api/me/sessions/{id}
-Sign out one session of the current account, by the `id` from the list. Same credential rules as the list. The session making the request cannot be signed out here (`400`, use logout); an id that is unknown or belongs to someone else returns `404`. The sockets, voice call and in-flight proxied downloads opened with that session end at once (close code 4001); the other sessions are not affected.
+Sign out one session of the current account, by the `id` from the list. Same credential rules as the list. The session making the request cannot be signed out here (`400`, use logout); an id that is unknown or belongs to someone else returns `404`. The sockets, voice call and in-flight proxied downloads opened with that session end at once (close code 4001); the other sessions are not affected. Since 1.24.2 this route, `POST /api/me/sessions/revoke-others` and `POST /api/users/{id}/sessions/revoke` share one limit of 30 calls per minute for one signed-in account (the admin route counts against the acting administrator, not the target); beyond it they answer `429` with a `ref` and `Retry-After: 10`.
 
 **Response:**
 ```json
@@ -406,7 +406,7 @@ View all user registrations that used a specific invite code.
 #### POST /api/api-keys
 Create a new API key.
 
-A key cannot create keys: a request authenticated with an API key (any scopes) gets `403`. Use a browser session or a bearer token from `POST /api/token`.
+A key cannot create keys: a request authenticated with an API key (any scopes) gets `403`. Use a browser session or a bearer token from `POST /api/token`. Since 1.24.2 a member can hold at most 50 live keys: creating another answers `400` `You already have 50 active API keys; revoke one before creating another`. Revoked and expired keys do not count.
 
 **Request:**
 ```json
@@ -534,7 +534,7 @@ Permanently delete an API key. What was opened with the key (WebSockets, voice c
 ### User Profile
 
 #### GET /api/me
-Get current user information.
+Get current user information. Since 1.24.2 the answer also has `granted_service_expiry`: for the same services as `granted_services`, `{service id: seconds left, or null when the grant never ends}`; `{}` for administrators.
 
 **Response:**
 ```json
@@ -956,7 +956,7 @@ Create a new connection. `config.recording` (SSH connections) is an administrato
 ---
 
 #### GET /api/connections/status
-Health of the connections you can reach (1.22.0): `{"<connection id>": {"status": "up" | "down" | "maintenance" | "unknown", "latency_ms": 12 | null, "since": "2030-01-01T10:00:00Z" | null}}`, one entry for each connection you own or hold a live share of, and `{}` while the feature is off (it is off by default; a superadmin switches it on, see `PUT /api/admin/connection-health`). The shape is the same for the owner and for a member the connection is shared with, and never holds an error text, a host, an address or a port. `latency_ms` is the last answer time while `up`; `since` is when the current `up` or `down` began (UTC); an entry that has not been checked yet, is not checked at all (a connection that is not pinned and was not opened in the last 7 days, a type that has no check, a name the host policy refuses) or has not been checked lately reads `unknown` with both fields `null`. A connection that is in maintenance reads `"maintenance"` with both fields `null` for the owner and for every member who can reach it (it says no more than the maintenance page does; the message and the end time are not in it). Registered before `/api/connections/{id}`. The answer is `no-store`.
+Health of the connections you can reach (1.22.0): `{"<connection id>": {"status": "up" | "down" | "maintenance" | "unknown", "latency_ms": 12 | null, "since": "2030-01-01T10:00:00Z" | null}}`, one entry for each connection you own or hold a live share of, and `{}` while the feature is off (it is off by default; a superadmin switches it on, see `PUT /api/admin/connection-health`). The shape is the same for the owner and for a member the connection is shared with, and never holds an error text, a host, an address or a port. `latency_ms` is the last answer time while `up`; `since` is when the current `up` or `down` began (UTC); an entry that has not been checked yet, is not checked at all (a connection that is not pinned and was not opened in the last 7 days, a type that has no check, a name the host policy refuses) or has not been checked lately reads `unknown` with both fields `null`. A connection that is in maintenance reads `"maintenance"` with both fields `null` for the owner and for every member who can reach it (it says no more than the maintenance page does; the message and the end time are not in it). Registered before `/api/connections/{id}`. The answer is `no-store`. Since 1.24.2, while the global maintenance flag is on, the status of an HTTP-proxy connection (the types `/proxy` and `/browser` serve) reads `maintenance` and its down and up transitions send no alert; an alert owed then is sent after maintenance ends if the state still holds.
 
 How a status comes about: while the feature is on, one background task makes a round every interval (60 to 900 seconds, 60 by default, plus or minus 10 percent) and checks only connections that are pinned or were opened in the last 7 days by somebody who still has access: a TCP connect (closed again at once, nothing written) for `ssh`, `sftp`, `vnc`, `rdp` and the tunnel and database types, a `HEAD` of `/` (a `GET` after `405` or `501`) for the HTTP types, never following a redirect and sending no cookie or credential. The target is only what the connection holds, and goes through the same host policy as a real connection (a name that resolves to a loopback, private, link-local or shared address is never contacted and is `unknown`, not `down`). A status below 500 counts as up. At most 100 checks per round, at most 10 targets per owner in a round (the rounds are filled in turn across members and a member's least recently checked connection goes first, so one member who pins hundreds of connections only gets their own checked less often: those read `unknown` once stale), 5 at once, 6 seconds each. A check sends a `HEAD` request or a TCP connect and nothing else: no credentials, no cookies. A target the host policy refuses is not looked at again for 10 minutes (doubling to an hour) and is logged once when it starts and once when it ends. `down` after 3 failed checks in a row, `up` after 2 good ones; only the changes are stored (14 days, at most 24 per connection per day, at most 50000 rows in all with the oldest removed first; after the daily limit the status still changes and is shown but nothing more is stored or alerted until the next day). After a restart, or after the feature is switched off and on, a stored `down` older than 30 minutes is not announced as `back up`. `service.health_changed` fires on a change between up and down with the connection's name, at most once per connection every 10 minutes and never while the connection is in maintenance (the alert is sent afterwards if the status is still the same) (third-party formats get no name and no host).
 
@@ -991,7 +991,7 @@ Update connection. `config.recording` (SSH connections) is an administrator's se
 `"stored_password_cleared": true` is added whenever a stored SSH password was removed: because the request asked for it (`credential_mode: "prompt"` or an empty `password`), because the host, port, username or connection type changed, or because the connection now uses key authentication, and the request did not carry a new one. The edit form sends `credential_mode` only when the "Prompt each time" switch was changed, so a rename of an older connection that holds a password (and has no mode) keeps it. A connection moved to a type other than `ssh` or `sftp` keeps no stored password and no `credential_mode` (a `password` in the same request stays as the new type's own). See "Stored SSH password" above.
 Since 1.24.1 the same holds for the `password` of a `spice` or `proxmox` connection: it is removed when the host, port or type changes and the request carries no new one, and `"stored_password_cleared": true` says so. An edit that moves nothing keeps it. A `proxmox` connection's `api_token` goes the same way (and `stored_password_cleared` also says that it was removed), unless the request carries a new one.
 
-**Every stored secret follows the same rule (1.24.1).** For every connection type, a change of the row's `host` or `port`, of the scheme, host or port of `config.target_url`, `api_url`, `webrtc_url` or `hls_url`, of `config.tls_port` or `config.tls`, or of the type to one handled by another plugin removes every stored secret (`password`, `private_key`, `private_key_path`, `auth_header`, `psk`, `extra_headers`, `api_token`, `personal_token`, `client_secret`, `webhook_secret`, `pre_shared_key`) that the same request does not send again. A changed path or query of a URL does not count. The answer then has `"stored_secrets_cleared": ["auth_header", "extra_headers"]` (the removed keys, sorted); `stored_password_cleared` keeps its meaning and is also true when a `password` or `api_token` was removed.
+**Every stored secret follows the same rule (1.24.1).** For every connection type, a change of the row's `host` or `port`, of the scheme, host or port of `config.target_url`, `api_url`, `webrtc_url` or `hls_url`, of `config.tls_port` or `config.tls`, or of the type to one handled by another plugin removes every stored secret (`password`, `private_key`, `private_key_path`, `auth_header`, `psk`, `extra_headers`, `api_token`, `personal_token`, `client_secret`, `webhook_secret`, `pre_shared_key`) that the same request does not send again. A changed path or query of a URL does not count. The answer then has `"stored_secrets_cleared": ["auth_header", "extra_headers"]` (the removed keys, sorted); `stored_password_cleared` keeps its meaning and is also true when a `password` or `api_token` was removed. Since 1.24.2 a change of the connection's type to any other type (also one of the same plugin, such as `http` to `grafana`) removes the stored secrets the request does not send again, and so does a change of `config.verify_ssl` from on to off (or its removal; a missing value counts as off). `PUT /api/connections/{id}` ignores body keys that are not connection fields (`user_id`, `conn_id`, ...) and saves the real ones with `200`; it answered `500`.
 
 ---
 
@@ -1530,7 +1530,7 @@ Get stream information and playback URLs.
 }
 ```
 
-The `webrtc_whep` and `webrtc_whip` URLs work only on a network that can reach MediaMTX's WebRTC media port directly; they do not work through the public proxy. See Streaming Configuration. `hls` is the playback URL that works everywhere.
+The `webrtc_whep` and `webrtc_whip` URLs work only on a network that can reach MediaMTX's WebRTC media port directly; they do not work through the public proxy. See Streaming Configuration. `hls` is the playback URL that works everywhere. Since 1.24.2 the `hls` and `webrtc_whep` addresses are built from `PUBLIC_BASE_URL`, else `https://` and `HOSTNAME`, and never from the request's `Host` header; without either setting they are relative paths.
 
 ---
 
@@ -1843,7 +1843,7 @@ The `is_live` field follows the tri-state model: `1`=live (stream started), `2`=
 ### Chat
 
 #### GET /api/chat/channels
-List chat channels the caller may see: public channels, private channels the caller belongs to (admins and superadmins: all), and stream chat channels only when the stream is public or the caller is its owner or an admin (the chat of a stream that is not public is left out, with its stream, live state and owner). Stream-associated channels include live status and stream metadata for UI grouping (Live / Encoding / Offline sections). The `stream_is_live` field uses the tri-state integer: `0`=offline, `1`=live, `2`=encoding.
+List chat channels the caller may see: public channels, private channels the caller belongs to (admins and superadmins: all), and stream chat channels only when the stream is public or the caller is its owner or an admin (the chat of a stream that is not public is left out, with its stream, live state and owner). Stream-associated channels include live status and stream metadata for UI grouping (Live / Encoding / Offline sections). The `stream_is_live` field uses the tri-state integer: `0`=offline, `1`=live, `2`=encoding. Since 1.24.2 every row has an integer `unread_mentions` (the member's own unread mentions that are newer than the read position in that channel; 0 when none).
 
 **Response:**
 ```json
@@ -1984,7 +1984,7 @@ Include the returned URL as `image_url` in the WS message payload.
 ---
 
 #### GET /api/chat/link-preview
-Fetch OpenGraph metadata for a URL (for link preview cards in chat).
+Fetch OpenGraph metadata for a URL (for link preview cards in chat). Since 1.24.2 a host name that does not resolve within 5 seconds answers `400`.
 
 **Query Parameters:**
 - `url` (required): The URL to fetch preview data for (http/https only)
@@ -2463,7 +2463,7 @@ List members of a channel. Accessible to members and moderator+.
 ```
 
 #### POST /api/chat/channels/{id}/members
-Add a member to a channel. Requires moderator+ or channel-moderator.
+Add a member to a channel. Requires moderator+ or channel-moderator. Since 1.24.2 the body must be a JSON object, and a `user_id` that is not a number or is out of range answers `400` (it answered `500`).
 
 **Request:** `{ "user_id": 10, "role": "member" }`
 
@@ -2724,7 +2724,7 @@ Returns an XML sitemap listing public pages with the portal's configured hostnam
 ### WebSocket Endpoints
 
 #### WS /ws/chat
-Real-time chat. Messages are rate limited to **5 per 5 seconds** per user.
+Real-time chat. Messages are rate limited to **5 per 5 seconds** per user. Since 1.24.2 `react`, `edit_message` and the `dm_*` frames answer `{"type": "error"}` (`Invalid message_id` or `Invalid id`) for an invalid or out-of-range message or conversation id and the socket stays open; more than 20 `voice_kick`, `voice_server_mute`, `voice_server_unmute`, `voice_lock_room` or `voice_unlock_room` frames in 10 seconds on one socket answer `Rate limit exceeded`; the error frame for a channel the socket can no longer read carries an integer `channel_id`.
 
 Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous state is stored per-message in the database, so historical messages preserve their anonymity regardless of the user's current setting.
 
@@ -2901,7 +2901,7 @@ Remove VOD storage configuration. Does not delete remote files.
 Pin the VOD storage host key. Needs a full-scope credential (a browser session or an all-scope token or API key; stream keys and scoped keys get 403). Body `{"fingerprint": "SHA256:..."}`, which must be the `host_key_refused.fingerprint` the settings showed; any other fingerprint, or no refused key being stored, gives 409 `{"error", "type": "host_key_stale"}`. The storage pins the key it sees on its first connect automatically (logged in the activity feed); a different key later is refused and logged (`vod_host_key_refused`), `GET /api/vods/storage` then shows `host_key_refused: {fingerprint, at}` next to `host_key_fingerprint`, and this route accepts the new key. `host_key_ignore` (boolean, in the save body) turns the check off.
 
 #### POST /api/services/{id}/host-key/accept
-Same for an admin-defined `ssh` service (admin only, with the same full-scope credential rule), with the same body and the same 409 for a stale prompt. An admin may also set `config.host_key_fingerprint` when creating or editing the service. An edit that changes the host or port the plugin dials (`config.host` / `config.port` when set, else the service's own) clears the pin.
+Same for an admin-defined `ssh` service (admin only, with the same full-scope credential rule), with the same body and the same 409 for a stale prompt. An admin may also set `config.host_key_fingerprint` when creating or editing the service. An edit that changes the host or port the plugin dials (`config.host` / `config.port` when set, else the service's own) clears the pin. Since 1.24.2 a value that is set but is not a SHA256 fingerprint (`SHA256:` followed by 43 base64 characters; a lowercase `sha256:` prefix and a trailing `=` are accepted) answers `400` `Invalid host key fingerprint` on create and on edit (it was dropped and the call answered `200` or `201`); an empty value clears the pin. The admin service form has a Host key fingerprint field that pre-fills the pin.
 
 ---
 
@@ -4142,7 +4142,7 @@ Trigger immediate data cleanup cycle.
 Backup archives hold the database, `.env`, the encryption salt and the invite code, so they are as sensitive as root access to the portal. All five routes need a superadmin whose credential carries admin power: stream keys and narrowly scoped API keys or tokens get `403`. Download, delete, changing the extra destination and lowering the number of archives to keep also need the superadmin's own browser login session: an API key, bearer token or `?token=` value gets `403` with `A browser login session is required`.
 
 #### GET /api/admin/backups
-List the archives (newest first) with the settings and the last result.
+List the archives (newest first) with the settings and the last result. Since 1.24.2 `config` has `include_uploads` (bool), the answer has `uploads_estimate` (`{"files", "bytes", "skipped_outside", "skipped_vanished", "skipped_unreadable"}`, what the uploads folder holds now) and each archive has `uploads` (`null`, or `{"included", "files", "bytes", "skipped"}`). An archive made with uploads cannot be restored by 1.24.1 or earlier.
 
 **Auth**: Superadmin (any full-power credential)
 
@@ -4163,7 +4163,7 @@ List the archives (newest first) with the settings and the last result.
 ---
 
 #### POST /api/admin/backups/run
-Take a backup archive now. Returns at once with `409` when a backup is already running (updates, by contrast, wait up to ten minutes for a running backup). Each run first removes leftover `.work-*` directories and `.partial-*.tar.gz` files older than one hour from `backups/archives/`. Audited `backup.run` (size, names pruned, stale files removed).
+Take a backup archive now. Returns at once with `409` when a backup is already running (updates, by contrast, wait up to ten minutes for a running backup). Each run first removes leftover `.work-*` directories and `.partial-*.tar.gz` files older than one hour from `backups/archives/`. Audited `backup.run` (size, names pruned, stale files removed). Since 1.24.2 the answer also has `uploads` (`null`, or the summary of what was included) and `uploads_note` (`null`, or `uploads skipped: not enough space`; the archive was then written without uploads and a `backup.failed` alert is sent).
 
 **Auth**: Superadmin (any full-power credential)
 
@@ -4174,7 +4174,7 @@ Take a backup archive now. Returns at once with `409` when a backup is already r
 ---
 
 #### PUT /api/admin/backups/settings
-Change the schedule. All fields are optional.
+Change the schedule. All fields are optional. Since 1.24.2 `include_uploads` (bool, default false) adds `static/uploads` to scheduled and manual archives (never to the backup before an update). Switching it on answers `400` when the backup disk cannot hold 1.1 times the size of the uploads folder plus twice the database. Restore is the command line only: `server.py restore-archive FILE --into DIR [--with-uploads]` or `--uploads-into DIR [--overwrite]` (exactly one of `--into` and `--uploads-into`, otherwise exit 2; never the live installation).
 
 **Auth**: Superadmin; browser login session only when `extra_dir` is changed or `keep` is lowered below the saved value
 
@@ -4430,7 +4430,7 @@ New HMAC secret, shown once. Generic format only.
 
 #### Delivery rules
 
-Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures disable the hook. A `429` answer waits for `Retry-After` (seconds or an HTTP date, capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the 10. A delivery refused by policy before anything is sent (a non-generic hook over plain `http://` with allow_private off) sets the hook's last failure reason to a fixed text without the URL and counts toward the 10 at most once per hour. A hook is limited to 30 deliveries per minute.
+Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures disable the hook. A `429` answer waits for `Retry-After` (seconds or an HTTP date, capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the 10. A delivery refused by policy before anything is sent (a non-generic hook over plain `http://` with allow_private off) sets the hook's last failure reason to a fixed text without the URL and counts toward the 10 at most once per hour. A hook is limited to 30 deliveries per minute. Since 1.24.2 an alert hook has one window for alerts and one for ordinary events (30 each per 60 seconds), so ordinary events no longer use up the alerts' share.
 
 #### System webhooks (Superadmin)
 
@@ -4471,7 +4471,7 @@ Every alert has a cooldown or transition rule: `auth.login_failed_burst` fires a
 View log of all moderation actions. Entries are automatically created for: message_delete, pin/unpin_message, timeout/mute/unmute/ban/unban, channel CRUD, role changes (`role_change`), user deletes (`user_delete`), automod triggers, channel member management.
 
 #### GET /api/admin/audit-log
-Query audit log with optional filters.
+Query audit log with optional filters. Since 1.24.2 an automod trigger is written as the action `automod_trigger`, filed under the member the rule acted on (`actor_username` `AutoMod`, `"automatic": true` in the details, the channel filled in), so a filter `actor_id=<member>` also returns it.
 
 **Query Parameters:**
 - `limit` (default 50, max 100), `offset` (default 0)
@@ -4549,7 +4549,7 @@ A separate log of authentication and credential events, in its own table (`secur
 
 Events (category `auth`): `login_success`, `login_failed` (result `unknown_user` or `bad_password`), `2fa_required`, `2fa_passed`, `2fa_failed`, `2fa_throttled`, `backup_code_used`, `logout`, `session_revoked` (result `own`, `others` or `admin_all` for the sessions page and the admin sign-out, none for a token revoked by id), `register_failed`. Events (category `security`): `2fa_enabled`, `2fa_disabled`, `2fa_disable_failed`, `api_key_created`, `api_key_revoked`, `api_key_deleted`, `password_changed`, `password_change_failed`, `password_reset` (admin or command line), `user_created`, `user_deleted`, `role_changed`, `invite_created`, `invite_deactivated`, `ip_blocked` (an administrator, or automatic with `kind` `login` or `probe` and `expires_at`), `ip_unblocked` (admin or command line), `probe_block` (automatic), `never_ban_changed`, `login_ban_changed` (the sign-in ban settings changed), `cf_ranges_refreshed` (result `ok` or `failed`, run by the weekly job), `cf_ranges_reset` (use the built-in list), `cf_ranges_approved` and `cf_ranges_dismissed` (a pending list approved or dismissed, counts only), `cf_refresh_toggled` (the weekly refresh turned on or off, `was` and `enabled`), `security_retention_changed` (`old_days`, `new_days` of `retention_security_events_days`), `security_events_pruned` (a manual run of cleanup deleted events: `deleted`, `days`), `rate_limited`, `host_key_accepted`, `security_log_export`. Backup runs, downloads, deletes and settings changes stay in the audit log only.
 
-**Aggregation.** Wrong passwords, bad or missing 2FA codes, failed registrations, wrong current-password attempts, probe blocks and rate-limit trips are counted per (source IP, event, result, minute) and written as one row with `count`, flushed every few seconds and at shutdown. An IPv6 source is counted as its /64 network (`ip` is then written `2001:db8:1:2::/64`; a full IPv6 address typed in the `ip` filter also matches its /64 row, and a typed /64 matches it directly). At most 300 aggregated rows are created per minute across all sources, counted over every flush; further sources in that minute are added to one shared row per event and result with `ip` `*`, no `username_tried`, `user_agent` or `details`. Such a row keeps the first `username_tried` and `user_agent` seen in that minute. All other events are written at once, at most 30 rows per minute for each account (or address, without an account) and event; the rest of that minute is counted in one aggregated row per account, which keeps the account and has `ip` `*`. These events are never held to that limit or folded into an overflow row: `role_changed`, `user_deleted`, `password_reset`, `never_ban_changed`, `login_ban_changed`, every `cf_*` event, `security_retention_changed`, `security_events_pruned`, `security_log_export`, and `ip_blocked` and `ip_unblocked` made by an administrator (they need a staff session, and their details must not be lost). A database error never stops the request that caused the event. Passwords, 2FA and backup codes, tokens, API keys and invite codes are never stored; `username_tried` is cut to 64 characters, `user_agent` to 200; control characters, zero-width characters (U+200B to U+200F, U+FEFF) and bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069) are removed.
+**Aggregation.** Wrong passwords, bad or missing 2FA codes, failed registrations, wrong current-password attempts, probe blocks and rate-limit trips are counted per (source IP, event, result, minute) and written as one row with `count`, flushed every few seconds and at shutdown. An IPv6 source is counted as its /64 network (`ip` is then written `2001:db8:1:2::/64`; a full IPv6 address typed in the `ip` filter also matches its /64 row, and a typed /64 matches it directly). At most 300 aggregated rows are created per minute across all sources, counted over every flush; further sources in that minute are added to one shared row per event and result with `ip` `*`, no `username_tried`, `user_agent` or `details`. Such a row keeps the first `username_tried` and `user_agent` seen in that minute. All other events are written at once, at most 30 rows per minute for each account (or address, without an account) and event; the rest of that minute is counted in one aggregated row per account, which keeps the account and has `ip` `*`. These events are never held to that limit or folded into an overflow row: `role_changed`, `user_deleted`, `password_reset`, `never_ban_changed`, `login_ban_changed`, every `cf_*` event, `security_retention_changed`, `security_events_pruned`, `security_log_export`, and `ip_blocked` and `ip_unblocked` made by an administrator (they need a staff session, and their details must not be lost). A database error never stops the request that caused the event. Passwords, 2FA and backup codes, tokens, API keys and invite codes are never stored; `username_tried` is cut to 64 characters, `user_agent` to 200; control characters, zero-width characters (U+200B to U+200F, U+FEFF) and bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069) are removed. Since 1.24.2 the member is part of the key when the event names one, so two members behind one address in the same minute are two rows. A sign-in or probe block that runs out is written as `ip_unblocked` with result `expired` (the address in `ip` and `details.target_ip`); one sweep writes at most 50 of them and one summary row with `details.more`.
 
 #### GET /api/admin/security-events
 **Query parameters** (all optional): `category` (`auth`, `security`; omit or `all` for every row), `event`, `ip`, `username` (exact match on `username_tried`), `user_id`, `since` / `until` (`YYYY-MM-DD`, or a date and time in UTC, with `Z` or an offset; an `until` date covers that whole day), `limit` (default 50, max 200), `offset`. Newest first. An invalid `category`, `user_id`, `since` or `until` gives `400`.
@@ -4600,7 +4600,7 @@ Create a new rule.
 **Actions:** `warn`, `delete`, `timeout`, `mute`
 
 The config is validated on create and on update (400 on failure). Regex mode (`word_filter` with `match_mode: "regex"`):
-- each pattern at most 500 characters, at most 100 patterns per rule, and it must compile
+- each pattern at most 500 characters, at most 100 patterns per rule, and it must compile Since 1.24.2 the blocked words are entered one per line in the admin page (a pattern may hold a comma); a single line with no line break is one pattern in a regex rule. A rule saved with more than 100 patterns before the cap existed can be saved again only while its pattern list is unchanged.
 - a pattern that repeats a group already containing an unbounded repeat (`(a+)+$`, `(\w+\s?)+`, `(?:a+){2,}`) is refused; this heuristic cannot catch every slow pattern (for example `a*a*a*b` or `(a|aa)+$`)
 - text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules; this bounds simple patterns only
 - patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped and the message (or edit) being checked is rejected for its author (since 1.24.1 an ordinary member gets error code `automod` and "Message blocked by auto-moderation" (an edit: "Edit blocked by auto-moderation; your message was not changed") with no rule name, which an ordinary block does carry; moderators and administrators get error code `automod_unchecked`, "could not be checked; shorten or rephrase it"); no penalty is booked, nobody else is told, and the pattern is tried again for the next message. Each rule in `GET /api/admin/automod` carries `slow_pattern_timeouts`, the number of such overruns of its patterns in the last hour
