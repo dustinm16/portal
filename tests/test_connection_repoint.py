@@ -148,6 +148,15 @@ async def main():
         check("ssh: the stored password rule is unchanged (cleared, same flag) and the list names it",
               "password" not in await stored(u) and body.get("stored_password_cleared") is True and "password" in body.get("stored_secrets_cleared", []), str(body))
 
+        # Choices that clear the stored SSH password without moving anything are not a move: the old flag only
+        u = await row("ssh", {"username": "u", "auth_method": "password", "credential_mode": "stored", "password": "pw"}, port=22)
+        st, body = await put(u, {"config": {"credential_mode": "prompt"}})
+        check("ssh: choosing Prompt each time answers stored_password_cleared and no move-style list",
+              body.get("stored_password_cleared") is True and "stored_secrets_cleared" not in body and "password" not in await stored(u), str(body))
+        u = await row("ssh", {"username": "u", "auth_method": "password", "credential_mode": "stored", "password": "pw"}, port=22)
+        st, body = await put(u, {"config": {"username": "other"}})
+        check("ssh: a changed username answers the old flag only", body.get("stored_password_cleared") is True and "stored_secrets_cleared" not in body, str(body))
+
         # Create stores what is sent (nothing is stored yet, so nothing can follow a move)
         async with owner.post(f"{env.base}/api/connections", json={"name": "new-http", "type": "http", "host": "93.184.216.34", "port": 80,
                                                                   "config": {"target_url": "http://93.184.216.34", "auth_header": "Bearer new"}}) as r:

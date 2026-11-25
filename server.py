@@ -6051,7 +6051,7 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
             data["config"], secrets_cleared = connection_secrets.clear_on_move(
                 moved=moved, existing=existing_config, incoming=config, merged=data["config"],
                 skip=("password",) if (old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES) else ())
-            if password_cleared and "password" not in secrets_cleared and (
+            if moved and password_cleared and "password" not in secrets_cleared and (
                     old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES):
                 secrets_cleared = sorted(secrets_cleared + ["password"])
             if any(k in secrets_cleared for k in ("password", "api_token")) and not password_cleared:
