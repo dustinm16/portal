@@ -715,10 +715,21 @@ async def amain():
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/repeat")
     check("CT: a trusted connection keeps the upstream's headers as they were (both Content-Type lines pass through, no nosniff)",
           st == 200 and hd.getall("Content-Type", []) == ["text/plain", "text/html"] and "X-Content-Type-Options" not in hd, str(hd.getall("Content-Type", [])))
-    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/missing")
+    st_missing, hd_missing, body_missing = await get(owner, f"/proxy/{web_raw}/ct/missing")
+    trusted_other = {}
+    for kind in ("comma", "junk", "three", "empty"):
+        st_o, hd_o, body_o = await get(owner, f"/proxy/{web_raw}/ct/{kind}")
+        trusted_other[kind] = (st_o, hd_o.getall("Content-Type", []))
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/mixed")
     check("CT: a trusted multipart/x-mixed-replace answer gets no policy of the isolated rule", st == 200 and server._PROXY_SVG_CSP not in hd.getall("Content-Security-Policy", []), str(dict(hd)))
-    check("CT: ... and a trusted answer without any is left as the proxy library makes it", st == 200 and body.count(marker) == 0, str(hd.getall("Content-Type", [])))
+    check("CT: ... and a trusted answer without any Content-Type is left as the proxy library makes it (aiohttp's own default, application/octet-stream), with no report script",
+          st_missing == 200 and hd_missing.getall("Content-Type", []) == ["application/octet-stream"]
+          and body_missing.count(marker) == 0, f"{st_missing} {hd_missing.getall('Content-Type', [])}")
+    # (A missing header becomes application/octet-stream on a trusted answer anyway, so the check above cannot tell whether the
+    # normalisation ran; these can: it would turn each of them into application/octet-stream.)
+    check("CT: ... and trusted answers with a comma list, an unparseable, three different or an empty Content-Type keep it exactly as the upstream sent it",
+          trusted_other == {"comma": (200, ["text/plain, text/html"]), "junk": (200, ["not a type"]),
+                            "three": (200, ["text/html", "text/plain", "image/png"]), "empty": (200, [""])}, str(trusted_other))
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as bare_c:
         async with bare_c.get(env.base + cap_base + "/data") as r:
             check("a sub-resource under the capability needs no cookie", r.status == 200, str(r.status))
