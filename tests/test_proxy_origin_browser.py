@@ -142,7 +142,8 @@ XX_PFORGE = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</
              b"</script></body></html>")
 # (1.24.2) pages that stop the injected script's answer to the ping without touching Object.prototype, and answer with
 # a forged address of the typed site: "psrc" makes MessageEvent.prototype.source read null (the injected listener
-# returns early), "popen" calls document.open(), which removes every listener the window had, the injected one too.
+# returns early), "popen" calls document.open() once the parser is done (a call made while the parser runs is ignored), which removes
+# every listener the window had, the injected one too, and only then adds its own forging listener.
 XX_PSRC = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1><script>"
            b"var g=Object.getOwnPropertyDescriptor(MessageEvent.prototype,'data').get;"
            b"Object.defineProperty(MessageEvent.prototype,'source',{get:function(){return null},configurable:true});"
@@ -153,8 +154,8 @@ XX_PSRC = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1
 XX_POPEN = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1><script>"
             b"var to=location.search.indexOf('r=1')>=0?'/xr/popen':'/xl/popen';"
             b"var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/popen',to).split('?')[0];"
-            b"document.open();document.write('<h1>LOOKS LIKE SITE ONE</h1>');document.close();"
-            b"addEventListener('message',function(e){if(e.data&&e.data.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:e.data.id},'*')});"
+            b"setTimeout(function(){document.open();document.write('<h1>LOOKS LIKE SITE ONE</h1>');document.close();"
+            b"addEventListener('message',function(e){if(e.data&&e.data.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:e.data.id},'*')})},0);"
             b"</script></body></html>")
 XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
 XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
