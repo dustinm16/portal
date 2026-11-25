@@ -99,5 +99,5 @@ async def main():
     await h.shutdown(env)
 
 
-asyncio.run(asyncio.wait_for(main(), 90))
+h.run(main, 90)
 h.finish("test_token_list_revoke")

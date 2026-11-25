@@ -143,6 +143,21 @@ async def connection(env, owner, name="box", ctype="ssh", host="93.184.216.34", 
     return uuid, cid
 
 
+def run(main, deadline):
+    """Run the async test body under a deadline. When it raises or runs out of time, print the failure and
+    leave the process at once: the database thread of a booted app is not a daemon, so a plain exit would
+    wait for it forever and the test would hang instead of failing."""
+    try:
+        asyncio.run(asyncio.wait_for(main(), deadline))
+    except BaseException as e:
+        import traceback
+        traceback.print_exc()
+        print(f"\nFAIL: the test did not run to the end ({type(e).__name__}: {e})", flush=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+
+
 def finish(label):
     if failures:
         print(f"\n{label}: {len(failures)} FAILED: " + "; ".join(failures))
