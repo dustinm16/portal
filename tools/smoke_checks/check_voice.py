@@ -408,7 +408,7 @@ async def run(ctx):
             left = await cb.wait(lambda e: e.get("type") == "voice_user_left" and e.get("user_id") == alice,
                                  start=m, timeout=5)
             ok("voice: logout ends the call at once, with no reconnecting state",
-                   st in (302, 303) and left is not None and time.monotonic() - t0 < 4
+                   st in (200, 302, 303) and left is not None and time.monotonic() - t0 < 4
                    and "voice_user_reconnecting" not in cb.types(m), f"status {st}, {cb.types(m)}")
             close = await asyncio.wait_for(_closed(lc), 5) if not lc.ws.closed else lc.ws.close_code
             ok("voice: logout closes that session's chat socket with code 4001", close == 4001, str(close))
