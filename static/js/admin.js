@@ -1733,15 +1733,17 @@ async function setup2FA() {
         // Display secret
         document.getElementById('2fa-secret-display').textContent = data.secret;
 
-        // Generate QR code
+        // Generate QR code (static/js/qr.js draws it on the canvas; an address it cannot hold, or a page without the
+        // script, shows only the secret key)
         const canvas = document.getElementById('2fa-qr-canvas');
-        if (typeof QRCode !== 'undefined') {
-            QRCode.toCanvas(canvas, data.uri, { width: 200, margin: 1 }, function(error) {
-                if (error) console.error('QR code generation error:', error);
-            });
+        const qrBox = document.getElementById('2fa-qr-container');
+        const qrIntro = document.getElementById('2fa-qr-intro');
+        if (window.PortalQR && PortalQR.draw(canvas, data.uri, 200)) {
+            qrBox.style.display = 'inline-block';
+            if (qrIntro) qrIntro.textContent = 'Scan this QR code with your authenticator app (Google Authenticator, Authy, Microsoft Authenticator, etc.):';
         } else {
-            console.error('QRCode library not loaded');
-            canvas.style.display = 'none';
+            qrBox.style.display = 'none';
+            if (qrIntro) qrIntro.textContent = 'Add an account to your authenticator app (Google Authenticator, Authy, Microsoft Authenticator, etc.) by entering the key below:';
         }
 
         // Reset and show setup modal

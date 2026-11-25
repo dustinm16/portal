@@ -486,7 +486,7 @@ MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "po
 MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
-MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6}
+MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
