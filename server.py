@@ -3548,10 +3548,19 @@ async def http_authenticated_upload(request: web.Request) -> web.Response:
         return web.Response(status=400, text="Bad request")
 
     # The file is judged as it resolves (a link inside uploads cannot lead out of it or around the thumbnail check below).
+    # A folder of uploads (chat, thumbnails) that is itself a link to another disk is served as it was: a file is
+    # also accepted when it resolves inside that folder's own resolved location (named as the folder and the
+    # path below it, so the thumbnail check below still reads it).
     uploads_root = (STATIC_DIR / "uploads").resolve()
     try:
         filepath = (uploads_root / rel_path).resolve()
-        rel_path = filepath.relative_to(uploads_root).as_posix()
+        try:
+            rel_path = filepath.relative_to(uploads_root).as_posix()
+        except ValueError:
+            top, _, below = rel_path.partition("/")
+            if not below:
+                raise
+            rel_path = top + "/" + filepath.relative_to((uploads_root / top).resolve()).as_posix()
     except (ValueError, OSError, RuntimeError):
         return web.Response(status=404, text="Not found")
     if not filepath.is_file():
