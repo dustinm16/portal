@@ -428,6 +428,8 @@ async def amain():
         "xhtml_odd": ([b"Application/XHTML+XML; charset=utf-8"], xhtml_body),
         "svg": ([b"IMAGE/SVG+XML"], b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>"),
         "bytes": ([b'multipart/byteranges; boundary="abc"'], b"--abc\r\n\r\nx\r\n--abc--"),
+        "mixed": ([b"Multipart/X-Mixed-Replace; boundary=frame"], b"--frame\r\nContent-Type: text/html\r\n\r\n<script>1</script>\r\n--frame--"),
+        "xsl": ([b"text/xsl"], b"<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform'/>"),
     }
 
     async def raw_serve(reader, writer):
@@ -649,7 +651,9 @@ async def amain():
             ("same_twice", ["text/html"], True, server._PROXY_HTML_CSP),
             ("xhtml_odd", ["application/xhtml+xml; charset=utf-8"], False, server._PROXY_SVG_CSP),
             ("svg", ["image/svg+xml"], False, server._PROXY_SVG_CSP),
-            ("bytes", ["multipart/byteranges; boundary=\"abc\""], False, None)):
+            ("bytes", ["multipart/byteranges; boundary=\"abc\""], False, None),
+            ("mixed", ["multipart/x-mixed-replace; boundary=\"frame\""], False, server._PROXY_SVG_CSP),
+            ("xsl", ["text/xsl"], False, server._PROXY_SVG_CSP)):
         st, hd, body = await get(bob, f"{cap_raw}/ct/{kind}")
         csp = hd.getall("Content-Security-Policy", [])
         check(f"CT {kind}: the isolated answer has exactly one Content-Type, {want_ct}", hd.getall("Content-Type", []) == want_ct, str(hd.getall("Content-Type", [])))
@@ -665,6 +669,8 @@ async def amain():
     check("CT: a trusted connection keeps the upstream's headers as they were (both Content-Type lines pass through, no nosniff)",
           st == 200 and hd.getall("Content-Type", []) == ["text/plain", "text/html"] and "X-Content-Type-Options" not in hd, str(hd.getall("Content-Type", [])))
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/missing")
+    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/mixed")
+    check("CT: a trusted multipart/x-mixed-replace answer gets no policy of the isolated rule", st == 200 and server._PROXY_SVG_CSP not in hd.getall("Content-Security-Policy", []), str(dict(hd)))
     check("CT: ... and a trusted answer without any is left as the proxy library makes it", st == 200 and body.count(marker) == 0, str(hd.getall("Content-Type", [])))
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as bare_c:
         async with bare_c.get(env.base + cap_base + "/data") as r:

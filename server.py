@@ -21718,6 +21718,10 @@ def _proxy_document_csp(content_type: str, isolated: bool = False):
         if isolated and ct != "text/html":
             return _PROXY_SVG_CSP
         return _PROXY_HTML_CSP
+    if isolated and ct in ("multipart/x-mixed-replace", "text/xsl"):
+        # A browser may build a document from these (the parts of a push response, a stylesheet that is an XML
+        # document); the policy does nothing to the same answer used as an image (a camera feed in an <img>).
+        return _PROXY_SVG_CSP
     return None
 
 
