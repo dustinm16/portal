@@ -1452,7 +1452,7 @@ Upload a custom thumbnail image for a stream (owner only). Multipart form data w
 }
 ```
 
-Since 1.24.1 a custom thumbnail under `/static/uploads/thumbnails/` is served only to a signed-in member who may watch its stream (a member banned from a public stream still gets it, as before): for a stream that is not public the owner and administrators get it with `Cache-Control: private, no-store` and everybody else `404`; a file no stream names is `404`; a public stream's thumbnail is served as before, with `Cache-Control: private`. Every answer of `/static/uploads/...` (chat files too) carries `Cache-Control: private` so a shared cache does not store it.
+Since 1.24.1 a custom thumbnail under `/static/uploads/thumbnails/` is served only to a signed-in member who may watch its stream (a member banned from a public stream still gets it, as before): for a stream that is not public the owner and administrators get it with `Cache-Control: private, no-store` and everybody else `404`; a file no stream names is `404`; a public stream's thumbnail is served as before, with `Cache-Control: private`. Every file answer of the signed-in route for `/static/uploads/...` (chat files too) carries `Cache-Control: private` so a shared cache does not store it; the `400`, `401` and `404` answers do not. Custom emotes under `/static/uploads/emotes/` are the exception: they are public by design, served to anyone without a sign-in with `Cache-Control: public`.
 
 
 ---

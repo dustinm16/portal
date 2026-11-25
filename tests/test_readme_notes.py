@@ -1729,6 +1729,23 @@ check("1.24.1: the notes say a chat attachment keeps only an allowed extension, 
       and "ext if (ext in ALLOWED_EXTENSIONS" in _srv241)
 
 
+# --- 1.24.1 final review: the address of an isolated page is a copyable credential; emotes are public by design -----------
+_m241r = re.search(r"### Upgrade notes for 1\.24\.1(.*?)(?=\n### |\n## |\Z)", text, re.S)
+_sec241r = _m241r.group(1) if _m241r else ""
+_low241r = _sec241r.lower()
+check("1.24.1: the notes do not claim a copied isolated address fails elsewhere; they say it works from any network until it ends",
+      "only from your address" not in _low241r and "to another network does not work" not in _low241r
+      and "from any network" in _low241r and "treat the address as a password" in _low241r
+      and _po241.CAP_TTL_SECONDS == 6 * 3600 and "address" not in _inspect241.signature(_po241.verify).parameters
+      and "address" not in _inspect241.signature(_po241.mint).parameters)
+_about241r = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
+_api241r = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_apihtml241r = (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8")
+check("1.24.1: every place that says uploads are for signed-in members names the exception for custom emotes",
+      "emotes" in _low241r and "public by design" in _low241r and "public by design" in _about241r.lower()
+      and "public by design" in text.lower().split("\n## security\n")[1][:6000] and "public by design" in _api241r.lower()
+      and "public by design" in _apihtml241r.lower() and "every answer of /static/uploads" not in (_about241r + _api241r + _apihtml241r + text).lower())
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
