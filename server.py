@@ -10009,7 +10009,9 @@ async def _vod_remote_dir_in_current_root(session_dir: str, meta: dict, outside:
     if _vod_path_inside(root, remote_dir):
         _vod_root_mismatch_logged.discard(name)
         return True
-    if outside is not None:
+    if outside is not None and posixpath.isabs(root) == posixpath.isabs(remote_dir):
+        # A relative root against an absolute folder (or the reverse) may name the same place; only two
+        # spellings of one kind are known to differ, so only those may age out (never on a guess).
         outside.append(True)
     if name not in _vod_root_mismatch_logged:
         _vod_root_mismatch_logged.add(name)

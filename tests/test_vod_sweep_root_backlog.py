@@ -91,6 +91,21 @@ def test_an_unreadable_root_never_ages_a_folder_out():
     assert run(asyncio.wait_for(go(), DEADLINE)), "a folder must not be removed on a guess"
 
 
+def test_a_relative_root_against_an_absolute_folder_is_never_aged_out():
+    """"vods" and "/home/me/vods" can be the same folder: the sweep cannot tell, so it keeps the chunks."""
+    async def go():
+        with tempfile.TemporaryDirectory(prefix="vodrootlog_") as t:
+            async with Remote(t) as remote:
+                d = session(t, "1_2026-01-01_5", {"chunk_000.mkv": b"x" * 123})
+                _age(str(d), 400)
+                db = MovedDb(remote, "v")
+                with Patched(t, remote, db):
+                    await server.recover_vod_staging()
+                return d.exists(), db.activity
+    exists, activity = run(asyncio.wait_for(go(), DEADLINE))
+    assert exists and not [a for a in activity if a[1] == "vod_discarded"], (exists, activity)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
