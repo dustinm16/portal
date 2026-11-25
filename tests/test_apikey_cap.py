@@ -72,8 +72,15 @@ async def main():
     st, _ = await create("n53")
     after = await live_count()
     check("above the cap: creation is refused and no key is removed", st == 400 and before == after and before > CAP, f"{st} {before} {after}")
+    # a stored expiry without a time zone (older rows) is read as UTC: an expired one does not count
+    naive_past = (datetime.now(timezone.utc) - timedelta(days=2)).replace(tzinfo=None).isoformat(sep=" ")
+    naive_future = (datetime.now(timezone.utc) + timedelta(days=2)).replace(tzinfo=None).isoformat(sep=" ")
+    rows = [{"revoked": 0, "expires_at": naive_past}, {"revoked": 0, "expires_at": naive_future},
+            {"revoked": 0, "expires_at": None}, {"revoked": 1, "expires_at": None}]
+    check("an expired key stored without a time zone does not count toward the cap",
+          h.server._live_api_key_count(rows) == 2, str(h.server._live_api_key_count(rows)))
     await h.shutdown(env)
 
 
-asyncio.run(asyncio.wait_for(main(), 90))
+h.run(main, 90)
 h.finish("test_apikey_cap")

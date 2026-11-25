@@ -5262,11 +5262,9 @@ def _live_api_key_count(rows: list[dict]) -> int:
             continue
         expires_at = rec.get("expires_at")
         if expires_at:
-            try:
-                if datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")) < now:
-                    continue
-            except (ValueError, TypeError):
-                pass
+            when = apikey_policy.parse_db_time(str(expires_at))     # a stored time without a zone counts as UTC
+            if when is not None and when < now:
+                continue
         live += 1
     return live
 
