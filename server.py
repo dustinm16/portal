@@ -21578,6 +21578,20 @@ class _IsolatedCookieJars:
 _isolated_jars = _IsolatedCookieJars()
 
 
+# Response headers of an upstream that act on the whole portal origin (what a browser stores per origin, or what
+# changes how every later portal page behaves), not on the one response. Never passed on by /proxy, /browser
+# (through /proxy) or /search (release 1.24.1): a proxied application could otherwise switch the portal's HSTS off
+# (max-age=0), pin or unpin its keys, point its error reports at itself (NEL, Report-To), change how the portal's
+# pages are grouped into agent clusters (Origin-Agent-Cluster), make the browser send client hints to the portal
+# on every request (Accept-CH, Critical-CH) or reset the portal's alternative services (Alt-Svc: clear).
+# Clear-Site-Data and Service-Worker-Allowed are dropped from the same rule.
+# Permissions-Policy is NOT here: it governs the one document it comes with.
+_UPSTREAM_ORIGIN_WIDE_HEADERS = frozenset({
+    "clear-site-data", "service-worker-allowed",
+    "strict-transport-security", "public-key-pins", "public-key-pins-report-only", "expect-ct",
+    "nel", "report-to", "origin-agent-cluster", "accept-ch", "critical-ch", "accept-ch-lifetime", "alt-svc",
+})
+
 _PROXY_ISOLATED = "proxy_isolated"       # request key: this response is for an isolated (opaque origin) page
 _PROXY_CAP_TOKEN = "proxy_cap_token"     # request key: the verified capability's credential (a TokenPayload)
 
@@ -22188,11 +22202,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                              "te", "trailers", "upgrade",
                              "content-security-policy", "x-frame-options",
                              "content-encoding", "content-length",
-                             "cache-control", "expires", "age",
-                             # an upstream may not widen the scope of a worker it serves to the portal's own paths
-                             "service-worker-allowed",
-                             # nor wipe the portal's cookies and storage (Clear-Site-Data names the whole origin)
-                             "clear-site-data"):
+                             "cache-control", "expires", "age") or k in _UPSTREAM_ORIGIN_WIDE_HEADERS:
+                        # (the last set: headers that act on the whole portal origin, see _UPSTREAM_ORIGIN_WIDE_HEADERS)
                         continue
 
                     # Rewrite Location headers for redirects
@@ -22639,8 +22650,8 @@ _SEARXNG_REQUEST_HOP_HEADERS = frozenset({
 _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
     "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
     "proxy-authorization", "te", "trailers", "upgrade", "content-encoding",
-    "content-length", "service-worker-allowed", "clear-site-data",
-})
+    "content-length",
+}) | _UPSTREAM_ORIGIN_WIDE_HEADERS
 # Kept in sync with services/searxng.py DEFAULT_PORT (8888/8889 are MediaMTX).
 _SEARXNG_DEFAULT_PORT = 8890
 

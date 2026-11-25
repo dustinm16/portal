@@ -144,6 +144,26 @@ async def page(request):
     resp.headers["Clear-Site-Data"] = '"cookies", "storage"'
     resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Content-Security-Policy"] = "default-src *"
+    for name, value in ORIGIN_WIDE.items():
+        resp.headers[name] = value
+    return resp
+
+
+# Response headers that act on the whole portal origin (not on the one response): never passed on (1.24.1).
+ORIGIN_WIDE = {
+    "Strict-Transport-Security": "max-age=0", "Public-Key-Pins": 'pin-sha256="x"; max-age=1',
+    "Public-Key-Pins-Report-Only": 'pin-sha256="x"; max-age=1', "Expect-CT": "max-age=0",
+    "NEL": '{"report_to":"x","max_age":1}', "Report-To": '{"group":"x","max_age":1,"endpoints":[]}',
+    "Origin-Agent-Cluster": "?0", "Accept-CH": "Sec-CH-UA", "Critical-CH": "Sec-CH-UA",
+    "Accept-CH-Lifetime": "86400", "Alt-Svc": "clear",
+}
+
+
+async def binary(request):
+    """A streamed (not rewritten) answer: its headers are final once sent, no middleware can mend them."""
+    resp = web.Response(body=b"\x89PNG....", content_type="image/png")
+    for name, value in ORIGIN_WIDE.items():
+        resp.headers[name] = value
     return resp
 
 
@@ -294,6 +314,7 @@ async def amain():
     def make_upstream():
         up = web.Application()
         up.router.add_get("/page", page)
+        up.router.add_get("/binary", binary)
         up.router.add_route("*", "/data", data)
         up.router.add_get("/ws", sock)
         up.router.add_get("/bare", bare)
@@ -354,6 +375,16 @@ async def amain():
     check("... but never one named like the portal session, in any letter case, and no dot-segment path",
           not any(c.lower().startswith(Config.SESSION_COOKIE_NAME) for c in sc) and not any(".." in c for c in sc), str(sc))
     check("... and Clear-Site-Data is not passed on", "Clear-Site-Data" not in hd, str(dict(hd)))
+    check("... nor any header that acts on the whole portal origin (HSTS, key pins, Expect-CT, NEL, Report-To, "
+          "Origin-Agent-Cluster, Accept-CH, Critical-CH, Alt-Svc)", not [n for n in ORIGIN_WIDE if n in hd and n != "Strict-Transport-Security"], str(dict(hd)))
+    check("... so the portal's own HSTS stays", "max-age=31536000" in hd.get("Strict-Transport-Security", ""), str(hd.get("Strict-Transport-Security")))
+    st, hd, body = await get(owner, f"/proxy/{web_m}/binary")
+    check("a streamed (binary) answer drops them too, and carries no HSTS of the upstream",
+          st == 200 and not [n for n in ORIGIN_WIDE if n in hd and (n != "Strict-Transport-Security" or "max-age=0" in hd[n])], str(dict(hd)))
+    check("the search proxy drops the same set (and the HTTP proxy tests membership of it)",
+          all(n.lower() in server._SEARXNG_RESPONSE_HOP_HEADERS for n in ORIGIN_WIDE)
+          and all(n.lower() in server._UPSTREAM_ORIGIN_WIDE_HEADERS for n in ORIGIN_WIDE)
+          and "or k in _UPSTREAM_ORIGIN_WIDE_HEADERS" in Path(server.__file__).read_text())
     st, hd, body = await get(bob, f"/proxy/{web_a}/page")
     check("an administrator's web connection opened by a member is served in place, unsandboxed",
           st == 200 and hd.getall("Content-Security-Policy", []) == [server._PROXY_HTML_CSP], f"{st} {hd.getall('Content-Security-Policy', [])}")
