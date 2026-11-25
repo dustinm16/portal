@@ -97,6 +97,9 @@ async def main():
         async with owner.post(f"{env.base}/api/connections/{u}/shares",
                               json={"usernames": ["bob", "carol"], "expires_in": "30d"}) as r:
             assert r.status == 200
+        for _who in (bob, carol):        # the first-open notice of a shared web connection (1.24.1)
+            async with _who.post(f"{env.base}/api/connections/{u}/notice") as r:
+                assert r.status == 200
 
     async def listing(s):
         async with s.get(f"{env.base}/api/connections") as r:

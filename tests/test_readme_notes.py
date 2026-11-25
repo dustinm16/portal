@@ -270,7 +270,7 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0, user-connections.js and dashboard.js again in 1.22.0)",
-      re.search(r"user-connections\.js\?v=59", (ROOT / "static" / "index.html").read_text())
+      re.search(r"user-connections\.js\?v=(59|61)", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=60", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
@@ -484,11 +484,13 @@ check("the old 'enable desktop alerts' star sentence is gone from the chat part"
 MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "portal.css": 56}
 # ... and in 1.23.0 (saved messages lane): an older release's notes keep the version of their day
 MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
+# ... and in 1.24.1 (the share dialog's note on a trusted web connection)
+MOVED_ON_1_24 = {"user-connections.js": 61}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))})
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))})
           and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
 check("the README names the three pictures and they exist",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file()
@@ -519,11 +521,11 @@ for name, needles in (("recording is off unless the flag is exactly true, 1, '1'
                       ("what is not tested", ("not tested", "no browser", "no microphone", "cloudflare", "real ssh server"))):
     check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
 _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
-# user-connections.js moved on to 59 in 1.22.0: the 1.20.0 notes keep the version of their release
-for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 59)):
+# user-connections.js moved on to 59 in 1.22.0 and 61 in 1.24.1: the 1.20.0 notes keep the version of their release
+for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 61)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}), str(loaded))
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))}), str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",
       all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
 # --- 1.20.0 notes: voice moderation and the room cap -----------------------------------
@@ -620,8 +622,8 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "59"), "streams.js": ("49", "53")}  # stated in 1.20.0, loaded since 1.22.0, 1.23.0 and 1.24.0
-check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.22.0, streams.js in 1.23.0 and 1.24.0)",
+_moved20 = {"user-connections.js": ("56", "61"), "streams.js": ("49", "53")}  # stated in 1.20.0, loaded since 1.24.1, 1.23.0 and 1.24.0
+check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0 and 1.24.0)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
 for name, needles in (
@@ -938,7 +940,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 4), ("dashboard.js", 60), ("user-connections.js", 59), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 4), ("dashboard.js", 60), ("user-connections.js", 61), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))
@@ -999,7 +1001,8 @@ _pages22 = {n: (ROOT / "static" / n).read_text(encoding="utf-8") for n in ("inde
 check("1.22.0: every script and style version the Static files bullet names is the one a page loads",
       all(re.search(rf"{re.escape(f)}\?v={v}\b", "".join(_pages22.values()) + (ROOT / "static" / "js" / "portal.js").read_text()
                     + _srv_text)
-                    or (f in MOVED_ON_1_23 and str(MOVED_ON_1_22.get(f)) == v) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
+                    or (f in MOVED_ON_1_23 and str(MOVED_ON_1_22.get(f)) == v)
+                    or (f in MOVED_ON_1_24 and str(MOVED_ON_1_22.get(f)) == v) for f, v in re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet))
       and len(re.findall(r"`([a-z-]+\.(?:js|css))` v(\d+)", _static_bullet)) >= 11)
 check("1.22.0: the screenshots section shows the new pictures and each file exists",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in (
@@ -1482,7 +1485,7 @@ _low241v = _sec241v.lower()
 check("1.24.1 vendor notes sit directly before the 1.24.0 notes", bool(m241v))
 check("1.24.1 vendor notes carry no emoji", not re.search(_EMOJI, _sec241v))
 check("1.24.1 vendor notes have the administrators list, a behaviour changes group, Breaking changes and a Not tested paragraph",
-      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes:", "**Breaking changes**", "**Not tested**")))
+      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes**", "**Breaking changes**", "**Not tested**")))
 _vend_lib = {"hls.js": "1.5.17", "xterm": "5.3.0", "xterm-addon-fit": "0.8.0", "chart.js": "4.4.7", "highlight.js": "11.12.0",
              "marked": "18.3.0", "dompurify": "3.5.0", "novnc": "1.4.0"}
 check("1.24.1 vendor: the notes name every library with the version in its vendored README and the Third-Party table lists it",
@@ -1512,6 +1515,62 @@ check("1.24.1 vendor: the download sizes the notes state are the sizes of the fi
       and sum(1 for f in (ROOT / "static/vendor/novnc/core").rglob("*.js")) + sum(1 for f in (ROOT / "static/vendor/novnc/vendor").rglob("*.js")) == 45)
 check("1.24.1 vendor: the notes' claim that the dashboard's QR script is gone and no QR library was added holds",
       "qrcode" not in (ROOT / "static" / "index.html").read_text(encoding="utf-8").lower() and not (ROOT / "static" / "vendor" / "qrcode").exists())
+# --- 1.24.1: proxied pages and the portal origin (proxyorigin lane) ------------------------------
+import proxy_origin as _po241  # noqa: E402
+
+m241 = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0)", text, re.S)
+_sec241 = m241.group(1) if m241 else ""
+_low241 = _sec241.lower()
+_srv241 = (ROOT / "server.py").read_text(encoding="utf-8")
+check("1.24.1 notes sit directly before the 1.24.0 notes", bool(m241))
+check("1.24.1 notes carry no emoji", not re.search(_EMOJI, _sec241))
+for name, needles in {
+    "a Breaking changes group, behaviour that stays, trusted marks, known gaps and Not tested": (
+        "**breaking changes**", "**what stays as it was**", "**trusted marks (superadmin)**", "**known and not changed**", "**not tested**"),
+    "the loss list: storage, cookies, service workers, nested frames": (
+        "no local storage", "no `document.cookie`", "no service workers", "no frames inside"),
+    "the cookie finding and what fixes it": ("no cookie of any kind", "separate host name", "chromium 156"),
+    "the credential in the address": ("signed path segment", "6 hours", "removed from logs", "your network address"),
+    "the notice": ("asked once", "continue and cancel", "bearer token or api key is not asked"),
+    "the seat belt is not a wall": ("seat belt, not a wall", "without a `referer`"),
+    "every caller considered": ("the portal's own pages", "embedded browser", "/api/push/", "obs", "api clients"),
+    "cookies and Clear-Site-Data": ("clear-site-data", "any letter case", "dot segment"),
+    "marks and audit": ("connection.proxy_trust", "no screen for it", "1.24.0 ignores them"),
+    "known gaps": ("get /logout", "strict-transport-security"),
+    "Not tested names the browsers": ("firefox, safari", "roughly 25 applications"),
+}.items():
+    check(f"1.24.1 states: {name}", all(n in _low241 for n in needles), str([n for n in needles if n not in _low241]))
+check("1.24.1: the facts stated are the ones in the code (sandbox text, 6 hours, routes, audit actions)",
+      _po241.ISOLATED_SANDBOX == "sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+      and _po241.CAP_TTL_SECONDS == 6 * 3600 and "/api/admin/connections/{id}/proxy-trust" in _srv241
+      and '"connection.proxy_trust"' in _srv241 and "/api/connections/{id}/notice" in _srv241
+      and '"clear-site-data"' in _srv241)
+_api241 = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+_apih241 = (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8")
+check("1.24.1: every new route is in the API reference and on the API page",
+      all(r in _api241 and r in _apih241 for r in ("/api/connections/{id}/notice", "/api/admin/proxy-trust-connections",
+                                                     "/api/admin/connections/{id}/proxy-trust")))
+check("1.24.1: the share dialog says what a sandbox takes away",
+      "share-web-isolation-note" in (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+      and "service workers" in (ROOT / "static" / "index.html").read_text(encoding="utf-8"))
+_ucjs241 = (ROOT / "static" / "js" / "user-connections.js").read_text(encoding="utf-8")
+_idx241 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+check("1.24.1: the share dialog does not call an administrator's trusted web connection sandboxed, and the notes say so",
+      'id="share-web-trusted-note"' in _idx241 and "is not sandboxed" in _idx241 and "share-web-trusted-note" in _ucjs241
+      and "user-connections.js?v=61" in _idx241 and "`user-connections.js` v61" in _sec241
+      and "not sandboxed" in _low241 and "byte for byte" in _low241)
+check("1.24.1: the README feature text names the isolation", "runs in an opaque-origin sandbox" in text)
+check("1.24.1: the notes say the portal keeps an isolated page's cookies, what ends them and what still breaks",
+      all(n in _low241 for n in ("kept by the portal", "stored on the server", "sign out", "share ends", "restarts", "6 hours without a request",
+                                 "`document.cookie` does not work", "4096 bytes", "60 cookies", "at most 40 jars", "the portal at most 500", "single sign-on across subdomains"))
+      and "a login that relies on a cookie is not kept" not in _low241
+      and _po241.CAP_TTL_SECONDS == 6 * 3600 and "_isolated_jars" in _srv241
+      and "MAX_COOKIES = 60" in _srv241 and "MAX_VALUE_LEN = 4096" in _srv241 and "MAX_JARS = 500" in _srv241 and "MAX_PER_USER = 40" in _srv241)
+check("1.24.1: the notes say a path that starts with ~ is the application's own and only the minted shape is a credential",
+      "paths that start with `~`" in _low241 and "exact" in _low241 and "~pc1." in _sec241 and _po241.CAP_PREFIX == "~pc1."
+      and _po241.is_capability(_po241.mint("s" * 32, user_id=1, token_id="t", conn_uuid="c", ip="1.2.3.4"))
+      and not _po241.is_capability("~alice"))
+
 
 
 if failures:

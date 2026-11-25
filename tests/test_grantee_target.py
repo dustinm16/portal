@@ -35,6 +35,8 @@ async def main():
     async with owner.post(f"{env.base}/api/connections/{uuid}/shares",
                           json={"usernames": ["bob", "adm", "mod"], "expires_in": "7d"}) as r:
         check("the owner shares it with a member, an administrator and a superadmin", r.status == 200, str(r.status))
+    async with bob.post(f"{env.base}/api/connections/{uuid}/notice") as r:       # the first-open notice (1.24.1)
+        assert r.status == 200, r.status
     ssh_cfg = {"username": "svc", "credential_mode": "stored", "password": "S3cret-pw", "host_key_fingerprint": "SHA256:abc",
                "auth_method": "password", "shell": "/bin/zsh"}
     ssh_uuid = await db.create_user_connection(env.uid["owner"], "stored", "ssh", "198.51.100.9", 2200, json.dumps(ssh_cfg))
@@ -86,7 +88,7 @@ async def main():
     row = await db.get_accessible_connection(uuid, env.uid["bob"])
     check("the stored row the server connects with still has the target",
           row["host"] == HOST and row["port"] == 8123 and row["config"]["target_url"] == CONFIG["target_url"], str(row))
-    async with bob.get(f"{env.base}/proxy/{uuid}/", allow_redirects=False) as r:
+    async with bob.get(f"{env.base}/proxy/{uuid}/") as r:      # through the entry redirect of an isolated page (1.24.1)
         check("the grantee reaches the proxy by id (the host policy answers, not 404)", r.status == 403, str(r.status))
     async with dave.get(f"{env.base}/proxy/{uuid}/", allow_redirects=False) as r:
         check("a member without a share still gets 404", r.status == 404, str(r.status))

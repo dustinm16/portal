@@ -143,6 +143,7 @@ import grant_expiry
 import maintenance
 import blockref
 import announcements
+import proxy_origin
 import sftp_browser
 from host_check import (
     BLOCKED_HOSTS, is_blocked_host, is_private_or_loopback_address, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
@@ -521,6 +522,8 @@ async def close_grant_dependents(kind: str, resource_id: int, user_id: int = Non
     """End what the grantee holds open through one share or grant (user_id None: through
     every grantee of that resource, for a deleted connection). Other sockets of the user,
     the chat for one, are not touched. Returns how many were closed."""
+    if kind == "conn":
+        _isolated_jars.forget(lambda k: k[2] == int(resource_id) and (user_id is None or k[0] == int(user_id)))
     keys = [k for k in list(_grant_dependents)
             if k[0] == kind and k[1] == int(resource_id) and (user_id is None or k[2] == int(user_id))]
     targets = []
@@ -534,6 +537,7 @@ async def close_grant_dependents_for(connection_ids=(), grantee_id: int = None) 
     whatever the given user holds open as a grantee of any share or grant (a deleted
     account's), in one pass."""
     ids = {int(i) for i in connection_ids}
+    _isolated_jars.forget(lambda k: k[2] in ids or (grantee_id is not None and k[0] == int(grantee_id)))
     keys = [k for k in list(_grant_dependents)
             if (k[0] == "conn" and k[1] in ids) or (grantee_id is not None and k[2] == int(grantee_id))]
     targets = []
@@ -593,6 +597,8 @@ async def close_user_websockets(user_id: int, except_token_id: str = None,
     # sessions that were kept is one lookup).
     _playback_cache_forget(user_id=user_id)
     _viewers.remove_user_everywhere(user_id)       # not counted as a viewer from now on
+    # What isolated pages of the ended sessions held for them goes with the session.
+    _isolated_jars.forget(lambda k: k[0] == int(user_id) and not _spared(k[1]))
 
     # Proxied HTTP responses (long downloads, event streams) have no total
     # time limit, so they are cut here too.
@@ -2445,6 +2451,9 @@ def create_ssl_context() -> ssl.SSLContext:
 
 # Request key set by authenticate_request when the ?token= query parameter is what authenticated it.
 _AUTH_VIA_QUERY_TOKEN = "auth_via_query_token"
+# Request key set by authenticate_request to the credential that won: "bearer", "apikey", "query" or "cookie".
+# The cross-site check (fetch_metadata_middleware) reads it: only a cookie can be sent by another site.
+_AUTH_KIND = "auth_kind"
 
 
 async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
@@ -2458,7 +2467,9 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         try:
-            return await validate_token(auth_header[7:], get_client_ip(request))
+            payload = await validate_token(auth_header[7:], get_client_ip(request))
+            request[_AUTH_KIND] = "bearer"
+            return payload
         except AuthError:
             pass
 
@@ -2472,6 +2483,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     if api_key:
         token_payload = await authenticate_api_key(api_key, get_client_ip(request), request=request)
         if token_payload:
+            request[_AUTH_KIND] = "apikey"
             return token_payload
 
     # Check query parameter
@@ -2481,6 +2493,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
             payload = await validate_token(token_str, get_client_ip(request))
             # Noted for the proxy, which must not pass the member's token on to the upstream.
             request[_AUTH_VIA_QUERY_TOKEN] = True
+            request[_AUTH_KIND] = "query"
             return payload
         except AuthError:
             pass
@@ -2489,7 +2502,9 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     session_token = request.cookies.get(Config.SESSION_COOKIE_NAME)
     if session_token:
         try:
-            return await validate_token(session_token, get_client_ip(request))
+            payload = await validate_token(session_token, get_client_ip(request))
+            request[_AUTH_KIND] = "cookie"
+            return payload
         except AuthError:
             pass
 
@@ -5317,6 +5332,10 @@ def _externalize_connection(conn: dict) -> dict:
     """Swap internal integer ID for the external UUID in a connection dict."""
     if "uuid" in conn:
         conn["id"] = conn.pop("uuid")
+    # The trust mark is a fingerprint of the target and names the superadmin who set it: not for any caller
+    # (a grantee's rows carry no target since 1.22.0, and a fingerprint of a plain address can be guessed).
+    conn.pop("proxy_trusted_fp", None)
+    conn.pop("proxy_trusted_by", None)
     if "maintenance" in conn:
         conn.update(maintenance.public_fields(conn))
     return conn
@@ -5329,6 +5348,8 @@ def redact_connection_config(connection: dict) -> dict:
     knows a credential exists without exposing the actual value.
     """
     conn = dict(connection)
+    conn.pop("proxy_trusted_fp", None)         # the trust mark (a target fingerprint) is not for any caller
+    conn.pop("proxy_trusted_by", None)
     config = conn.get("config", {})
     if isinstance(config, str):
         try:
@@ -5908,6 +5929,7 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     try:
         if await db.update_user_connection(int_id, token.user_id, **data):
             logger.info(f"Connection {conn_uuid} updated by user {token.user_id}")
+            await _drop_stale_proxy_trust(conn_uuid)
             await _audit_maintenance("connection.maintenance", token, connection.get("name"), connection, maint_updates)
             body = {"status": "updated"}
             if password_cleared:
@@ -19963,6 +19985,9 @@ async def http_browser_page(request: web.Request) -> web.Response:
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
     if type_info.get("plugin") != "http_proxy":
         return web.Response(status=400, text="Not an HTTP proxy connection")
+    notice = await _proxy_share_notice_gate(request, token, connection, _connection_config(connection))
+    if notice is not None:
+        return notice
 
     # Build target display URL for the address bar
     host = connection.get("host", "")
@@ -20674,8 +20699,7 @@ def _proxy_request_headers(request: web.Request, config: dict, upstream_host: st
             continue
         if k == "cookie":
             # Drop the portal session cookie; keep the rest.
-            cookies += [c.strip() for c in value.split(";")
-                        if c.strip() and not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
+            cookies += _cookies_without_portal_session(value)
             continue
         # (non-whitelisted headers are dropped, the proxy default)
         if forward_patterns and any(_fnmatch.fnmatch(k, p) for p in forward_patterns):
@@ -20894,6 +20918,17 @@ async def _proxy_open_upstream(session, method, url, headers, body, *, follow,
             resp.release()
 
 
+def _cookies_without_portal_session(header_value: str) -> list:
+    """The pairs of a Cookie request header except the portal's own session cookie (any letter case,
+    any spacing around the name), which no upstream is ever sent."""
+    out = []
+    for pair in header_value.split(";"):
+        pair = pair.strip()
+        if pair and not proxy_origin.forbidden_cookie_name(pair.split("=", 1)[0], Config.SESSION_COOKIE_NAME):
+            out.append(pair)
+    return out
+
+
 def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
     """One upstream Set-Cookie value, made storable under the proxy path.
 
@@ -20905,7 +20940,7 @@ def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
     passed on: one named like the portal's own session cookie.
     """
     parts = value.split(";")
-    if parts[0].split("=", 1)[0].strip() == Config.SESSION_COOKIE_NAME:
+    if proxy_origin.forbidden_cookie_name(parts[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME):
         return None
     path = ""
     kept = [parts[0].strip()]
@@ -20918,8 +20953,7 @@ def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
         if lname == "domain":
             continue
         if lname == "path":
-            val = val.strip()
-            path = val if val.startswith("/") else ""
+            path = proxy_origin.clean_cookie_path(val.strip())
             continue
         kept.append(attr)
     if path == cookie_prefix or path.startswith(cookie_prefix + "/"):
@@ -20930,16 +20964,166 @@ def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
     return "; ".join(kept)
 
 
+class _IsolatedCookieJar(aiohttp.CookieJar):
+    """The cookies the upstream of one isolated page has set for one viewer session (1.24.1).
+
+    An opaque-origin page sends no cookie of any kind, so the portal keeps them for it: they are stored
+    from the upstream's answers and sent on the requests that carry a valid capability, and never
+    reach the browser. Differences from aiohttp's default jar: addresses are accepted (the proxy's
+    upstreams are often a LAN address), a Secure cookie is sent to an http upstream as well (the browser
+    of a 1.24.0 member reached it over https, and the portal tells the upstream so with
+    X-Forwarded-Proto), and a cookie named like the portal's session is never sent upstream."""
+
+    MAX_COOKIES = 60            # per jar; more than that and the jar is emptied
+    MAX_VALUE_LEN = 4096        # per cookie value
+
+    def __init__(self):
+        # quote_cookie=False: send a value as the upstream set it, as a browser does (the default quotes
+        # '=', '/', ',' and a space, which PHP and others do not undo)
+        super().__init__(unsafe=True, quote_cookie=False)
+
+    def filter_cookies(self, request_url=None):
+        from yarl import URL
+        url = URL() if request_url is None else URL(request_url)
+        scheme = {"http": "https", "ws": "wss"}.get(url.scheme)
+        if scheme:
+            url = url.with_scheme(scheme)
+        found = super().filter_cookies(url)
+        for name in [n for n in found if proxy_origin.forbidden_cookie_name(n, Config.SESSION_COOKIE_NAME)]:
+            del found[name]
+        return found
+
+    def trim(self) -> None:
+        """Bound what an upstream can make the portal hold: no portal-session name, no huge value, no flood."""
+        self.clear(lambda m: proxy_origin.forbidden_cookie_name(m.key, Config.SESSION_COOKIE_NAME)
+                   or len(m.value) > self.MAX_VALUE_LEN)
+        if len(self) > self.MAX_COOKIES:
+            self.clear()
+
+
+class _IsolatedCookieJars:
+    """The jars of isolated pages, in memory: (user id, session token id, connection id, site) -> jar.
+
+    `site` is the origin in browser mode (one site's cookies never go to another) and "" for a
+    single-site connection. A jar is only kept once it holds a cookie (keep()), so a page that asks for
+    a new site every time fills nothing; until then the requests of one viewer for one site share the
+    same jar through a weak reference. A member holds at most MAX_PER_USER jars (their own least
+    recently used one goes first, so one member's pages cannot push out another's logins), MAX_JARS
+    bounds the whole, and a jar is dropped after IDLE_SECONDS without use. forget() is called when a
+    session ends or a share ends. Nothing is written to disk: a restart of the portal ends them all."""
+
+    MAX_JARS = 500
+    MAX_PER_USER = 40
+    IDLE_SECONDS = proxy_origin.CAP_TTL_SECONDS
+
+    def __init__(self, clock=monotonic):
+        self._clock = clock
+        self._jars: "OrderedDict[tuple, list]" = OrderedDict()
+        self._pending: "weakref.WeakValueDictionary" = weakref.WeakValueDictionary()
+
+    def _sweep(self, now: float) -> None:
+        for key in [k for k, (_, last) in self._jars.items() if now - last > self.IDLE_SECONDS]:
+            del self._jars[key]
+
+    def get(self, user_id: int, token_id: str, conn_id: int, site: str) -> _IsolatedCookieJar:
+        """The jar kept for this key, else a new one that is not kept yet (see keep())."""
+        now = self._clock()
+        self._sweep(now)
+        key = (int(user_id), str(token_id), int(conn_id), site or "")
+        entry = self._jars.get(key)
+        if entry is not None:
+            entry[1] = now
+            self._jars.move_to_end(key)
+            return entry[0]
+        jar = self._pending.get(key)
+        if jar is None:
+            jar = _IsolatedCookieJar()
+            self._pending[key] = jar
+        return jar
+
+    def keep(self, user_id: int, token_id: str, conn_id: int, site: str, jar: _IsolatedCookieJar) -> None:
+        """Keep a jar from get() once it holds a cookie."""
+        key = (int(user_id), str(token_id), int(conn_id), site or "")
+        entry = self._jars.get(key)
+        if entry is not None or len(jar) == 0:
+            return
+        now = self._clock()
+        mine = [k for k in self._jars if k[0] == key[0]]
+        while len(mine) >= self.MAX_PER_USER:
+            del self._jars[mine.pop(0)]
+        self._jars[key] = [jar, now]
+        self._pending.pop(key, None)
+        while len(self._jars) > self.MAX_JARS:
+            self._jars.popitem(last=False)
+
+    def keys(self) -> list:
+        return list(self._jars)
+
+    def forget(self, predicate) -> int:
+        """Drop every jar whose key (user id, token id, connection id, site) the predicate accepts."""
+        gone = [k for k in self._jars if predicate(k)]
+        for k in gone:
+            del self._jars[k]
+        for k in [k for k in list(self._pending) if predicate(k)]:
+            self._pending.pop(k, None)
+        return len(gone)
+
+
+_isolated_jars = _IsolatedCookieJars()
+
+
+_PROXY_ISOLATED = "proxy_isolated"       # request key: this response is for an isolated (opaque origin) page
+_PROXY_CAP_TOKEN = "proxy_cap_token"     # request key: the verified capability's credential (a TokenPayload)
+
+
+def _proxy_cap_response(status: int, text: str) -> web.Response:
+    """A plain answer for a bad capability: no login redirect (the caller is a page's subresource),
+    never cached."""
+    return web.Response(status=status, text=text, headers={"Cache-Control": "private, no-store"})
+
+
+async def _proxy_capability_token(request: web.Request, segment: str):
+    """The credential of a good capability segment of /proxy/{conn_id}/~cap/..., or None.
+
+    Signature, expiry, connection and client address are checked by proxy_origin.verify; here the
+    session it was minted for must still be live and the account must still exist. It never falls
+    back to a cookie or a header: a request that carries a capability is judged by it alone."""
+    conn_uuid = request.match_info.get("conn_id", "")
+    payload = proxy_origin.verify(Config.JWT_SECRET, segment, conn_uuid=conn_uuid, ip=get_client_ip(request))
+    if payload is None:
+        return None
+    jti = payload["token_id"]
+    if jti.startswith(("apikey-", "streamkey-")) or not await db.is_token_valid(jti):
+        return None
+    if await db.get_user_by_id(payload["user_id"]) is None:
+        return None
+    from auth import TokenPayload
+    return TokenPayload({"jti": jti, "sub": str(payload["user_id"]), "scopes": ["proxy:isolated"],
+                         "iat": int(time()), "exp": payload["expires"]})
+
+
 async def http_proxy_connection(request: web.Request) -> web.Response:
     """Reverse proxy for user HTTP connections.
 
     Forwards all HTTP requests to the target service, rewriting URLs
     so that navigation stays within the /proxy/{conn_id}/ path.
     Also handles WebSocket upgrades for real-time web UIs.
+
+    An isolated page (proxy_origin.decide) runs in an opaque origin and carries its credential in the
+    path (/proxy/{conn_id}/~capability/...); every other request is authenticated as before.
     """
-    token = await authenticate_request(request)
-    if not token:
-        raise web.HTTPFound("/login")
+    segment, _rest = proxy_origin.split_path(request.match_info.get("path", ""))
+    if segment is not None:
+        token = await _proxy_capability_token(request, segment)
+        if not token:
+            return _proxy_cap_response(401, "This link has expired or is not valid here. "
+                                            "Open the connection again from the portal.")
+        request[_PROXY_CAP_TOKEN] = token
+        request[_PROXY_ISOLATED] = True
+    else:
+        token = await authenticate_request(request)
+        if not token:
+            raise web.HTTPFound("/login")
     # Registered right after authentication, before any further await, so a
     # revocation that lands while the connection is looked up cannot slip
     # between the two: it aborts this call, and the handler checks `aborted`
@@ -20947,9 +21131,237 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     call = _ProxyHttpCall(request)
     _register_user_proxy_call(token.user_id, call, token.token_id)
     try:
-        return await _proxy_connection_authed(request, token, call)
+        response = await _proxy_connection_authed(request, token, call)
+        if request.get(_PROXY_ISOLATED) and not response.prepared:
+            # Portal-made answers (error pages, redirects) of an isolated page get the sandbox too.
+            _proxy_isolate_headers(response.headers)
+        return response
     finally:
         _unregister_user_proxy_call(token.user_id, call)
+
+
+def _proxy_isolate_headers(headers) -> None:
+    """The headers every response of an isolated page carries: the opaque-origin sandbox (added next to
+    any policy already there, never instead of it), no sniffing, and CORS for the page's own requests
+    (an opaque origin sends Origin: null; the capability in the URL is the credential, no cookie is
+    involved, so any origin value is answered with *)."""
+    if not any("sandbox" in v for v in headers.getall("Content-Security-Policy", [])):
+        headers.add("Content-Security-Policy", proxy_origin.ISOLATED_SANDBOX)
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers.popall("Access-Control-Allow-Credentials", None)
+    headers["Access-Control-Allow-Origin"] = "*"
+    headers["Access-Control-Expose-Headers"] = "*"
+
+
+def _proxy_decision(connection: dict, config: dict, viewer_id: int) -> str:
+    """"trusted" or "isolated" for this viewer of this connection (proxy_origin.decide)."""
+    fp = connection.get("proxy_trusted_fp")
+    return proxy_origin.decide(
+        viewer_id=viewer_id, owner_id=connection.get("user_id"),
+        owner_is_admin=_connection_owner_is_admin(connection, viewer_id),
+        browser_mode=bool((config or {}).get("browser_mode")),
+        marked_trusted=bool(fp) and fp == proxy_origin.target_fingerprint(connection, config or {}))
+
+
+def _connection_config(connection: dict) -> dict:
+    config = connection.get("config", {})
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+    return config if isinstance(config, dict) else {}
+
+
+async def _drop_stale_proxy_trust(conn_uuid: str) -> None:
+    """After an edit: a superadmin's trust mark does not survive a change of host, port, scheme
+    (target URL) or type. (The proxy also compares the fingerprint on every request.)"""
+    try:
+        row = await db.get_connection_for_admin(conn_uuid)
+        if row and row.get("proxy_trusted_fp") and row["proxy_trusted_fp"] != proxy_origin.target_fingerprint(row, row["config"]):
+            await db.set_connection_proxy_trust(row["id"], None, None)
+            logger.info(f"Trust mark of connection {conn_uuid} removed: its target changed")
+    except Exception:
+        logger.warning("could not re-check a trust mark after an edit", exc_info=True)
+
+
+def _shared_notice_url(connection_uuid: str, next_url: str) -> str:
+    from urllib.parse import quote
+    return f"/shared-app?connection={quote(connection_uuid, safe='')}&next={quote(next_url, safe='')}"
+
+
+async def _proxy_share_notice_gate(request: web.Request, token, connection: dict, config: dict):
+    """The first-open notice of a web connection somebody else shared (release 1.24.1).
+
+    Applies to a person (session cookie or ?token=) opening a connection they do not own, until they
+    chose Continue for this target (a changed target asks again). A page request is sent to
+    /shared-app, which names the connection and who shared it; anything else (a fetch, a form, a
+    socket) is refused until then. Not asked of a bearer token or API key (a program), and not of
+    an isolated page's own requests (the capability is minted only after Continue)."""
+    if not connection.get("shared") or request.get(_AUTH_KIND) not in ("cookie", "query"):
+        return None
+    fp = proxy_origin.target_fingerprint(connection, config)
+    if await db.get_share_notice_fp(connection["id"], token.user_id) == fp:
+        return None
+    is_page = (request.method in ("GET", "HEAD") and request.headers.get("Upgrade", "").lower() != "websocket"
+               and request.headers.get("Sec-Fetch-Dest", "document") in ("document", "iframe", "frame"))
+    if not is_page:
+        return web.Response(status=403, text="This shared connection has not been opened from the portal yet",
+                            headers={"Cache-Control": "private, no-store"})
+    return web.Response(status=302, headers={"Location": _shared_notice_url(connection["uuid"], request.raw_path),
+                                             "Cache-Control": "private, no-store"})
+
+
+def _safe_notice_next(connection_uuid: str, value: str) -> str:
+    """Where Continue goes: only this connection's own /proxy or /browser address."""
+    from urllib.parse import quote
+    proxy = f"/proxy/{connection_uuid}"
+    if value == proxy or value.startswith((proxy + "/", proxy + "?")):
+        return value
+    if value.startswith(f"/browser?connection={quote(connection_uuid, safe='')}"):
+        return value
+    return f"/browser?connection={quote(connection_uuid, safe='')}"
+
+
+_SHARED_APP_MODE_TEXT = {
+    "isolated": ("It opens isolated: it runs in a sandbox that keeps its script away from your portal session, so it "
+                 "cannot act as you in the portal or read portal pages. In exchange it has no storage of its own and "
+                 "no cookies it can read, so a login that depends on local storage or on a cookie read from script will not be kept "
+                 "(the portal keeps the cookies the server sets for as long as your session lasts), "
+                 "service workers do not run, and frames inside it do not load."),
+    "trusted": ("It is trusted: its pages run as part of this portal's own address and can act as you here. "
+                "Continue only if you know and trust the person who shared it."),
+}
+
+
+async def http_shared_app_page(request: web.Request) -> web.Response:
+    """GET /shared-app?connection=<id>&next=<address>: the first-open notice of a shared web connection."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+    conn_uuid = request.query.get("connection", "")
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id) if conn_uuid else None
+    if not connection or not connection.get("shared") or CONNECTION_TYPES.get(
+            connection.get("type", "custom"), {}).get("plugin") != "http_proxy":
+        return web.Response(status=404, text="Connection not found")
+    config = _connection_config(connection)
+    mode = _proxy_decision(connection, config, token.user_id)
+    html = load_static_file("shared-app.html")
+    html = html.replace("{{CONNECTION_ID}}", _html.escape(conn_uuid, quote=True))
+    html = html.replace("{{CONNECTION_NAME}}", _html.escape(str(connection.get("name") or "")))
+    html = html.replace("{{OWNER}}", _html.escape(str(connection.get("owner_username") or "a member")))
+    html = html.replace("{{MODE}}", mode)
+    html = html.replace("{{MODE_TEXT}}", _SHARED_APP_MODE_TEXT[mode])
+    html = html.replace("{{NEXT}}", _html.escape(_safe_notice_next(conn_uuid, request.query.get("next", "")), quote=True))
+    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def http_accept_share_notice(request: web.Request) -> web.Response:
+    """POST /api/connections/{id}/notice: the recipient's "Continue" for a shared web connection, kept per viewer."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
+    connection = await db.get_accessible_connection(request.match_info.get("id", ""), token.user_id)
+    if not connection or not connection.get("shared"):
+        return web.json_response({"error": "Not a shared connection"}, status=404)
+    await db.accept_share_notice(connection["id"], token.user_id,
+                                 proxy_origin.target_fingerprint(connection, _connection_config(connection)))
+    return web.json_response({"accepted": True})
+
+
+def _proxy_trust_row(row: dict) -> dict:
+    config = row.get("config") or {}
+    return {"id": row["uuid"], "name": row["name"], "type": row["type"], "owner": row["owner_username"],
+            "shares": row.get("shares", 0), "browser_mode": bool(config.get("browser_mode")),
+            "trusted": bool(row.get("proxy_trusted_fp")) and row["proxy_trusted_fp"] == proxy_origin.target_fingerprint(row, config)}
+
+
+async def http_admin_proxy_trust_list(request: web.Request) -> web.Response:
+    """GET /api/admin/proxy-trust-connections - members' web connections and their trust mark (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    out = [_proxy_trust_row(r) for r in await db.list_proxy_trust_candidates()
+           if CONNECTION_TYPES.get(r["type"], {}).get("plugin") == "http_proxy"]
+    return web.json_response({"connections": out})
+
+
+async def http_admin_proxy_trust_set(request: web.Request) -> web.Response:
+    """PUT /api/admin/connections/{id}/proxy-trust {trusted: bool} - mark a member's web connection trusted
+    (its pages run unsandboxed on the portal origin, as the viewer) or take the mark away (superadmin, audited).
+    Never for browser mode. The mark is bound to the connection's type, host, port and target URL."""
+    user, err = await _backup_superadmin(request, cookie_only=True)     # a browser session, like the other switches that widen trust
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict) or not isinstance(data.get("trusted"), bool):
+        return web.json_response({"error": "trusted must be true or false"}, status=400)
+    row = await db.get_connection_for_admin(request.match_info.get("id", ""))
+    if not row or CONNECTION_TYPES.get(row.get("type", ""), {}).get("plugin") != "http_proxy":
+        return web.json_response({"error": "Connection not found"}, status=404)
+    if data["trusted"] and (row["config"] or {}).get("browser_mode"):
+        return web.json_response({"error": "A connection in browser mode is never trusted"}, status=400)
+    fp = proxy_origin.target_fingerprint(row, row["config"]) if data["trusted"] else None
+    await db.set_connection_proxy_trust(row["id"], fp, user["id"])
+    await audit_log("connection.proxy_trust" if data["trusted"] else "connection.proxy_untrust", user["id"], user.get("username", ""),
+                    target_id=row["id"], target_type="connection", target_name=row.get("name"),
+                    details={"owner": row.get("owner_username")})
+    return web.json_response({"id": row["uuid"], "trusted": data["trusted"]})
+
+
+def _connection_owner_is_admin(connection: dict, viewer_id: int) -> bool:
+    """True when the connection's owner is an administrator (read from the owner's row for a shared
+    connection; an owner opening their own connection is never asked: they are the viewer)."""
+    if not connection.get("shared"):
+        return False
+    return proxy_origin.is_admin_role(connection.get("owner_role"), connection.get("owner_is_admin"))
+
+
+def _proxy_isolated_entry(request: web.Request, token, conn_uuid: str, request_path: str):
+    """The answer for a request to an isolated page that carries no capability, or None to serve it in place.
+
+    A GET navigation authenticated by the session (cookie or ?token=) is the entry: the capability is
+    minted here, while the real session is still on the request, and the browser is sent to the URL
+    that carries it. Everything the page then asks for goes to that URL. Any other state-changing call
+    or a WebSocket upgrade without a capability is refused. A bearer token or API key (not a browser
+    page) is served in place, still with the sandbox headers."""
+    kind = request.get(_AUTH_KIND)
+    if kind not in ("cookie", "query"):
+        return None
+    jti = str(token.token_id or "")
+    is_ws = request.headers.get("Upgrade", "").lower() == "websocket"
+    if request.method not in ("GET", "HEAD") or is_ws or jti.startswith(("apikey-", "streamkey-")):
+        return web.Response(status=403, text="Open this connection from the portal first",
+                            headers={"Cache-Control": "private, no-store"})
+    cap = proxy_origin.mint(Config.JWT_SECRET, user_id=token.user_id, token_id=jti,
+                            conn_uuid=conn_uuid, ip=get_client_ip(request))
+    raw = request.raw_path.split("?", 1)[0]
+    tail = raw[len(f"/proxy/{conn_uuid}"):] if raw.startswith(f"/proxy/{conn_uuid}") else ""
+    location = f"/proxy/{conn_uuid}/{cap}" + (tail or "/")
+    query = _proxy_query_string(request)
+    if query:
+        location += "?" + query
+    return web.Response(status=302, headers={"Location": location, "Cache-Control": "private, no-store"})
+
+
+# Posted by the injected script of an isolated page to the embedded browser: where it is and what it is
+# called (the parent cannot read an opaque-origin frame), and it carries out back, forward and reload.
+_ISOLATED_FRAME_JS = (
+    '<script>(function(){"use strict";var last="";'
+    'function send(){try{var h=location.href,t=document.title||"";if(h+"|"+t!==last){last=h+"|"+t;'
+    'window.parent.postMessage({type:"portalFrame",href:h,title:t},"*")}}catch(e){}}'
+    'send();setInterval(send,700);addEventListener("popstate",send);addEventListener("hashchange",send);'
+    'addEventListener("load",send);'
+    'addEventListener("message",function(e){if(e.source!==window.parent||!e.data)return;'
+    'if(e.data.type==="portalNav"){var a=e.data.action;'
+    'if(a==="back")history.back();else if(a==="forward")history.forward();else if(a==="reload")location.reload()}})'
+    '})();</script>'
+)
 
 
 async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttpCall) -> web.Response:
@@ -20959,6 +21371,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     conn_uuid = request.match_info.get("conn_id", "")
     if not conn_uuid:
         return web.Response(status=400, text="Invalid connection ID")
+    # The capability segment (isolated pages) is not part of the upstream path.
+    cap_segment, request_path = proxy_origin.split_path(request.match_info.get("path", ""))
+    isolated = cap_segment is not None
 
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
@@ -20984,8 +21399,27 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         except json.JSONDecodeError:
             config = {}
 
-    # Build target URL
+    # Who may run script as the viewer (proxy_origin.decide): decided before the config is completed below,
+    # so that the target fingerprint is the one the superadmin's mark was made against.
     browser_mode = config.get("browser_mode", False)
+    if _proxy_decision(connection, config, token.user_id) == "isolated":
+        isolated = True
+    if not cap_segment:
+        notice = await _proxy_share_notice_gate(request, token, connection, config)
+        if notice is not None:
+            return notice
+    if isolated and not cap_segment:
+        entry = _proxy_isolated_entry(request, token, conn_uuid, request_path)
+        if entry is not None:
+            return entry
+    request[_PROXY_ISOLATED] = isolated
+    if isolated and cap_segment and request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
+        # A CORS preflight of the page's own request (the capability in the URL is checked above).
+        pre = web.Response(status=204, headers={
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": request.headers.get("Access-Control-Request-Headers") or "*",
+            "Access-Control-Max-Age": "600", "Cache-Control": "private, no-store"})
+        return pre
     host = connection.get("host")
     default_port = type_info.get("default_port", 80)
     port = connection.get("port") or config.get("port") or default_port
@@ -21014,10 +21448,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             config["target_url"] = f"{scheme}://{host}:{port}"
 
     verify_ssl = config.get("verify_ssl", False)
-    proxy_base = f"/proxy/{conn_uuid}"
+    proxy_base = f"/proxy/{conn_uuid}" + (f"/{cap_segment}" if cap_segment else "")
 
     # Browser mode: extract target URL from path for multi-site navigation
-    raw_path = request.match_info.get("path", "")
+    raw_path = request_path
     if browser_mode and (raw_path.startswith("http://") or raw_path.startswith("https://")):
         # Full URL in path — navigate to external site
         browse_query = request.query_string
@@ -21042,6 +21476,12 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
 
+    # An isolated page's cookies live on the server, per viewer session, connection and (browser mode) site.
+    jar = None
+    if request.get(_PROXY_CAP_TOKEN) is not None:
+        jar_key = (token.user_id, token.token_id, connection["id"], target_origin if browser_mode else "")
+        jar = _isolated_jars.get(*jar_key)
+
     # Handle WebSocket upgrade
     if request.headers.get("Upgrade", "").lower() == "websocket":
         if call.aborted:
@@ -21050,7 +21490,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         await ws.prepare(request)
 
         ws_scheme = "wss" if parsed_target.scheme == "https" else "ws"
-        ws_raw_path = request.match_info.get("path", "")
+        ws_raw_path = request_path
         ws_query = _proxy_query_string(request)
         if browser_mode and (ws_raw_path.startswith("http://") or ws_raw_path.startswith("https://")):
             ws_parsed = urlparse(f"{ws_raw_path}?{ws_query}" if ws_query else ws_raw_path)
@@ -21088,8 +21528,12 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 await ws.close(code=4001, message=b"session revoked")
                 return ws
             connector = _SSRFSafeConnector(ssl=verify_ssl)
-            async with aiohttp.ClientSession(connector=connector) as session:
+            async with aiohttp.ClientSession(connector=connector, **({"cookie_jar": jar} if jar is not None else {})) as session:
                 async with session.ws_connect(ws_url) as upstream:
+                    if jar is not None:
+                        jar.trim()
+                        if not ws.closed:
+                            _isolated_jars.keep(*jar_key, jar)
                     async def _fwd_client():
                         async for msg in ws:
                             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -21126,7 +21570,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         return ws
 
     # Build upstream URL
-    path = request.match_info.get("path", "")
+    path = request_path
     query = _proxy_query_string(request)
     if browser_mode and (path.startswith("http://") or path.startswith("https://")):
         # Browser mode: full URL already parsed above, extract just the path portion
@@ -21175,7 +21619,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=_proxy_client_timeout(config),
-            auto_decompress=True
+            auto_decompress=True,
+            **({"cookie_jar": jar} if jar is not None else {})
         ) as session:
             body = None
             if request.body_exists:
@@ -21200,8 +21645,13 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 call=call,
             ) as resp:
                 call.resp = resp
+                if jar is not None:
+                    jar.trim()
                 if call.aborted:
                     return web.Response(status=401, text="Session revoked")
+                if jar is not None:
+                    # after the revocation check: a session revoked meanwhile must not get its jar back
+                    _isolated_jars.keep(*jar_key, jar)
                 # Build response headers (before reading body — needed for streaming path).
                 # Repeated headers (several Set-Cookie lines) are all kept.
                 resp_headers = CIMultiDict()
@@ -21214,7 +21664,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                              "content-encoding", "content-length",
                              "cache-control", "expires", "age",
                              # an upstream may not widen the scope of a worker it serves to the portal's own paths
-                             "service-worker-allowed"):
+                             "service-worker-allowed",
+                             # nor wipe the portal's cookies and storage (Clear-Site-Data names the whole origin)
+                             "clear-site-data"):
                         continue
 
                     # Rewrite Location headers for redirects
@@ -21226,6 +21678,12 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                         else:
                             loc = _proxy_rewrite_location(loc, proxy_prefix, target_origin)
                         resp_headers.add(key, loc)
+                        continue
+
+                    if isolated and (k == "set-cookie" or k.startswith("access-control-")):
+                        # An opaque origin is never sent a cookie back: the upstream's cookies are kept in
+                        # the session's jar on the server (_isolated_jars) and never passed on. The portal
+                        # answers CORS for an isolated page itself (_proxy_isolate_headers).
                         continue
 
                     # Every Set-Cookie: Path moved under the proxy path, Domain dropped
@@ -21246,6 +21704,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 doc_csp = _proxy_document_csp(resp.headers.get("Content-Type", ""))
                 if doc_csp:
                     resp_headers["Content-Security-Policy"] = doc_csp
+                if isolated:
+                    _proxy_isolate_headers(resp_headers)
 
                 # Check if response needs URL rewriting
                 content_type = resp.headers.get("Content-Type", "")
@@ -21579,6 +22039,13 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                 else:
                                     text = inject_js + text
 
+                        if isolated and "text/html" in content_type:
+                            head_idx = text.lower().find("<head")
+                            close_idx = text.find(">", head_idx) if head_idx >= 0 else -1
+                            if close_idx >= 0:
+                                text = text[:close_idx + 1] + _ISOLATED_FRAME_JS + text[close_idx + 1:]
+                            else:
+                                text = _ISOLATED_FRAME_JS + text
                         response_body = text.encode(charset)
                     except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
                         pass
@@ -21638,7 +22105,7 @@ _SEARXNG_REQUEST_HOP_HEADERS = frozenset({
 _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
     "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
     "proxy-authorization", "te", "trailers", "upgrade", "content-encoding",
-    "content-length", "service-worker-allowed",
+    "content-length", "service-worker-allowed", "clear-site-data",
 })
 # Kept in sync with services/searxng.py DEFAULT_PORT (8888/8889 are MediaMTX).
 _SEARXNG_DEFAULT_PORT = 8890
@@ -21741,8 +22208,7 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
         if k in _SEARXNG_REQUEST_HOP_HEADERS:
             continue
         if k == "cookie":
-            cookies = [c.strip() for c in value.split(";")
-                       if not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
+            cookies = _cookies_without_portal_session(value)
             if cookies:
                 fwd_headers[key] = "; ".join(cookies)
             continue
@@ -21770,10 +22236,13 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                 data=body,
                 allow_redirects=False,
             ) as resp:
-                resp_headers = {
-                    key: value for key, value in resp.headers.items()
+                # Repeated headers (several Set-Cookie lines) are kept; one named like the portal's own
+                # session cookie is dropped (the same rule as the HTTP proxy).
+                resp_headers = CIMultiDict(
+                    (key, value) for key, value in resp.headers.items()
                     if key.lower() not in _SEARXNG_RESPONSE_HOP_HEADERS
-                }
+                    and not (key.lower() == "set-cookie" and proxy_origin.forbidden_cookie_name(
+                        value.split(";", 1)[0].split("=", 1)[0], Config.SESSION_COOKIE_NAME)))
                 # Never let a shared edge cache store authenticated content.
                 resp_headers["Cache-Control"] = "private, no-store"
                 # SVG, XHTML and XML (SearXNG's image proxy passes any image/* type from any host)
@@ -21781,8 +22250,7 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                 sx_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
                 sx_csp = _proxy_document_csp(sx_type) if sx_type != "text/html" else None
                 if sx_csp:
-                    for key in [k for k in resp_headers if k.lower() == "content-security-policy"]:
-                        del resp_headers[key]
+                    resp_headers.popall("Content-Security-Policy", None)
                     resp_headers["Content-Security-Policy"] = sx_csp
 
                 # Buffer the full body (StreamReader.read(n) can return early on a
@@ -31726,6 +32194,17 @@ async def _has_valid_credential(request: web.Request) -> bool:
     has not been verified yet is counted as logged out until the handler has verified it once.
     """
     from auth import decode_jwt, parse_api_key
+    if request.path.startswith("/proxy/"):
+        # An isolated page's requests carry a capability in the path instead of any cookie.
+        parts = request.path.split("/", 4)
+        if len(parts) >= 4 and proxy_origin.is_capability(parts[3]):
+            payload = proxy_origin.verify(Config.JWT_SECRET, parts[3], conn_uuid=parts[2], ip=get_client_ip(request))
+            if payload and not payload["token_id"].startswith(("apikey-", "streamkey-")):
+                try:
+                    if await db.is_token_valid(payload["token_id"]):
+                        return True
+                except Exception:
+                    pass
     auth_header = request.headers.get("Authorization", "")
     candidates = []
     if auth_header.startswith("Bearer "):
@@ -31783,6 +32262,53 @@ async def proxy_limit_middleware(request: web.Request, handler):
         if refusal is not None:
             return refusal
     return await handler(request)
+
+
+# Sockets and endpoints that are not cookie-authenticated browser calls and so are not judged here:
+# the chat overlay socket (an OBS browser source, authenticated by its own token).
+_FETCH_METADATA_EXEMPT_PATHS = ("/ws/overlay",)
+
+
+def _own_host_names(request: web.Request) -> frozenset:
+    names = {(request.host or "").lower()}
+    for configured in (Config.HOSTNAME, getattr(Config, "STREAM_HOSTNAME", "")):
+        if configured:
+            names.add(str(configured).strip().lower())
+    return frozenset(n for n in names if n)
+
+
+@web.middleware
+async def fetch_metadata_middleware(request: web.Request, handler):
+    """Refuse a cookie-authenticated state change that another site or a proxied page could be behind.
+
+    POST, PUT, PATCH, DELETE and a WebSocket upgrade, carrying the session cookie, are refused when the
+    browser says the request is cross-site (Sec-Fetch-Site), when its Origin is "null" (a sandboxed
+    document) or, in a browser that sends no fetch metadata, another site's, or when its Referer is a
+    page under /proxy/, /browser or /search (proxy_origin.cross_site_refusal). A request that a bearer
+    token, an API key or a ?token= parameter authenticates is not cookie-authenticated and is let
+    through (checked by actually authenticating it: a bad bearer next to a cookie is still the cookie).
+    A browser that sends no Sec-Fetch headers, Origin or Referer (a script, curl, OBS) is not affected.
+    The proxy itself (/proxy, /search, /browser) is not judged here: what a proxied application posts
+    to its own address is its own business, and an isolated page's requests are cross-site by design.
+    This is a seat belt: script running unsandboxed on the portal origin (trusted content) can still
+    hide its Referer, so what keeps untrusted pages away from the session is the sandbox, not this."""
+    path = request.path
+    is_ws = request.headers.get("Upgrade", "").lower() == "websocket"
+    if ((request.method in proxy_origin.SAFE_METHODS and not is_ws)
+            or path.startswith(("/proxy/", "/browser")) or path == "/search" or path.startswith("/search/")
+            or path in _FETCH_METADATA_EXEMPT_PATHS
+            or not request.cookies.get(Config.SESSION_COOKIE_NAME)):
+        return await handler(request)
+    why = proxy_origin.cross_site_refusal(request.method, path, request.headers, _own_host_names(request),
+                                          websocket=is_ws)
+    if why is None:
+        return await handler(request)
+    await authenticate_request(request)
+    if request.get(_AUTH_KIND) in ("bearer", "apikey", "query"):
+        return await handler(request)
+    logger.warning(f"Refused a cookie-authenticated {request.method} {path} ({why})")
+    return web.json_response({"error": "Cross-site request refused"}, status=403,
+                             headers={"Cache-Control": "no-store"})
 
 
 async def _load_proxy_limit_state() -> None:
@@ -32249,7 +32775,8 @@ def create_app() -> web.Application:
     # manager's, itself env-configurable) plus a little multipart framing
     # headroom; individual endpoints still enforce their own tighter caps.
     app = web.Application(
-        middlewares=[request_id_middleware, security_headers_middleware, proxy_limit_middleware],
+        middlewares=[request_id_middleware, security_headers_middleware, proxy_limit_middleware,
+                     fetch_metadata_middleware],
         client_max_size=Config.FILE_MANAGER_MAX_UPLOAD + 1024 * 1024,
     )
     register_request_ids(app)
@@ -32655,6 +33182,10 @@ def create_app() -> web.Application:
     app.router.add_get("/github/{service_id}", http_github_page)
     # Embedded browser for HTTP proxy connections
     app.router.add_get("/browser", http_browser_page)
+    app.router.add_get("/shared-app", http_shared_app_page)
+    app.router.add_post("/api/connections/{id}/notice", http_accept_share_notice)
+    app.router.add_get("/api/admin/proxy-trust-connections", http_admin_proxy_trust_list)
+    app.router.add_put("/api/admin/connections/{id}/proxy-trust", http_admin_proxy_trust_set)
     # User connection reverse proxy (all HTTP methods + WebSocket)
     app.router.add_route("*", "/proxy/{conn_id}", http_proxy_connection)
     app.router.add_route("*", "/proxy/{conn_id}/{path:.*}", http_proxy_connection)

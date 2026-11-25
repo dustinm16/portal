@@ -1681,6 +1681,12 @@ async function showShareConnectionModal(uuid, name) {
     _sharePicker.reset();
     document.getElementById('share-duration').value = '30d';
     _shareExisting = new Set();
+    // A web connection is sandboxed for the people it is shared with, except an administrator's own that is not in
+    // browser mode (proxy_origin.decide): that one runs on the portal's origin as the recipient, and the note says so.
+    const trustedWeb = typeof currentUser !== 'undefined' && !!currentUser && Portal.isAdmin(currentUser)
+        && !(conn && conn.config && conn.config.browser_mode);
+    document.getElementById('share-web-isolation-note').style.display = trustedWeb ? 'none' : 'block';
+    document.getElementById('share-web-trusted-note').style.display = trustedWeb ? 'block' : 'none';
     // The owner is told what a share of a connection with a stored password gives away.
     document.getElementById('share-stored-password-warning').style.display =
         (conn && conn.config && conn.config.has_stored_password && conn.config.credential_mode !== 'prompt') ? 'block' : 'none';

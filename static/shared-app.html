@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Shared web application - Open Relay Portal</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=56">
+    <script src="/static/js/theme.js?v=3"></script>
+    <style>
+        html, body { margin: 0; background: var(--bg-primary, #0d1117); color: var(--text-primary, #c9d1d9); }
+        .notice { max-width: 640px; margin: 8vh auto; padding: 1.5rem 1.75rem; background: var(--card-bg, #161b22);
+                  border: 1px solid var(--card-border, #30363d); border-radius: 10px; line-height: 1.5; }
+        .notice h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+        .notice .mode { padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--card-border, #30363d); margin: 1rem 0; }
+        .notice .row { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
+        .notice .err { color: var(--accent-red, #f85149); margin-top: 0.75rem; }
+    </style>
+</head>
+<body>
+    <main class="notice" id="notice" data-connection="{{CONNECTION_ID}}" data-next="{{NEXT}}" data-mode="{{MODE}}">
+        <h1>Open a shared web application?</h1>
+        <p><strong>{{OWNER}}</strong> shared <strong>{{CONNECTION_NAME}}</strong> with you. It is a
+           third-party application: its pages come from a server that {{OWNER}} chose, not from this portal.</p>
+        <div class="mode">{{MODE_TEXT}}</div>
+        <p>You are asked once for this connection. Cancel leaves it unopened.</p>
+        <div class="row">
+            <button type="button" class="btn btn-primary" id="shared-continue">Continue</button>
+            <button type="button" class="btn btn-secondary" id="shared-cancel">Cancel</button>
+        </div>
+        <p class="err" id="shared-error" hidden></p>
+    </main>
+    <script src="/static/js/shared-app.js?v=1"></script>
+</body>
+</html>

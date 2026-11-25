@@ -87,8 +87,17 @@ async def main():
     share_url = f"{env.base}/api/connections/{uuid}/shares"
     ws_base = env.base.replace("http", "ws")
 
+    async def cap_ws_url():
+        """bob opens the (isolated, 1.24.1) connection like a browser: the entry answers with the address that
+        carries the capability a WebSocket then connects to (a socket cannot follow the redirect itself)."""
+        async with bob.get(f"{env.base}/proxy/{uuid}/", allow_redirects=False) as r:
+            assert r.status == 302, r.status
+            return ws_base + r.headers["Location"].rstrip("/")
+
     async def share(duration="7d"):
         async with owner.post(share_url, json={"usernames": ["bob"], "expires_in": duration}) as r:
+            assert r.status == 200, r.status
+        async with bob.post(f"{env.base}/api/connections/{uuid}/notice") as r:   # the first-open notice (1.24.1)
             assert r.status == 200, r.status
 
     async def wait_event(name, wait=3.0):
@@ -120,7 +129,7 @@ async def main():
 
     # ---- revoke: WebSocket relay ------------------------------------------------------------------------
     await share()
-    ws = await bob.ws_connect(f"{ws_base}/proxy/{uuid}/ws")
+    ws = await bob.ws_connect(await cap_ws_url() + "/ws")
     check("the relay delivers the upstream's first frame", (await asyncio.wait_for(ws.receive(), 3)).data == "hi")
     async with owner.delete(f"{share_url}/{env.uid['bob']}") as r:
         check("the owner revokes the share again", r.status == 200)
@@ -144,7 +153,7 @@ async def main():
     # ---- expiry: WebSocket relay ------------------------------------------------------------------------
     clock["now"] = T0
     await share("1h")
-    ws = await bob.ws_connect(f"{ws_base}/proxy/{uuid}/ws")
+    ws = await bob.ws_connect(await cap_ws_url() + "/ws")
     check("the relay delivers the first frame (expiry case)", (await asyncio.wait_for(ws.receive(), 3)).data == "hi")
     clock["now"] = T0 + timedelta(hours=1, seconds=1)
     check("the sweeper deletes the expired share (relay case)", await server.sweep_expired_grants_once() == 1)

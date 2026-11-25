@@ -468,15 +468,40 @@
         }
 
         // --- Tab title extraction ---
+        // A framed page the portal shows in its own origin can be read from here. An isolated page (every page of
+        // browser mode, and a web connection shared by a member) runs in an opaque origin: it cannot be read, so
+        // its injected script posts its address and title ("portalFrame") and this keeps the last of them.
+        function stripCap(path) {
+            return path.replace(/^(\/proxy\/[^\/]+)\/~pc1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{24}(?=\/|$)/, '$1');
+        }
+        function frameTab(iframe) {
+            return tabs.find(t => t.iframe === iframe) || null;
+        }
+        function framePath(iframe) {
+            // The path, query and fragment of the framed page as the proxy shows them (capability removed), or null.
+            try {
+                const loc = iframe.contentWindow.location;
+                return stripCap(loc.pathname) + loc.search + loc.hash;
+            } catch {}
+            const t = frameTab(iframe);
+            if (t && t.href) {
+                try {
+                    const u = new URL(t.href, window.location.origin);
+                    return stripCap(u.pathname) + u.search + u.hash;
+                } catch {}
+            }
+            return null;
+        }
         function extractTitle(iframe) {
+            const own = frameTab(iframe);
+            if (own && own.frameTitle) return own.frameTitle.substring(0, 40);
             try {
                 const doc = iframe.contentDocument || iframe.contentWindow.document;
                 if (doc && doc.title) return doc.title.substring(0, 40);
             } catch {}
             // Fallback: extract hostname from URL
             try {
-                const loc = iframe.contentWindow.location;
-                const path = loc.pathname;
+                const path = (framePath(iframe) || '').split(/[?#]/)[0];
                 const prefix = proxyBase + '/';
                 if (path.startsWith(prefix)) {
                     const remainder = path.slice(prefix.length);
@@ -496,7 +521,7 @@
             iframe.src = url || getHomeSrc();
             frameContainer.appendChild(iframe);
 
-            const tab = { id, iframe, title: 'New Tab' };
+            const tab = { id, iframe, title: 'New Tab', href: '', frameTitle: '' };
             tabs.push(tab);
 
             // Listen for load events to update title + catch escaped navigation
@@ -657,9 +682,9 @@
                     sessionEnded();
                     return;
                 }
-                const path = loc.pathname + loc.search + loc.hash;
-                urlInput.value = proxyPathToDisplay(path);
             } catch {}
+            const shownPath = framePath(frame);
+            if (shownPath !== null) urlInput.value = proxyPathToDisplay(shownPath);
 
             // Update tab title
             const tab = getActiveTab();
@@ -709,24 +734,31 @@
             }
         }
 
+        // Ask an isolated (opaque-origin) page to go back, forward or reload; true when the message was sent.
+        function frameCommand(frame, action) {
+            try { frame.contentWindow.postMessage({ type: 'portalNav', action: action }, '*'); return true; } catch { return false; }
+        }
+
         // Navigation
         function goBack() {
             const frame = getActiveFrame();
             if (!frame) return;
-            try { frame.contentWindow.history.back(); } catch {}
+            try { frame.contentWindow.history.back(); } catch { frameCommand(frame, 'back'); }
         }
 
         function goForward() {
             const frame = getActiveFrame();
             if (!frame) return;
-            try { frame.contentWindow.history.forward(); } catch {}
+            try { frame.contentWindow.history.forward(); } catch { frameCommand(frame, 'forward'); }
         }
 
         function refreshPage() {
             const frame = getActiveFrame();
             if (!frame) return;
             try { frame.contentWindow.location.reload(); } catch {
-                frame.src = frame.src;
+                // An isolated page reloads itself on request (its address carries its capability); one that
+                // does not answer is loaded again from the address this frame was given.
+                if (!frameCommand(frame, 'reload')) frame.src = frame.src;
             }
         }
 
@@ -769,12 +801,28 @@
         }
 
         // Open a URL in a new tab (called from JS interceptor via postMessage)
+        // Messages come from this page's own origin (the portal pages in a frame) or from an isolated page, whose
+        // origin is "null": the latter is accepted only from one of this page's own tab frames.
         window.addEventListener('message', function(e) {
-            if (e.origin !== window.location.origin) return;
-            if (e.data && e.data.type === 'openTab' && e.data.url) {
+            const fromFrame = tabs.find(t => t.iframe.contentWindow === e.source) || null;
+            if (e.origin !== window.location.origin && !(e.origin === 'null' && fromFrame)) return;
+            if (!e.data) return;
+            if (e.data.type === 'openTab' && e.data.url) {
                 var url = e.data.url;
                 if (typeof url !== 'string' || !url.startsWith(proxyBase + '/')) return;
                 addTab(url);
+            } else if (e.data.type === 'portalFrame' && fromFrame) {
+                if (typeof e.data.href === 'string') fromFrame.href = e.data.href.substring(0, 4096);
+                if (typeof e.data.title === 'string') fromFrame.frameTitle = e.data.title.substring(0, 200);
+                const shown = extractTitle(fromFrame.iframe);
+                if (shown !== fromFrame.title) { fromFrame.title = shown; renderTabs(); }
+                if (fromFrame.id === activeTabId) {
+                    updateUrlBar();
+                    if (fromFrame.frameTitle.includes('Cannot reach')) {
+                        setStatus('disconnected', 'Error');
+                        errorEl.style.display = 'flex';
+                    }
+                }
             }
         });
 

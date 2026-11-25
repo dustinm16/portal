@@ -1777,6 +1777,8 @@
                     <div id="share-user-results" class="userpick-results" style="display:none;"></div>
                 </div>
                 <small style="color: var(--text-muted);">They'll use this connection from their own dashboard — browser, shell, xterm. They can't edit or delete it.</small>
+                <small id="share-web-isolation-note" style="color: var(--text-muted); display: block; margin-top: 0.25rem;">A web connection (a web interface or the embedded browser) is shown to the people you share it with in an isolated sandbox, so its pages cannot act as them in the portal. The application loses what a sandbox takes away: its own local storage, cookies it reads from script (the portal keeps the ones the server sets, so a normal login lasts as long as your portal session), service workers and frames inside its pages. They are asked once to Continue before it first opens. A superadmin can mark a connection trusted to lift the sandbox.</small>
+                <small id="share-web-trusted-note" style="color: var(--text-muted); display: none; margin-top: 0.25rem;">A web connection of an administrator that is not in browser mode is not sandboxed: its pages run on the portal's own address as each person you share it with, with that person's sign-in, so the application behind it can act as them in the portal. Share it only with people you would let run that application as themselves.</small>
                 <small id="share-stored-password-warning" style="display: none; color: var(--warning, #d29922); margin-top: 0.25rem;">This connection has a stored password. Anyone you add gets a shell as that account, and file access, without knowing the password and without being asked for it. Remove their access, or choose Prompt each time in the connection settings, to stop that.</small>
             </div>
             <div class="form-group">
@@ -2124,7 +2126,7 @@
     <script src="/static/js/dashboard.js?v=60"></script>
     <script src="/static/js/admin.js?v=40"></script>
     <script src="/static/js/ssh-keys.js?v=25"></script>
-    <script src="/static/js/user-connections.js?v=59"></script>
+    <script src="/static/js/user-connections.js?v=61"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

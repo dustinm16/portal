@@ -58,6 +58,9 @@ async def main():
     for u in (uuid, box):
         async with adm.post(f"{env.base}/api/connections/{u}/shares", json={"usernames": ["bob", "mod"]}) as r:
             assert r.status == 200
+        for _who in ("bob", "mod"):      # the first-open notice of a shared web connection (1.24.1), answered once
+            async with env.sessions[_who].post(f"{env.base}/api/connections/{u}/notice") as r:
+                assert r.status == 200
     await db.create_service("searxng", "/search", plugin="searxng", service_type="managed", host="127.0.0.1", port=8890)
     url = f"{env.base}/api/admin/maintenance"
 

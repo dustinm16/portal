@@ -613,7 +613,7 @@ async def main():
     portal = TestServer(proxy_app, host="127.0.0.1")
     await portal.start_server()
 
-    NOW_CONNECTION.update({"id": 5, "type": "http", "host": "127.0.0.1", "port": upstream.port,
+    NOW_CONNECTION.update({"id": 5, "user_id": 1, "type": "http", "host": "127.0.0.1", "port": upstream.port,
                            "name": "echo"})
     saved = (server.authenticate_request, server.db.get_accessible_connection,
              server.db.record_connection_usage, server.resolve_checked_host,
@@ -919,11 +919,13 @@ async def main():
                 check("browser mode: no address, host or prefix sent to the site",
                       not any(k in hdrs for k in ("x-forwarded-for", "x-real-ip", "x-forwarded-host", "x-forwarded-prefix")), str(hdrs))
                 site = f"/proxy/xyz/http://127.0.0.1:{upstream.port}"
-                check("browser mode: Set-Cookie rewritten for every cookie, Path under that site's own path",
-                      len(r.headers.getall("Set-Cookie", [])) == 3
-                      and all(f"Path={site}/" in x for x in r.headers.getall("Set-Cookie", [])), str(r.headers.getall("Set-Cookie", [])))
+                check("browser mode (isolated page, 1.24.1): no Set-Cookie is passed on, an opaque origin is never sent one back",
+                      r.headers.getall("Set-Cookie", []) == [], str(r.headers.getall("Set-Cookie", [])))
+                site_prefix = f"/proxy/xyz/http://127.0.0.1:{upstream.port}"
+                check("browser mode: the per-site cookie path rule is still the helper's (Path under that site's own path)",
+                      rw("a=1; Path=/", site_prefix) == f"a=1; Path={site_prefix}/", rw("a=1; Path=/", site_prefix))
 
-            # --- cookies in a real cookie jar: one site's cookies never go to another site
+            # --- cookies in a real cookie jar
             def sent_cookie(raw):
                 for k, v in json.loads(raw)["headers"]:
                     if k.lower() == "cookie":
@@ -933,20 +935,12 @@ async def main():
             CONFIG.clear()
             CONFIG["browser_mode"] = True
             site_a = f"{base}/http://127.0.0.1:{upstream.port}"
-            site_b_url = f"{base}/http://127.0.0.1:{site_b.port}"
             async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as jar_c:
                 async with jar_c.get(f"{site_a}/echo") as r:
                     await r.read()
                 async with jar_c.get(f"{site_a}/echo") as r:
                     again_a = sent_cookie(await r.text())
-                async with jar_c.get(f"{site_b_url}/echo") as r:
-                    to_b = sent_cookie(await r.text())
-                check("cookies (browser mode): site A's cookies come back to site A", "c=3" in again_a, again_a)
-                check("cookies (browser mode): site A's cookies are not sent to site B (two sites)", "c=3" not in to_b and "a=1" not in to_b, to_b)
-                # site B's own cookie then stays with site B
-                async with jar_c.get(f"{site_b_url}/echo") as r:
-                    again_b = sent_cookie(await r.text())
-                check("cookies (browser mode): site B's cookies come back to site B", "c=3" in again_b, again_b)
+                check("cookies (browser mode): a request without a capability (this harness has none) keeps nothing, so nothing comes back; the cookies of a page with one are checked in test_proxy_origin", again_a == "", again_a)
             CONFIG.clear()         # single-site mode: the cookie stays under /proxy/xyz/, not under another connection
             async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as jar_c:
                 async with jar_c.get(f"{base}/echo") as r:

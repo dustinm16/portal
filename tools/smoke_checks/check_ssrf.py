@@ -344,7 +344,8 @@ async def run(ctx):
             ctx.ok("hosts: /proxy refused for internal target_url", r.status == 403, str(r.status))
         for target in ("https://127.0.0.1:8464/health", "http://2130706433:8464/health",
                        "https://localhost.:8464/health"):
-            async with s.get(f"{ctx.base_url}/proxy/{ids['http_browser']}/{target}", allow_redirects=False) as r:
+            # (browser mode is isolated since 1.24.1: the entry redirects to the capability address, which is refused)
+            async with s.get(f"{ctx.base_url}/proxy/{ids['http_browser']}/{target}") as r:
                 ctx.ok(f"hosts: /proxy browser-mode refused for {target}", r.status == 403, str(r.status))
 
         # A placeholder host with a public target_url is not checked (and not
@@ -459,7 +460,7 @@ async def run(ctx):
                    "required")
         async with s.get(f"{ctx.base_url}/") as r:
             ctx.ok("hosts: index loads the current dashboard script version",
-                   "user-connections.js?v=59" in await r.text(), str(r.status))
+                   "user-connections.js?v=61" in await r.text(), str(r.status))
 
         # Non-string name or host is a 400 (never a 500), on create and update.
         for field in ("name", "host"):

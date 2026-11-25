@@ -150,7 +150,9 @@ async def run(ctx):
                    (r.status, await r.text()) == outsider_before and outsider_before[0] == 404)
         async with adm.put(f"{base}/api/connections/{uuid}", json={"maintenance": False}) as r:
             ctx.ok("maintenance: the administrator ends it", r.status == 200)
-        async with mem.get(f"{base}/proxy/{uuid}/", allow_redirects=False) as r:
+        async with mem.post(f"{base}/api/connections/{uuid}/notice") as r:          # the first-open notice of a share (1.24.1)
+            await r.read()
+        async with mem.get(f"{base}/proxy/{uuid}/") as r:
             ctx.ok("maintenance: the member is no longer shown the maintenance page (the host policy refuses instead)",
                    r.status == 403 and "Down for maintenance" not in await r.text(), str(r.status))
 

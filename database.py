@@ -1482,6 +1482,22 @@ MIGRATIONS = [
         last_used_at INTEGER,
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
     )""",
+    # Proxied pages and the portal origin (1.24.1). A superadmin's "trusted" mark on a member's web
+    # connection stores a fingerprint of its target (proxy_origin.target_fingerprint); a changed target
+    # stops matching. Adding a column is a catalogue change only. 1.24.0 ignores the column and the table.
+    "ALTER TABLE user_connections ADD COLUMN proxy_trusted_fp TEXT DEFAULT NULL",
+    "ALTER TABLE user_connections ADD COLUMN proxy_trusted_by INTEGER DEFAULT NULL",
+    # A recipient's "Continue" on the first-open notice of a shared web connection, per viewer and
+    # connection, bound to the target fingerprint (a changed target asks again).
+    """CREATE TABLE IF NOT EXISTS proxy_share_notice (
+        connection_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        target_fp TEXT NOT NULL,
+        accepted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (connection_id, user_id),
+        FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4619,6 +4635,7 @@ class Database:
             return owned
         cursor = await self.conn.execute(
             f"""SELECT uc.*, 1 as shared, owner.username as owner_username,
+                      owner.role as owner_role, owner.is_admin as owner_is_admin,
                       cs.expires_at as share_expires_raw
                FROM connection_shares cs
                JOIN user_connections uc ON uc.id = cs.connection_id
@@ -4630,6 +4647,68 @@ class Database:
         if not row:
             return None
         return self._decode_shared_rows([row])[0]
+
+    # --- proxied pages and the portal origin (1.24.1) ---------------------------------------------------
+
+    async def get_share_notice_fp(self, connection_id: int, user_id: int) -> Optional[str]:
+        """The target fingerprint a recipient accepted the first-open notice for, or None."""
+        cursor = await self.conn.execute(
+            "SELECT target_fp FROM proxy_share_notice WHERE connection_id = ? AND user_id = ?",
+            (connection_id, user_id))
+        row = await cursor.fetchone()
+        return row["target_fp"] if row else None
+
+    async def accept_share_notice(self, connection_id: int, user_id: int, target_fp: str) -> None:
+        await self.conn.execute(
+            """INSERT INTO proxy_share_notice (connection_id, user_id, target_fp) VALUES (?, ?, ?)
+               ON CONFLICT(connection_id, user_id) DO UPDATE SET target_fp = excluded.target_fp,
+                                                                  accepted_at = CURRENT_TIMESTAMP""",
+            (connection_id, user_id, target_fp))
+        await self.conn.commit()
+
+    async def get_connection_for_admin(self, uuid: str) -> Optional[dict]:
+        """A connection by UUID whoever owns it, with its owner's name and role and a decoded config
+        (superadmin trust marks only; no route returns this row)."""
+        cursor = await self.conn.execute(
+            """SELECT uc.*, owner.username AS owner_username, owner.role AS owner_role,
+                      owner.is_admin AS owner_is_admin
+               FROM user_connections uc JOIN users owner ON owner.id = uc.user_id WHERE uc.uuid = ?""", (uuid,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        conn = dict(row)
+        import json
+        try:
+            conn["config"] = json.loads(decrypt_config(conn.get("config") or "{}"))
+        except Exception:
+            conn["config"] = {}
+        return conn
+
+    async def set_connection_proxy_trust(self, connection_id: int, fingerprint: Optional[str], by_user_id: Optional[int]) -> None:
+        await self.conn.execute(
+            "UPDATE user_connections SET proxy_trusted_fp = ?, proxy_trusted_by = ? WHERE id = ?",
+            (fingerprint, by_user_id if fingerprint else None, connection_id))
+        await self.conn.commit()
+
+    async def list_proxy_trust_candidates(self) -> list[dict]:
+        """Every member-owned (non-administrator) connection with its trust mark: name, owner, type and
+        the mark; never the host, port or config. The raw rows still carry the config for the caller to
+        read browser_mode from; it removes it."""
+        cursor = await self.conn.execute(
+            """SELECT uc.id, uc.uuid, uc.name, uc.type, uc.config, uc.proxy_trusted_fp, uc.host, uc.port,
+                      owner.username AS owner_username, owner.role AS owner_role, owner.is_admin AS owner_is_admin,
+                      (SELECT COUNT(*) FROM connection_shares cs WHERE cs.connection_id = uc.id) AS shares
+               FROM user_connections uc JOIN users owner ON owner.id = uc.user_id
+               WHERE COALESCE(owner.role, 'user') NOT IN ('admin', 'superadmin') AND COALESCE(owner.is_admin, 0) = 0
+               ORDER BY owner.username, uc.name""")
+        rows = [dict(r) for r in await cursor.fetchall()]
+        import json
+        for r in rows:
+            try:
+                r["config"] = json.loads(decrypt_config(r.get("config") or "{}"))
+            except Exception:
+                r["config"] = {}
+        return rows
 
     async def list_connection_shares(self, connection_id: int) -> list[dict]:
         """Live shares of one connection (an expired one the sweeper has not deleted yet is not listed)."""

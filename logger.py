@@ -62,11 +62,13 @@ SENSITIVE_PATTERNS = [
     # A token stands alone: the lookarounds keep the pattern from matching inside longer base64 text
     # (an encrypted value in a logged SQL parameter).
     (re.compile(r'(?<![A-Za-z0-9_-])ov_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])'), '[OVERLAY_TOKEN_REDACTED]'),
+    # An isolated proxied page carries its credential as a path segment (/proxy/<id>/~pc1.<body>.<mac>/...).
+    (re.compile(r'(/proxy/[^/\s?"\']+/)~pc1\.[A-Za-z0-9_.-]+'), r'\1~[REDACTED]'),
 ]
 
 # Cheap pre-check so ordinary log lines skip the full pattern list.
 _QUICK_CHECK = re.compile(
-    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/|/api/streams/schedule/feed/|ov_',
+    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/|/api/streams/schedule/feed/|ov_|/proxy/',
     re.IGNORECASE,
 )
 

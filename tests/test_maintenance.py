@@ -135,6 +135,8 @@ async def main():
     for uuid in (web_uuid, box_uuid):
         async with adm.post(f"{env.base}/api/connections/{uuid}/shares", json={"usernames": ["bob"]}) as r:
             assert r.status == 200, r.status
+        async with bob.post(f"{env.base}/api/connections/{uuid}/notice") as r:     # the first-open notice (1.24.1)
+            assert r.status == 200, r.status
 
     async def text(resp):
         return resp.status, await resp.text()
@@ -448,6 +450,8 @@ EXEMPT = {
     "http_service_health": "a status probe a monitor may need during maintenance",
     "http_accept_service_host_key": "admin pins a key", "http_accept_connection_host_key": "owner pins a key",
     "http_remove_connection_share": "a grantee leaves a share",
+    "http_shared_app_page": "the first-open notice names the connection and the sharer; it serves no upstream content and dials nothing",
+    "http_accept_share_notice": "records the recipient's choice; nothing is dialled",
     "http_vuln_scan_service": "admin scan",
     "http_start_service": "admin control", "http_stop_service": "admin control", "http_restart_service": "admin control",
     "http_start_managed_service": "admin or grantee controls a process, nothing is proxied",

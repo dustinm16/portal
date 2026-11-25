@@ -356,7 +356,7 @@ async def main():
 
             # --- proxied responses: ours replaces the upstream's
             CONNECTION.clear()
-            CONNECTION.update({"id": 5, "type": "http", "host": "127.0.0.1", "port": upstream.port,
+            CONNECTION.update({"id": 5, "user_id": 1, "type": "http", "host": "127.0.0.1", "port": upstream.port,
                                "name": "Echo", "config": {}})
             for path in ("setid", "streamid"):
                 async with c.get(f"{base}/proxy/xyz/{path}", headers={"X-Request-ID": "FORGED-IN"}) as r:
