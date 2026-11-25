@@ -331,7 +331,10 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
             token_id, user_id = "sess-1", ALICE
 
         class Req:
-            method = "GET"      # the sign-out link
+            method = "POST"     # the sign-out button: since 1.24.1 only a POST signs out
+            content_type = "application/x-www-form-urlencoded"
+            headers = {}
+            query = {}
 
             class cookies:
                 @staticmethod
@@ -351,7 +354,7 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
             try:
                 await server.http_logout(Req)
                 raise AssertionError("logout should redirect")
-            except server.web.HTTPFound:
+            except server.web.HTTPSeeOther:     # a form post is answered with 303 to the login page
                 pass
         finally:
             server.authenticate_request, server.db.revoke_token = real_auth, real_revoke
