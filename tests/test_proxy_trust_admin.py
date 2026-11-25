@@ -67,6 +67,10 @@ check("E6 fingerprint: a config port, a Host header and a rewrite rule each end 
       len({_f0, _fp, _fh, _fr}) == 4, (_f0, _fp, _fh, _fr))
 check("E6 fingerprint: the Host header name is case-insensitive and its value is lower-cased",
       po.target_fingerprint(_c, {"extra_headers": {"hOsT": "INTERNAL.example"}}) == _fh)
+_f2 = po.target_fingerprint(_c, {"extra_headers": {"Host": "a.internal", "HOST": "evil.internal"}})
+check("E6 fingerprint: a second Host key in another letter case counts, the last one is what is sent",
+      _f2 != po.target_fingerprint(_c, {"extra_headers": {"Host": "a.internal"}})
+      and _f2 == po.target_fingerprint(_c, {"extra_headers": {"host": "evil.internal"}}))
 check("E6 fingerprint: another Host value or another rule gives another value",
       po.target_fingerprint(_c, {"extra_headers": {"Host": "other.example"}}) != _fh
       and po.target_fingerprint(_c, {"path_rewrite_rules": [{"match": "^/a", "replace": "/c"}]}) != _fr)

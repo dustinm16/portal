@@ -71,8 +71,7 @@ def target_fingerprint(connection: dict, config: dict) -> str:
     if isinstance(extra, dict):
         for k, v in extra.items():
             if str(k).strip().lower() == "host":
-                host_header = str(v or "").strip().lower()
-                break
+                host_header = str(v or "").strip().lower()   # the last one wins, as in the request headers
     rules = cfg.get("path_rewrite_rules") or []
     if cfg_port or host_header or rules:
         try:
