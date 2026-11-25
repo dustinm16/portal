@@ -1194,8 +1194,8 @@ check("README does not claim zero third-party dependencies, even-if-compelled pr
       and "end-to-end encrypted voice" not in text.lower() and "zero-knowledge voice" not in text.lower())
 check("README says plainly that chat is not end-to-end encrypted and that an administrator is effectively root",
       "nothing is **end-to-end encrypted**" in text and "effectively root" in _first)
-check("README lists what is fetched from other hosts: jsDelivr, the STUN default, GitHub, the Cloudflare list, link previews, push services",
-      all(n in text for n in ("cdn.jsdelivr.net", "STUN_SERVER", "GitHub releases API", "Cloudflare address list", "link-preview", "push service")))
+check("README lists what is fetched from other hosts: the STUN default, GitHub, the Cloudflare list, link previews, push services (the libraries are vendored since 1.24.1)",
+      all(n in text for n in ("static/vendor", "STUN_SERVER", "GitHub releases API", "Cloudflare address list", "link-preview", "push service")))
 _get = text.split("## What You Get", 1)[1].split("\n## ", 1)[0]
 check("What You Get puts streaming and chat before the remote access, file and service tools",
       _get.index("### Live Streaming") < _get.index("### Chat\n") < _get.index("### Voice Chat")
@@ -1206,9 +1206,9 @@ check("the journalists and activists audience promises no protection",
 # the evidence behind the privacy statements
 import config as _config23a  # noqa: E402
 _srv_src = (ROOT / "server.py").read_text(encoding="utf-8")
-check("code backs the README: the STUN default is Google's, the CSP allows jsDelivr, hls.js loads from jsDelivr on the public live page",
-      "stun.l.google.com" in _config23a.Config.STUN_SERVER and "https://cdn.jsdelivr.net" in _srv_src
-      and "cdn.jsdelivr.net/npm/hls.js" in (ROOT / "static" / "live.html").read_text(encoding="utf-8"))
+check("code backs the README: the STUN default is Google's, the CSP no longer allows jsDelivr (1.24.1), hls.js loads from the vendored copy on the public live page",
+      "stun.l.google.com" in _config23a.Config.STUN_SERVER and "cdn.jsdelivr.net" not in _srv_src
+      and "/static/vendor/hls.js/hls.min.js" in (ROOT / "static" / "live.html").read_text(encoding="utf-8"))
 _db_src231 = (ROOT / "database.py").read_text(encoding="utf-8")
 check("code backs the README: the search index is filled with the plaintext words of a message, and the README says so",
       'f"INSERT INTO {fts_table}(message) VALUES (?)", (plaintext or "",)' in _db_src231
@@ -1473,6 +1473,45 @@ check("1.24.0 pictures: the Live streams caption and the Not tested text say the
       "The question wraps inside the table, on a row of its own" in text and "runs past the edge of the table" not in text
       and "scrolling sideways; this was seen and left as it is" not in _sec24 and "the tool fails the picture when the table is wider than its window" in _sec24
       and "the question did not wrap" in _ms24)
+
+
+# --- 1.24.1: libraries served from the portal's own server (vendor lane) ----------------------------------------
+m241v = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0)", text, re.S)
+_sec241v = m241v.group(1) if m241v else ""
+_low241v = _sec241v.lower()
+check("1.24.1 vendor notes sit directly before the 1.24.0 notes", bool(m241v))
+check("1.24.1 vendor notes carry no emoji", not re.search(_EMOJI, _sec241v))
+check("1.24.1 vendor notes have the administrators list, a behaviour changes group, Breaking changes and a Not tested paragraph",
+      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes:", "**Breaking changes**", "**Not tested**")))
+_vend_lib = {"hls.js": "1.5.17", "xterm": "5.3.0", "xterm-addon-fit": "0.8.0", "chart.js": "4.4.7", "highlight.js": "11.12.0",
+             "marked": "18.3.0", "dompurify": "3.5.0", "novnc": "1.4.0"}
+check("1.24.1 vendor: the notes name every library with the version in its vendored README and the Third-Party table lists it",
+      all(v in _sec241v and f"static/vendor/{d}/" in text and f"{v} (vendored)" in (ROOT / "static" / "vendor" / d / "README.md").read_text(encoding="utf-8")
+          for d, v in _vend_lib.items())
+      and all(re.search(rf"\| \[[^\]]+\]\([^)]+\) {re.escape(v)} \|[^\n]*static/vendor/{re.escape(d)}/", text) for d, v in _vend_lib.items()))
+for name, needles in {
+    "the CDN is gone from the pages and the policy, and says what a custom page will notice": (
+        "no longer come from a cdn", "removed from `script-src`, `style-src` and `font-src`", "custom page", "no host is added"),
+    "what still contacts other hosts": ("youtube", "stun_server", "push services", "github releases api", "cloudflare address list"),
+    "where the files came from": ("registry.npmjs.org", "sha512", "sha256 of every file", "unchanged"),
+    "the three floating versions and the two libraries that most likely did not load before": (
+        "marked.min.js", "qrcode@1.5.3", "build/", "inferred from the package", "not compared with what the cdn served"),
+    "Chart.js lost its integrity attribute": ("integrity attribute", "sha384"),
+    "what was run in a browser and what was not": ("headless chromium", "offline flags", "not proven", "54 vendored files", "not part of the repository"),
+    "rollback and no database change": ("no setting, `.env` entry, command or database change", "1.24.0 starts on the same database"),
+}.items():
+    check(f"1.24.1 vendor states: {name}", all(n in _low241v for n in needles), str([n for n in needles if n not in _low241v]))
+check("1.24.1 vendor: the README no longer says the pages load libraries from the CDN, and the Privacy and Security bullets name what is true",
+      "from the jsDelivr CDN rather than" not in text and "from `cdn.jsdelivr.net` instead of from your server" not in text
+      and "A browser that blocks `cdn.jsdelivr.net`" not in text and "names no CDN" in text and "static/vendor/" in text.split("\n## Security\n", 1)[1].split("\n## Backups", 1)[0])
+check("1.24.1 vendor: the download sizes the notes state are the sizes of the files",
+      "hls.js 414 KB" in _sec241v and (ROOT / "static/vendor/hls.js/hls.min.js").stat().st_size // 1000 == 413
+      and "Chart.js 206 KB" in _sec241v and (ROOT / "static/vendor/chart.js/chart.umd.js").stat().st_size // 1000 == 205
+      and "noVNC 547 KB over 45 requests" in _sec241v
+      and sum(f.stat().st_size for f in (ROOT / "static/vendor/novnc").rglob("*.js")) // 1000 == 547
+      and sum(1 for f in (ROOT / "static/vendor/novnc/core").rglob("*.js")) + sum(1 for f in (ROOT / "static/vendor/novnc/vendor").rglob("*.js")) == 45)
+check("1.24.1 vendor: the notes' claim that the dashboard's QR script is gone and no QR library was added holds",
+      "qrcode" not in (ROOT / "static" / "index.html").read_text(encoding="utf-8").lower() and not (ROOT / "static" / "vendor" / "qrcode").exists())
 
 
 if failures:

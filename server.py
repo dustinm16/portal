@@ -31855,10 +31855,10 @@ async def security_headers_middleware(request: web.Request, handler):
 
         csp = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:; "
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline' blob:; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: https:; "
-            "font-src 'self' https://cdn.jsdelivr.net; "
+            "font-src 'self'; "
             "connect-src 'self' wss:; "
             "media-src 'self' blob:; "
             "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "

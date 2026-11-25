@@ -1,8 +1,8 @@
 # xterm.js 5.3.0 (vendored)
 
-Used by the Recordings player of the admin page (`static/js/recordings-admin.js`) so that
-page loads no terminal code from another host. `terminal.html` still loads its own copy
-from a CDN; that is a separate matter.
+Used by the Recordings player of the admin page (`static/js/recordings-admin.js`) and, since
+1.24.1, by `terminal.html` (which loads `xterm.js` and `xterm.css` at `?v=5.3.0`, together with the fit
+addon in `../xterm-addon-fit/`), so neither page loads terminal code from another host.
 
 Source: the npm package `xterm@5.3.0`, tarball `https://registry.npmjs.org/xterm/-/xterm-5.3.0.tgz`
 (sha512 `8QqjlekLUFTrU6x7xck1MsPzPA571K5zNqWm0M0oroYEWVOptZ0+ubQSkQ3uxIEhcIHRujJy6emDWX4A7qyFzg==`,

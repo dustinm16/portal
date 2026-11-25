@@ -901,13 +901,13 @@ async def main():
 
         # ------------------------------------------------------------ CSP
         s, _b, h = await w.call("GET", None, "/html")
-        old_csp = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:; "
-                   "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; "
-                   "font-src 'self' https://cdn.jsdelivr.net; connect-src 'self' wss:; media-src 'self' blob:; "
+        old_csp = ("default-src 'self'; script-src 'self' 'unsafe-inline' blob:; "
+                   "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+                   "font-src 'self'; connect-src 'self' wss:; media-src 'self' blob:; "
                    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
                    "worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self';")
         csp = h["Content-Security-Policy"]
-        check("portal pages: the policy is byte for byte what it was before this change", csp == old_csp)
+        check("portal pages: the policy is byte for byte the one of 1.24.0 minus the jsDelivr host (1.24.1 vendors the libraries; nothing else changed)", csp == old_csp)
         check("portal pages already allow a same-origin worker and manifest (worker-src 'self', manifest falls back to default-src 'self')",
               "worker-src 'self' blob:" in csp and "manifest-src" not in csp and "default-src 'self'" in csp)
         s, _b, h = await w.call("GET", None, "/sw.js")

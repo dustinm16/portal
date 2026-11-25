@@ -38,9 +38,9 @@ else:
         check(r["name"], r["ok"], r["detail"])
 
 html = (ROOT / "static" / "vod-player.html").read_text()
-check("the page loads the same hls.js file and host as the live page",
-      "https://cdn.jsdelivr.net/npm/hls.js@1.5.17" in html and "https://cdn.jsdelivr.net/npm/hls.js@1.5.17" in (ROOT / "static" / "live.html").read_text())
-check("hls.js is loaded before the player script", html.index("hls.js@1.5.17") < html.index("/static/js/vod-player.js?v="))
+check("the page loads the same vendored hls.js file as the live page",
+      "/static/vendor/hls.js/hls.min.js?v=1.5.17" in html and "/static/vendor/hls.js/hls.min.js?v=1.5.17" in (ROOT / "static" / "live.html").read_text())
+check("hls.js is loaded before the player script", html.index("/static/vendor/hls.js/hls.min.js") < html.index("/static/js/vod-player.js?v="))
 check("the player page has no inline handler", "onclick" not in html.split("<nav")[0] + html.split("</nav>")[1])
 
 if failed:

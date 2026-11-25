@@ -36,13 +36,11 @@ assert re.search(r"\.keybar\s*\{[^}]*display:\s*none", HTML), "bar must be hidde
 assert "body.keybar-on .keybar" in HTML
 assert 'class="keybar"' in HTML and 'id="keybar-toggle"' in HTML
 
-# only xterm from the CDN, plus our own scripts
+# xterm and its fit addon come from the vendored copies (no script from another host), plus our own scripts
 srcs = re.findall(r'<script src="([^"]+)"', HTML)
-external = [s for s in srcs if s.startswith("http")]
-assert external == [
-    "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js",
-    "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js",
-], external
+external = [s for s in srcs if s.startswith("http") or s.startswith("//")]
+assert external == [], external
+assert "/static/vendor/xterm/xterm.js?v=5.3.0" in srcs and "/static/vendor/xterm-addon-fit/xterm-addon-fit.js?v=0.8.0" in srcs, srcs
 
 # key bar buttons: the keys the plan lists, no inline handlers on them
 bar = re.search(r'<div class="keybar".*?</div>', HTML, re.S).group(0)

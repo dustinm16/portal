@@ -271,9 +271,9 @@ async def run(ctx):
                     ctx.ok("vodsession: a traversal path is 404 over HTTP", g.status == 404, str(g.status))
                 async with s.get(ctx.base_url + "/vods/play?name=S%2F2026-02-01%2Fchunk_000.mkv&mode=session", allow_redirects=False) as g:
                     page = await g.text()
-                    ctx.ok("vodsession: the player page loads vod-player.js v3 and the hls.js file of the live page from the same host",
+                    ctx.ok("vodsession: the player page loads vod-player.js v3 and the vendored hls.js file of the live page",
                            g.status == 200 and "/static/js/vod-player.js?v=3" in page
-                           and "https://cdn.jsdelivr.net/npm/hls.js@1.5.17" in page and 'id="vp-mode"' in page, str(g.status))
+                           and "/static/vendor/hls.js/hls.min.js?v=1.5.17" in page and 'id="vp-mode"' in page, str(g.status))
                     ctx.ok("vodsession: the player page has no inline handler", not re.search(r"onclick=", page.split("</nav>")[-1]))
                 async with s.get(ctx.base_url + "/static/js/vod-player.js?v=3") as g:
                     js = await g.text()

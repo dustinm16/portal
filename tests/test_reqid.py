@@ -410,7 +410,7 @@ async def main():
                   'data-retry="15"' in page and '<script src="/static/js/upstream-error.js?v=2"></script>' in page
                   and page.count("<script") == 1 and "onclick" not in page and "javascript:" not in page)
             check("down upstream: Retry-After and no-store, and the portal CSP is the one the middleware adds, unchanged",
-                  retry == "15" and cache == "no-store" and "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:" in csp
+                  retry == "15" and cache == "no-store" and "script-src 'self' 'unsafe-inline' blob:" in csp and "jsdelivr" not in csp
                   and "default-src 'self'" in csp, f"{retry} {cache} {csp}")
             text = log_text()
             err = [x for x in text.splitlines() if f"[req={header_id}]" in x and "Upstream error 502" in x]
