@@ -486,7 +486,7 @@ MOVED_ON_1_22 = {"portal.js": 51, "admin.js": 40, "user-connections.js": 59, "po
 MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
-MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4}
+MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -787,7 +787,7 @@ check("1.21.0: the administrators' summary says plainly who plays, the limits, t
 _static21 = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec21, re.M)), "")
 _pl = (ROOT / "static" / "vod-player.html").read_text()
 check("1.21.0: the Static files bullet states the versions vod-player.html really loads (portal.css moved on to 56 in 1.22.0)",
-      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v or str(MOVED_ON_1_23.get(f)) == v
+      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v or str(MOVED_ON_1_23.get(f)) == v or str(MOVED_ON_1_24.get(f)) == v
           for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl))
       and "`portal.css` v55" in _static21 and "portal.css?v=56" in _pl, _static21[:200])
 
@@ -1588,7 +1588,7 @@ for name, needles in {
     "every caller considered": ("the portal's own pages", "embedded browser", "/api/push/", "obs", "api clients"),
     "cookies and Clear-Site-Data": ("clear-site-data", "any letter case", "dot segment"),
     "marks and audit": ("connection.proxy_trust", "no screen for it", "1.24.0 ignores them"),
-    "known gaps": ("get /logout", "strict-transport-security"),
+    "known gaps": ("websocket sockets", "sandboxed popup"),
     "Not tested names the browsers": ("firefox, safari", "roughly 25 applications"),
 }.items():
     check(f"1.24.1 states: {name}", all(n in _low241 for n in needles), str([n for n in needles if n not in _low241]))
@@ -1662,7 +1662,7 @@ check("1.24.1: the notes say the automod answer for an overrun names no rule and
 check("1.24.1: the notes say plain-mode proxied pages carry no origin for a grantee and browser mode is unchanged, and the code does",
       "`var TO`, `var FO`" in _sec241 and "/proxy/{id}/~/path" in _sec241 and "What this does not hide" in _sec241
       and "shared_viewer = bool(connection.get(\"shared\"))" in _srv241 and "own_alias" in _srv241
-      and "origin_hidden = bool(connection.get(\"shared\"))" in _srv241
+      and "origin_hidden = shared_viewer and not browser_mode" in _srv241
       and (ROOT / "tests" / "test_proxy_origin_hidden.py").exists())
 check("1.24.1: the notes name the driver logger level and the logger sets it",
       "held at INFO" in _sec241 and 'logging.getLogger("aiosqlite").setLevel(logging.INFO)' in (ROOT / "logger.py").read_text(encoding="utf-8"))

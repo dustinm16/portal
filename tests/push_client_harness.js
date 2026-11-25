@@ -58,7 +58,7 @@ function world(opts) {
     if (url === '/api/push/prefs' && (o.method || 'GET') === 'GET') return respond({ prefs: state.prefs });
     if (url === '/api/push/prefs' && o.method === 'PUT') { Object.assign(state.prefs, JSON.parse(o.body)); return respond({ prefs: state.prefs }); }
     if (url === '/api/push/unsubscribe') return respond({ success: true });
-    if (url === '/logout') return respond({ success: true });
+    if (url === '/logout') return opts.logoutFails ? Promise.reject(new Error('offline')) : respond({ success: true });
     return respond({ error: 'unexpected ' + url }, 404);
   };
   const ctx = { window: win, Notification: win.Notification, navigator: nav, document: doc, fetch, localStorage: { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
@@ -142,14 +142,24 @@ function logoutClick(w) {
   check('logout with a device here: the link is held and POST /logout carries the endpoint in the body',
         prevented() && lo && lo.method === 'POST' && JSON.parse(lo.body).endpoint === 'https://fcm.googleapis.com/fcm/send/abc'
         && lo.url.indexOf('?') < 0, JSON.stringify(lo));
-  check('the browser subscription is dropped and the page goes to /logout (which signs out even if the POST failed)', w.state.sub.unsubscribed && w.state.navigated === '/logout');
+  check('the browser subscription is dropped and the page goes to /login (the POST signed out)', w.state.sub.unsubscribed && w.state.navigated === '/login');
   check('the local hint is forgotten', !w.store.has('portal_push_on'));
   w = world({ subscribed: true, registered: true });
   const p2 = logoutClick(w); await tick(20);
-  check('without a device enabled here the link works as before', !p2() && !w.calls.some(c => c.url === '/logout'));
+  await tick(60);
+  const lo2 = w.calls.find(c => c.url === '/logout');
+  check('without a device enabled here the link is still a POST (a GET no longer signs out), with no body, then the login page',
+        p2() && lo2 && lo2.method === 'POST' && !lo2.body && w.state.navigated === '/login', JSON.stringify(lo2));
   w = world({ framed: true, subscribed: true, storage: [['portal_push_on', '1']] });
-  const p3 = logoutClick(w); await tick(20);
-  check('inside a frame the logout hook does nothing', !p3());
+  const p3 = logoutClick(w); await tick(60);
+  const lo3 = w.calls.find(c => c.url === '/logout');
+  check('inside a frame the link is a POST too, but it names no push device', p3() && lo3 && lo3.method === 'POST' && !lo3.body && w.state.navigated === '/login', JSON.stringify(lo3));
+  w = world({ logoutFails: true });
+  const p4 = logoutClick(w); await tick(60);
+  check('a POST that fails goes to the sign-out page (GET /logout), never reports a sign-out', p4() && w.state.navigated === '/logout', String(w.state.navigated));
+  w = world({});
+  const p5 = logoutClick(w); const p5b = logoutClick(w); await tick(60);
+  check('a second click while signing out does not post twice', p5() && p5b() && w.calls.filter(c => c.url === '/logout').length === 1);
 
   // every page load where push is on here: the device is re-announced, so it belongs to the live session
   const onLoad = { subscribed: true, registered: true, permission: 'granted', storage: [['portal_push_on', '1']] };
@@ -178,7 +188,7 @@ function logoutClick(w) {
   w = world({ path: '/search/', subscribed: true, registered: true, storage: [['portal_push_on', '1']] });
   const ps = logoutClick(w); await tick(80);
   const los = w.calls.find(c => c.url === '/logout');
-  check('on /search/ a logout click names this browser\'s device too', ps() && los && JSON.parse(los.body).endpoint === 'https://fcm.googleapis.com/fcm/send/abc' && w.state.navigated === '/logout');
+  check('on /search/ a logout click names this browser\'s device too', ps() && los && JSON.parse(los.body).endpoint === 'https://fcm.googleapis.com/fcm/send/abc' && w.state.navigated === '/login');
 
   // the worker asks the page to go to the tapped target
   function swMessage(wd, data) {

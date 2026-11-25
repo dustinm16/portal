@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Sign out - Open Relay Portal</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=56">
+    <script src="/static/js/theme.js?v=3"></script>
+    <style>
+        html, body { margin: 0; background: var(--bg-primary, #0d1117); color: var(--text-primary, #c9d1d9); }
+        .signout { max-width: 480px; margin: 12vh auto; padding: 1.5rem 1.75rem; background: var(--card-bg, #161b22);
+                   border: 1px solid var(--card-border, #30363d); border-radius: 10px; line-height: 1.5; }
+        .signout h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+        .signout .row { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
+    </style>
+</head>
+<body>
+    <main class="signout">
+        <h1>Sign out of the portal?</h1>
+        <p>This ends the session of this browser. Nothing else is changed.</p>
+        <form method="post" action="/logout" class="row">
+            <button type="submit" class="btn btn-primary">Sign out</button>
+            <a class="btn btn-secondary" href="/dashboard">Stay signed in</a>
+        </form>
+    </main>
+</body>
+</html>

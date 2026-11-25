@@ -177,6 +177,7 @@ class World:
         r.add_post("/api/admin/push/reset-key", server.http_admin_push_reset_key)
         r.add_post("/api/me/password", server.http_change_password)
         r.add_get("/logout", server.http_logout)
+        r.add_post("/logout", server.http_logout)
         r.add_post("/api/me/sessions/others", server.http_revoke_my_other_sessions)
         r.add_delete("/api/admin/users/{id}", server.http_delete_user)
         r.add_post("/api/users/{id}/sessions/revoke", server.http_admin_revoke_user_sessions)
@@ -561,10 +562,10 @@ async def main():
         await w.db.create_token(w.ids["alice"], "t-c", FULL, name="web_session")
         await w.subscribe("alice", da, headers={"X-Test-Tid": "t-c"})
         await w.subscribe("alice", dbb, headers={"X-Test-Tid": "t-c"})
-        async with w.http.get(str(w.srv.make_url("/logout")), allow_redirects=False,
+        async with w.http.post(str(w.srv.make_url("/logout")), allow_redirects=False,
                               headers={"X-Test-User": str(w.ids["alice"]), "X-Test-Tid": "t-c",
                                        "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"}) as lr:
-            check("logout redirects to the login page", lr.status == 302)
+            check("logout (POST) answers 200", lr.status == 200)
         check("logout removes the devices of that session", await w.rows("alice") == [])
         await w.db.create_token(w.ids["alice"], "t-d", FULL, name="web_session")
         await w.subscribe("alice", da, headers={"X-Test-Tid": "t-d"})
@@ -813,9 +814,9 @@ async def main():
         check("the page's re-announcement ties the device to the session that is open now: updated, no second row",
               s == 200 and b["status"] == "updated" and [r["token_id"] for r in await rows.fetchall()] == ["t-B"]
               and len(await w.rows("erin")) == 1, f"{s} {b}")
-        s, _b, _h = await w.call("GET", "erin", "/logout", headers={"X-Test-Tid": "t-B", "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"})
-        check("signing out of that session (a plain GET /logout, as from a page with no push script) ends the device",
-              s == 302 and await w.rows("erin") == [] and await w.db.push_subscriptions_for_send(w.ids["erin"]) == [], str(s))
+        s, _b, _h = await w.call("POST", "erin", "/logout", headers={"X-Test-Tid": "t-B", "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"})
+        check("signing out of that session (a plain POST /logout, as from a page with no push script) ends the device",
+              s == 200 and await w.rows("erin") == [] and await w.db.push_subscriptions_for_send(w.ids["erin"]) == [], str(s))
         # the re-announcement never takes a device that is not this member's, and a revoked session does nothing
         await w.subscribe("fay", dev)
         s, _b = await w.subscribe("erin", dev, headers={"X-Test-Tid": "t-A"})
@@ -845,8 +846,8 @@ async def main():
         # every portal page with a logout link loads the sign-out hook, at one version
         for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
             text = (ROOT / "static" / f"{page}.html").read_text()
-            check(f"{page}.html has a logout link and loads push.js", 'href="/logout"' in text and "/static/js/push.js?v=5" in text)
-        check("/search/ gets push.js too (its navbar has a logout link)", 'push.js?v=5' in (ROOT / "server.py").read_text()
+            check(f"{page}.html has a logout link and loads push.js", 'href="/logout"' in text and "/static/js/push.js?v=6" in text)
+        check("/search/ gets push.js too (its navbar has a logout link)", 'push.js?v=6' in (ROOT / "server.py").read_text()
               and 'href="/logout"' in (ROOT / "static" / "js" / "searxng-portal.js").read_text())
 
         # ------------------------------------------------------------ VAPID reset, key state, shutdown

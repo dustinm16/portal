@@ -20119,13 +20119,30 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
 
 async def http_logout(request: web.Request) -> web.Response:
-    """Handle logout. GET (a link) answers with a redirect to the login page. POST {endpoint}
-    (the push script) also removes the push device of this browser, found by its endpoint (in
-    the body, never in the URL), then answers 200; a device of an earlier session of the same
-    member is removed too, which revoking this session's token alone would miss."""
-    post = request.method == "POST"
+    """Sign out. Only a POST signs out (release 1.24.1): a link, an image tag or a navigation from any page,
+    a proxied one included, must not be able to end a session. GET answers with a page that has a Sign out
+    button (a plain form posting here), or a redirect to the login page when there is no session to end.
+    POST {endpoint} (the push script, an API client) answers 200 {"success": true}, also removes the push
+    device of this browser, found by its endpoint (in the body, never in the URL); a device of an earlier
+    session of the same member is removed too, which revoking this session's token alone would miss.
+    A form post (the button of the page above, no script) is answered with a redirect to the login page."""
+    cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
+    if request.method != "POST":
+        token = None
+        if cookie:
+            try:
+                token = await authenticate_request(request)
+            except Exception:
+                token = None
+        if token:
+            return web.Response(text=load_static_file("logout.html"), content_type="text/html",
+                                headers={"Cache-Control": "no-store"})
+        response = web.HTTPFound("/login")
+        response.del_cookie(Config.SESSION_COOKIE_NAME)
+        raise response
+    is_form = request.content_type in ("application/x-www-form-urlencoded", "multipart/form-data")
     endpoint = None
-    if post:
+    if not is_form:
         try:
             data = await request.json()
             endpoint = data.get("endpoint") if isinstance(data, dict) else None
@@ -20134,7 +20151,6 @@ async def http_logout(request: web.Request) -> web.Response:
         if not isinstance(endpoint, str) or not endpoint or len(endpoint) > webpush.MAX_ENDPOINT_LEN:
             endpoint = None
     # Try to revoke the session token before clearing cookie
-    cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
     if cookie:
         try:
             token = await authenticate_request(request)
@@ -20154,13 +20170,13 @@ async def http_logout(request: web.Request) -> web.Response:
         except Exception:
             pass  # Best effort - still clear cookie
 
-    if post:
-        response = web.json_response({"success": True})
+    if is_form:
+        response = web.HTTPSeeOther("/login")
         response.del_cookie(Config.SESSION_COOKIE_NAME)
-        return response
-    response = web.HTTPFound("/login")
+        raise response
+    response = web.json_response({"success": True})
     response.del_cookie(Config.SESSION_COOKIE_NAME)
-    raise response
+    return response
 
 
 async def http_dashboard(request: web.Request) -> web.Response:
@@ -22662,7 +22678,7 @@ _SEARXNG_HEAD_INJECT = (
     b'<link rel="stylesheet" href="/static/css/portal.css?v=56">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
-    b'<script src="/static/js/push.js?v=5" defer></script>'
+    b'<script src="/static/js/push.js?v=6" defer></script>'
 )
 
 

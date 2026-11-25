@@ -765,7 +765,7 @@
                         <span class="endpoint-desc">Sign out and remove this browser's push device</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Like <code>GET /logout</code> but answers <code>200 {"success": true}</code> instead of a redirect. With <code>{"endpoint": "..."}</code> in the JSON body (never in the URL) it also removes your push device with that endpoint, even one an earlier session registered; another member's endpoint removes nothing.</p>
+                        <p>Ends the current session (since 1.24.1 only a POST does: <code>GET /logout</code> shows a page with a Sign out button and changes nothing, or redirects to <code>/login</code> when there is no session). Answers <code>200 {"success": true}</code> and clears the session cookie; a browser form post is answered with <code>303</code> to <code>/login</code>. A cookie-authenticated POST marked cross-site by the browser, or sent from a proxied or sandboxed page, is refused with <code>403</code>. With <code>{"endpoint": "..."}</code> in the JSON body (never in the URL) it also removes your push device with that endpoint, even one an earlier session registered; another member's endpoint removes nothing.</p>
                     </div>
                 </div>
 
@@ -7335,7 +7335,7 @@ X-RateLimit-Reset: 1704067200</pre>
     </div>
 
     <script src="/static/js/portal.js?v=52"></script>
-    <script src="/static/js/push.js?v=5"></script>
+    <script src="/static/js/push.js?v=6"></script>
     <script>
         // Headers added since 1.20.0 carry data-toggle-endpoint instead of an inline onclick.
         document.addEventListener('click', function (e) {

@@ -829,8 +829,8 @@ async def main_async(tmp):
             toks = (await r.json())["tokens"]
         async with client() as extra:
             await login(extra, "victim")
-            async with extra.get(base + "/logout", allow_redirects=False) as r:
-                check("logout redirects", r.status in (302, 303))
+            async with extra.post(base + "/logout", allow_redirects=False) as r:
+                check("logout (POST) answers", r.status == 200)
         await secevents.log.flush()
         check("logout recorded", len(await rows("event = 'logout' AND user_id = ?", (ids["victim"],))) == 1)
         async with sa.get(base + "/api/tokens") as r:

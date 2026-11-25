@@ -231,8 +231,8 @@ async def run(ctx):
                 ctx.skip("push: test push, VAPID header and 410 prune", "no administrator password")
 
             # ---- signing out removes the device of that session
-            async with member.get(base + "/logout", allow_redirects=False) as r:
-                ok("logout redirects", r.status == 302, r.status)
+            async with member.post(base + "/logout", allow_redirects=False) as r:
+                ok("logout (POST) answers 200", r.status == 200, r.status)
             resp = await ctx.login(member, name, PW)
             st, b, _h = await call(member, "GET", "/api/push/subscriptions")
             ok("after signing out the device of that session is gone", st == 200 and b.get("devices") == [], f"{st} {b}")

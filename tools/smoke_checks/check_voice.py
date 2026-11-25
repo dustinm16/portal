@@ -403,7 +403,7 @@ async def run(ctx):
             ok("voice: alice joins voice on the session that will log out", bool(vs and vs.get("resume_token")))
             m = cb.mark()
             t0 = time.monotonic()
-            async with lo.get(f"{ctx.base_url}/logout", allow_redirects=False) as resp:
+            async with lo.post(f"{ctx.base_url}/logout", allow_redirects=False) as resp:
                 st = resp.status
             left = await cb.wait(lambda e: e.get("type") == "voice_user_left" and e.get("user_id") == alice,
                                  start=m, timeout=5)

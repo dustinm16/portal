@@ -43,14 +43,14 @@ check("the go-live switch's label also names the stream reminders it covers",
 for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
     text = (STATIC / f"{page}.html").read_text()
     check(f"{page}.html loads push.js (so a sign-out there names this browser's device)",
-          re.search(r'src="/static/js/push\.js\?v=5"', text) is not None)
+          re.search(r'src="/static/js/push\.js\?v=6"', text) is not None)
 for page in sorted(STATIC.glob("*.html")):
     text = page.read_text()
     if 'href="/logout"' in text:
         check(f"{page.name} has a logout link, so it loads push.js (a sign-out there must close this browser's device)",
-              "/static/js/push.js?v=5" in text)
+              "/static/js/push.js?v=6" in text)
 check("the /search/ pages load push.js too (their navbar has a logout link)",
-      "/static/js/push.js?v=5" in (ROOT / "server.py").read_text().split("_SEARXNG_HEAD_INJECT = (")[1].split(")")[0])
+      "/static/js/push.js?v=6" in (ROOT / "server.py").read_text().split("_SEARXNG_HEAD_INJECT = (")[1].split(")")[0])
 check("the chat page opens a /chat?dm= link once the socket's first frame has arrived (the server checks participation)",
       "pendingDmLink" in CHAT and "openDmConversation(linked)" in CHAT)
 check("the admin card has the switch, the test button, a device count and the allow-list, and shows only on a 200",

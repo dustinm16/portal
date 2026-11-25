@@ -202,27 +202,33 @@
         return api('DELETE', '/api/push/subscriptions').then(function () { return disable(); });
     }
 
-    /* Sign out: when this browser was enabled here, tell the server which device it is (POST /logout with
-       the endpoint in the body, never in the URL), drop the browser's own subscription, then go to /logout
-       (bounded wait). Without a push device here the link works as it always did. */
+    /* Sign out (release 1.24.1): only a POST to /logout signs out, so the Logout link of every navbar is turned
+       into one here. When this browser was enabled for push, its endpoint goes in the body (never in the URL) so
+       the server removes that device, then the browser's own subscription is dropped. Then the login page. A
+       failed or slow POST (2.5 s) lands on GET /logout, which shows a page with a Sign out button. */
+    var signingOut = false;
     document.addEventListener('click', function (ev) {
         var a = ev.target && ev.target.closest ? ev.target.closest('a[href="/logout"]') : null;
-        if (!a || !hinted() || !canAct()) return;
+        if (!a || ev.defaultPrevented || ev.button > 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
         ev.preventDefault();
+        if (signingOut) return;
+        signingOut = true;
         var done = false;
-        /* Always /logout, never /login: when the POST was slow or failed the link still signs the member out;
-           when it worked the session is gone and /logout just redirects to the login page. */
-        function go() { if (!done) { done = true; window.location.href = '/logout'; } }
-        setTimeout(go, 2500);
-        currentSubscription().then(function (sub) {
+        function go(signedOut) { if (!done) { done = true; window.location.href = signedOut ? '/login' : '/logout'; } }
+        setTimeout(function () { go(false); }, 2500);
+        function post(body) {
+            return fetch('/logout', body === null
+                ? { method: 'POST', credentials: 'same-origin' }
+                : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: body });
+        }
+        var work = (hinted() && canAct()) ? currentSubscription().then(function (sub) {
             forget();
-            if (!sub) return fetch('/logout', { method: 'POST', credentials: 'same-origin' });
-            return fetch('/logout', {
-                method: 'POST', credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ endpoint: sub.endpoint })
-            }).then(function () { return sub.unsubscribe(); });
-        }).then(go, go);
+            if (!sub) return post(null);
+            return post(JSON.stringify({ endpoint: sub.endpoint })).then(function (r) {
+                return sub.unsubscribe().then(function () { return r; }, function () { return r; });
+            });
+        }) : post(null);
+        work.then(function (r) { go(!!(r && r.ok)); }, function () { go(false); });
     });
 
     /* Every page load where push is on for this browser: tell the server this device belongs to the session

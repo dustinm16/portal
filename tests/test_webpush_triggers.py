@@ -487,9 +487,9 @@ def test_logout_with_the_endpoint_removes_that_device_and_only_the_callers():
         assert s == 200
         assert await d.list_push_subscriptions(ids["bob"]) == []
         assert len(await d.list_push_subscriptions(ids["alice"])) == 1
-        # the link still redirects, a bad body is harmless
+        # the link now only shows the sign-out page (a GET never signs out), a bad body is harmless
         s, _b = await http(env, "GET", "/logout", ids["bob"], headers=cookie)
-        assert s == 302
+        assert s in (200, 302)
         s, _b = await http(env, "POST", "/logout", ids["bob"], headers=cookie, data=b"not json")
         assert s == 200
     run(body)

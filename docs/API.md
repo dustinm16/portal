@@ -99,12 +99,12 @@ username=admin&password=secret&remember_me=on
 ---
 
 #### GET /logout
-End current session. The chat sockets opened with this session are closed (code 4001), its voice call ends and its in-flight proxied downloads are cut; the account's other sessions are not affected.
+Does not sign out (release 1.24.1): a link, an image tag or a navigation, from any page, must not end a session. With a live session it answers `200` with a page that has a **Sign out** button (a form that posts to `/logout`); with no session it redirects to `/login`.
 
-**Response:** Redirect to `/login`
+**Response:** `200` HTML page, or redirect to `/login`
 
 #### POST /logout
-The same, for a script. With `{"endpoint": "<push endpoint>"}` in the JSON body (never in the URL) it also removes the caller's own push device with that endpoint, even one an earlier session of the member registered; an endpoint of another member removes nothing. Any other body is ignored. **Response:** `200 {"success": true}` and the session cookie is cleared.
+End the current session. The chat sockets opened with this session are closed (code 4001), its voice call ends and its in-flight proxied downloads are cut; the account's other sessions are not affected. This is the way for a script to sign out, unchanged. With `{"endpoint": "<push endpoint>"}` in the JSON body (never in the URL) it also removes the caller's own push device with that endpoint, even one an earlier session of the member registered; an endpoint of another member removes nothing. Any other body is ignored. **Response:** `200 {"success": true}` and the session cookie is cleared. A browser form post (the page above) is answered with `303` to `/login` instead. A cookie-authenticated POST that the browser marks cross-site, or that comes from a proxied page or a sandboxed page, is refused with `403`.
 
 ---
 
@@ -4889,7 +4889,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | Path | Description |
 |------|-------------|
 | `/login` | Login page |
-| `/logout` | Logout (clears session) |
+| `/logout` | Sign-out page (GET shows a Sign out button; POST signs out) |
 | `/dashboard` | Main dashboard with tabs |
 | `/admin` | Admin panel (metrics, services, users) |
 | `/chat` | Community chat |
