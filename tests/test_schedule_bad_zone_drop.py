@@ -78,6 +78,18 @@ async def main():
         check("the marks of the broken entry are dropped", left == 0, str(left))
         lines = [l for l in log.getvalue().splitlines() if f"entry {bad}: dropped" in l]
         check("the broken entry is logged", len(lines) >= 1, str(lines))
+
+        # a host whose zone data is missing as a whole (UTC cannot be loaded either) loses no mark
+        keep_uid = await db.create_user("keeper", "x")
+        await db.rsvp_add(keep_uid, good, base, base - 7200, 100, False)
+        real = server.stream_schedule.zone_available
+        server.stream_schedule.zone_available = lambda tz: False
+        try:
+            await server.schedule_reminder_pass()
+        finally:
+            server.stream_schedule.zone_available = real
+        kept = (await (await db.conn.execute("SELECT COUNT(*) AS n FROM stream_rsvps WHERE entry_id = ? AND user_id = ?", (good, keep_uid))).fetchone())["n"]
+        check("with no zone data on the host at all, no Interested mark is dropped", kept == 1, str(kept))
     finally:
         server.logger.removeHandler(handler)
         server.db, server._schedule_now, server._schedule_last_prune = saved

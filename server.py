@@ -8720,6 +8720,10 @@ async def schedule_reminder_pass() -> int:
     sent = 0
     if due:
         entries, cancelled, started, users, zone_dropped = {}, {}, {}, {}, {}
+        # A zone name that cannot be loaded while UTC loads is one entry's problem (its marks are dropped below).
+        # When UTC cannot be loaded either, the host's whole zone data is broken or missing: no mark is dropped
+        # for that (it would lose every member's Interested mark in one pass), the marks wait for the data.
+        host_zones_ok = stream_schedule.zone_available("UTC")
         for row in due:
             eid, uid = row["entry_id"], row["user_id"]
             if eid not in entries:
@@ -8730,6 +8734,8 @@ async def schedule_reminder_pass() -> int:
                     started[eid] = (await db.schedule_started_map([eid], now - _SCHEDULE_STARTED_WINDOW))[eid]
             entry = entries[eid]
             if entry and not _schedule_zone_ok(entry, now):
+                if not host_zones_ok:
+                    continue
                 # no occurrence can be computed for it: the mark is dropped (the due list reads at most 500
                 # rows with no zone filter, so marks left standing would starve other members' reminders)
                 await db.rsvp_drop(row["id"])
