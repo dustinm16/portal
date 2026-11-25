@@ -60,6 +60,7 @@ class FakeRequest:
         self.query = {}
         self.cookies = {}
         self.match_info = match or {}
+        self.path = "/api/test"
         self.transport = FakeTransport(peer)
         self._body = body
         self._store = {}

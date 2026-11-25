@@ -98,8 +98,11 @@ def _refused_409(token, owner_id=5):
     async def connect(connection):
         raise hostkeys.HostKeyRefused(hostkeys.STATE_UNPINNED, "SHA256:" + "A" * 43)
 
+    async def get_user(user_id):
+        return {"id": user_id, "role": "user"}       # the member's default key reads the role of its owner
+
     real = (server.db, server.sftp_browser.connect_sftp)
-    server.db = SimpleNamespace(get_accessible_connection=get_accessible)
+    server.db = SimpleNamespace(get_accessible_connection=get_accessible, get_user_by_id=get_user)
     server.sftp_browser.connect_sftp = connect
     try:
         req = make_mocked_request("GET", "/api/sftp/abc/list", match_info={"conn_id": "abc"})
@@ -112,8 +115,14 @@ def _refused_409(token, owner_id=5):
 def test_409_body_has_no_accept_token_for_scoped_callers():
     for label, t in SCOPED.items():
         status, body = _refused_409(t)
-        assert status == 409, label
-        assert body["can_accept"] is False and "accept_token" not in body and "accept_url" not in body, (label, body)
+        # Since 1.24.1 the file routes themselves refuse a credential without the user's whole authority (403, before
+        # the host is dialled). The one exception in this table is the member's default key: it carries exactly the
+        # member's own session authority, so it still reaches the host key refusal, and is told it may not accept.
+        if label == "non-admin api key":
+            assert status == 409 and body["can_accept"] is False, (label, status, body)
+        else:
+            assert status == 403, (label, status, body)
+        assert "accept_token" not in body and "accept_url" not in body, (label, body)
     for label, t in FULL.items():
         status, body = _refused_409(t)
         assert status == 409 and body["can_accept"] is True and body.get("accept_token") and body.get("accept_url"), label

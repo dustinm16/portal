@@ -1361,7 +1361,7 @@ _low241 = _sec241.lower()
 check("1.24.1 authorisation notes sit directly before the 1.24.0 notes", bool(m241))
 check("1.24.1 authorisation notes carry no emoji", not re.search(_EMOJI, _sec241))
 for name, needles in {
-    "the three groups and the closing sections": ("breaking changes", "behaviour changes", "**database**", "**static files**", "**rollback**", "**not tested**"),
+    "the three groups and the closing sections": ("breaking changes", "behaviour changes", "**database**", "**static files**", "**rollback**", "**not tested.**"),
     "end now and stop relays": ("`\"confirm\": true`", "`400`", "`regenerate_key` of end now no longer defaults to true", "stop-relays"),
     "connections need the whole authority": ("whole authority", "`403`", "member's default key", "`/connect`", "`get`) is unchanged", "`/proxy/{conn_id}`", "`auth_header` and `extra_headers`"),
     "regenerate while live": ("\"end_live_session\": true", "`409`", "path the session was published on", "recording is finished and kept"),
@@ -1522,7 +1522,7 @@ _low241v = _sec241v.lower()
 check("1.24.1 vendor notes sit directly before the 1.24.0 notes", bool(m241v))
 check("1.24.1 vendor notes carry no emoji", not re.search(_EMOJI, _sec241v))
 check("1.24.1 vendor notes have the administrators list, a behaviour changes group, Breaking changes and a Not tested paragraph",
-      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes**", "**Breaking changes**", "**Not tested**")))
+      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes:", "**Breaking changes**", "**Not tested**")))
 _vend_lib = {"hls.js": "1.5.17", "xterm": "5.3.0", "xterm-addon-fit": "0.8.0", "chart.js": "4.4.7", "highlight.js": "11.12.0",
              "marked": "18.3.0", "dompurify": "3.5.0", "novnc": "1.4.0"}
 check("1.24.1 vendor: the notes name every library with the version in its vendored README and the Third-Party table lists it",

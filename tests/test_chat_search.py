@@ -719,7 +719,7 @@ def test_stream_ban_and_removed_member_are_not_searched():
         assert ids_of(b) == [sm], "an admin who is not banned reads it"
         await d.create_stream_ban(sid, u["boss"], u["alice"], "x")
         st, b = await env.search(u["boss"], q="in:streamroom")
-        assert b["results"] == [], "admins are held to the same ban check as history"
+        assert ids_of(b) == [sm], "a stream ban never applies to an administrator (1.24.1), here as for history"
         await d.remove_channel_member(ch["priv"], u["member"])
         st, b = await env.search(u["member"], q="in:secret")
         assert b["results"] == []
