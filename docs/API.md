@@ -96,6 +96,8 @@ username=admin&password=secret&remember_me=on
 
 **Response:** Redirect to `/dashboard` or error page
 
+A login POST that the browser marks cross-site, that has a foreign or `null` Origin, or that comes from a page under `/proxy`, `/browser` or `/search` is refused with `403` (release 1.24.1), so another site cannot replace a member's session cookie. The portal's own login form, JSON logins and scripts (which send no fetch metadata) are not affected.
+
 ---
 
 #### GET /logout

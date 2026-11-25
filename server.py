@@ -33090,6 +33090,8 @@ async def fetch_metadata_middleware(request: web.Request, handler):
     token, an API key or a ?token= parameter authenticates is not cookie-authenticated and is let
     through (checked by actually authenticating it: a bad bearer next to a cookie is still the cookie).
     A browser that sends no Sec-Fetch headers, Origin or Referer (a script, curl, OBS) is not affected.
+    POST /login is judged the same way even with no cookie: it answers with Set-Cookie, and a form posted
+    from another site (sent without the Lax cookie) must not be able to replace the member's session cookie.
     The proxy itself (/proxy, /search, /browser) is not judged here: what a proxied application posts
     to its own address is its own business, and an isolated page's requests are cross-site by design.
     This is a seat belt: script running unsandboxed on the portal origin (trusted content) can still
@@ -33099,7 +33101,7 @@ async def fetch_metadata_middleware(request: web.Request, handler):
     if ((request.method in proxy_origin.SAFE_METHODS and not is_ws)
             or path.startswith(("/proxy/", "/browser")) or path == "/search" or path.startswith("/search/")
             or path in _FETCH_METADATA_EXEMPT_PATHS
-            or not request.cookies.get(Config.SESSION_COOKIE_NAME)):
+            or (not request.cookies.get(Config.SESSION_COOKIE_NAME) and path != "/login")):
         return await handler(request)
     why = proxy_origin.cross_site_refusal(request.method, path, request.headers, _own_host_names(request),
                                           websocket=is_ws)
