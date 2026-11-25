@@ -6,7 +6,9 @@ closes the grantee's socket; no SSH target is involved.
 """
 
 import asyncio
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -26,6 +28,35 @@ import server  # noqa: E402
 from auth import create_user  # noqa: E402
 from config import Config  # noqa: E402
 
+
+def _isolate_static():
+    """Point the app at a temporary copy of static/ so nothing a test uploads (chat files, thumbnails, emotes) is
+    written into the checkout. The files are copied (a link would let a test change the checkout, and the static
+    route does not follow links); static/uploads starts empty. The whole folder is removed at exit."""
+    root = Path(tempfile.mkdtemp(prefix="portal-test-static-"))
+    atexit.register(shutil.rmtree, root, True)
+    real = Path(server.STATIC_DIR)
+    (root / "static").mkdir()
+    for src in real.rglob("*"):
+        rel = src.relative_to(real)
+        if rel.parts[0] == "uploads":
+            continue
+        dst = root / "static" / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+        shutil.copy2(src, dst)
+    uploads = root / "static" / "uploads"
+    (uploads / "chat").mkdir(parents=True)
+    # The upload handlers build their folders from the module's own location, so the module is placed in the
+    # temporary folder (with a copy of server.py, which a few tests read); STATIC_DIR is where the app reads files from.
+    shutil.copy2(server.__file__, root / "server.py")
+    server.__file__ = str(root / "server.py")
+    server.STATIC_DIR = root / "static"
+    return root / "static"
+
+
+STATIC_DIR = _isolate_static()
 PW = "Grant-fix-pass-12345!"
 failures = []
 
@@ -80,6 +111,8 @@ async def boot(names=("owner", "bob", "carol", "adm"), superadmin=("adm",)):
     await server.db.connect()
     secevents.log.bind(server.db)
     env.db = server.db
+    env.db.chat_upload_dir = str(STATIC_DIR / "uploads" / "chat")
+    env.static = STATIC_DIR
     for name in names:
         await create_user(name, PW, is_admin=(name in superadmin))
     for name in superadmin:

@@ -279,13 +279,13 @@ async def main():
         check("system hook allow_private also needs a browser session", st == 403)
         st, s2 = await call(sa, "POST", "/api/admin/webhooks", {"name": "sys-lan", "events": ["*"], "format": "gotify",
                                                                "url": rbase, "allow_private": True,
-                                                               "format_config": {"token": "GTK"}})
+                                                               "format_config": {"token": "gk7Qw3ZxV9mPb2LsT8nYc4Rf"}})
         check("system LAN hook created from a browser session", st == 201, str((st, s2)))
         answer[0] = 200
         got.clear()
         st, r = await call(sa_api, "POST", f"/api/admin/webhooks/{s2['id']}/test", headers=bearer)
         check("system hook Test reports status; Gotify path and header",
-              r["status"] == 200 and got and got[-1][0] == "/message" and got[-1][1].get("X-Gotify-Key") == "GTK", str((r, got)))
+              r["status"] == 200 and got and got[-1][0] == "/message" and got[-1][1].get("X-Gotify-Key") == "gk7Qw3ZxV9mPb2LsT8nYc4Rf", str((r, got)))
         st, lg = await call(sa, "GET", f"/api/admin/webhooks/{s2['id']}/logs")
         check("system delivery list: status only, no payload or response bodies",
               st == 200 and lg["logs"] and set(lg["logs"][0]) == {"id", "event", "response_status", "success", "attempt", "duration_ms", "created_at"}
@@ -374,7 +374,7 @@ async def main():
         cur = await db.conn.execute("SELECT url, secret, format_config FROM webhooks")
         dump = json.dumps([list(r) for r in await cur.fetchall()])
         check("no token, password or URL in the clear in the table",
-              not any(t in dump for t in ("tk_NEW", "tk_NTFYTOKEN", "PASSWORD-X", "GTK", "DISCORDSECRETTOKEN", "93.184.216.34")))
+              not any(t in dump for t in ("tk_NEW", "tk_NTFYTOKEN", "PASSWORD-X", "gk7Qw3ZxV9mPb2LsT8nYc4Rf", "DISCORDSECRETTOKEN", "93.184.216.34")))
 
     await srv.close()
     await rsrv.close()

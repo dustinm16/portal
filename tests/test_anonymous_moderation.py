@@ -19,6 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()
+
 import test_chat_history as H  # noqa: E402
 from test_chat_history import Env, server  # noqa: E402
 import aiohttp  # noqa: E402

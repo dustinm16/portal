@@ -63,6 +63,11 @@ async def _status(session, ctx, method, path, **kw):
 
 
 async def run(ctx):
+    if not ctx.admin_password:
+        # Every step signs in as the admin account; without its password (a --from-db run) the
+        # check cannot run, and creating its users first would only leave them behind.
+        ctx.skip("tokens: revocation checks", "no admin password (use --admin-password)")
+        return
     rc, out = await ctx.run_py(SETUP)
     try:
         ids = json.loads(out.strip().splitlines()[-1])

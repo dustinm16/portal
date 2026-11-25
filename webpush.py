@@ -211,6 +211,19 @@ def _lock() -> asyncio.Lock:
     return _vapid_lock
 
 
+_logged_key_failures: set[str] = set()
+
+
+def _log_key_failure_once(kind: str, message: str) -> None:
+    """A stored key that cannot be used is the same problem on every call (the push config route
+    asks on every member page load): log it once per process and kind. Replacing the key forgets
+    what was logged, so a later failure is logged again."""
+    if kind in _logged_key_failures:
+        return
+    _logged_key_failures.add(kind)
+    logger.error(message)
+
+
 async def vapid_state(db) -> str:
     """Why push is or is not usable on the key side: 'ok', 'none' (no key yet: one is made on
     first use), 'unreadable' (a stored key that cannot be decrypted here: another machine's
@@ -241,9 +254,11 @@ async def reset_vapid(db) -> int | None:
         if not sealed.startswith("enc:"):
             logger.error("Web push: the new VAPID key could not be encrypted; nothing was changed")
             return None
-        removed = await db.delete_all_push_subscriptions()
+        # The key goes in first: if the delete then fails, the devices are still there and a
+        # second reset removes them; the other order could leave no devices and the old key.
         await db.set_settings({SETTING_PRIVATE: sealed, SETTING_PUBLIC: b64u(public_bytes(key))})
-        return removed
+        _logged_key_failures.clear()
+        return await db.delete_all_push_subscriptions()
 
 
 async def get_vapid(db) -> VapidKeys | None:
@@ -254,14 +269,14 @@ async def get_vapid(db) -> VapidKeys | None:
         stored = await db.get_setting(SETTING_PRIVATE)
         if stored:
             if not stored.startswith("enc:"):
-                logger.error("Web push: stored VAPID key is not encrypted; push stays off")
+                _log_key_failure_once("plain", "Web push: stored VAPID key is not encrypted; push stays off")
                 return None
             try:
                 data = json.loads(dbmod.decrypt_config(stored))
                 keys = vapid_from_secret(data["d"])
             except Exception:
-                logger.error("Web push: stored VAPID key cannot be read; push stays off "
-                             "(a new key is never generated over an old one)")
+                _log_key_failure_once("unreadable", "Web push: stored VAPID key cannot be read; push stays off "
+                                      "(a new key is never generated over an old one)")
                 return None
             return keys
         key = ec.generate_private_key(ec.SECP256R1())

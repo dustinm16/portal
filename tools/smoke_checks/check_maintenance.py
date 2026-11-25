@@ -16,7 +16,8 @@ policy's 403 "Host not allowed" instead of a maintenance page.
 
 The users carry a random suffix and the module asserts on its own rows only, so it also passes on a copy of a
 production database (--from-db). At the end it removes the connection (and with it the shares) and the announcements
-it made; the three users it created, their sessions and the audit rows stay (the names carry the random suffix).
+it made, and the three users it created with their sessions, tokens and audit rows as actor; the security events
+and the audit rows that name them as target stay (the names carry the random suffix).
 No admin password is needed: the module makes its own administrator. If the global flag is already set on the
 instance, the global part is skipped and nothing is changed.
 """
@@ -87,6 +88,10 @@ async def main():
     await db.conn.execute("DELETE FROM user_connections WHERE name = ?", ({CONN!r},))
     await db.conn.execute("DELETE FROM announcements WHERE body LIKE ?", ('%{MARK}%',))
     await db.conn.commit()
+    for name in ({ADMIN!r}, {MEMBER!r}, {OUTSIDER!r}):
+        user = await db.get_user_by_username(name)
+        if user:
+            await db.delete_user(user["id"])
     await db.close()
 
 asyncio.run(main())

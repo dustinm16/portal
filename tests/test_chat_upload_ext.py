@@ -28,7 +28,7 @@ async def main():
             async with env.sessions["bob"].post(env.base + "/api/chat/upload", data=form) as r:
                 body = await r.json()
                 if r.status == 200:
-                    made.append(ROOT / body["url"].lstrip("/"))
+                    made.append(h.STATIC_DIR / body["url"].removeprefix("/static/"))
                 return r.status, body
 
         for name in ("a.html", "a.svg", "a.xml", "a.xhtml", "a.htm", "a.js", "a.docx", "a.HTML"):

@@ -12,7 +12,8 @@ depends on the administrator's own address. Then:
     lets the address through again and is a security event and an activity entry
   - without one: those steps are skipped and the rows are read from the database instead
 The checks assert on their own random addresses only, restore the two limit settings they change
-(they flood until the first 429) and pass on a copy of a production database (--from-db).
+(they flood until the first 429), delete the member they made (the security events that name it stay)
+and pass on a copy of a production database (--from-db).
 """
 
 import json
@@ -36,6 +37,20 @@ async def main():
     await database.db.connect()
     if not await database.db.get_user_by_username({MEMBER!r}):
         await create_user({MEMBER!r}, {PASSWORD!r}, is_admin=False)
+    await database.db.close()
+
+asyncio.run(main())
+"""
+
+DELETE_MEMBER = f"""
+import asyncio
+import database
+
+async def main():
+    await database.db.connect()
+    user = await database.db.get_user_by_username({MEMBER!r})
+    if user:
+        await database.db.delete_user(user["id"])
     await database.db.close()
 
 asyncio.run(main())
@@ -185,6 +200,7 @@ async def run(ctx):
             pass
         _sql(ctx, "DELETE FROM blocked_ips WHERE ip_address = ?", (blocked,))
         _sql(ctx, "DELETE FROM block_refs WHERE subject IN (?, ?)", (blocked, limited))
+        await ctx.run_py(DELETE_MEMBER)
         for k in keys:
             _sql(ctx, "DELETE FROM settings WHERE key = ?", (k,))
             if saved.get(k):

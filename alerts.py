@@ -275,6 +275,7 @@ def _stamp(name: str, keys: tuple, now: float) -> None:
 
 WHY_GLOBAL, WHY_RESERVE, WHY_KIND = "global", "reserve", "kind"
 WHY_SLOW = "slow"          # not a cap: a receiver answered 429 and an alert for it was dropped
+WHY_RATE = "rate"          # not a cap either: the portal's own rate limit of one hook dropped an alert for it
 
 
 def _cap_refusal(now: float, bucket: str, capped: bool = True) -> Optional[str]:
@@ -475,10 +476,11 @@ def _hold_back(name: str, why: str, now: float) -> None:
     _notice_scheduled = _spawn(_send_notice(delay, _notice_gen))
 
 
-def note_dropped(name: str, retry_in: Optional[float] = None) -> None:
-    """An alert event was dropped for a hook that is paused after a 429 ("receiver asked to slow
-    down") or is over its rate limit: count it into the next "alerts held back" notice so a
-    receiver cannot swallow alerts unseen. The caller counts each event once, not once per hook.
+def note_dropped(name: str, retry_in: Optional[float] = None, why: str = WHY_SLOW) -> None:
+    """An alert event was dropped for a hook that is paused after a 429 (why=WHY_SLOW, "receiver
+    asked to slow down") or is over its own rate limit (why=WHY_RATE): count it into the next
+    "alerts held back" notice so a receiver cannot swallow alerts unseen. The caller counts each
+    event once, not once per hook.
 
     The notice itself is never counted (it would announce itself forever). When a hook could not
     take the notice, its counts are put back and a new notice is scheduled for `retry_in` seconds
@@ -486,7 +488,7 @@ def note_dropped(name: str, retry_in: Optional[float] = None) -> None:
     if name == "alerts.suppressed":
         _notice_undelivered(retry_in)
     elif name in EVENT_NAMES:
-        _hold_back(name, WHY_SLOW, _clock())
+        _hold_back(name, why if why in (WHY_SLOW, WHY_RATE) else WHY_SLOW, _clock())
 
 
 def _notice_undelivered(retry_in: Optional[float]) -> None:
@@ -516,7 +518,7 @@ def _notice_undelivered(retry_in: Optional[float]) -> None:
 
 
 WHY_LABEL = {WHY_GLOBAL: "global limit", WHY_RESERVE: "reserve", WHY_KIND: "per-kind limit",
-             WHY_SLOW: "receiver asked to slow down"}
+             WHY_SLOW: "receiver asked to slow down", WHY_RATE: "rate limit of the hook"}
 
 
 def _why_sentence(why: str) -> str:
@@ -527,6 +529,8 @@ def _why_sentence(why: str) -> str:
                 "are kept for staff and operations alerts")
     if why == WHY_SLOW:
         return "A receiver asked to slow down, so alerts for it were dropped"
+    if why == WHY_RATE:
+        return "The rate limit of a hook was reached, so alerts for it were dropped"
     return "Per-kind limit reached (a cap on what strangers or members can set off)"
 
 
@@ -559,7 +563,7 @@ async def _send_notice(delay: float, gen: int) -> None:
     mixed = len(reasons) > 1
 
     def label(k):
-        return f" ({' and '.join(WHY_LABEL[w] for w in (WHY_GLOBAL, WHY_RESERVE, WHY_KIND, WHY_SLOW) if w in why.get(k, ()))})"
+        return f" ({' and '.join(WHY_LABEL[w] for w in (WHY_GLOBAL, WHY_RESERVE, WHY_KIND, WHY_SLOW, WHY_RATE) if w in why.get(k, ()))})"
 
     items = [f"{k}: {n}" + (label(k) if mixed else "") for k, n in ranked]
     tail = "" if mixed or not reasons else ". " + _why_sentence(next(iter(reasons)))

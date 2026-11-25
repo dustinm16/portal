@@ -3121,17 +3121,26 @@ async def http_admin_push_put(request: web.Request) -> web.Response:
         return bad
     # The allow-list decides which hosts the portal sends to: like a webhook's allow_private, only a
     # superadmin's browser login session may change it, never a bearer token.
-    if "allowed_hosts" in data and not await _may_set_allow_private(request, token):
-        return web.json_response(
-            {"error": "Changing the allowed push hosts needs a superadmin's browser login session"}, status=403)
+    # A bearer script that reads the settings and writes them back unchanged is not refused: the
+    # session is required only when the parsed list differs from the stored one.
+    new_hosts: list[str] | None = None
+    if "allowed_hosts" in data:
+        try:
+            new_hosts = webpush.parse_extra_hosts(data["allowed_hosts"])
+        except webpush.PushError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        if (new_hosts != await _get_pusher().extra_hosts()
+                and not await _may_set_allow_private(request, token)):
+            return web.json_response(
+                {"error": "Changing the allowed push hosts needs a superadmin's browser login session"}, status=403)
     values: dict[str, str] = {}
     try:
         if "enabled" in data:
             if not isinstance(data["enabled"], bool):
                 raise webpush.PushError("enabled must be true or false")
             values[webpush.SETTING_ENABLED] = "1" if data["enabled"] else "0"
-        if "allowed_hosts" in data:
-            values[webpush.SETTING_EXTRA_HOSTS] = ",".join(webpush.parse_extra_hosts(data["allowed_hosts"]))
+        if new_hosts is not None:
+            values[webpush.SETTING_EXTRA_HOSTS] = ",".join(new_hosts)
         if "subject" in data:
             subject = data["subject"]
             if subject in (None, ""):
@@ -6554,22 +6563,30 @@ async def sweep_expired_grants_once() -> int:
         await db.cleanup_orphan_connection_prefs()
     except Exception as e:
         logger.warning(f"clean-up of connection filing failed: {e}")
-    for row in rows:
-        conn = row["kind"] == "conn"
-        # the grantor is the actor; a grantor who no longer exists cannot be an audit actor
-        if row.get("granted_by_username"):
-            actor_id, actor_name = row["granted_by"], row["granted_by_username"]
-        else:
-            actor_id, actor_name = row["grantee_id"], row["grantee_username"]
-        details = {"grantee": row["grantee_username"], "grantee_id": row["grantee_id"],
-                   "granted_by": row.get("granted_by_username"), "expired_at": row["expires_at"]}
-        if not conn:
-            details["actions"] = row.get("actions")
-        await audit_log(
-            "connection.share_expired" if conn else "service.grant_expired", actor_id, actor_name,
-            target_id=row["resource_id"], target_type="connection" if conn else "service",
-            target_name=row.get("resource_name"), details=details)
-        await close_grant_dependents(row["kind"], row["resource_id"], row["grantee_id"])
+    closes = []
+    try:
+        for row in rows:
+            conn = row["kind"] == "conn"
+            # the grantor is the actor; a grantor who no longer exists cannot be an audit actor
+            if row.get("granted_by_username"):
+                actor_id, actor_name = row["granted_by"], row["granted_by_username"]
+            else:
+                actor_id, actor_name = row["grantee_id"], row["grantee_username"]
+            details = {"grantee": row["grantee_username"], "grantee_id": row["grantee_id"],
+                       "granted_by": row.get("granted_by_username"), "expired_at": row["expires_at"]}
+            if not conn:
+                details["actions"] = row.get("actions")
+            await audit_log(
+                "connection.share_expired" if conn else "service.grant_expired", actor_id, actor_name,
+                target_id=row["resource_id"], target_type="connection" if conn else "service",
+                target_name=row.get("resource_name"), details=details)
+            # Every row's sockets are closed at the same time (each close may wait up to
+            # GRANT_CLOSE_WAIT_SECONDS for its handshakes; one row after another would add the waits up)
+            closes.append(asyncio.ensure_future(close_grant_dependents(row["kind"], row["resource_id"], row["grantee_id"])))
+    finally:
+        for result in await asyncio.gather(*closes, return_exceptions=True):
+            if isinstance(result, Exception):
+                logger.warning(f"closing what an expired share or grant held open failed: {type(result).__name__}")
     return len(rows)
 
 
@@ -8704,7 +8721,7 @@ async def schedule_reminder_pass() -> int:
     due = await db.rsvp_due(now, now + stream_schedule.REMINDER_LEAD_SECONDS)
     sent = 0
     if due:
-        entries, cancelled, started, users = {}, {}, {}, {}
+        entries, cancelled, started, users, zone_dropped = {}, {}, {}, {}, {}
         for row in due:
             eid, uid = row["entry_id"], row["user_id"]
             if eid not in entries:
@@ -8715,7 +8732,11 @@ async def schedule_reminder_pass() -> int:
                     started[eid] = (await db.schedule_started_map([eid], now - _SCHEDULE_STARTED_WINDOW))[eid]
             entry = entries[eid]
             if entry and not _schedule_zone_ok(entry, now):
-                continue                                    # no occurrence can be computed: skipped, not dropped
+                # no occurrence can be computed for it: the mark is dropped (the due list reads at most 500
+                # rows with no zone filter, so marks left standing would starve other members' reminders)
+                await db.rsvp_drop(row["id"])
+                zone_dropped[eid] = zone_dropped.get(eid, 0) + 1
+                continue
             if not entry or not stream_schedule.is_occurrence(entry, row["occ_start"]) \
                     or row["occ_start"] in cancelled[eid]:
                 await db.rsvp_drop(row["id"])               # moved, cancelled or gone: nothing stale
@@ -8746,6 +8767,8 @@ async def schedule_reminder_pass() -> int:
                 raise
             except Exception as e:
                 logger.warning(f"Schedule reminder for stream {stream['id']} failed: {type(e).__name__}")
+        for eid, n in zone_dropped.items():
+            logger.warning(f"Schedule entry {eid}: dropped {n} Interested mark(s), its time zone cannot be loaded")
     if now - _schedule_last_prune >= 3600:
         _schedule_last_prune = now
         await db.rsvp_prune_past(now - 7 * 86400)
@@ -10994,7 +11017,21 @@ async def _stop_relay_process(stream_id: int, relay_id: int, info: dict,
 # Webhook Delivery Engine
 # =========================================================================
 
-_webhook_rate_limits: dict[int, list[float]] = {}
+# One window per (hook, kind): ops alerts and ordinary events are counted apart, so a member
+# spamming chat cannot use up the window an alert needs on the same hook, and the other way round.
+_webhook_rate_limits: dict[tuple[int, str], list[float]] = {}
+
+
+def _webhook_rate_key(webhook_id: int, event: str) -> tuple[int, str]:
+    return (webhook_id, "alert" if event in webhook_formats.ALERT_EVENTS else "event")
+
+
+def _webhook_rate_forget(webhook_id: int) -> None:
+    """Drop both rate windows of a deleted hook."""
+    for kind in ("alert", "event"):
+        _webhook_rate_limits.pop((webhook_id, kind), None)
+
+
 _webhook_incoming_rate_limits: dict[str, list[float]] = {}
 _WEBHOOK_RATE_LIMIT = 30        # max deliveries per webhook per window
 _WEBHOOK_RATE_WINDOW = 60.0     # seconds
@@ -11071,9 +11108,40 @@ def _message_deleted_webhook_payload(message_id: int, channel: str, deleted_by: 
             "deleted_by": None if own_anonymous else deleted_by}
 
 
+# Events whose sender needs to know whether a receiver took them: fire_webhook_event waits for
+# the first attempt of each delivery and returns how many were accepted, not how many started.
+# The update announcement is marked as made only then; it is checked once a day, so a delivery
+# that failed is tried again by the next check. The wait is shorter than the 30 s the alert
+# module gives its fire call, and never cuts a delivery (and its retries) short.
+_WEBHOOK_CONFIRMED_EVENTS = frozenset({"update.available"})
+_WEBHOOK_CONFIRM_WAIT = 25.0
+
+
+async def _webhook_count_accepted(tasks: list) -> int:
+    """How many of these delivery tasks ended with their first attempt accepted by the receiver.
+    A task that is still working (waiting out a retry) has not been accepted. The tasks are
+    never cancelled here: what is not finished carries on in the background."""
+    accepted = 0
+    pending = set(tasks)
+    deadline = monotonic() + _WEBHOOK_CONFIRM_WAIT
+    while pending and not accepted:
+        left = deadline - monotonic()
+        if left <= 0:
+            break
+        done, pending = await asyncio.wait(pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if task.cancelled() or task.exception() is not None:
+                continue
+            result = task.result()
+            if isinstance(result, dict) and result.get("success"):
+                accepted += 1
+    return accepted
+
+
 async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = None) -> int:
     """Dispatch event to all subscribed outgoing webhooks (non-blocking). Returns how many
-    deliveries were started.
+    deliveries were started; for an event in _WEBHOOK_CONFIRMED_EVENTS it waits (up to
+    _WEBHOOK_CONFIRM_WAIT seconds) and returns how many receivers accepted it.
 
     `meta` is private to the portal: it is never part of the generic body. It
     carries what the non-generic formats need (channel id, anonymous flag,
@@ -11090,14 +11158,17 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
         logger.warning(f"Webhook event dispatch failed for {event}: {e}")
         return 0
     started = 0
+    tasks: list = []
     drops: dict = {}        # shared by this event's deliveries: a drop is counted once, not once per hook
     for webhook in webhooks:
         if webhook.get("format") != "generic" and not visible:
             continue
         if not _stream_event_hook_allowed(webhook, event, meta):
             continue
-        asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta, drops=drops))
+        tasks.append(asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta, drops=drops)))
         started += 1
+    if event in _WEBHOOK_CONFIRMED_EVENTS and tasks:
+        return await _webhook_count_accepted(tasks)
     return started
 
 
@@ -11129,7 +11200,7 @@ def _webhook_error_text(e: BaseException) -> str:
     return type(e).__name__
 
 
-def _webhook_note_dropped(event: str, drops: dict | None, retry_in: float) -> None:
+def _webhook_note_dropped(event: str, drops: dict | None, retry_in: float, why: str = alerts.WHY_SLOW) -> None:
     """An alert was dropped for one hook (paused by a 429, or over its rate limit): tell the
     alert module once per event, however many hooks drop it. The "held back" notice is passed on
     for every hook that refuses it; the alert module puts its counts back once."""
@@ -11137,7 +11208,7 @@ def _webhook_note_dropped(event: str, drops: dict | None, retry_in: float) -> No
         if drops.get("noted"):
             return
         drops["noted"] = True
-    alerts.note_dropped(event, retry_in)
+    alerts.note_dropped(event, retry_in, why)
 
 
 async def _stage_sink_allows(url: str, allow_private: bool) -> bool:
@@ -11277,15 +11348,17 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     # Per-webhook rate limit
     now = monotonic()
     window_start = now - _WEBHOOK_RATE_WINDOW
-    times = _webhook_rate_limits.setdefault(webhook_id, [])
-    _webhook_rate_limits[webhook_id] = [t for t in times if t > window_start]
-    if len(_webhook_rate_limits[webhook_id]) >= _WEBHOOK_RATE_LIMIT:
+    rate_key = _webhook_rate_key(webhook_id, event)
+    times = _webhook_rate_limits.setdefault(rate_key, [])
+    _webhook_rate_limits[rate_key] = [t for t in times if t > window_start]
+    if len(_webhook_rate_limits[rate_key]) >= _WEBHOOK_RATE_LIMIT:
         logger.warning(f"Webhook {webhook_id} rate limited, dropping delivery for {event}")
         result["error"] = "rate limited"
         if not single:
-            _webhook_note_dropped(event, drops, _webhook_rate_limits[webhook_id][0] + _WEBHOOK_RATE_WINDOW - now)
+            _webhook_note_dropped(event, drops, _webhook_rate_limits[rate_key][0] + _WEBHOOK_RATE_WINDOW - now,
+                                  alerts.WHY_RATE)
         return result
-    _webhook_rate_limits[webhook_id].append(now)
+    _webhook_rate_limits[rate_key].append(now)
 
     # One formatter layer: generic keeps the signed body, the others are minimal.
     # A redirect is followed only by a generic hook without allow_private: a public
@@ -11871,7 +11944,7 @@ async def http_delete_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     await db.delete_webhook(webhook_id)
-    _webhook_rate_limits.pop(webhook_id, None)
+    _webhook_rate_forget(webhook_id)
     _webhook_paused_until.pop(webhook_id, None)
     return web.json_response({"message": "Webhook deleted"})
 
@@ -12138,7 +12211,7 @@ async def http_admin_webhooks_delete(request: web.Request) -> web.Response:
     if err:
         return err
     await db.delete_webhook(hook["id"])
-    _webhook_rate_limits.pop(hook["id"], None)
+    _webhook_rate_forget(hook["id"])
     _webhook_paused_until.pop(hook["id"], None)
     await audit_log("webhook_system_delete", user["id"], user["username"], target_id=hook["id"],
                     target_type="webhook", target_name=hook["name"])
@@ -12458,6 +12531,10 @@ async def http_stream_event(request: web.Request) -> web.Response:
     logger.debug(f"Stream event: event={event}, path={path}")
 
     if event == "disconnect" and path:
+        if _shutting_down:
+            # MediaMTX stops before the runner is cleaned up: a grace task started now would never be awaited;
+            # the reset of every stream at the next start repairs the state
+            return web.json_response({"ok": True})
         # Find stream and mark as offline (after grace period)
         stream_key = path.split("/")[-1] if "/" in path else path
         # Handle rtmp_ token paths — map back to parent stream
@@ -14106,9 +14183,9 @@ async def http_stream_info(request: web.Request) -> web.Response:
     if error:
         return _stream_not_found()
 
-    # Base URL for the portal
-    host = request.headers.get("Host", Config.HOSTNAME)
-    base_url = f"https://{host}"
+    # Base URL from the configured public address, never from the request's Host header; without
+    # a usable one the addresses are relative to the host the client already reached
+    base_url = _public_base_url()
 
     # Use public key for playback URLs, never expose the private stream_key
     public_key = stream.get("public_key", "")
@@ -34796,6 +34873,8 @@ class PortalServer:
         self._search_backfill_task = None
         self._saved_task = None
         self._schedule_task = None
+        self._viewer_task = None
+        self._grant_sweep_task = None
         self._overlay_task = None
 
     def _start_vod_recovery(self) -> None:
@@ -34841,6 +34920,8 @@ class PortalServer:
 
     async def start(self) -> None:
         """Start the server."""
+        global _shutting_down
+        _shutting_down = False          # a server started again in this process (a test) takes overlay sockets again
         # Validate configuration
         if Config.validate_or_warn():
             logger.error("Configuration errors detected. Please fix and restart.")
@@ -34968,14 +35049,14 @@ class PortalServer:
 
         # Start viewer count sync task (portal-side viewer map, every few seconds)
         # (it only reads and writes the database, so it runs in staged mode too)
-        asyncio.create_task(self._viewer_sync_task())
+        self._viewer_task = asyncio.create_task(self._viewer_sync_task())
 
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
 
         # Expired connection shares and service grants: deleted, audited, their sockets closed
         # (runs in staged mode too; it only reads and writes the database and closes sockets)
-        asyncio.create_task(self._grant_expiry_task())
+        self._grant_sweep_task = asyncio.create_task(self._grant_expiry_task())
 
         # Stream schedule reminders: one indexed query per tick, nothing else while idle; held so stop() ends it
         self._schedule_task = asyncio.create_task(self._schedule_reminder_task())
@@ -35496,6 +35577,14 @@ class PortalServer:
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        # The viewer sync tick and the mod-level pushes in flight end before the database closes
+        # (and so does the grant sweeper)
+        owned = [t for t in (getattr(self, "_viewer_task", None), getattr(self, "_grant_sweep_task", None)) if t is not None]
+        pushes = list(_mod_level_tasks)
+        for t in owned + pushes:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*owned, *pushes, return_exceptions=True)
         _overlay_close_all()
         task = getattr(self, "_overlay_task", None)
         if task is not None and not task.done():

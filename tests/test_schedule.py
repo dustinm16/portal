@@ -829,8 +829,8 @@ async def main():
                   sent == 2 and len([n for n in await w.notes("m1")]) >= 1, str(sent))
             left = await (await w.db.conn.execute(
                 "SELECT COUNT(*) AS n, SUM(reminded_at IS NULL) AS unsent FROM stream_rsvps WHERE entry_id = ?", (z_bad,))).fetchone()
-            check("the broken entry's marks are skipped, not dropped and not claimed (they work again when the zone does)",
-                  left["n"] == 2 and left["unsent"] == 2, f"{tuple(left)}")
+            check("the broken entry's marks are dropped, not claimed (they could starve the reminders of other entries)",
+                  left["n"] == 0 and not left["unsent"], f"{tuple(left)}")
             try:
                 await server._schedule_note_go_live({"id": zs})
                 went = "ok"
@@ -839,12 +839,12 @@ async def main():
             started = await w.db.schedule_started_map([z_good, z_bad], zbase - 86400)
             check("a go-live in the slot is not stopped by it: the working entry's slot is marked started",
                   went == "ok" and zbase in started[z_good] and not started[z_bad], f"{went} {started}")
-            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}" in l]
+            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}:" in l and "cannot be loaded on this host" in l]
             check("it is logged once for the entry, however many reads there were that day", len(lines) == 1, str(lines))
             w.clock.now += 86400
             await w.call("GET", "m1", "/api/streams/schedule/upcoming")
             await w.call("GET", "m1", "/api/streams/schedule/upcoming")
-            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}" in l]
+            lines = [l for l in zlog.getvalue().splitlines() if f"entry {z_bad}:" in l and "cannot be loaded on this host" in l]
             check("... and once more the next day", len(lines) == 2, str(lines))
         finally:
             server.logger.removeHandler(zhandler)

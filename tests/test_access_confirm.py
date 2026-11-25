@@ -13,6 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()
+
 import test_live_ops_fixes as base  # noqa: E402  (loads the outbound guard first)
 from test_live_ops_fixes import Spy, publish_hook, with_mtx  # noqa: E402
 from test_stream_health_server import admin_req  # noqa: E402

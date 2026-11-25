@@ -270,7 +270,7 @@ async def main():
     server._webhook_paused_until.clear()
     # deleting a hook forgets its Retry-After pause
     server._webhook_paused_until[cap["id"]] = server.monotonic() + 100
-    server._webhook_rate_limits[cap["id"]] = [1.0]
+    server._webhook_rate_limits[(cap["id"], "event")] = [1.0]
     class _Req:
         match_info = {"id": str(cap["id"])}
     _real_auth, _real_get_user = server.authenticate_request, db.get_user_by_id

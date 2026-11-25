@@ -18,8 +18,8 @@ route needs a session.
 
 Users and connections carry random suffixes and every assertion is about those rows, so the module
 also holds on a stage started from a copy of the production database (real pinned connections are
-never probed in a staged instance). It makes its own users and needs no admin password; it sets
-the two global settings directly and restores what it found.
+never probed in a staged instance). It makes its own users and needs no admin password, and deletes them (with their
+connections) at the end; it sets the two global settings directly and restores what it found.
 
 Not proven here: a real SSH server, DNS, the HTTP probe against a real web service (the
 loopback HTTP probe is run in tests/test_connection_health.py), the dot in a browser, the alert
@@ -52,6 +52,20 @@ async def main():
     out["stranger"] = await db.create_user_connection(out["users"]["owner"], P["pre"] + "-stranger", "ssh", "93.184.216.34", 22, "{}")
     await db.close()
     print("RESULT " + json.dumps(out))
+
+asyncio.run(main())
+'''
+
+CLEANUP = r'''
+import asyncio
+from database import db
+
+async def main():
+    await db.connect()
+    cur = await db.conn.execute("SELECT id FROM users WHERE username LIKE ?", (%(like)r,))
+    for row in await cur.fetchall():
+        await db.delete_user(row[0])
+    await db.close()
 
 asyncio.run(main())
 '''
@@ -241,3 +255,7 @@ async def run(ctx):
         if other_server is not None:
             other_server.close()
             await other_server.wait_closed()
+        try:
+            await ctx.run_py(CLEANUP % {"like": pre + "%"})
+        except Exception:
+            pass

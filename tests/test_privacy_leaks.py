@@ -57,7 +57,7 @@ async def main():
     await driver_log_check(db)
 
     # ---- custom thumbnails ---------------------------------------------------------------------------------------
-    upload = ROOT / "static" / "uploads" / "thumbnails"
+    upload = h.STATIC_DIR / "uploads" / "thumbnails"
     upload.mkdir(parents=True, exist_ok=True)
     files = []
     try:
@@ -104,7 +104,7 @@ async def main():
               st == 200 and hd.get("Cache-Control") == "private, no-store", f"{st} {hd.get('Cache-Control')}")
         # The same file through the plain static route: spellings the uploads route does not match ("%2F" in the
         # directory part, "." and ".." segments before "uploads") must not serve anything under static/uploads.
-        chat_dir = ROOT / "static" / "uploads" / "chat"
+        chat_dir = h.STATIC_DIR / "uploads" / "chat"
         chat_dir.mkdir(parents=True, exist_ok=True)
         active = chat_dir / "t241active.html"
         active.write_bytes(b"<script>1</script>")
@@ -135,7 +135,7 @@ async def main():
                           and body != b"<script>1</script>", f"{st} {hd.get('Content-Type')}")
         # The guard works out the uploads root once, not on every static request.
         import pathlib as _pathlib
-        real_resolve, uploads_dir, resolved_uploads = _pathlib.Path.resolve, ROOT / "static" / "uploads", []
+        real_resolve, uploads_dir, resolved_uploads = _pathlib.Path.resolve, h.STATIC_DIR / "uploads", []
 
         def counting_resolve(self, *a, **kw):
             if self == uploads_dir:

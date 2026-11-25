@@ -373,11 +373,11 @@ async def main():
         alerts.reset_state()
         server._webhook_paused_until.pop(syshook["id"], None)
         server._webhook_paused_until.pop(syshook2["id"], None)
-        server._webhook_rate_limits[syshook["id"]] = [server.monotonic()] * server._WEBHOOK_RATE_LIMIT
+        server._webhook_rate_limits[(syshook["id"], "alert")] = [server.monotonic()] * server._WEBHOOK_RATE_LIMIT
         r = await server._deliver_webhook(w, "role.changed", {"title": "t"})
         check("a drop by the per-hook rate limit is counted into the notice too",
               r["error"] == "rate limited" and alerts._held == {"role.changed": 1}, str((r, alerts._held)))
-        server._webhook_rate_limits.pop(syshook["id"], None)
+        server._webhook_rate_forget(syshook["id"])
         alerts.reset_state()
         server._webhook_paused_until.pop(syshook["id"], None)
         await rsrv.close()
