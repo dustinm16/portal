@@ -446,9 +446,12 @@ def parse_ports(raw) -> frozenset:
 
 class Monitor:
     def __init__(self, db, types: dict, *, stage_mode: bool = False, emit=None, probe=None,
-                 clock=time.monotonic, wall=None, rng=None):
+                 clock=time.monotonic, wall=None, rng=None, global_maintenance=None):
         self.db = db
         self.types = types
+        # async callable returning the global maintenance flag (a dict or None), cached by the caller;
+        # None: the monitor does not look at the global flag
+        self.global_maintenance = global_maintenance
         self.stage_mode = stage_mode
         self.emit = emit or alerts.emit
         self.probe = probe or probe_target
@@ -542,6 +545,7 @@ class Monitor:
                 logger.warning("[Health] could not read the stored states: %s", type(e).__name__)
             self._seeded = True
         since = _iso(now_dt - timedelta(days=RECENT_DAYS))
+        gstate = await self._global_state(now_dt)
         refs = await self.db.list_health_candidate_refs(since, CANDIDATE_REF_LIMIT)
 
         # Who is looked at: each owner's least recently probed OWNER_SCAN connections, in turn across
@@ -590,7 +594,7 @@ class Monitor:
         transitions = []
         for row, key in unprobed:
             # not probeable (or not allowed here, or refused and waiting): reads "unknown", nothing is dialled
-            tr = self.state.apply(row["id"], key, Result("refused"), now, iso, quiet=self._quiet(row, now_dt))
+            tr = self.state.apply(row["id"], key, Result("refused"), now, iso, quiet=self._quiet(row, now_dt, gstate))
             if tr:
                 transitions.append((row, tr))
 
@@ -635,7 +639,7 @@ class Monitor:
             elif res.kind in ("ok", "fail"):
                 self._note_not_refused(target, now)
             for row in members:
-                tr = self.state.apply(row["id"], target.key, res, now, iso, quiet=self._quiet(row, now_dt))
+                tr = self.state.apply(row["id"], target.key, res, now, iso, quiet=self._quiet(row, now_dt, gstate))
                 if tr:
                     transitions.append((row, tr))
         for row, tr in transitions:
@@ -655,10 +659,27 @@ class Monitor:
         self.rounds += 1
         return probes
 
-    @staticmethod
-    def _quiet(row: dict, now_dt: datetime) -> bool:
-        """The connection is in maintenance now: its transitions send no alert."""
-        return maintenance.state(row, now_dt) is not None
+    def _is_proxy_type(self, conn_type) -> bool:
+        """The connection is served by the HTTP proxy, which the global maintenance flag blocks."""
+        info = self.types.get(conn_type or "custom", {"plugin": "tcp_tunnel"})
+        return info.get("plugin") in HTTP_PLUGINS
+
+    async def _global_state(self, now_dt: datetime) -> Optional[dict]:
+        """The global maintenance flag as maintenance.state shapes it while it is in force, else None."""
+        if self.global_maintenance is None:
+            return None
+        try:
+            return maintenance.global_state(await self.global_maintenance(), now_dt)
+        except Exception as e:
+            logger.debug("[Health] could not read the global maintenance flag: %s", type(e).__name__)
+            return None
+
+    def _quiet(self, row: dict, now_dt: datetime, gstate: Optional[dict] = None) -> bool:
+        """The connection is in maintenance now (its own, or the global flag for a proxy-type one):
+        its transitions send no alert."""
+        if maintenance.state(row, now_dt) is not None:
+            return True
+        return gstate is not None and self._is_proxy_type(row.get("type"))
 
     async def _prune(self, now: float) -> None:
         self._last_prune = now
@@ -720,13 +741,21 @@ class Monitor:
         now = self.clock()
         now_dt = self.wall()
         out = {}
+        gstate = await self._global_state(now_dt)
         # A grantee's pin makes the portal probe a connection. The owner's own dot must not show that: an
         # owned connection shows a status only when the owner's own pin or use qualifies (a grantee's does not).
         qualified = await self.db.owner_health_qualified_ids(
             user_id, _iso(now_dt - timedelta(days=RECENT_DAYS)))
         owned = await self.db.owned_connection_ids(user_id)
-        for cid, uuid, maint in await self.db.list_accessible_connection_refs(user_id):
-            if maintenance.state(maint, now_dt) is not None:
+        refs = await self.db.list_accessible_connection_refs(user_id)
+        proxy_ids: set = set()
+        if gstate is not None and refs:
+            # The refs carry no type and no config is read for them; only while the global flag is in
+            # force, take the types (the config the rows come with is dropped here, never kept or shown).
+            proxy_ids = {r["id"] for r in await self.db.get_health_candidate_rows([c for c, _u, _m in refs])
+                         if self._is_proxy_type(r.get("type"))}
+        for cid, uuid, maint in refs:
+            if maintenance.state(maint, now_dt) is not None or cid in proxy_ids:
                 out[uuid] = {"status": "maintenance", "latency_ms": None, "since": None}
             elif cid in owned and cid not in qualified:
                 out[uuid] = {"status": "unknown", "latency_ms": None, "since": None}

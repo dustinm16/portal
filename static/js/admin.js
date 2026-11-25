@@ -140,7 +140,7 @@ const SERVICE_PRESETS = {
         path: '/rdp',
         plugin: 'vnc',
         host: '',
-        port: 3389,
+        port: 5900,
         config: { rfb_version: '3.8' }
     },
     'mediamtx-rtsps': {

@@ -1,5 +1,6 @@
 """Authentication module for Open Relay Portal."""
 
+import asyncio
 import secrets
 import time
 import hashlib
@@ -90,6 +91,32 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+# Argon2 takes tens of milliseconds of CPU; run on the event loop it stalls every other request, so the
+# handlers use these wrappers. At most PASSWORD_HASH_WORKERS hashes run at once (the rest wait their turn).
+PASSWORD_HASH_WORKERS = 4
+_password_hash_sem: Optional[tuple] = None      # (event loop, semaphore); made when first used on a loop
+
+
+def _password_hash_semaphore() -> asyncio.Semaphore:
+    global _password_hash_sem
+    loop = asyncio.get_running_loop()
+    if _password_hash_sem is None or _password_hash_sem[0] is not loop:
+        _password_hash_sem = (loop, asyncio.Semaphore(PASSWORD_HASH_WORKERS))
+    return _password_hash_sem[1]
+
+
+async def hash_password_async(password: str) -> str:
+    """hash_password in a worker thread, at most PASSWORD_HASH_WORKERS at once."""
+    async with _password_hash_semaphore():
+        return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, password_hash: str) -> bool:
+    """verify_password in a worker thread, at most PASSWORD_HASH_WORKERS at once."""
+    async with _password_hash_semaphore():
+        return await asyncio.to_thread(verify_password, password, password_hash)
+
+
 # A fixed hash that a login for an unknown account is checked against, so the answer takes
 # as long as one for a real account and the time does not tell the two apart.
 _DUMMY_PASSWORD_HASH = ph.hash("no-such-account-placeholder")
@@ -143,11 +170,11 @@ async def authenticate_user_reason(username: str, password: str) -> tuple[Option
     user = await db.get_user_by_username(username)
     if not user:
         try:
-            verify_password(password, _DUMMY_PASSWORD_HASH)     # same work as for a real account
+            await verify_password_async(password, _DUMMY_PASSWORD_HASH)     # same work as for a real account
         except Exception:
             pass
         return None, "unknown_user"
-    if not verify_password(password, user["password_hash"]):
+    if not await verify_password_async(password, user["password_hash"]):
         return None, "bad_password"
     return user, None
 
@@ -177,7 +204,7 @@ async def create_user(
     """Create a new user."""
     if is_reserved_mention_name(username):
         raise ValueError("That username is reserved")
-    password_hash = hash_password(password)
+    password_hash = await hash_password_async(password)
     user_id = await db.create_user(username, password_hash, is_admin, registration_ip=registration_ip)
     return await db.get_user_by_id(user_id)
 

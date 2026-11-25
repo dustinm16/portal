@@ -70,8 +70,10 @@ from auth import (
     get_invite_code_info,
     log_invite_code_usage,
     get_daily_invite_code,
-    hash_password,
+    hash_password,      # kept importable (tests and tools use server.hash_password)
+    hash_password_async,
     verify_password,
+    verify_password_async,
     generate_totp_secret,
     get_totp_uri,
     verify_totp,
@@ -2823,11 +2825,22 @@ async def authenticate_api_key(api_key: str, client_ip: Optional[str] = None,
             key_record = rec
             break
     if key_record is None:
+        # A candidate whose check is refused as busy (pending caps) must not hide the others
+        # with the same prefix: go on with the next, and answer 503 only when nothing verified
+        # and at least one check was skipped (the skipped one might have been the key).
+        any_busy = False
         for rec in viable:
-            if await _verify_api_key_offloop(rec["id"], api_key, rec["key_hash"]):
+            try:
+                ok = await _verify_api_key_offloop(rec["id"], api_key, rec["key_hash"])
+            except ApiKeyCheckBusy:
+                any_busy = True
+                continue
+            if ok:
                 _api_key_remember(rec["id"], api_key, rec["key_hash"])
                 key_record = rec
                 break
+        if key_record is None and any_busy:
+            raise ApiKeyCheckBusy()
 
     if key_record is None:
         # Address binding: a bound key used from outside its networks is refused before the
@@ -3740,6 +3753,15 @@ async def http_revoke_token(request: web.Request) -> web.Response:
     is_admin_caller = (get_role_level(caller_role) >= get_role_level("admin")
                        and token.has_scope("admin"))
     target = await db.get_token(token_id)
+    if target is None:
+        # The id GET /api/tokens shows as "session_id" (the opaque public id): only the caller's own
+        # live tokens are reached this way, whatever the caller's role. Only a credential with its user's
+        # full scope may use it (as for the sessions routes); for any other it answers as an unknown id.
+        for own in (await db.get_user_tokens(token.user_id) if has_full_user_scope(token) else ()):
+            if not own["revoked"] and matches_public_id(own["token_id"], token_id):
+                token_id = own["token_id"]
+                target = await db.get_token(token_id)
+                break
     # Admins follow the same hierarchy as password resets: they cannot act on
     # accounts at or above their own level (superadmins may act on anyone).
     if is_admin_caller and target and target["user_id"] != token.user_id:
@@ -3784,6 +3806,8 @@ async def http_list_tokens(request: web.Request) -> web.Response:
             {
                 "id": t["id"],
                 "token_id": t["token_id"][:8] + "...",
+                # what POST /api/token/revoke accepts in place of the full token id
+                "session_id": public_session_id(t["token_id"]),
                 "name": t["name"],
                 "scopes": t["scopes"],
                 "revoked": bool(t["revoked"]),
@@ -3846,6 +3870,20 @@ async def http_list_my_sessions(request: web.Request) -> web.Response:
     })
 
 
+# The three sign-out routes (one session, all other sessions, an administrator signing a user out) write rows
+# and security events; one allowance per signed-in account (the acting account for the admin route).
+_SESSION_REVOKE_LIMIT = 30
+_session_revoke_rate = _viewers_mod.RateWindow(_SESSION_REVOKE_LIMIT, 60.0)
+
+
+async def _session_revoke_limited(request: web.Request, token) -> Optional[web.Response]:
+    """The 429 when the account has used its sign-out allowance (counts the call), else None."""
+    if _session_revoke_rate.allow(str(token.user_id)):
+        return None
+    return await _limited(request, "session_revoke", "Too many sign-out requests, try again in a minute",
+                          user_id=token.user_id, headers={"Retry-After": "10"})
+
+
 async def http_revoke_my_session(request: web.Request) -> web.Response:
     """Sign out one of the caller's own sessions, by its public id."""
     token = await authenticate_request(request)
@@ -3855,6 +3893,8 @@ async def http_revoke_my_session(request: web.Request) -> web.Response:
     # session or a full-scope credential may use them.
     if not has_full_user_scope(token):
         return full_scope_required_response()
+    if (limited := await _session_revoke_limited(request, token)) is not None:
+        return limited
     public_id = request.match_info.get("id", "")
     target = next((r for r in await db.get_user_live_tokens(token.user_id)
                    if matches_public_id(r["token_id"], public_id)), None)
@@ -3887,6 +3927,8 @@ async def http_revoke_my_other_sessions(request: web.Request) -> web.Response:
     # session or a full-scope credential may use them.
     if not has_full_user_scope(token):
         return full_scope_required_response()
+    if (limited := await _session_revoke_limited(request, token)) is not None:
+        return limited
     revoked = await db.revoke_user_tokens(token.user_id, except_token_id=token.token_id)
     closed = await close_user_websockets(token.user_id, except_token_id=token.token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
@@ -3917,6 +3959,8 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
             {"error": "Only admins and superadmins can sign users out"}, status=403)
     if not has_full_user_scope(token):
         return full_scope_required_response()
+    if (limited := await _session_revoke_limited(request, token)) is not None:
+        return limited
     user_id = request.match_info.get("id")
     if not user_id or not user_id.isdigit():
         return web.json_response({"error": "Invalid user ID"}, status=400)
@@ -4113,6 +4157,8 @@ async def http_create_service(request: web.Request) -> web.Response:
     if isinstance(config, dict):
         if "host_key_ignore" in config and not isinstance(config["host_key_ignore"], bool):
             return web.json_response({"error": "Invalid host key setting"}, status=400)
+        if hostkeys.malformed_pin(config):
+            return web.json_response({"error": "Invalid host key fingerprint"}, status=400)
         # An admin may pre-fill a valid fingerprint; anything else is dropped.
         config = hostkeys.guard_replacement({}, config, target_changed=False, trusted_incoming=True)
 
@@ -4236,6 +4282,16 @@ async def http_update_service(request: web.Request) -> web.Response:
             # pre-filling a valid fingerprint.
             if "host_key_ignore" in new_config and not isinstance(new_config["host_key_ignore"], bool):
                 return web.json_response({"error": "Invalid host key setting"}, status=400)
+            if hostkeys.malformed_pin(new_config):
+                return web.json_response({"error": "Invalid host key fingerprint"}, status=400)
+            if target_changed and hostkeys.FINGERPRINT_KEY in new_config:
+                # The edit form sends the stored pin back; on a new target that is not a pre-fill
+                # (the old host's pin must be dropped), only a different fingerprint is.
+                stored_pin = hostkeys.normalize_fingerprint(
+                    (service.get("config") or {}).get(hostkeys.FINGERPRINT_KEY)
+                    if isinstance(service.get("config"), dict) else None)
+                if stored_pin and hostkeys.normalize_fingerprint(new_config[hostkeys.FINGERPRINT_KEY]) == stored_pin:
+                    new_config = {k: v for k, v in new_config.items() if k != hostkeys.FINGERPRINT_KEY}
             new_config = hostkeys.guard_replacement(
                 service.get("config"), new_config,
                 target_changed=target_changed, trusted_incoming=True)
@@ -5184,6 +5240,27 @@ async def http_admin_list_all_keys(request: web.Request) -> web.Response:
 from auth import generate_api_key, verify_api_key, parse_api_key
 
 
+API_KEYS_PER_USER = 50
+
+
+def _live_api_key_count(rows: list[dict]) -> int:
+    """How many of a member's key rows (get_user_api_keys) are neither revoked nor expired."""
+    now = datetime.now(timezone.utc)
+    live = 0
+    for rec in rows:
+        if rec.get("revoked"):
+            continue
+        expires_at = rec.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")) < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        live += 1
+    return live
+
+
 async def http_create_api_key(request: web.Request) -> web.Response:
     """Create a new API key for the authenticated user."""
     token = await authenticate_request(request)
@@ -5229,6 +5306,13 @@ async def http_create_api_key(request: web.Request) -> web.Response:
     else:
         scopes_list = requested
     scopes = ",".join(scopes_list)
+
+    # At most API_KEYS_PER_USER live (not revoked, not expired) keys per member; only creation is
+    # refused, a member already above the cap keeps every key.
+    if _live_api_key_count(await db.get_user_api_keys(token.user_id)) >= API_KEYS_PER_USER:
+        return web.json_response(
+            {"error": f"You already have {API_KEYS_PER_USER} active API keys; revoke one before creating another"},
+            status=400)
 
     try:
         # Generate the API key
@@ -6049,14 +6133,14 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
                     data["config"], password_cleared = sshpass_rules.apply_leaving(
                         existing_config, config, data["config"])
             # A moved target does not take the stored secrets along, for every type: the row's host or
-            # port, the origin of a URL key, a TLS port or switch, or a type handled by another plugin.
+            # port, the origin of a URL key, a TLS port or switch, certificate checking turned off, or any change
+            # of the connection type (two types of one plugin differ in scheme and port defaults).
             # Each secret is kept only when this request carries a new one. The SSH stored password has
             # its own rule above (the same answer flag), so it is left to that.
-            plugin_of = lambda t: (CONNECTION_TYPES.get(t) or {}).get("plugin") or t
             moved = connection_secrets.dial_changed(
                 connection.get("host"), connection.get("port"),
                 data.get("host", connection.get("host")), data.get("port", connection.get("port")),
-                existing_config, data["config"]) or plugin_of(old_type) != plugin_of(new_type)
+                existing_config, data["config"]) or old_type != new_type
             data["config"], secrets_cleared = connection_secrets.clear_on_move(
                 moved=moved, existing=existing_config, incoming=config, merged=data["config"],
                 skip=("password",) if (old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES) else ())
@@ -6091,7 +6175,9 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
                 {"error": "Only SOCKS mode is available for this connection type"}, status=400)
 
     try:
-        if await db.update_user_connection(int_id, token.user_id, **data):
+        # Keys that are not connection fields (user_id, conn_id, anything unknown) are ignored, not refused.
+        fields = {k: v for k, v in data.items() if k in db.USER_CONNECTION_UPDATE_FIELDS}
+        if await db.update_user_connection(int_id, token.user_id, **fields):
             logger.info(f"Connection {conn_uuid} updated by user {token.user_id}")
             await _drop_stale_proxy_trust(conn_uuid)
             await _audit_maintenance("connection.maintenance", token, connection.get("name"), connection, maint_updates)
@@ -6323,11 +6409,11 @@ async def http_accept_service_host_key(request: web.Request) -> web.Response:
     if err:
         return err
 
-    config = dict(service.get("config") or {})
-    config[hostkeys.FINGERPRINT_KEY] = fp
-    config.pop(hostkeys.REFUSED_KEY, None)
-    if not await db.update_service_config_if_target(
-            service["id"], config, service.get("host"), service.get("port")):
+    # Only the pin keys are merged, into the config as it is stored now: a config edit made while
+    # the prompt was open is not written back over.
+    if not await db.merge_service_host_key(
+            service["id"], fp, service.get("host"), service.get("port"),
+            hostkeys.FINGERPRINT_KEY, hostkeys.REFUSED_KEY, _service_ssh_target(service)):
         return _stale_host_key("The service was changed while this prompt was open; connect again")
     logger.info(f"SSH host key accepted for service {service['id']} by user {token.user_id}: {fp}")
     user = await db.get_user_by_id(token.user_id)
@@ -14381,16 +14467,8 @@ def _service_target_changed(service: dict, updates: dict, new_config=None) -> bo
     return _service_ssh_target(service) != _service_ssh_target(after)
 
 
-def _coerce_port(value, default: int) -> int:
-    """A TCP port as an int; `default` when the value is missing or not a valid port
-    (a config saved through the form can hold the port as text or null)."""
-    if isinstance(value, bool):
-        return default
-    try:
-        port = int(str(value).strip()) if isinstance(value, (str, float)) else int(value)
-    except (TypeError, ValueError):
-        return default
-    return port if 0 < port < 65536 else default
+# One definition for the ssh plugin (what it dials) and the accept dialog (what it pins).
+_coerce_port = hostkeys.coerce_port
 
 
 def _present_host_key(payload: dict, scope: str, ident, user_id: int, target: tuple) -> dict:
@@ -20159,10 +20237,15 @@ async def http_logout(request: web.Request) -> web.Response:
             endpoint = None
         if not isinstance(endpoint, str) or not endpoint or len(endpoint) > webpush.MAX_ENDPOINT_LEN:
             endpoint = None
-    # Try to revoke the session token before clearing cookie
+    # Try to revoke the session token before clearing cookie. It is the session of the cookie that ends,
+    # looked up from the cookie value itself: authenticate_request would prefer a bearer token, an API key
+    # or ?token= sent along, and that other credential would be revoked while the cookie's session stayed live.
     if cookie:
         try:
-            token = await authenticate_request(request)
+            try:
+                token = await validate_token(cookie, get_client_ip(request))
+            except AuthError:
+                token = None
             if token:
                 # Revoke first: a subscribe still in flight is then refused by the database
                 # (its write is conditional on a live session), and the device of this session
@@ -31549,6 +31632,8 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         # user may control/read without being an admin. Empty for admins (they
         # can already do everything).
         "granted_services": {} if is_admin else await db.get_user_granted_service_ids(token.user_id),
+        # {service_id: seconds left, or null when the grant never ends}, for the same services.
+        "granted_service_expiry": {} if is_admin else await db.get_user_granted_service_expiry(token.user_id),
         "permissions": {
             "can_manage_users": get_role_level(role) >= get_role_level("moderator"),
             "can_reset_passwords": get_role_level(role) >= get_role_level("admin"),
@@ -31595,14 +31680,14 @@ async def http_change_password(request: web.Request) -> web.Response:
     if not user:
         return web.json_response({"error": "User not found"}, status=404)
 
-    if not verify_password(current_password, user["password_hash"]):
+    if not await verify_password_async(current_password, user["password_hash"]):
         logger.warning(f"Failed password change attempt for user {token.user_id}")
         security_event_nowait("password_change_failed", request=request, user=user,
                               result="bad_current_password")
         return web.json_response({"error": "Current password is incorrect"}, status=401)
 
     # Update password
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password_async(new_password)
     await db.update_password_hash(token.user_id, new_hash)
 
     # Revoke all existing tokens except the current session
@@ -31967,7 +32052,7 @@ async def http_2fa_disable(request: web.Request) -> web.Response:
         return web.json_response({"error": "2FA is not enabled"}, status=400)
 
     # Verify password
-    if not verify_password(password, user["password_hash"]):
+    if not await verify_password_async(password, user["password_hash"]):
         logger.warning(f"Failed 2FA disable attempt for user {token.user_id} - wrong password")
         security_event_nowait("2fa_disable_failed", request=request, user=user, result="bad_password")
         return web.json_response({"error": "Invalid password"}, status=401)
@@ -32288,7 +32373,7 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
         )
 
     # Hash and save new password
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password_async(new_password)
     await db.reset_user_password(user_id, new_hash)
 
     # Sign the target out everywhere; an admin resetting their own password
@@ -32523,7 +32608,8 @@ async def http_put_voice_settings(request: web.Request) -> web.Response:
 # Connection health checks (connection_health.py): status dots on the dashboard
 # ---------------------------------------------------------------------------
 _health_monitor = connection_health.Monitor(db, CONNECTION_TYPES, stage_mode=bool(Config.STAGE_MODE),
-                                            emit=lambda *a, **k: alerts.emit(*a, **k))
+                                            emit=lambda *a, **k: alerts.emit(*a, **k),
+                                            global_maintenance=lambda: _maintenance_global_flag())
 
 
 async def http_connection_status(request: web.Request) -> web.Response:

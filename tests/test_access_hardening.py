@@ -211,7 +211,7 @@ def section_api_key_buttons():
     js = (ROOT / "static" / "js" / "user-connections.js").read_text()
     index = (ROOT / "static" / "index.html").read_text()
     check("the API key buttons have no inline handler", "onclick=\"confirmRevokeApiKey" not in js and "onclick=\"confirmDeleteApiKey" not in js)
-    check("the page loads user-connections.js at the version after 61", "user-connections.js?v=62" in index)
+    check("the page loads user-connections.js at the version after 61", "user-connections.js?v=63" in index)
     m = re.search(r"function renderApiKeys\(\) \{.*?\n\}\n", js, re.S)
     check("renderApiKeys is present", m is not None)
     if not m:

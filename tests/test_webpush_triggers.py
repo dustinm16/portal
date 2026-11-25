@@ -42,6 +42,7 @@ from aiohttp.test_utils import TestServer  # noqa: E402
 import test_chat_access_loss as base  # noqa: E402
 import test_notify_levels as nl  # noqa: E402
 import backup_manager as bm  # noqa: E402
+import auth as auth_mod  # noqa: E402
 import server  # noqa: E402
 import update_manager as um  # noqa: E402
 import webpush as wp  # noqa: E402
@@ -79,6 +80,8 @@ class Device:
 class PushEnv(nl.Env):
     async def __aenter__(self):
         await super().__aenter__()
+        self.saved_auth_db = auth_mod.db       # sign-out validates the cookie's session through auth's own database
+        auth_mod.db = self.db
         self.service = Service()
         await self.service.start()
         server._push_pusher = None
@@ -100,6 +103,7 @@ class PushEnv(nl.Env):
         server._push_pusher = None
         await self.app2.close()
         await self.service.srv.close()
+        auth_mod.db = self.saved_auth_db
         await super().__aexit__(*exc)
 
     async def device(self, user_id, name, token_id=None):
@@ -478,19 +482,26 @@ def test_logout_with_the_endpoint_removes_that_device_and_only_the_callers():
         ids = await base.users(d)
         mine = await env.device(ids["bob"], "bob1", token_id="an-older-session")
         theirs = await env.device(ids["alice"], "alice1")
-        cookie = {"Cookie": f"{server.Config.SESSION_COOKIE_NAME}=x"}
+        n = [0]
+
+        async def cookie_of(user):
+            # sign-out ends the session of the cookie it carries, so each call needs a live session's own cookie
+            n[0] += 1
+            tid = f"logout-session-{n[0]}"
+            await d.create_token(user, tid, ["*"], name="web_session")
+            return {"Cookie": f"{server.Config.SESSION_COOKIE_NAME}={auth_mod.create_jwt(user, tid, ['*'])}"}
         # naming another member's endpoint removes nothing of theirs
-        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=cookie, json={"endpoint": theirs.endpoint})
+        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=await cookie_of(ids["bob"]), json={"endpoint": theirs.endpoint})
         assert s == 200 and len(await d.list_push_subscriptions(ids["alice"])) == 1
         assert len(await d.list_push_subscriptions(ids["bob"])) == 1, "no endpoint was sent for bob's own"
-        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=cookie, json={"endpoint": mine.endpoint})
+        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=await cookie_of(ids["bob"]), json={"endpoint": mine.endpoint})
         assert s == 200
         assert await d.list_push_subscriptions(ids["bob"]) == []
         assert len(await d.list_push_subscriptions(ids["alice"])) == 1
         # the link now only shows the sign-out page (a GET never signs out), a bad body is harmless
-        s, _b = await http(env, "GET", "/logout", ids["bob"], headers=cookie)
+        s, _b = await http(env, "GET", "/logout", ids["bob"], headers=await cookie_of(ids["bob"]))
         assert s in (200, 302)
-        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=cookie, data=b"not json")
+        s, _b = await http(env, "POST", "/logout", ids["bob"], headers=await cookie_of(ids["bob"]), data=b"not json")
         assert s == 200
     run(body)
 

@@ -850,6 +850,10 @@ async function showAddConnectionModal() {
         sshPwField.dataset.hadStored = '';
         delete sshPwField.dataset.initialPrompt;
     }
+    const sftpClearBox = document.getElementById('connection-sftp-clear-password');
+    if (sftpClearBox) sftpClearBox.checked = false;
+    const legacyNoteNew = document.getElementById('connection-ssh-legacy-note');
+    if (legacyNoteNew) { legacyNoteNew.textContent = ''; legacyNoteNew.style.display = 'none'; }
 
     // Reset SSH shell selector
     const sshShellField = document.getElementById('connection-ssh-shell');
@@ -1210,6 +1214,11 @@ function onSSHAuthChange() {
     }
     document.getElementById('connection-ssh-stored-group').style.display =
         (authMethod !== 'key' && (isSftp || !prompt.checked)) ? 'block' : 'none';
+    // SFTP has no "Prompt each time" switch: a stored password is removed with its own box, offered
+    // only for a connection that holds one.
+    const hadStoredPw = document.getElementById('connection-ssh-stored-password').dataset.hadStored === '1';
+    document.getElementById('connection-sftp-clear-group').style.display =
+        (isSftp && authMethod !== 'key' && hadStoredPw) ? 'block' : 'none';
     // Recording is an administrator's setting and only SSH has it (the server ignores a member's
     // value, so the toggle is not offered to anyone else).
     document.getElementById('connection-ssh-recording-group').style.display =
@@ -1275,6 +1284,9 @@ function collectSSHCredential(type, isEdit, hadStoredPassword, initialPrompt) {
     }
     const pw = document.getElementById('connection-ssh-stored-password').value;
     if (type === 'sftp') {
+        // "Remove stored password" is shown only where one is stored; the server clears it for mode prompt.
+        const clearBox = document.getElementById('connection-sftp-clear-password');
+        if (clearBox && clearBox.checked) return { credential_mode: 'prompt' };
         return pw ? { credential_mode: 'stored', password: pw } : {};
     }
     const promptOn = document.getElementById('connection-ssh-prompt').checked;
@@ -1488,6 +1500,11 @@ async function editConnection(connectionId) {
             pwReset.dataset.hadStored = '';
             delete pwReset.dataset.initialPrompt;
             document.getElementById('connection-ssh-prompt').checked = true;
+            const clearReset = document.getElementById('connection-sftp-clear-password');
+            if (clearReset) clearReset.checked = false;
+            const legacyReset = document.getElementById('connection-ssh-legacy-note');
+            legacyReset.textContent = '';
+            legacyReset.style.display = 'none';
         }
 
         // Show type-specific fields
@@ -1513,6 +1530,12 @@ async function editConnection(connectionId) {
                     pwField.dataset.hadStored = config.has_stored_password ? '1' : '';
                     pwField.placeholder = config.has_stored_password ? '(Password stored - leave empty to keep it)' : '';
                     document.getElementById('connection-ssh-prompt').checked = config.credential_mode !== 'stored';
+                    // An older row can hold a password and have no mode: it shows "Prompt each time" on.
+                    if (conn.type === 'ssh' && config.has_stored_password && !config.credential_mode) {
+                        const legacyNote = document.getElementById('connection-ssh-legacy-note');
+                        legacyNote.textContent = 'A password is stored on this connection from before this setting existed. The terminal still asks each time; the file browser can use it.';
+                        legacyNote.style.display = 'block';
+                    }
                     pwField.dataset.initialPrompt = config.credential_mode !== 'stored' ? '1' : '0';
                     onSSHAuthChange();
                 }

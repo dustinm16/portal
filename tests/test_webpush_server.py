@@ -564,7 +564,7 @@ async def main():
         await w.subscribe("alice", dbb, headers={"X-Test-Tid": "t-c"})
         async with w.http.post(str(w.srv.make_url("/logout")), allow_redirects=False,
                               headers={"X-Test-User": str(w.ids["alice"]), "X-Test-Tid": "t-c",
-                                       "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"}) as lr:
+                                       "Cookie": f"{Config.SESSION_COOKIE_NAME}={auth_mod.create_jwt(w.ids['alice'], 't-c', ['*'])}"}) as lr:
             check("logout (POST) answers 200", lr.status == 200)
         check("logout removes the devices of that session", await w.rows("alice") == [])
         await w.db.create_token(w.ids["alice"], "t-d", FULL, name="web_session")
@@ -814,7 +814,7 @@ async def main():
         check("the page's re-announcement ties the device to the session that is open now: updated, no second row",
               s == 200 and b["status"] == "updated" and [r["token_id"] for r in await rows.fetchall()] == ["t-B"]
               and len(await w.rows("erin")) == 1, f"{s} {b}")
-        s, _b, _h = await w.call("POST", "erin", "/logout", headers={"X-Test-Tid": "t-B", "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"})
+        s, _b, _h = await w.call("POST", "erin", "/logout", headers={"X-Test-Tid": "t-B", "Cookie": f"{Config.SESSION_COOKIE_NAME}={auth_mod.create_jwt(w.ids['erin'], 't-B', ['*'])}"})
         check("signing out of that session (a plain POST /logout, as from a page with no push script) ends the device",
               s == 200 and await w.rows("erin") == [] and await w.db.push_subscriptions_for_send(w.ids["erin"]) == [], str(s))
         # the re-announcement never takes a device that is not this member's, and a revoked session does nothing

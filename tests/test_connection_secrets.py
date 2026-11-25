@@ -33,6 +33,7 @@ SECRET_TOKENS = {"token", "secret", "password", "key", "header", "headers", "coo
 # Names that look like a credential and are not one, each with the reason
 NOT_SECRET = {
     "host_key_ignore": "a boolean switch about verifying the server's identity",
+    "host_key_fingerprint": "the public SHA256 fingerprint of the server's host key, not a credential",
     "auth_method": "which way to sign in (password or key), not a value",
     "client_id": "the public half of an OAuth app",
     "forward_headers": "names of client headers to forward; no values",
@@ -42,6 +43,7 @@ DIAL_TOKENS = {"host", "port", "ports", "url", "tls", "scheme", "target", "addre
 NOT_DIAL = {
     "forwarded_host": "a boolean: send X-Forwarded-Host to the app",
     "host_key_ignore": "a boolean about host key verification",
+    "host_key_fingerprint": "a public fingerprint the host key is compared with, not an address",
 }
 
 

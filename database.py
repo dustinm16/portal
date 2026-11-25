@@ -1365,6 +1365,8 @@ MIGRATIONS = [
     "ALTER TABLE tokens ADD COLUMN ip TEXT",
     "ALTER TABLE tokens ADD COLUMN user_agent TEXT",
     "ALTER TABLE tokens ADD COLUMN last_ip TEXT",
+    # The failed-login household check looks tokens up by address (has_recent_login_from_anyone)
+    "CREATE INDEX IF NOT EXISTS idx_tokens_ip ON tokens(ip)",
     # API keys: address binding (comma-separated networks, NULL = not bound), where the key was
     # made and where it was last used
     "ALTER TABLE api_keys ADD COLUMN allowed_cidrs TEXT",
@@ -3989,6 +3991,58 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def merge_service_host_key(
+        self, service_id: int, fingerprint: str, host: Optional[str], port: Optional[int],
+        pin_key: str, refused_key: str, target: tuple,
+    ) -> bool:
+        """Pin a host key on an ssh service by changing only the pin keys of its CURRENT config.
+
+        The accept route used to write back the whole config it had read when the prompt was
+        built, so a config edit made while the prompt was open was overwritten. Here the row is
+        read again, the pin keys are merged into what is stored now, and the write only lands if
+        the config is still the text that was read and the host and port columns are still
+        `host` and `port` (compare and set; retried when somebody wrote in between). `target` is the
+        (host, port) the prompt showed; the ssh plugin dials the config's own host and port in
+        preference to the columns, so the stored config must still resolve to that target. False when
+        the service is not an ssh one, points elsewhere or is gone, or when its config cannot be
+        read (nothing is written)."""
+        import json
+        from hostkeys import coerce_port
+        for _ in range(8):
+            cursor = await self.conn.execute(
+                "SELECT config FROM services WHERE id = ? AND plugin = 'ssh' "
+                "AND COALESCE(host, '') = ? AND COALESCE(port, 0) = ?",
+                (service_id, host or "", port or 0))
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            stored = row["config"]
+            plain = decrypt_config(stored) if stored else "{}"
+            if stored and stored.startswith("enc:") and plain == "{}":
+                return False        # decryption failed: never write a pin over a config we cannot read
+            try:
+                cfg = json.loads(plain) if plain else {}
+            except json.JSONDecodeError:
+                return False
+            if not isinstance(cfg, dict):
+                return False
+            # the effective target, as the ssh plugin and the accept dialog work it out
+            if ((cfg.get("host", host) or "", coerce_port(cfg.get("port"), coerce_port(port, 22)))
+                    != (target[0] or "", target[1])):
+                return False
+            cfg[pin_key] = fingerprint
+            cfg.pop(refused_key, None)
+            cursor = await self.conn.execute(
+                "UPDATE services SET config = ?, updated_at = ? "
+                "WHERE id = ? AND plugin = 'ssh' AND COALESCE(host, '') = ? AND COALESCE(port, 0) = ? "
+                "AND config IS ?",
+                (encrypt_config(json.dumps(cfg)), datetime.now(timezone.utc).isoformat(),
+                 service_id, host or "", port or 0, stored))
+            await self.conn.commit()
+            if cursor.rowcount > 0:
+                return True
+        return False
+
     # Category operations
     async def create_category(self, name: str, icon: str = "folder", sort_order: int = 0) -> int:
         """Create a new category and return its ID."""
@@ -4572,6 +4626,11 @@ class Database:
         connections.extend(self._decode_shared_rows(await cursor.fetchall()))
         return connections
 
+    # The columns a connection edit may write; the PUT route drops every other key of the body before the call.
+    USER_CONNECTION_UPDATE_FIELDS = frozenset({
+        "name", "type", "host", "port", "config", "ssh_key_id", "icon", "portal_access", "api_access",
+        "maintenance", "maintenance_until", "maintenance_message"})
+
     async def update_user_connection(
         self,
         conn_id: int,
@@ -4579,9 +4638,7 @@ class Database:
         **kwargs
     ) -> bool:
         """Update a user connection (must be owned by user)."""
-        allowed_fields = {"name", "type", "host", "port", "config", "ssh_key_id", "icon", "portal_access", "api_access",
-                          "maintenance", "maintenance_until", "maintenance_message"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+        updates = {k: v for k, v in kwargs.items() if k in self.USER_CONNECTION_UPDATE_FIELDS}
         if not updates:
             return False
 
@@ -4631,12 +4688,13 @@ class Database:
         password) was overwritten and the old values came back. Here the row is read again,
         the pin keys are merged into what is stored now, and the write only lands if the
         config is still the text that was read (compare and set; retried when somebody wrote
-        in between). False when the connection no longer points at `host`:`port` (a missing
-        port means 22) or is gone, or when its config cannot be read (nothing is written)."""
+        in between). False when the connection is not an ssh or sftp one, no longer points at
+        `host`:`port` (a missing port means 22) or is gone, or when its config cannot be read (nothing is written)."""
         import json
         for _ in range(8):
             cursor = await self.conn.execute(
-                "SELECT config, host, port FROM user_connections WHERE id = ? AND user_id = ?",
+                "SELECT config, host, port FROM user_connections WHERE id = ? AND user_id = ? "
+                "AND type IN ('ssh', 'sftp')",      # sftp_browser.SFTP_ELIGIBLE_TYPES, the types the accept route allows
                 (conn_id, user_id))
             row = await cursor.fetchone()
             if not row or row["host"] != host or (row["port"] or 22) != (port or 22):
@@ -4655,8 +4713,8 @@ class Database:
             cfg.pop(refused_key, None)
             cursor = await self.conn.execute(
                 "UPDATE user_connections SET config = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = ? AND user_id = ? AND host = ? AND COALESCE(NULLIF(port, 0), 22) = ? "
-                "AND config IS ?",
+                "WHERE id = ? AND user_id = ? AND type IN ('ssh', 'sftp') "
+                "AND host = ? AND COALESCE(NULLIF(port, 0), 22) = ? AND config IS ?",
                 (encrypt_config(json.dumps(cfg)), conn_id, user_id, host, port or 22, stored))
             await self.conn.commit()
             if cursor.rowcount > 0:
@@ -4988,6 +5046,16 @@ class Database:
         for row in await cursor.fetchall():
             out[row["service_id"]] = [a.strip() for a in (row["actions"] or "").split(",") if a.strip()]
         return out
+
+    async def get_user_granted_service_expiry(self, user_id: int) -> dict:
+        """{service_id: seconds left, or None for a grant that never ends} for every live grant this user holds
+        (the same grants as get_user_granted_service_ids)."""
+        cursor = await self.conn.execute(
+            f"""SELECT sg.service_id, sg.expires_at AS expires_raw FROM service_grants sg
+                WHERE sg.grantee_user_id = ? AND {grant_expiry.live_sql('sg')}""",
+            (user_id, grant_expiry.live_param()),
+        )
+        return {row["service_id"]: self._with_expiry(row)["expires_in"] for row in await cursor.fetchall()}
 
     async def list_service_grants(self, service_id: int) -> list[dict]:
         """Live grants on one service (an expired one the sweeper has not deleted yet is not listed)."""

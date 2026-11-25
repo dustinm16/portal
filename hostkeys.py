@@ -40,6 +40,19 @@ STATE_CHANGED = "changed"
 _FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
 
+def coerce_port(value, default: int) -> int:
+    """A TCP port as an int; `default` when the value is missing or not a valid port
+    (a config saved through the form can hold the port as text or null). The ssh plugin dials
+    with this and the accept dialog pins the host key for the same target, so both use it."""
+    if isinstance(value, bool):
+        return default
+    try:
+        port = int(str(value).strip()) if isinstance(value, (str, float)) else int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 0 < port < 65536 else default
+
+
 def valid_fingerprint(value) -> bool:
     return isinstance(value, str) and bool(_FP_RE.match(value))
 
@@ -54,6 +67,15 @@ def normalize_fingerprint(value) -> Optional[str]:
     # OpenSSH prints the hash without '=' padding; accept one that kept it.
     text = text.rstrip("=")
     return text if _FP_RE.match(text) else None
+
+
+def malformed_pin(config) -> bool:
+    """True when a config being saved carries a host-key fingerprint that is set but is not one. An empty
+    value (or none) is not malformed: it means no pin."""
+    if not isinstance(config, dict):
+        return False
+    raw = config.get(FINGERPRINT_KEY)
+    return bool(raw) and normalize_fingerprint(raw) is None
 
 
 def fingerprint_of(key) -> str:

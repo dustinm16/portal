@@ -270,7 +270,7 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0, user-connections.js and dashboard.js again in 1.22.0)",
-      re.search(r"user-connections\.js\?v=(59|62)", (ROOT / "static" / "index.html").read_text())
+      re.search(r"user-connections\.js\?v=(59|62|63)", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=60", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
@@ -487,11 +487,13 @@ MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 # ... and in 1.24.1 (the share dialog's note on a trusted web connection and the API key buttons; the question when a live stream's key is
 # replaced; the Live streams script that sends confirm)
 MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
+# ... and in 1.24.2 (the service form's Desktop preset port; the SFTP form's remove-password box): the versions the pages load now
+MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))})
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))}, {str(MOVED_ON_1_24_2.get(js))})
           and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
 check("the README names the three pictures and they exist",
       all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file()
@@ -526,7 +528,7 @@ _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glo
 for js, ver, now in (("terminal.js", 7, 7), ("recordings-admin.js", 4, 4), ("user-connections.js", 56, 62)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that",
-          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))}), str(loaded))
+          loaded in ({str(ver)}, {str(MOVED_ON_1_22.get(js))}, {str(MOVED_ON_1_23.get(js))}, {str(MOVED_ON_1_24.get(js))}, {str(MOVED_ON_1_24_2.get(js))}), str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",
       all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
 # --- 1.20.0 notes: voice moderation and the room cap -----------------------------------
@@ -623,7 +625,7 @@ _stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
 _loaded_all = {}
 for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
     _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
-_moved20 = {"user-connections.js": ("56", "62"), "streams.js": ("49", "54")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0
+_moved20 = {"user-connections.js": ("56", "63"), "streams.js": ("49", "54")}  # stated in 1.20.0, loaded since 1.24.1 (user-connections.js, streams.js), 1.23.0 and 1.24.0
 check("1.20.0: the one Static files bullet states each changed script at the version the pages load (user-connections.js moved on in 1.24.1, streams.js in 1.23.0, 1.24.0 and 1.24.1)",
       all(_loaded_all[j] == {_moved20.get(j, (_stated.get(j),) * 2)[1]} and _stated.get(j) == _moved20.get(j, (_stated.get(j),) * 2)[0] for j in _loaded_all)
       and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
@@ -787,7 +789,7 @@ check("1.21.0: the administrators' summary says plainly who plays, the limits, t
 _static21 = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec21, re.M)), "")
 _pl = (ROOT / "static" / "vod-player.html").read_text()
 check("1.21.0: the Static files bullet states the versions vod-player.html really loads (portal.css moved on to 56 in 1.22.0)",
-      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v or str(MOVED_ON_1_23.get(f)) == v or str(MOVED_ON_1_24.get(f)) == v
+      all(f"`{f}` v{v}" in _static21 or str(MOVED_ON_1_22.get(f)) == v or str(MOVED_ON_1_23.get(f)) == v or str(MOVED_ON_1_24.get(f)) == v or str(MOVED_ON_1_24_2.get(f)) == v
           for f, v in re.findall(r"/static/(?:js|css)/([\w.-]+)\?v=(\d+)", _pl))
       and "`portal.css` v55" in _static21 and "portal.css?v=56" in _pl, _static21[:200])
 
@@ -941,7 +943,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 4), ("dashboard.js", 60), ("user-connections.js", 62), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 4), ("dashboard.js", 60), ("user-connections.js", 63), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))
@@ -1376,7 +1378,7 @@ _st241_txt = _s241.split("- **Static files.**", 1)[1].split("- **Rollback.**", 1
 _named241 = re.findall(r"`([a-z-]+\.js)` v(\d+)", _st241_txt)
 _pages241 = "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html"))
 check("1.24.1 notes: every script version the Static files bullet names is the one a page loads",
-      len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 for n, v in _named241), str(_named241))
+      len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 or f"/{n}?v={MOVED_ON_1_24_2.get(n)}" in _pages241 for n, v in _named241), str(_named241))
 check("1.24.1 notes: the Rollback bullet says what is lost and what does not come back",
       all(n in _s241.split("- **Rollback.**", 1)[-1] if "- **Rollback.**" in _s241 else False for n in ("What is lost on 1.24.0", "What does not come back", "WEBHOOK_LOCAL_ALLOW", "jsDelivr")))
 check("1.24.1 notes: the limit of a trusted proxied application is stated in the notes, the Security list and the About page",
@@ -1417,7 +1419,7 @@ for name, needles in {
     check(f"1.24.1 authorisation states: {name}", all(n in _low241 for n in needles), str([n for n in needles if n not in _low241]))
 check("1.24.1: the static versions stated are the ones the pages load",
       "`user-connections.js` v62" in _sec241 and "`streams.js` v54" in _sec241 and "`live-ops-admin.js` v4" in _sec241
-      and "user-connections.js?v=62" in (ROOT / "static" / "index.html").read_text()
+      and "user-connections.js?v=63" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text())
 # Counting failed sign-ins per IPv6 /64 was reverted in the lane and is not part of 1.24.1: nowhere may it be claimed.
@@ -1650,7 +1652,7 @@ _ucjs241 = (ROOT / "static" / "js" / "user-connections.js").read_text(encoding="
 _idx241 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.24.1: the share dialog does not call an administrator's trusted web connection sandboxed, and the notes say so",
       'id="share-web-trusted-note"' in _idx241 and "is not sandboxed" in _idx241 and "share-web-trusted-note" in _ucjs241
-      and "user-connections.js?v=62" in _idx241 and "`user-connections.js` v62" in _sec241
+      and "user-connections.js?v=63" in _idx241 and "`user-connections.js` v62" in _sec241
       and "not sandboxed" in _low241 and "byte for byte" in _low241)
 check("1.24.1: the README feature text names the isolation", "runs in an opaque-origin sandbox" in text)
 check("1.24.1: the notes say the portal keeps an isolated page's cookies, what ends them and what still breaks",

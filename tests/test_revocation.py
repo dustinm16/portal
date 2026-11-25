@@ -107,9 +107,13 @@ async def run():
     async def fake_revoke_key(key_id, user_id):
         return state["key_ok"]
 
+    async def fake_user_tokens(user_id):    # an unknown id is looked up among the caller's own sessions
+        return []
+
     saved = (server.authenticate_request, server.get_user_role_from_token, server.db.get_token,
              server.db.get_user_by_id, server.revoke_token, server.audit_log,
-             server.db.revoke_api_key, server.db.delete_api_key)
+             server.db.revoke_api_key, server.db.delete_api_key, server.db.get_user_tokens)
+    server.db.get_user_tokens = fake_user_tokens
     server.authenticate_request = fake_auth
     server.get_user_role_from_token = fake_role
     server.db.get_token = fake_get_token
@@ -213,7 +217,7 @@ async def run():
     finally:
         (server.authenticate_request, server.get_user_role_from_token, server.db.get_token,
          server.db.get_user_by_id, server.revoke_token, server.audit_log,
-         server.db.revoke_api_key, server.db.delete_api_key) = saved
+         server.db.revoke_api_key, server.db.delete_api_key, server.db.get_user_tokens) = saved
         reset()
 
 

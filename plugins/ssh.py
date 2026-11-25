@@ -8,7 +8,7 @@ from typing import Optional
 from aiohttp import web, WSMsgType
 
 import sshpass_rules
-from hostkeys import HostKeyRefused, connect_verified, policy_for
+from hostkeys import HostKeyRefused, coerce_port, connect_verified, policy_for
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 from session_recording import AsciicastRecorder, recorder_for, recording_wanted
@@ -85,6 +85,11 @@ class SSHPlugin(PluginBase):
                     "description": "Do not verify host key (not recommended: the server's identity is then not checked)",
                     "default": False
                 },
+                "host_key_fingerprint": {
+                    "type": "string",
+                    "description": "Pinned host key fingerprint (SHA256:..., as ssh-keygen -lf prints it); public, not a secret. Leave empty to pin on first accept",
+                    "default": ""
+                },
                 "shell": {
                     "type": "string",
                     "description": "Remote shell to use (e.g. /bin/bash, /usr/bin/fish)",
@@ -115,7 +120,7 @@ class SSHPlugin(PluginBase):
 
         config = target.config
         host = config.get("host", target.host)
-        port = config.get("port", target.port or 22)
+        port = coerce_port(config.get("port"), coerce_port(target.port, 22))   # as the accept dialog pins it
         username = config.get("username")
 
         logger.info(f"SSH connection for user {user_id}: {username}@{host}:{port}")
@@ -340,7 +345,7 @@ class SSHPlugin(PluginBase):
             return {"healthy": False, "message": "asyncssh not installed"}
 
         host = target.config.get("host", target.host)
-        port = target.config.get("port", target.port or 22)
+        port = coerce_port(target.config.get("port"), coerce_port(target.port, 22))
 
         try:
             reader, writer = await asyncio.wait_for(

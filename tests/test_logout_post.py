@@ -25,7 +25,7 @@ async def alive(s, base):
 
 
 async def main():
-    env = await h.boot(names=("owner", "bob"), superadmin=())
+    env = await h.boot(names=("owner", "bob", "carol"), superadmin=())
     base = env.base
     bob = env.sessions["bob"]
 
@@ -65,6 +65,32 @@ async def main():
                 check(f"POST /logout without a session cookie ({label}) answers but sends no Set-Cookie",
                       r.status in (200, 303) and not r.headers.getall("Set-Cookie", []), f"{r.status} {r.headers.getall('Set-Cookie', [])}")
     check("... and a signed-in browser is untouched by it", await alive(bob, base))
+
+    # ---- a request with the cookie AND another credential ends the cookie's session, not the other one
+    carol = env.sessions["carol"]
+    async with aiohttp_anon() as anon:
+        async with anon.post(base + "/api/token", json={"username": "carol", "password": h.PW}) as r:
+            tok = (await r.json())["token"]
+        bearer = {"Authorization": f"Bearer {tok}"}
+
+        async def bearer_alive():
+            async with anon.get(base + "/api/me", headers=bearer) as r:
+                return r.status == 200
+        cookie_val = next(c.value for c in carol.cookie_jar if c.key == "portal_session")
+
+        async def cookie_alive():
+            async with anon.get(base + "/api/me", headers={"Cookie": f"portal_session={cookie_val}"}) as r:
+                return r.status == 200
+        check("carol has a live cookie session and a live bearer token", await cookie_alive() and await bearer_alive())
+        async with carol.post(base + "/logout", json={}, headers={"Sec-Fetch-Site": "same-origin", **bearer}) as r:
+            await r.read()
+            check("POST /logout with cookie and bearer answers 200", r.status == 200, str(r.status))
+        check("... the cookie's session is the one that ended", not await cookie_alive())
+        check("... the bearer token of the other session is still live", await bearer_alive())
+        async with anon.post(base + "/logout", json={}, headers={"Sec-Fetch-Site": "same-origin", **bearer}) as r:
+            await r.read()
+            check("POST /logout with a bearer and no cookie answers 200", r.status == 200, str(r.status))
+        check("... and ends nothing", await bearer_alive())
 
     # ---- POST from the portal's own page signs out
     async with bob.post(base + "/logout", headers={"Sec-Fetch-Site": "same-origin"}, data={}, allow_redirects=False) as r:

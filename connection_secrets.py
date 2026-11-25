@@ -7,7 +7,7 @@ Two rules, kept in one place so every route that returns or edits a connection u
   `has_<key>: true` flag; the value is never returned to any credential, whatever its scope. Only an edit
   that sends a new value changes it.
 - A stored secret does not follow a moved target. When anything that decides where the portal dials changes
-  (the row's host or port, the origin of a URL key, a TLS port, which plugin handles the type), every stored
+  (the row's host or port, the origin of a URL key, a TLS port, a switch of the connection type, certificate checking turned off), every stored
   secret of the connection is removed unless the same request sends it again.
 
 SECRET_KEYS and DIAL_KEYS are plain sets on purpose (not derived from the plugins at run time): a plugin field
@@ -99,6 +99,11 @@ def dial_changed(old_host, old_port, new_host, new_port, old_config: dict, new_c
     for key in ADDRESS_KEYS:
         if _norm(old_config.get(key)) != _norm(new_config.get(key)):
             return True
+    # Turning certificate checking off sends the stored secret to an endpoint nobody verifies any more.
+    # A missing verify_ssl means off (every plugin's default and its dial code use False), so only an
+    # explicit on becoming off or missing counts; off to on does not.
+    if old_config.get("verify_ssl") and not new_config.get("verify_ssl"):
+        return True
     return False
 
 

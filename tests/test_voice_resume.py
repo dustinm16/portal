@@ -335,6 +335,7 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
             content_type = "application/x-www-form-urlencoded"
             headers = {}
             query = {}
+            transport = None
 
             class cookies:
                 @staticmethod
@@ -343,13 +344,13 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
 
         revoked = []
 
-        async def auth(request):
+        async def validate(cookie, ip=None):    # sign-out ends the session of the cookie it carries
             return Tok
 
         async def revoke(token_id):
             revoked.append(token_id)
-        real_auth, real_revoke = server.authenticate_request, server.db.revoke_token
-        server.authenticate_request, server.db.revoke_token = auth, revoke
+        real_validate, real_revoke = server.validate_token, server.db.revoke_token
+        server.validate_token, server.db.revoke_token = validate, revoke
         try:
             try:
                 await server.http_logout(Req)
@@ -357,7 +358,7 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
             except server.web.HTTPSeeOther:     # a form post is answered with 303 to the login page
                 pass
         finally:
-            server.authenticate_request, server.db.revoke_token = real_auth, real_revoke
+            server.validate_token, server.db.revoke_token = real_validate, real_revoke
             server._unregister_user_ws(ALICE, s1)
             server._unregister_user_ws(ALICE, s2)
         assert revoked == ["sess-1"]

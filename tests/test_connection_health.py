@@ -952,6 +952,50 @@ async def fix_c_checks(env):
     await db.conn.commit()
     check("maintenance: an end time in the past is no maintenance", (await mon.statuses_for(uid["owner"]))[mu]["status"] == "down")
 
+    # ---- 4b. the global maintenance flag reads as maintenance for proxy-type connections ------------------
+    await wipe()
+    alerts.reset_state()
+    fire = Fire()
+    alerts.bind(fire=fire, notify=None, get_setting=None, set_setting=None)
+    alerts.bind_record(None)
+    alerts._clock = lambda: clock["t"]
+    web_u, web_c = await mk("owner", "webapp", "web.example", ctype="http", port=80)
+    ssh_u, ssh_c = await mk("owner", "shellbox", "shell.example")
+    gflag = {"flag": None}
+
+    async def read_flag():
+        return gflag["flag"]
+
+    mon = ch.Monitor(db, TYPES, emit=alerts.emit, probe=probe2, clock=lambda: clock["t"], global_maintenance=read_flag)
+    verdict2["v"] = "ok"
+    for _ in range(2):
+        clock["t"] += 5
+        await mon.run_round()
+    st = await mon.statuses_for(uid["owner"])
+    check("global maintenance off: both dots show the real status", st[web_u]["status"] == "up" and st[ssh_u]["status"] == "up", str(st))
+    gflag["flag"] = {"message": "secret plan", "until": None, "set_by": "adm", "set_at": None}
+    st = await mon.statuses_for(uid["owner"])
+    check("global maintenance: the proxy-type dot reads 'maintenance' and carries nothing else",
+          st[web_u] == {"status": "maintenance", "latency_ms": None, "since": None}, str(st[web_u]))
+    check("global maintenance: a connection the proxy does not serve keeps its status", st[ssh_u]["status"] == "up", str(st[ssh_u]))
+    check("global maintenance: the message is not in the answer", "secret plan" not in json.dumps(st))
+    verdict2["v"] = "fail"
+    for _ in range(3):
+        clock["t"] += 5
+        await mon.run_round()
+    await settle()
+    downs = [p["summary"] for e, p in fire.sent]
+    check("global maintenance: the proxy-type connection goes down without an alert, the other one alerts once",
+          len(downs) == 1 and "webapp" not in downs[0] and mon.state.entries[web_c].status == "down" and mon.state.entries[ssh_c].status == "down", str(downs))
+    gflag["flag"] = {"message": "", "until": "2000-01-01T00:00:00Z", "set_by": "adm", "set_at": None}
+    check("global maintenance: an end time in the past is no maintenance", (await mon.statuses_for(uid["owner"]))[web_u]["status"] == "down")
+    gflag["flag"] = None
+    clock["t"] += 5
+    await mon.run_round()
+    await settle()
+    check("global maintenance: once it ends the owed alert is sent",
+          len([1 for e, p in fire.sent if "webapp" in p["summary"]]) == 1, str(fire.sent))
+
     # ---- 5c. a stale stored down does not announce 'back up' -----------------------------------------
     await wipe()
     ru, rc = await mk("owner", "restarted", "restart.example")
