@@ -96,10 +96,10 @@ def mint(secret: str, *, user_id: int, token_id: str, conn_uuid: str,
 
     Not bound to the client address (release 1.24.1): a member's address changes in the middle of a page (mobile
     network, IPv4 and IPv6 on different connections) and a bound capability then failed inside an open page. The
-    address buys no protection here: script in the isolated page can read its own address and already reaches
-    everything the capability reaches from the viewer's own address, and a leaked address of the capability is
-    still limited to one connection, ends with the session (logout, revoke, password change) and expires after
-    CAP_TTL_SECONDS."""
+    address does not stop script in the isolated page (it reads its own address and already reaches everything the
+    capability reaches, from the viewer's own address). What is given up: a copy of the address used from elsewhere
+    until CAP_TTL_SECONDS or the end of the session. It is limited to one connection and ends with the session
+    (logout, revoke, password change)."""
     exp = int((time.time() if now is None else now) + ttl)
     body = _b64(json.dumps([int(user_id), str(token_id), str(conn_uuid), exp],
                            separators=(",", ":")).encode("utf-8"))

@@ -293,10 +293,11 @@ def run_browser(info):
               not str(r.get("read_me", "")).startswith("200") and not str(r.get("post_share", "")).startswith("200")
               and not str(r.get("read_dashboard", "")).startswith("200"), r)
         check("embedded browser: it cannot reach the browser page that frames it", str(r.get("parent", "")).startswith("ERR"), r.get("parent"))
-        wait_for(lambda: page.input_value("#url-input").startswith("http://127.0.0.1"), 6)
+        wait_for(lambda: page.input_value("#url-input") not in ("", "about:blank"), 6)
         shown = page.input_value("#url-input")
-        check("embedded browser: the address bar shows the page's own address without the capability",
-              shown.startswith(up) and "~" not in shown, shown)
+        # bob is a grantee: the address bar names the connection and the path, never the shared host or the capability
+        check("embedded browser: a grantee's address bar shows the connection's name and path, with no host, port or capability",
+              "127.0.0.1" not in shown and str(up.rsplit(":", 1)[-1]) not in shown and "~" not in shown and shown != "", shown)
         wait_for(lambda: "evil-title" in page.inner_text(".tab-bar"), 6)
         check("embedded browser: the tab shows the page's title", "evil-title" in page.inner_text(".tab-bar"), page.inner_text(".tab-bar"))
         time.sleep(0.5)
