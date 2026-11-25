@@ -21347,7 +21347,30 @@ def _proxy_redirect_url(loc: str, current_url: str, proxy_prefix: str, target_or
     return urlunsplit((urlsplit(target_origin).scheme, urlsplit(target_origin).netloc, path, split.query, ""))
 
 
-def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str, own_prefix: Optional[str] = None) -> str:
+_OWN_ALIASES = ("~https", "~http", "~")      # a grantee's addresses for the connection's own site (see _proxy_browser_location)
+
+
+def _origin_text(url: str) -> str:
+    """scheme://host[:port] of an address, as the proxy writes an origin."""
+    p = urlsplit(url)
+    return f"{p.scheme}://{p.netloc.rsplit('@', 1)[-1]}"
+
+
+def _effective_origin(url: str):
+    """(scheme, lower-case host, port with the scheme's default filled in, whether the port was written) or None."""
+    try:
+        p = urlsplit(url)
+        host, port = (p.hostname or "").lower(), p.port
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not host:
+        return None
+    default = 443 if p.scheme == "https" else 80
+    return p.scheme, host, port or default, port is not None and port != default
+
+
+def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str, own_prefix: Optional[str] = None,
+                            own_origin: Optional[str] = None) -> str:
     """A Location from a site in general-browsing mode, kept inside the proxy.
 
     A protocol-relative value (//host/path) names another host and takes the
@@ -21358,16 +21381,29 @@ def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str, own_p
     address.
 
     own_prefix is given for a member who was only given the connection: a Location that names the connection's own
-    site (root-relative, or its origin) is put under that prefix, which holds no host or port.
+    site (root-relative, or its origin) is put under that prefix, which holds no host or port. own_origin is the
+    connection's configured origin: the same host on the other scheme at that scheme's default port (an http to
+    https upgrade, a site on 8080 that sends people to https://host/) is the same site and must not put the host into
+    the member's address bar either; it is put under "<proxy_base>/~http" or "/~https", which dial that scheme, and
+    under plain "~" when it is the configured origin itself (so a site that goes back is not sent round in a circle).
     """
     if own_prefix:
         absolute = f"{target_origin.split(':', 1)[0]}:{loc}" if loc.startswith("//") else loc
         if absolute.startswith("/") and not absolute.startswith("//"):
             return f"{own_prefix}{absolute}"
         if absolute[:8].lower().startswith(("http://", "https://")):
-            rest = absolute[len(target_origin):]
-            if absolute[:len(target_origin)].lower() == target_origin.lower() and (rest == "" or rest[0] in "/?#"):
-                return f"{own_prefix}{rest if rest[:1] == '/' else '/' + rest}"
+            cfg, new = _effective_origin(own_origin or target_origin), _effective_origin(absolute)
+            if cfg and new and new[1] == cfg[1]:
+                if new[:3] == cfg[:3]:
+                    alias = "~"
+                elif not new[3]:                    # no port written, or the scheme's own default one
+                    alias = "~" + new[0]
+                else:
+                    alias = None
+                if alias:
+                    parts = urlsplit(absolute)
+                    rest = (parts.path or "/") + (f"?{parts.query}" if parts.query else "") + (f"#{parts.fragment}" if parts.fragment else "")
+                    return f"{proxy_base}/{alias}{rest}"
     if loc.startswith("//"):
         return f"{proxy_base}/{target_origin.split(':', 1)[0].lower()}:{loc}"
     if loc.startswith("/"):
@@ -22010,9 +22046,12 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     shared_viewer = bool(connection.get("shared")) and not await _is_recording_admin(token.user_id)
     raw_path = request_path        # the path without the capability segment: a grantee's "~" alias follows the token
     route_path, full_url_path, own_alias = raw_path, False, False
+    alias_seg = "~"          # "~" the connection's own site; "~http" / "~https": the same host on that scheme and its default port
     if browser_mode:
-        if shared_viewer and (raw_path == "~" or raw_path.startswith("~/")):
-            route_path = raw_path[2:]
+        alias_hit = next((a for a in _OWN_ALIASES if shared_viewer and (raw_path == a or raw_path.startswith(a + "/"))), None)
+        if alias_hit:
+            alias_seg = alias_hit
+            route_path = raw_path[len(alias_hit) + 1:]
         else:
             full_url_path = raw_path.startswith("http://") or raw_path.startswith("https://")
         own_alias = shared_viewer and not full_url_path
@@ -22064,9 +22103,20 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     else:
         target_url = config["target_url"].rstrip("/")
 
+    own_origin_cfg = _origin_text(target_url)       # the connection's own origin, before an alias moves it to another scheme
+    if own_alias and alias_seg != "~":
+        # The same host on the other scheme (and its default port): one address, no host shown to a grantee
+        alias_host = urlparse(target_url).hostname or ""
+        try:
+            await resolve_checked_host_cached(alias_host, 443 if alias_seg == "~https" else 80)
+        except (HostCheckError, ValueError):
+            return web.Response(status=403, text="Host not allowed")
+        target_url = f"{alias_seg[1:]}://{'[' + alias_host + ']' if ':' in alias_host else alias_host}"
+        config["target_url"] = target_url
+
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
-    proxy_prefix = f"{proxy_base}/~" if own_alias else f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
+    proxy_prefix = f"{proxy_base}/{alias_seg}" if own_alias else f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
     # A connection that was only shared with this member (an administrator is not asked): the pages the proxy
     # serves are not given its scheme, host and port in the script it writes into them
     origin_hidden = shared_viewer and not browser_mode      # the viewer decision made once above (shared_viewer)
@@ -22270,7 +22320,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                         if browser_mode:
                             # Browser mode: encode full URL in proxy path
                             loc = _proxy_browser_location(loc, proxy_base, target_origin,
-                                                          own_prefix=proxy_prefix if own_alias else None)
+                                                          own_prefix=proxy_prefix if own_alias else None,
+                                                          own_origin=own_origin_cfg if own_alias else None)
                         else:
                             loc = _proxy_rewrite_location(loc, proxy_prefix, target_origin)
                         resp_headers.add(key, loc)
@@ -22420,7 +22471,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                 inject_js = (
                                     f'<script>(function(){{"use strict";'
                                     f'var B="{proxy_base}";'
-                                    f'var X="{"/~" if own_alias else "/" + target_origin}";'
+                                    f'var X="{"/" + alias_seg if own_alias else "/" + target_origin}";'
                                     f'var P=location.origin;'
                                     # Helper: rewrite a URL string
                                     f'function R(u){{if(typeof u!=="string")return u;'

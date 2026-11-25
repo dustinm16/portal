@@ -54,6 +54,10 @@ async def redir_abs(request):
     raise web.HTTPFound(f"http://127.0.0.1:{request.url.port}/landing?a=1")
 
 
+async def redir_to(request):
+    raise web.HTTPFound(request.query["to"].replace("PORT", str(request.url.port)))
+
+
 async def redir_rel(request):
     raise web.HTTPFound("/landing")
 
@@ -77,6 +81,7 @@ async def main():
     up.router.add_get("/bpage", bpage)
     up.router.add_get("/redir-abs", redir_abs)
     up.router.add_get("/redir-rel", redir_rel)
+    up.router.add_get("/redir-to", redir_to)
     upstream = TestServer(up, host="127.0.0.1")
     await upstream.start_server()
     env = await h.boot()
@@ -180,6 +185,26 @@ async def main():
     check("browser mode: no host or port in the redirect answers", "127.0.0.1" not in headers and port not in headers, headers)
     st, body, headers, r = await bfetch(owner, "redir-abs")
     check("browser mode: the owner's redirect keeps the origin", r.headers.get("Location") == f"{base}/http://127.0.0.1:{port}/landing?a=1", str(r.headers.get("Location")))
+    # the same host on another scheme or at its default port is the connection itself, not another site (no host in the address bar)
+    for to, want, label in ((f"http://127.0.0.1:PORT/same?x=1", f"{base}/~/same?x=1", "the configured origin itself"),
+                            ("http://127.0.0.1/landing", f"{base}/~http/landing", "the same host at port 80"),
+                            ("https://127.0.0.1/landing?a=1", f"{base}/~https/landing?a=1", "the same host on https (an upgrade)"),
+                            ("HTTPS://127.0.0.1:443/up", f"{base}/~https/up", "the default port written out, any letter case"),
+                            ("https://127.0.0.1", f"{base}/~https/", "no path")):
+        st, body, headers, r = await bfetch(bob, "~/redir-to?to=" + to.replace(":", "%3A").replace("/", "%2F"))
+        loc = r.headers.get("Location", "")
+        check(f"browser mode: a redirect to {label} stays under an alias and shows no host or port",
+              st == 302 and loc == want and "127.0.0.1" not in loc and port not in loc, f"{st} {loc}")
+    for to, label in ((f"http://127.0.0.1:{int(port) + 1}/x", "the same host on another port"), ("https://other.example/x", "another host")):
+        st, body, headers, r = await bfetch(bob, "~/redir-to?to=" + to.replace(":", "%3A").replace("/", "%2F"))
+        check(f"browser mode: a redirect to {label} is still another site (wrapped with its origin)",
+              st == 302 and r.headers.get("Location", "").startswith(f"{base}/{to.split('/x')[0]}/"), f"{st} {r.headers.get('Location')}")
+    st, body, headers, r = await bfetch(bob, "~http/landing")
+    check("the ~http address dials the host on port 80, not the configured port (nothing listens there: the proxy answers 502, not the page)",
+          st in (502, 503, 504) and port not in body and "127.0.0.1" not in body, f"{st} {body[:200]}")
+    st, body, headers, r = await bfetch(owner, f"redir-to?to=http%3A%2F%2F127.0.0.1%2Fx")
+    check("the owner's own redirect is unchanged (the origin stays in the address)",
+          st == 302 and r.headers.get("Location") == f"{base}/http://127.0.0.1/x", f"{st} {r.headers.get('Location')}")
     # another site by its full address is still reached and answered under its own origin path
     st, body, headers, r = await bfetch(bob, f"http://127.0.0.1:{port}/bpage")
     check("browser mode: a full address typed by the member is still served under the origin path",
