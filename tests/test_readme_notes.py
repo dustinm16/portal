@@ -1587,7 +1587,7 @@ for name, needles in {
     "the seat belt is not a wall": ("seat belt, not a wall", "without a `referer`"),
     "every caller considered": ("the portal's own pages", "embedded browser", "/api/push/", "obs", "api clients"),
     "cookies and Clear-Site-Data": ("clear-site-data", "any letter case", "dot segment"),
-    "marks and audit": ("connection.proxy_trust", "no screen for it", "1.24.0 ignores them"),
+    "marks and audit": ("connection.proxy_trust", "shared web connections", "1.24.0 ignores them"),
     "known gaps": ("websocket sockets", "sandboxed popup"),
     "Not tested names the browsers": ("firefox, safari", "roughly 25 applications"),
 }.items():

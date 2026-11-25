@@ -366,6 +366,7 @@
         /* Admin > Live streams: the End now / Stop relays question is a long text on a row of its own; the table cells
            do not wrap, so this one cell does, and it never makes the table wider than its window. */
         #live-ops-body .live-ops-confirm-row > td { white-space: normal; overflow-wrap: anywhere; }
+        #proxy-trust-body .proxy-trust-confirm-row > td { white-space: normal; overflow-wrap: anywhere; }
         .sysmon-table td.cmdline {
             max-width: 300px;
             overflow: hidden;
@@ -1650,6 +1651,19 @@
                         <p id="push-admin-msg" style="font-size:0.8125rem; margin:0.5rem 0 0; color:var(--text-muted);"></p>
                     </div>
 
+                    <!-- Shared web connections and their trust mark (superadmin only: the card appears when the list loads) -->
+                    <div class="admin-card" id="proxy-trust-card" style="display:none;">
+                        <h3>Shared web connections</h3>
+                        <p style="color:var(--text-secondary); font-size:0.8125rem; margin:0 0 0.75rem;">Web connections that members have shared with others. A page of a member's shared connection runs in a sandbox that keeps its script away from the viewer's portal session. Trusting a connection lifts that for it: its pages then run on the portal's own address, as each person it is shared with. A connection in browser mode is never trusted. Only the owner, the name and the number of people it is shared with are shown. Changes are written to the audit log and ask first.</p>
+                        <p id="proxy-trust-note" style="color:var(--text-muted); font-size:0.8125rem;"></p>
+                        <div class="sys-table-scroll">
+                            <table class="sysmon-table">
+                                <thead><tr><th>Owner</th><th>Connection</th><th>Kind</th><th>Shared with</th><th>State</th><th></th></tr></thead>
+                                <tbody id="proxy-trust-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- Certificate Management Card -->
                     <div class="admin-card" style="grid-column: span 1;">
                         <h3>
@@ -2574,6 +2588,7 @@
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/recordings-admin.js?v=4"></script>
     <script src="/static/js/live-ops-admin.js?v=4"></script>
+    <script src="/static/js/proxy-trust-admin.js?v=1"></script>
     <script src="/static/js/maintenance-admin.js?v=2"></script>
     <script src="/static/js/block-ref-admin.js?v=1"></script>
     <script>
