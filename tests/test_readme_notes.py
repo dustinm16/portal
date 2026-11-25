@@ -1745,6 +1745,9 @@ check("1.24.1: every place that says uploads are for signed-in members names the
       "emotes" in _low241r and "public by design" in _low241r and "public by design" in _about241r.lower()
       and "public by design" in text.lower().split("\n## security\n")[1][:6000] and "public by design" in _api241r.lower()
       and "public by design" in _apihtml241r.lower() and "every answer of /static/uploads" not in (_about241r + _api241r + _apihtml241r + text).lower())
+check("1.24.1: the notes say a browser-mode connection's stored headers go only to its own site, and the code decides by origin",
+      "sent only to the connection's own site" in _low241r and "`~http`" in _sec241r and "unencrypted" in _low241r
+      and "send_secrets" in _srv241 and "configured_origin" in _srv241)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

@@ -21193,7 +21193,7 @@ def _proxy_query_string(request: web.Request) -> str:
 
 
 def _proxy_request_headers(request: web.Request, config: dict, upstream_host: str,
-                           proxy_prefix: str, browser_mode: bool) -> CIMultiDict:
+                           proxy_prefix: str, browser_mode: bool, send_secrets: bool = True) -> CIMultiDict:
     """Headers sent to the upstream for one proxied request.
 
     Only headers matching the connection's forward_headers list are copied.
@@ -21202,6 +21202,9 @@ def _proxy_request_headers(request: web.Request, config: dict, upstream_host: st
     X-Forwarded-Host and X-Forwarded-Prefix are sent only when the connection
     has forwarded_host on. Browser mode (any site on the internet) is told
     nothing about the member or the portal beyond the scheme.
+    The connection's stored auth_header and extra_headers are added only when send_secrets is true: the caller
+    says so only for a request to the connection's own origin (scheme, host and port), never for another site
+    the embedded browser is on, nor for the same host on another scheme or port.
     """
     import fnmatch as _fnmatch
 
@@ -21237,6 +21240,8 @@ def _proxy_request_headers(request: web.Request, config: dict, upstream_host: st
                 out["X-Forwarded-Host"] = host
             out["X-Forwarded-Prefix"] = proxy_prefix
 
+    if not send_secrets:
+        return out
     if config.get("auth_header"):
         out["Authorization"] = config["auth_header"]
     extra = config.get("extra_headers")
@@ -22090,6 +22095,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     verify_ssl = config.get("verify_ssl", False)
     proxy_base = f"/proxy/{conn_uuid}" + (f"/{cap_segment}" if cap_segment else "")
 
+    # The connection's own origin as configured, taken before a browsed site or an alias replaces config["target_url"]:
+    # the stored auth_header and extra_headers go only to it.
+    configured_origin = _origin_parts(config["target_url"])
+
     # Browser mode: extract target URL from path for multi-site navigation
     if full_url_path:
         # Full URL in path — navigate to external site
@@ -22257,7 +22266,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     # Prepare headers: no Portal auth is passed on, and the forwarding headers
     # (client address, scheme, host, prefix) are set here, never copied.
     fwd_headers = _proxy_request_headers(
-        request, config, parsed_target.netloc, proxy_prefix, browser_mode)
+        request, config, parsed_target.netloc, proxy_prefix, browser_mode,
+        send_secrets=configured_origin is not None and _origin_parts(target_origin) == configured_origin)
 
     # Record connection usage: once a minute per user and connection, not once per proxied request
     if await _note_connection_opened(connection, token.user_id):
