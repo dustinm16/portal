@@ -227,5 +227,43 @@ class N {
     await first;
     check('the confirm button still works after the figures moved', c3.state.asking === null);
   });
+  // ---- the probe that decides whether the Live streams tab is shown reads only the status: it must let go of the body,
+  // or the request stays open and the admin page never becomes idle (each run has its own page, with the tab in it)
+  async function probeRun(response) {
+    const pels = { 'tab-btn-livestreams': new N('BUTTON'), 'live-ops-body': new N('TBODY'), 'tab-livestreams': new N('DIV'), 'live-ops-note': new N('P') };
+    pels['tab-btn-livestreams'].style.display = 'none';
+    const pcalls = [];
+    const pctx = {
+      document: { readyState: 'complete', hidden: false, visibilityState: 'visible', head: new N('HEAD'), body: new N('BODY'),
+        getElementById: id => pels[id] || null, createElement: t => new N(t), createElementNS: (ns, t) => new N(t),
+        addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] },
+      location: { protocol: 'https:', host: 'portal.test', pathname: '/admin', href: 'https://portal.test/admin' },
+      localStorage: { getItem: () => null, setItem() {} }, navigator: {},
+      setTimeout: () => 0, clearTimeout() {}, setInterval: () => 1, clearInterval() {}, console,
+      fetch: async (url) => { pcalls.push(url); return response; },
+    };
+    pctx.window = pctx;
+    vm.createContext(pctx);
+    for (const [i, name] of [[2, 'portal.js'], [3, 'stream-health.js'], [4, 'live-ops-admin.js']]) {
+      vm.runInContext(fs.readFileSync(process.argv[i], 'utf8'), pctx, { filename: name });
+    }
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    return { shown: pels['tab-btn-livestreams'].style.display === '', calls: pcalls };
+  }
+  await withDeadline('the tab probe', async () => {
+    let cancelled = 0;
+    const body = () => ({ cancel() { cancelled++; return Promise.resolve(); } });
+    let r = await probeRun({ ok: true, status: 200, body: body(), json: async () => ({}) });
+    check('the probe asks for the list once', r.calls.length === 1 && r.calls[0] === '/api/admin/live-streams', JSON.stringify(r.calls));
+    check('an administrator gets the tab, and the probe lets go of the answer body', r.shown && cancelled === 1, cancelled);
+    r = await probeRun({ ok: false, status: 404, body: body(), json: async () => ({}) });
+    check('a refused probe leaves the tab hidden and lets go of the body too', !r.shown && cancelled === 2, cancelled);
+    r = await probeRun({ ok: true, status: 200, json: async () => ({}) });
+    check('an answer without a body object still shows the tab', r.shown);
+    r = await probeRun({ ok: true, status: 200, body: { cancel() { throw new Error('locked'); } }, json: async () => ({}) });
+    check('a body that cannot be cancelled does not stop the tab from showing', r.shown);
+    r = await probeRun({ ok: true, status: 200, body: { cancel() { return Promise.reject(new Error('closed')); } }, json: async () => ({}) });
+    check('a cancel that fails is not an unhandled rejection and the tab shows', r.shown);
+  }, 15000);
   console.log(results.map(r => 'RESULT ' + JSON.stringify(r)).join('\n'));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'the harness ran', ok: false, detail: String(e && e.stack || e) })); });

@@ -216,6 +216,11 @@
         // The tab is shown only when the list opens for this account (administrators).
         Portal.fetch('/api/admin/live-streams').then(function (res) {
             if (res.ok) tabBtn.style.display = '';
+            // Only the status is wanted: the body is let go, or the request stays open and the page never becomes idle.
+            try {
+                var rest = res.body && typeof res.body.cancel === 'function' ? res.body.cancel() : null;
+                if (rest && typeof rest.catch === 'function') rest.catch(function () { /* already closed */ });
+            } catch (e) { /* nothing to let go */ }
         }).catch(function () { /* not an administrator: the tab stays hidden */ });
     }
 

@@ -489,7 +489,7 @@ MOVED_ON_1_23 = {"portal.js": 52, "push.js": 5}
 MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js": 4, "push.js": 6, "admin.js": 41}
 # ... and in 1.24.2 (the time left on a granted service's card, the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages; the Live streams figures that keep moving while a question is open and the xterm version of the Recordings script): the versions the pages load now
 MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4,
-                   "live-ops-admin.js": 5, "recordings-admin.js": 5, "dashboard.js": 61}
+                   "live-ops-admin.js": 6, "recordings-admin.js": 5, "dashboard.js": 61}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -1319,7 +1319,7 @@ check("1.24.0: the static versions stated are the ones the pages load",
       "`stream-health.js` is new at version 4" in _sec240 and "`live-ops-admin.js` is new at version 3" in _sec240
       and "`streams.js` is version 53" in _sec240
       and "/static/js/stream-health.js?v=4" in (ROOT / "static" / "watch.html").read_text()
-      and "/static/js/live-ops-admin.js?v=5" in (ROOT / "static" / "admin.html").read_text()  # 3 then, 4 since 1.24.1, 5 since 1.24.2
+      and "/static/js/live-ops-admin.js?v=6" in (ROOT / "static" / "admin.html").read_text()  # 3 then, 4 since 1.24.1, 6 since 1.24.2
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text())
 _api24 = (ROOT / "docs" / "API.md").read_text()
 _docs24 = (ROOT / "static" / "api-docs.html").read_text()
@@ -1423,7 +1423,7 @@ check("1.24.1: the static versions stated are the ones the pages load",
       "`user-connections.js` v62" in _sec241 and "`streams.js` v54" in _sec241 and "`live-ops-admin.js` v4" in _sec241
       and "user-connections.js?v=63" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
-      and "/static/js/live-ops-admin.js?v=5" in (ROOT / "static" / "admin.html").read_text())  # 4 then, 5 since 1.24.2
+      and "/static/js/live-ops-admin.js?v=6" in (ROOT / "static" / "admin.html").read_text())  # 4 then, 6 since 1.24.2
 # Counting failed sign-ins per IPv6 /64 was reverted in the lane and is not part of 1.24.1: nowhere may it be claimed.
 # (The alert burst and the security log key an IPv6 source by its /64 since earlier releases; those sentences do not
 # name the blocking of failed sign-ins and are not looked at here.)
