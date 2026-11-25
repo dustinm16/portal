@@ -1383,7 +1383,14 @@ check("1.24.1 notes: the limit of a trusted proxied application is stated in the
       "proxy only applications you trust" in _s241.lower()
       and "proxy only applications you trust" in text.split("\n## Security\n")[-1].split("\n## Backups", 1)[0].lower()
       and "proxy only applications you trust" in (ROOT / "static" / "about.html").read_text(encoding="utf-8").lower()
-      and "Proxied content runs in a sandboxed iframe" not in (ROOT / "static" / "about.html").read_text(encoding="utf-8"))
+      and "Proxied content runs in a sandboxed iframe" not in (ROOT / "static" / "about.html").read_text(encoding="utf-8")
+      and "HTTPS is enforced for all proxied connections" not in (ROOT / "static" / "about.html").read_text(encoding="utf-8"))
+check("1.24.1 notes: the notes do not say the two-factor dialog has no QR code while the portal draws one, and do not say nothing on screen is new",
+      (ROOT / "static" / "js" / "qr.js").exists() and "no qr code" not in _s241.lower() and "a real qr code needs a separate change" not in _s241.lower()
+      and "nothing is added that a member sees as a feature" not in _s241.lower()
+      and "two-factor entry" in _s241.lower())
+check("1.24.1 notes: the Database bullet says the two user_connections columns hold the trust mark",
+      "hold the superadmin's trust mark" in _db241_txt and "marks of isolated pages" not in _s241)
 check("1.24.1 notes: no ready-made request spellings of the upload or header problems are published",
       not re.search(r"%2e|%2F|uploads%2|/\./uploads|x/\.\./uploads|max-age=0|fresh frame", _s241 + (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
                     + (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"), re.I))
