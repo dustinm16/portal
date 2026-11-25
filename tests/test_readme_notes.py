@@ -1964,7 +1964,9 @@ check("1.24.2: no note says the spoofing is closed, that the bar is proof, or th
                                       "cannot be spoofed", "address bar cannot", "handled the same as a link", "address bar is secure"))
       and "A hostile page may still find a way to show a wrong address with no tag" in _s242)
 check("1.24.2: the notes say what an isolated answer's Content-Type becomes, and the code has the one parser the notes describe",
-      "carries exactly one `Content-Type`" in _s242 and "**A missing, empty, comma-listed or unparseable `Content-Type`, and several different ones, are served as `application/octet-stream`**" in _s242
+      "carries exactly one `Content-Type` (a 204, 205 or 304 answer that had none gets none)" in _s242
+      and "one header made from what it parsed (a 204, 205 or 304 answer that had none gets none)," in _s242
+      and 'if resp.status not in (204, 205, 304) or "Content-Type" in resp.headers:' in (ROOT / "server.py").read_text(encoding="utf-8") and "**A missing, empty, comma-listed or unparseable `Content-Type`, and several different ones, are served as `application/octet-stream`**" in _s242
       and "def _isolated_content_type(" in (ROOT / "server.py").read_text(encoding="utf-8")
       and '_CT_FALLBACK = "application/octet-stream"' in (ROOT / "server.py").read_text(encoding="utf-8"))
 
