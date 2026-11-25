@@ -363,11 +363,12 @@ async def run(ctx):
             return (time.monotonic() - t0) if mid else None
 
         async def refused_unchecked(name, text):
-            """Seconds until the author got the 'could not be checked' error, or None."""
+            """Seconds until the author got the refusal for a message that could not be checked (1.24.1: "blocked by auto-moderation", no rule named, not "could not be checked"), or None."""
             mark = len(ev[name])
             t0 = time.monotonic()
             await ws[name].send_json({"type": "message", "message": text})
-            err = await _wait_for(ev[name], lambda e: e.get("type") == "error" and e.get("error_code") == "automod_unchecked",
+            err = await _wait_for(ev[name], lambda e: e.get("type") == "error" and e.get("error_code") == "automod"
+                                  and "blocked by auto-moderation" in str(e.get("message")),
                                   timeout=5.0, start=mark)
             return (time.monotonic() - t0, err) if err else (None, None)
 
@@ -383,7 +384,8 @@ async def run(ctx):
                base is not None and victim is not None and victim < 1.5,
                f"baseline {base}, during attack {victim}, attacker message {attacked}")
         ctx.ok("automod: the slow pattern is stopped and the message that overran it is refused to its author (bounded)",
-               attacked is not None and total < 3.0 and "shorten or rephrase" in err.get("message", ""),
+               attacked is not None and total < 3.0 and "auto-moderation" in err.get("message", "") and "shorten or rephrase" not in err.get("message", "")
+               and "slow" not in err.get("message", "") and "(" not in err.get("message", ""),
                f"attacker round trip {attacked}, total {total:.2f}s, {err}")
         ctx.ok("automod: nobody else is told about the refused message",
                not any(e.get("type") in ("message", "user_timed_out", "user_muted") and "a" * 100 in json.dumps(e)

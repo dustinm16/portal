@@ -1450,6 +1450,9 @@ Upload a custom thumbnail image for a stream (owner only). Multipart form data w
 }
 ```
 
+Since 1.24.1 a custom thumbnail under `/static/uploads/thumbnails/` is served only to a signed-in member who may watch its stream (a member banned from a public stream still gets it, as before): for a stream that is not public the owner and administrators get it with `Cache-Control: private, no-store` and everybody else `404`; a file no stream names is `404`; a public stream's thumbnail is served as before, with `Cache-Control: private`. Every answer of `/static/uploads/...` (chat files too) carries `Cache-Control: private` so a shared cache does not store it.
+
+
 ---
 
 #### DELETE /api/streams/{id}/thumbnail
@@ -1960,6 +1963,8 @@ State of the last prune in the channel, same gate: `{"running": false, "status":
 #### POST /api/chat/upload
 Upload an image for embedding in chat messages (max 5MB, JPEG/PNG/GIF/WebP).
 
+Other files are accepted too (max 25MB). A file sent as `application/octet-stream` keeps its extension only when it is on the portal's allowed list (documents, archives, code and configuration files, audio and video); any other name is stored with the extension `.bin`, and the original name is returned as `filename`.
+
 **Request:** Multipart form data with field name `image`.
 
 **Response:**
@@ -2037,7 +2042,7 @@ Read older messages of a channel, or a window around one message (for a link to 
 
 - `messages` are oldest first, in the same shape as the `history` reply of the WebSocket (user enrichment, reactions, polls, reply previews). The three ways to read a channel (join, `history_page`, this route) build them in one shared function, so the same viewer gets byte-identical message objects from each.
 - `has_more`: older messages exist. `has_newer`: newer messages exist than the window shows (only for `around_id`). `found` is `false`, with an empty list, when `around_id` is not a message of this channel (deleted, removed by the chat retention, or in another channel).
-- Anonymous posts are masked for ordinary members exactly as in the join history: no account id, role, nickname, avatar or name, in the message, its reactions, reply previews and poll. Moderators, admins and the author keep the id.
+- Anonymous posts are masked for ordinary members exactly as in the join history: no account id, role, nickname, avatar or name, in the message, its reactions, reply previews and poll. A reaction made while its reactor chats anonymously stays anonymous (1.24.1: the row carries a flag set when it is made): its reactor's id is left out of `reactions[].user_ids` for everybody but the reactor and staff, also after the reactor has switched anonymous off, and the live `reaction_update` frame names nobody for it either, when it is made and when it is taken back. Moderators, admins and the author keep the id.
 - Messages older than the chat retention (`retention_chat_days`, or the channel's own `retention_days` since 1.20.0) no longer exist and are never returned. A message whose uploaded file was removed by the channel's file retention has `"file_removed": 1` and no `image_url` / `attachment_url`.
 - Reading never marks anything as read and sends no notification.
 - A go-live card (1.16.0) is a message with `"message_type": "stream_card"` and `"card": {"stream_id": 5, "streamer": "alice", "title": "..."}`; `message` holds a plain-text fallback (`alice is live: title - https://host/watch/5`) for a client that does not know the type. A client builds the watch link from `card.stream_id` (`/watch/{id}`). The card is a system post written through the normal encrypted insert, authored by the streamer's account, and cannot be edited. It is posted into the stream's own chat and, for a public stream, into the announce channel an administrator chose; it is never posted into a channel ordinary members can read for a stream that is not public. It is deleted from every channel except the stream's own closed chat when the stream becomes private (also from a channel that was made private later and has members) and everywhere when the stream is deleted, and the chat retention removes it like any message. It carries no stream key and no thumbnail. The room receives `message_deleted` when it is removed.
@@ -4593,7 +4598,7 @@ The config is validated on create and on update (400 on failure). Regex mode (`w
 - each pattern at most 500 characters, at most 100 patterns per rule, and it must compile
 - a pattern that repeats a group already containing an unbounded repeat (`(a+)+$`, `(\w+\s?)+`, `(?:a+){2,}`) is refused; this heuristic cannot catch every slow pattern (for example `a*a*a*b` or `(a|aa)+$`)
 - text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules; this bounds simple patterns only
-- patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped and the message (or edit) being checked is rejected for its author with error code `automod_unchecked` ("could not be checked; shorten or rephrase it"); no penalty is booked, nobody else is told, and the pattern is tried again for the next message. Each rule in `GET /api/admin/automod` carries `slow_pattern_timeouts`, the number of such overruns of its patterns in the last hour
+- patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped and the message (or edit) being checked is rejected for its author (since 1.24.1 an ordinary member gets error code `automod` and "Message blocked by auto-moderation" (an edit: "Edit blocked by auto-moderation; your message was not changed") with no rule name, which an ordinary block does carry; moderators and administrators get error code `automod_unchecked`, "could not be checked; shorten or rephrase it"); no penalty is booked, nobody else is told, and the pattern is tried again for the next message. Each rule in `GET /api/admin/automod` carries `slow_pattern_timeouts`, the number of such overruns of its patterns in the last hour
 - messages over the chat length limit (4000 characters, for new messages and edits) are rejected by chat and never reach automod
 - rules saved before these limits existed are re-checked at run time; a pattern that fails is skipped and the rule is marked in `not_enforced_reason`
 
@@ -4948,3 +4953,10 @@ When rate limited, response includes:
   "retry_after": 60
 }
 ```
+
+## Changes in 1.24.1 (privacy)
+
+- Moderation by message id (`delete`, `timeout_user`, `ban` over the chat socket) and lifting a ban made from an anonymous post (`unban` over the socket, `DELETE /api/streams/{id}/bans/id/{ban_id}`): for a stream owner or stream mod the answer no longer depends on who wrote the anonymous post (the action is allowed on every anonymous post of that stream chat, `"Not allowed"` only for one's own post); global moderators and administrators keep the rank rules. An action on a named member keeps them for everybody.
+- The anonymous handle `anon_ref` of presence events and the online list is stable while one anonymous period lasts and changes when `PUT /api/me/anonymous` switches anonymous mode on again.
+- `GET /api/connections` status for a connection the caller owns: `unknown` unless the owner's own pin or an open of their own in the last 7 days qualifies; a grantee's pin no longer changes it.
+- `GET /browser?connection=` for a member the connection was shared with (not an administrator) shows the connection's name in the address bar and holds no host or port.

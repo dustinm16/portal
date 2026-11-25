@@ -309,8 +309,21 @@ def test_check_automod_raises_when_a_pattern_overruns_and_apply_automod_rejects_
                     assert time.monotonic() - t0 < 1.5
                     assert blocked is True, "a message that could not be checked must be rejected"
                     err = ws.sent[0]
-                    assert err["error_code"] == "automod_unchecked" and "could not be checked" in err["message"]
-                    assert "shorten or rephrase" in err["message"]
+                    # (1.24.1) a member is told only that auto-moderation blocked it: no rule is named, and nothing says
+                    # that a check could not finish
+                    assert err["error_code"] == "automod" and "could not be checked" not in err["message"], err
+                    assert "blocked by auto-moderation" in err["message"] and "slow" not in err["message"] \
+                        and "(" not in err["message"], err
+                    # the member's breaker answers the next short message in the same words, still without the name
+                    again = Ws()
+                    assert await server.apply_automod(again, "hello", user_id=uid, user_role="user", channel=channel,
+                                                      channel_name="room3", username="author3", my_state={}, edit_of=edit_of)
+                    assert again.sent[0] == err, (again.sent[0], err)
+                    # staff (who may read the rules) are told it could not be checked
+                    staff = Ws()
+                    assert await server.apply_automod(staff, "a" * 1999, user_id=uid, user_role="moderator", channel=channel,
+                                                      channel_name="room3", username="author3", my_state={}, edit_of=edit_of)
+                    assert staff.sent[0]["error_code"] == "automod_unchecked" and "shorten or rephrase" in staff.sent[0]["message"]
                     if edit_of:
                         assert ws.sent[1] == {"type": "edit_rejected", "message_id": 9, "message": "old text"}
                     else:

@@ -443,14 +443,16 @@ def test_targets_and_other_channels():
             assert not await d.is_user_banned_from_stream(w.stream["a"], w.u[target]), target
         got = await owner.act("user_timed_out", type="timeout_user", target_user_id=w.u["mod2"], duration=60)
         assert got["type"] == "user_timed_out"
-        # timeout by the id of a message: an anonymous author is named to nobody, and the same refusal
+        # timeout by the id of a message: an anonymous author is named to nobody, whoever it is
         await d.conn.execute("UPDATE users SET chat_anonymous = 1 WHERE id IN (?, ?)", (w.u["spammer"], w.u["owner"]))
         await d.conn.commit()
         anon_spam = await d.create_chat_message(cid, w.u["spammer"], "spammer", "anon spam", anonymous=True)
         anon_owner = await d.create_chat_message(cid, w.u["owner"], "owner", "anon boss", anonymous=True)
+        # (1.24.1) an anonymous post is answered the same whoever wrote it: the owner's post is no refusal
         got = await friend.act("user_timed_out", type="timeout_user", message_id=anon_owner, duration=60)
-        assert got["type"] == "error" and got["message"] == server._CHAT_REFUSED_TARGET, got
-        assert not await d.is_user_timed_out(w.u["owner"], cid)
+        assert got["type"] == "user_timed_out" and got["username"] == "Anonymous" and got.get("user_id") is None, got
+        assert await d.is_user_timed_out(w.u["owner"], cid)
+        await d.remove_chat_timeout(w.u["owner"], cid)
         got = await friend.act("user_timed_out", type="timeout_user", message_id=anon_spam, duration=60)
         assert got["type"] == "user_timed_out" and got["username"] == "Anonymous" and got.get("user_id") is None, got
         assert await d.is_user_timed_out(w.u["spammer"], cid)

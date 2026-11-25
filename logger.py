@@ -356,6 +356,10 @@ def setup_logging(
     # Set levels for noisy loggers
     logging.getLogger("aiohttp.access").setLevel(logging.INFO)
     logging.getLogger("websockets").setLevel(logging.WARNING)
+    # The SQL driver logs every statement with its parameter values at DEBUG: tokens, hashes, message text.
+    # Its own level keeps that out of every handler whatever the portal's level is (set_log_level changes
+    # the root logger and the handlers, never this one).
+    logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
 
 def get_log_level() -> str:

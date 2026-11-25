@@ -1609,6 +1609,69 @@ check("1.24.1: the notes say a path that starts with ~ is the application's own 
       and not _po241.is_capability("~alice"))
 
 
+# --- 1.24.1: privacy lane --------------------------------------------------------------------------------
+import inspect as _inspect241  # noqa: E402
+import connection_health as _ch241  # noqa: E402
+import database as _db241  # noqa: E402
+
+m241 = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0)", text, re.S)
+_sec241 = m241.group(1) if m241 else ""
+_low241 = _sec241.lower()
+check("1.24.1 privacy notes sit directly before the 1.24.0 notes", bool(m241))
+check("1.24.1 privacy notes carry no emoji", not re.search(_EMOJI, _sec241))
+check("1.24.1 privacy notes have Breaking changes, Behaviour changes, Database and Not tested",
+      all(h in _sec241 for h in ("**Breaking changes**", "**Behaviour changes**", "**Database**", "**Not tested**")))
+_srv241 = (ROOT / "server.py").read_text(encoding="utf-8")
+check("1.24.1: the health-dot window stated is the one the code uses and the notes name the owner's own pin",
+      _ch241.RECENT_DAYS == 7 and "last 7 days" in _sec241 and "owner's own pin" in _sec241
+      and "owner_health_qualified_ids" in _inspect241.getsource(_ch241.Monitor.statuses_for))
+check("1.24.1: the notification batch stated is the one in the code",
+      "batches of 500" in _sec241 and _inspect241.signature(_db241.Database.withdraw_stream_notifications).parameters["batch"].default == 500)
+check("1.24.1: the notes say the migration marks reactions once, name the settings row and the column",
+      "reaction_anonymous_marked" in _sec241 and "chat_reactions.anonymous" in _sec241
+      and "reaction_anonymous_marked" in (ROOT / "database.py").read_text(encoding="utf-8")
+      and "ADD COLUMN anonymous INTEGER DEFAULT 0" in (ROOT / "database.py").read_text(encoding="utf-8"))
+check("1.24.1: the notes' moderation decision is the one in the code (rankless on anonymous posts for non-staff, timeouts silence)",
+      "_rankless_on_anonymous" in _srv241 and "as the range prune already treated them" in _sec241
+      and "does not bind the stream's owner or an administrator either" in _sec241
+      and "no longer ends the author's voice call at that moment" in _sec241
+      and "if not _rankless_on_anonymous(user_role, msg_anon):\n                            await _voice_drop_for_penalty(target_user_id, channel)" in _srv241
+      and "_penalty_in_force" in _srv241 and "_penalty_in_force(channel, user_id, user_role)" in _srv241.split("async def _chat_member_blocked")[1][:3000] and "does depend on the existing penalty" in _sec241)
+check("1.24.1: the notes say the chat read check skips the owner and administrators, and the code does",
+      "skips the stream's owner and administrators" in _sec241
+      and "A stream ban never applies to the stream's owner or an administrator (_stream_read_allowed" in _srv241)
+_am241 = _srv241.split("async def apply_automod")[1].split("if not automod_result:")[0]
+check("1.24.1: the notes say the automod answer for an overrun names no rule and what a member can still infer, and the code names none",
+      "with no rule name" in _sec241 and "What a member can still infer" in _sec241
+      and "rule_name" not in _am241 and '"Message blocked by auto-moderation"' in _am241)
+check("1.24.1: the notes say plain-mode proxied pages carry no origin for a grantee and browser mode is unchanged, and the code does",
+      "`var TO`, `var FO`" in _sec241 and "/proxy/{id}/~/path" in _sec241 and "What this does not hide" in _sec241
+      and "shared_viewer = bool(connection.get(\"shared\"))" in _srv241 and "own_alias" in _srv241
+      and "origin_hidden = bool(connection.get(\"shared\"))" in _srv241
+      and (ROOT / "tests" / "test_proxy_origin_hidden.py").exists())
+check("1.24.1: the notes name the driver logger level and the logger sets it",
+      "held at INFO" in _sec241 and 'logging.getLogger("aiosqlite").setLevel(logging.INFO)' in (ROOT / "logger.py").read_text(encoding="utf-8"))
+check("1.24.1: the notes tell operators to purge the whole edge cache, not only the thumbnails",
+      "purge the whole cache of the site once after upgrading" in _sec241 and 'private, no-store' in _sec241)
+check("1.24.1: the notes describe the static-route guard, the spellings it refuses and what the code does about them",
+      "nothing under `/static/uploads/` is served by any route but its own" in _sec241
+      and "gets `404` from a guard in front of the plain static route" in _sec241
+      and "is refused with `400` for every upload" not in _sec241 and "is the only spelling that is answered" not in _sec241
+      and "static_uploads_guard_middleware" in _srv241 and "static_uploads_guard_middleware]" in _srv241.replace("\n", "").replace(" ", "")
+      and "relative_to(uploads_root)" in _srv241)
+check("1.24.1: the upload notes do not claim avatar files exist under static/uploads (avatars are a database setting)",
+      "avatars" not in _sec241 and "avatars too" not in (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+      and "def set_avatar" in (ROOT / "database.py").read_text(encoding="utf-8"))
+check("1.24.1: the notes say what the browser page shows and that browser mode still shows addresses",
+      "name in the address bar" in _sec241 and "browser mode" in _sec241 and "does not hide" in _sec241)
+check("1.24.1: the notes say an open page and a sent push keep notifications, and the automod answer is documented",
+      "reloaded" in _sec241 and "not recalled" in _sec241 and "automod_unchecked" in _sec241
+      and "since 1.24.1" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+      and "since 1.24.1" in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))
+check("1.24.1: the notes say a chat attachment keeps only an allowed extension, and the code keeps one only from that list",
+      "keeps its file extension only when the extension is on the allowed list" in _sec241 and "<random>.bin" in _sec241
+      and "ext if (ext in ALLOWED_EXTENSIONS" in _srv241)
+
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

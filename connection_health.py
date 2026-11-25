@@ -720,9 +720,16 @@ class Monitor:
         now = self.clock()
         now_dt = self.wall()
         out = {}
+        # A grantee's pin makes the portal probe a connection. The owner's own dot must not show that: an
+        # owned connection shows a status only when the owner's own pin or use qualifies (a grantee's does not).
+        qualified = await self.db.owner_health_qualified_ids(
+            user_id, _iso(now_dt - timedelta(days=RECENT_DAYS)))
+        owned = await self.db.owned_connection_ids(user_id)
         for cid, uuid, maint in await self.db.list_accessible_connection_refs(user_id):
             if maintenance.state(maint, now_dt) is not None:
                 out[uuid] = {"status": "maintenance", "latency_ms": None, "since": None}
+            elif cid in owned and cid not in qualified:
+                out[uuid] = {"status": "unknown", "latency_ms": None, "since": None}
             else:
                 out[uuid] = self.state.view(cid, now, stale)
         return out

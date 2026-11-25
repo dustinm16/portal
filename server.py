@@ -3541,10 +3541,38 @@ async def http_authenticated_upload(request: web.Request) -> web.Response:
     # Prevent directory traversal
     if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return web.Response(status=400, text="Bad request")
+    # A "." or empty segment ("./thumbnails/x", "thumbnails//x") names the same file as the plain path but would
+    # get past the thumbnail check below, which reads the path as written: only the plain path is answered.
+    if any(seg in ("", ".") for seg in rel_path.split("/")):
+        return web.Response(status=400, text="Bad request")
 
-    filepath = STATIC_DIR / "uploads" / rel_path
+    # The file is judged as it resolves (a link inside uploads cannot lead out of it or around the thumbnail check below).
+    uploads_root = (STATIC_DIR / "uploads").resolve()
+    try:
+        filepath = (uploads_root / rel_path).resolve()
+        rel_path = filepath.relative_to(uploads_root).as_posix()
+    except (ValueError, OSError, RuntimeError):
+        return web.Response(status=404, text="Not found")
     if not filepath.is_file():
         return web.Response(status=404, text="Not found")
+
+    # A custom stream thumbnail is served to those who may watch its stream: a stream that is not public
+    # keeps it from everybody else (404, like the stream itself) and its answer is private and not stored.
+    # A public stream's thumbnail is served as before. One no stream names is not served.
+    # Every answer of this route is for a signed-in member, so none may be stored by a shared cache (an edge cache
+    # would otherwise keep a file and hand it to someone who is not allowed it after a stream is switched to private).
+    private_headers = {"Cache-Control": "private"}
+    if rel_path.startswith("thumbnails/"):
+        thumb_stream = await db.get_stream_by_thumbnail_url("/static/uploads/" + rel_path)
+        if not thumb_stream:
+            return web.Response(status=404, text="Not found")
+        if not thumb_stream.get("is_public"):
+            role = await get_user_role_from_token(token)
+            banned = (thumb_stream.get("user_id") != token.user_id
+                      and await db.is_user_banned_from_stream(thumb_stream["id"], token.user_id))
+            if not _stream_read_allowed(thumb_stream, token.user_id, role, False, banned):
+                return web.Response(status=404, text="Not found")
+            private_headers = {"Cache-Control": "private, no-store"}
 
     # Determine content type
     content_type, _ = mimetypes.guess_type(str(filepath))
@@ -3569,6 +3597,7 @@ async def http_authenticated_upload(request: web.Request) -> web.Response:
         headers["Content-Disposition"] = f'attachment; filename="{fname}"'
 
     headers["Content-Type"] = content_type
+    headers.update(private_headers)
     return web.FileResponse(filepath, headers=headers)
 
 
@@ -6785,6 +6814,25 @@ async def _remove_stream_cards(stream_id: int, only_open_to_members: bool) -> in
     return removed
 
 
+async def _withdraw_stream_notifications(stream: dict, banned_user_id: Optional[int] = None) -> int:
+    """Withdraw the stored stream_live / stream_reminder notifications of a stream from everybody who may no
+    longer watch it: with `banned_user_id` that member's own (not the owner's or an administrator's, whom a
+    ban never touches), without it all of them but the owner's and the administrators' (the stream is not
+    public now). They name the streamer and the stream and link to it. An open page keeps what it already
+    shows until it is reloaded, and a push already sent cannot be recalled. Never raises."""
+    try:
+        if banned_user_id is not None:
+            user = await db.get_user_by_id(banned_user_id)
+            if (stream.get("user_id") == banned_user_id or not user
+                    or _user_role_of(user) in ("admin", "superadmin")):
+                return 0
+            return await db.withdraw_stream_notifications(stream["id"], user_id=banned_user_id)
+        return await db.withdraw_stream_notifications(stream["id"], keep_user_id=stream.get("user_id"))
+    except Exception as e:
+        logger.warning(f"Withdrawing the notifications of stream {stream.get('id')} failed: {type(e).__name__}: {e}")
+        return 0
+
+
 async def _post_go_live_cards(stream: dict, payload: dict, broad: bool = True) -> None:
     """The announce card: into the stream's own chat and, when allowed, the announce channel.
 
@@ -6977,6 +7025,9 @@ async def _mark_stream_live(stream: dict, ip: str, mtx_path: Optional[str] = Non
         return
     stream = current
     if begun:        # the report that began the session records the go-live; the other one only meets the claim
+        # Read again for the activity row: the stream may have been renamed or made private since `current` was
+        # read (the name and the type of the row come from the stream as it is now)
+        stream = await db.get_user_stream(stream_id) or current
         logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
         await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
         # Notify chat channel that stream went live
@@ -7260,6 +7311,9 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             # here: an edit of a stream that is already private must keep the follows its
             # owner and administrators made.
             await _remove_stream_cards(stream_id, only_open_to_members=True)
+            # Stored "is live" and reminder notifications name the streamer and link to the stream: they go
+            # for everybody but its owner and the administrators
+            await _withdraw_stream_notifications(stream)
             # Its stored "went live / went offline" activity rows (found by the stream's name) go
             # to the private types, under the old and the new name, so a rename cannot bring
             # them back into other members' feed. Only when the stream just became non-public or
@@ -7725,6 +7779,7 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
 
     if ban_id:
         _stream_member_lost_access(stream_id, user_id)      # playback is refused from the next request
+        await _withdraw_stream_notifications(stream, banned_user_id=user_id)
         # A banned member does not stay in the stream chat's text room or its voice call.
         await _evict_unreadable_by_id(stream.get("chat_channel_id"))
         await _voice_eject_if_not_allowed(user_id)
@@ -7831,8 +7886,11 @@ async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
     pending = await db.get_stream_ban(stream_id, ban_id)
     if not pending:
         return web.json_response({"error": "Ban not found"}, status=404)
-    if not lifts_any and pending["user_id"] != token.user_id and not await _stream_route_may_ban(
-            stream, ban_chan, level, token.user_id, caller_role, pending["user_id"]):
+    # A ban made from an anonymous post is lifted whoever the hidden member is (as over the websocket: the answer
+    # must not tell the actor the author's rank)
+    if not lifts_any and pending["user_id"] != token.user_id and not (
+            _rankless_on_anonymous(caller_role, pending.get("anonymous"))
+            or await _stream_route_may_ban(stream, ban_chan, level, token.user_id, caller_role, pending["user_id"])):
         return web.json_response({"error": "Not allowed"}, status=400)
     removed = await db.remove_stream_ban_by_id(stream_id, ban_id)
     if not removed:
@@ -20384,6 +20442,13 @@ async def http_browser_page(request: web.Request) -> web.Response:
 
     proxy_path = f"/proxy/{conn_id}"
 
+    # A member who was only given this connection is not told its target (1.22.0: no host, port or
+    # config): the address bar shows the connection's name, the page carries no address and the
+    # server resolves a path against the connection. The owner and administrators keep the address.
+    target_hidden = bool(connection.get("shared")) and not await _is_recording_admin(token.user_id)
+    if target_hidden:
+        target_display = str(connection.get("name") or "") or "Shared connection"
+
     browser_mode = config.get("browser_mode", False)
 
     # Home / new-tab page. An explicit config["home_url"] wins; otherwise the
@@ -20406,6 +20471,10 @@ async def http_browser_page(request: web.Request) -> web.Response:
     html = html.replace("{{CONNECTION_ID}}", conn_id)
     html = html.replace("{{SERVICE_NAME}}", _html.escape(connection.get("name", "Browser")))
     html = html.replace("{{PROXY_PATH}}", proxy_path)
+    html = html.replace("{{TARGET_HIDDEN}}", "true" if target_hidden else "false")
+    # In the script only the owner's and an administrator's page holds the address; the input
+    # (attribute-escaped) carries the text shown, which the script reads back for a hidden target
+    html = html.replace("{{TARGET_DISPLAY_JS}}", "" if target_hidden else _html.escape(target_display))
     html = html.replace("{{TARGET_DISPLAY}}", _html.escape(target_display))
     html = html.replace("{{BROWSER_MODE}}", "true" if browser_mode else "false")
     html = html.replace("{{HOME_URL}}", _html.escape(home_url))
@@ -21210,7 +21279,7 @@ def _proxy_redirect_url(loc: str, current_url: str, proxy_prefix: str, target_or
     return urlunsplit((urlsplit(target_origin).scheme, urlsplit(target_origin).netloc, path, split.query, ""))
 
 
-def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str) -> str:
+def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str, own_prefix: Optional[str] = None) -> str:
     """A Location from a site in general-browsing mode, kept inside the proxy.
 
     A protocol-relative value (//host/path) names another host and takes the
@@ -21219,7 +21288,18 @@ def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str) -> st
     /proxy/<id>/<url>, with the scheme lower-cased so the handler recognises
     it, so the browser never leaves the proxy and no site sees the member's
     address.
+
+    own_prefix is given for a member who was only given the connection: a Location that names the connection's own
+    site (root-relative, or its origin) is put under that prefix, which holds no host or port.
     """
+    if own_prefix:
+        absolute = f"{target_origin.split(':', 1)[0]}:{loc}" if loc.startswith("//") else loc
+        if absolute.startswith("/") and not absolute.startswith("//"):
+            return f"{own_prefix}{absolute}"
+        if absolute[:8].lower().startswith(("http://", "https://")):
+            rest = absolute[len(target_origin):]
+            if absolute[:len(target_origin)].lower() == target_origin.lower() and (rest == "" or rest[0] in "/?#"):
+                return f"{own_prefix}{rest if rest[:1] == '/' else '/' + rest}"
     if loc.startswith("//"):
         return f"{proxy_base}/{target_origin.split(':', 1)[0].lower()}:{loc}"
     if loc.startswith("/"):
@@ -21800,6 +21880,18 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             "Access-Control-Allow-Headers": request.headers.get("Access-Control-Request-Headers") or "*",
             "Access-Control-Max-Age": "600", "Cache-Control": "private, no-store"})
         return pre
+    # A connection that was only shared with this member (an administrator is not asked): its own scheme, host and
+    # port are not given to the member (see origin_hidden). In browser mode the connection's own site is addressed
+    # as /proxy/<id>/~/<path>, never by its origin; a page of another site keeps the origin in its path, as before.
+    shared_viewer = bool(connection.get("shared")) and not await _is_recording_admin(token.user_id)
+    raw_path = request_path        # the path without the capability segment: a grantee's "~" alias follows the token
+    route_path, full_url_path, own_alias = raw_path, False, False
+    if browser_mode:
+        if shared_viewer and (raw_path == "~" or raw_path.startswith("~/")):
+            route_path = raw_path[2:]
+        else:
+            full_url_path = raw_path.startswith("http://") or raw_path.startswith("https://")
+        own_alias = shared_viewer and not full_url_path
     host = connection.get("host")
     default_port = type_info.get("default_port", 80)
     port = connection.get("port") or config.get("port") or default_port
@@ -21831,8 +21923,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     proxy_base = f"/proxy/{conn_uuid}" + (f"/{cap_segment}" if cap_segment else "")
 
     # Browser mode: extract target URL from path for multi-site navigation
-    raw_path = request_path
-    if browser_mode and (raw_path.startswith("http://") or raw_path.startswith("https://")):
+    if full_url_path:
         # Full URL in path — navigate to external site
         browse_query = request.query_string
         browse_full = f"{raw_path}?{browse_query}" if browse_query else raw_path
@@ -21851,7 +21942,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
 
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
-    proxy_prefix = f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
+    proxy_prefix = f"{proxy_base}/~" if own_alias else f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
+    # A connection that was only shared with this member (an administrator is not asked): the pages the proxy
+    # serves are not given its scheme, host and port in the script it writes into them
+    origin_hidden = bool(connection.get("shared")) and not browser_mode and not await _is_recording_admin(token.user_id)
 
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
@@ -21870,9 +21964,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         await ws.prepare(request)
 
         ws_scheme = "wss" if parsed_target.scheme == "https" else "ws"
-        ws_raw_path = request_path
+        ws_raw_path = route_path
         ws_query = _proxy_query_string(request)
-        if browser_mode and (ws_raw_path.startswith("http://") or ws_raw_path.startswith("https://")):
+        if full_url_path:
             ws_parsed = urlparse(f"{ws_raw_path}?{ws_query}" if ws_query else ws_raw_path)
             ws_url = f"{ws_scheme}://{ws_parsed.netloc}{ws_parsed.path}"
             if ws_parsed.query:
@@ -21950,9 +22044,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
         return ws
 
     # Build upstream URL
-    path = request_path
+    path = route_path
     query = _proxy_query_string(request)
-    if browser_mode and (path.startswith("http://") or path.startswith("https://")):
+    if full_url_path:
         # Browser mode: full URL already parsed above, extract just the path portion
         parsed_browse = urlparse(f"{path}?{query}" if query else path)
         upstream_path = parsed_browse.path.lstrip("/")
@@ -22054,7 +22148,8 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                         loc = value
                         if browser_mode:
                             # Browser mode: encode full URL in proxy path
-                            loc = _proxy_browser_location(loc, proxy_base, target_origin)
+                            loc = _proxy_browser_location(loc, proxy_base, target_origin,
+                                                          own_prefix=proxy_prefix if own_alias else None)
                         else:
                             loc = _proxy_rewrite_location(loc, proxy_prefix, target_origin)
                         resp_headers.add(key, loc)
@@ -22204,7 +22299,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                 inject_js = (
                                     f'<script>(function(){{"use strict";'
                                     f'var B="{proxy_base}";'
-                                    f'var O="{target_origin}";'
+                                    f'var X="{"/~" if own_alias else "/" + target_origin}";'
                                     f'var P=location.origin;'
                                     # Helper: rewrite a URL string
                                     f'function R(u){{if(typeof u!=="string")return u;'
@@ -22212,11 +22307,11 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                     f'if(u.startsWith(B+"/"))return u;'
                                     f'if(u.startsWith(P+B+"/"))return u.slice(P.length);'
                                     # Absolute URL — strip portal origin if present, then wrap
-                                    f'if(u.startsWith(P+"/"))return B+"/"+O+u.slice(P.length);'
-                                    f'if(u.startsWith(P))return B+"/"+O+u.slice(P.length);'
+                                    f'if(u.startsWith(P+"/"))return B+X+u.slice(P.length);'
+                                    f'if(u.startsWith(P))return B+X+u.slice(P.length);'
                                     f'if(u.startsWith("http://")||u.startsWith("https://"))return B+"/"+u;'
-                                    f'if(u.startsWith("//"))return B+"/"+O.split("//")[0]+u;'
-                                    f'if(u.startsWith("/")&&!u.startsWith(B))return B+"/"+O+u;'
+                                    f'if(u.startsWith("//"))return B+"/{parsed_target.scheme}:"+u;'
+                                    f'if(u.startsWith("/")&&!u.startsWith(B))return B+X+u;'
                                     f'return u}}'
                                     # fetch()
                                     f'var _f=window.fetch;window.fetch=function(u,o){{'
@@ -22355,14 +22450,21 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                 final_parsed = urlparse(final_url)
                                 final_origin = f"{final_parsed.scheme}://{final_parsed.netloc}"
 
+                                # A member who was only given this connection is not told its host and port (the
+                                # embedded browser page already holds neither): the script then rewrites only
+                                # root-relative URLs, and the origins in the upstream's own text were replaced above.
+                                if origin_hidden:
+                                    origin_decl, origin_rules = "", ""
+                                else:
+                                    origin_decl = f'var TO="{target_origin}";var FO="{final_origin}";'
+                                    origin_rules = (f'if(u.startsWith(TO))return B+u.slice(TO.length);'
+                                                    f'if(FO!==TO&&u.startsWith(FO))return B+u.slice(FO.length);')
                                 inject_js = (
                                     f'<script>(function(){{"use strict";'
                                     f'var B="{proxy_prefix}";'
-                                    f'var TO="{target_origin}";'
-                                    f'var FO="{final_origin}";'
+                                    f'{origin_decl}'
                                     f'function R(u){{if(typeof u!=="string")return u;'
-                                    f'if(u.startsWith(TO))return B+u.slice(TO.length);'
-                                    f'if(FO!==TO&&u.startsWith(FO))return B+u.slice(FO.length);'
+                                    f'{origin_rules}'
                                     f'if(u.startsWith("/")&&!u.startsWith(B)&&!u.startsWith("//"))return B+u;'
                                     f'return u}}'
                                     f'var _f=window.fetch;window.fetch=function(u,o){{'
@@ -23034,16 +23136,32 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
             mass_allowed = await _may_mass_mention(
                 channel, user_id, user_role, await db.get_stream_by_chat_channel(channel["id"]))
         automod_result = await check_automod(text, user_id, channel["id"], channel_name, mass_allowed)
-    except automod.RegexCheckError:
-        # A regex rule could not be evaluated in time: fail closed. The author is told
-        # in neutral words; no penalty is booked and nobody else hears of it.
-        await ws.send_json({
-            "type": "error",
-            "error_code": "automod_unchecked",
-            "message": ("Your edit could not be checked; shorten or rephrase it. Your message was not changed"
-                        if edit_of is not None else
-                        "Your message could not be checked; shorten or rephrase it")
-        })
+    except automod.RegexCheckError as unchecked:
+        # A regex rule could not be evaluated in time: fail closed, no penalty is booked and nobody else hears of
+        # it. Staff (who may read the rules) are told it could not be checked. Anybody else is told only that
+        # auto-moderation blocked the message: no rule is named, because a long text followed by a short one (the
+        # member's 60 second breaker refuses that too) would otherwise show that a slow rule exists and what it is
+        # called. An ordinary block names its rule; this one cannot.
+        if user_role in ("admin", "superadmin", "moderator"):
+            await ws.send_json({
+                "type": "error",
+                "error_code": "automod_unchecked",
+                "message": ("Your edit could not be checked; shorten or rephrase it. Your message was not changed"
+                            if edit_of is not None else
+                            "Your message could not be checked; shorten or rephrase it")
+            })
+        elif edit_of is not None:
+            await ws.send_json({
+                "type": "error",
+                "error_code": "automod",
+                "message": "Edit blocked by auto-moderation; your message was not changed"
+            })
+        else:
+            await ws.send_json({
+                "type": "error",
+                "error_code": "automod",
+                "message": "Message blocked by auto-moderation"
+            })
         if edit_of is not None:
             await ws.send_json({
                 "type": "edit_rejected",
@@ -23145,7 +23263,7 @@ async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: st
         return True
 
     # Check if user is timed out or muted
-    timeout_info = await db.is_user_timed_out(user_id, channel["id"])
+    timeout_info = await _penalty_in_force(channel, user_id, user_role)
     if timeout_info:
         if timeout_info["type"] == "mute":
             await ws.send_json({
@@ -24338,7 +24456,9 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         # Determine extension
         # Keep the stored name to a plain extension so the URL always passes
         # _valid_chat_upload_url; the original filename is returned separately.
-        safe_ext = ext if re.fullmatch(r"\.[a-z0-9]{1,10}", ext or "") else ""
+        # Only an extension on the allowed list is kept: any other name is stored as .bin, so a name a browser would
+        # render (.html, .svg, .xml) can never be stored under its own extension.
+        safe_ext = ext if (ext in ALLOWED_EXTENSIONS and re.fullmatch(r"\.[a-z0-9]{1,10}", ext or "")) else ""
         file_ext = ALLOWED_TYPES.get(content_type) or safe_ext or ".bin"
         is_image = content_type.startswith("image/")
 
@@ -24922,12 +25042,27 @@ _CHAT_STAFF_ROLES = frozenset(("moderator", "admin", "superadmin"))
 # participants apart in presence events without learning their account id.
 _ANON_REF_KEY = secrets.token_bytes(16)
 
+# One random nonce per member, new each time anonymous mode is switched on (_anon_activated), mixed into
+# the handle: the handle stays the same while one anonymous period lasts and differs in the next, so
+# other members cannot tell that two anonymous periods of one member in a channel belong together.
+# In memory only, like the key.
+_anon_nonces: dict = {}
+
+
+def _anon_activated(user_id) -> None:
+    """Anonymous mode was switched on for this member (it was off): their handle changes."""
+    _anon_nonces[user_id] = secrets.token_bytes(8)
+
 
 def _anon_ref(channel, user_id) -> str:
     """Opaque, per-process handle for an anonymous participant in one channel.
     The channel is part of the input so the same person cannot be matched
-    across channels by comparing handles."""
-    data = ("%s:%s" % (channel, user_id)).encode()
+    across channels by comparing handles; the member's activation nonce is part of it
+    so two anonymous periods are not linked either."""
+    nonce = _anon_nonces.get(user_id)
+    if nonce is None:
+        nonce = _anon_nonces[user_id] = secrets.token_bytes(8)
+    data = ("%s:%s:" % (channel, user_id)).encode() + nonce
     return hmac.new(_ANON_REF_KEY, data, hashlib.sha256).hexdigest()[:12]
 
 
@@ -25024,22 +25159,26 @@ def _hide_subject(payload: dict, subject_id, channel=None) -> dict:
 
 
 async def _mask_reactor_ids(reactions_by_message: dict, viewer_id, viewer_role) -> None:
-    """Drop the id of every reactor who is currently in anonymous mode from the
-    reactions[].user_ids lists of one viewer's history payload. Counts are not
-    touched; the viewer's own id and staff viewers' lists are left as they are."""
-    if (viewer_role or "") in _CHAT_STAFF_ROLES:
-        return
-    ids = {uid for reactions in reactions_by_message.values()
-           for r in reactions for uid in r.get("user_ids", [])}
-    ids.discard(viewer_id)
-    if not ids:
-        return
-    anonymous = {u["id"] for u in await db.get_users_status(list(ids)) if u.get("chat_anonymous")}
-    if not anonymous:
-        return
+    """Drop the id of every anonymous reactor from the reactions[].user_ids lists of one viewer's
+    history payload: a reactor whose row was made while anonymous (the row's own flag, which stays
+    after the member switches anonymous off) and one who is in anonymous mode right now. Counts are
+    not touched; the viewer's own id and staff viewers' lists are left as they are. The internal
+    anonymous_user_ids list is removed for every viewer."""
+    staff = (viewer_role or "") in _CHAT_STAFF_ROLES
+    anonymous_now: set = set()
+    if not staff:
+        ids = {uid for reactions in reactions_by_message.values()
+               for r in reactions for uid in r.get("user_ids", [])}
+        ids.discard(viewer_id)
+        if ids:
+            anonymous_now = {u["id"] for u in await db.get_users_status(list(ids)) if u.get("chat_anonymous")}
     for reactions in reactions_by_message.values():
         for r in reactions:
-            r["user_ids"] = [uid for uid in r.get("user_ids", []) if uid not in anonymous]
+            flagged = set(r.pop("anonymous_user_ids", ()))
+            if staff:
+                continue
+            r["user_ids"] = [uid for uid in r.get("user_ids", [])
+                             if uid == viewer_id or (uid not in flagged and uid not in anonymous_now)]
 
 
 def _user_has_other_socket(channel: str, user_id, ws) -> bool:
@@ -25184,7 +25323,8 @@ async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREA
     False for a missing channel, for the chat of a stream that is not public
     (only its owner and admins read it; everyone else gets the answer for a
     missing channel), for a member banned from the chat of the stream the
-    channel belongs to, and for a private channel the member does not belong
+    channel belongs to (a stream ban never applies to the stream's owner or an
+    administrator), and for a private channel the member does not belong
     to (admins and superadmins read every channel, moderators do not). The
     stream is the one whose chat_channel_id is this channel. Callers pass
     `stream` when they already have it (None means the channel has no stream).
@@ -25200,8 +25340,11 @@ async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREA
         stream = await db.get_stream_by_chat_channel(channel["id"])
     if _stream_chat_hidden(stream, user_id, user_role):
         return _ReadAccess(False, "hidden", "Channel not found")
-    if stream and (user_id in banned_ids if banned_ids is not None
-                   else await db.is_user_banned_from_stream(stream["id"], user_id)):
+    # A stream ban never applies to the stream's owner or an administrator (_stream_read_allowed says the same for
+    # playback): the stream mod's ban of the author of an anonymous post cannot reach either of them
+    if stream and not (stream.get("user_id") == user_id or user_role in ("admin", "superadmin")) and (
+            user_id in banned_ids if banned_ids is not None
+            else await db.is_user_banned_from_stream(stream["id"], user_id)):
         return _ReadAccess(False, "banned", "You are banned from this stream's chat")
     if channel.get("visibility", "public") == "private" and user_role not in ("admin", "superadmin"):
         if not (user_id in member_ids if member_ids is not None
@@ -25323,6 +25466,40 @@ def _chat_may_act_on(actor_level: int, actor_role: str, target_rank: int, target
     return False
 
 
+def _rankless_on_anonymous(actor_role, anonymous) -> bool:
+    """True when a moderation action on a post (or a ban made from a post) that is anonymous does not look at the
+    rank of its hidden author: for an actor who is not given the author's identity (everybody but staff roles). The
+    answer to such an action must not depend on who wrote the post, or a refusal would tell a stream owner or
+    stream mod the rank of the author. This is how the range prune already treats an anonymous post (rankless for
+    everybody but an administrator). Staff roles see the author and keep the rank rules; an action on a named
+    member always keeps them."""
+    return bool(anonymous) and (actor_role or "") not in _CHAT_STAFF_ROLES
+
+
+async def _exempt_from_stream_mod_timeout(channel, user_id: int, user_role: str, stream=_STREAM_UNSET) -> bool:
+    """True for the owner of this channel's stream and for an administrator: a timeout that a stream mod placed on
+    them (only possible through an anonymous post, which is rankless for a stream mod) does not bind them, as a stream
+    ban made the same way does not (_can_read_channel). The owner has no route to lift it, so it would last up to 30
+    days. A timeout placed by a staff role is not touched by this."""
+    if user_role in ("admin", "superadmin"):
+        return True
+    if stream is _STREAM_UNSET:
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+    return _real_stream_chat(stream) and stream.get("user_id") == user_id
+
+
+async def _penalty_in_force(channel, user_id: int, user_role: str) -> Optional[dict]:
+    """db.is_user_timed_out for a member of this channel, except that a channel timeout placed by a stream mod does
+    not bind the stream's owner or an administrator (_exempt_from_stream_mod_timeout)."""
+    penalty = await db.is_user_timed_out(user_id, channel["id"])
+    if (penalty and penalty.get("type") == "timeout" and penalty.get("channel_id") is not None
+            and await _exempt_from_stream_mod_timeout(channel, user_id, user_role)):
+        placer = await db.get_user_by_id(penalty.get("moderator_id")) if penalty.get("moderator_id") else None
+        if _user_role_of(placer) not in _CHAT_STAFF_ROLES:
+            return None
+    return penalty
+
+
 async def chat_mod_may_act(channel, actor: dict, target_id: int, stream=_STREAM_UNSET) -> bool:
     """chat_mod_level of the actor plus the target rules: nobody acts on themselves,
     the target must exist, and _chat_may_act_on must allow the pair."""
@@ -25353,7 +25530,7 @@ async def _audit_chat_mod(action: str, actor_id: int, actor_name: str, level: in
                     channel_name=channel["name"] if channel else None, details=json.dumps(details))
 
 
-async def _evict_unreadable_sockets(channel) -> int:
+async def _evict_unreadable_sockets(channel, anonymous_ids=()) -> int:
     """After access to a channel was lost (stream made not public, member removed
     from a private channel, stream ban, channel made private): put every socket in
     its room that can no longer read it out.
@@ -25367,6 +25544,10 @@ async def _evict_unreadable_sockets(channel) -> int:
     the voice room without a socket in the text room are checked too. The rest
     of the room is told who left. Returns the number of sockets put out; never
     raises (a failure is logged and the next socket is still checked).
+
+    anonymous_ids are the accounts whose departure is announced as an anonymous participant's whatever their own
+    mode is now: a ban made from an anonymous post removes its author, who may be in the room under their name,
+    and the stream mod who made the ban must not be told who left.
     """
     if not channel:
         return 0
@@ -25404,7 +25585,7 @@ async def _evict_unreadable_sockets(channel) -> int:
                 if _user_has_other_socket(name, entry[1], entry[0]):
                     continue
                 state = chat_user_state.get(entry[1], {})
-                anon = bool(state.get("anonymous"))
+                anon = bool(state.get("anonymous")) or entry[1] in anonymous_ids
                 await broadcast_to_channel(name, {
                     "type": "user_left",
                     "user_id": entry[1],
@@ -27929,8 +28110,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 # No author (a system post): the owner and staff only
                                 is_mod = mod_level in (CHAT_LEVEL_OWNER, CHAT_LEVEL_STAFF)
                             else:
-                                is_mod = mod_level != CHAT_LEVEL_NONE and await chat_mod_may_act(
-                                    del_ch, {"id": user_id, "role": user_role}, del_msg.get("user_id"))
+                                is_mod = mod_level != CHAT_LEVEL_NONE and (
+                                    _rankless_on_anonymous(user_role, del_msg.get("anonymous"))
+                                    or await chat_mod_may_act(
+                                        del_ch, {"id": user_id, "role": user_role}, del_msg.get("user_id")))
                         if is_mod:
                             success = await db.delete_chat_message(message_id)
                         else:
@@ -27973,7 +28156,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not access:
                             await ws.send_json({"type": "error", "message": access.message})
                             continue
-                        added, count = await db.toggle_reaction(message_id, user_id, emoji)
+                        added, count, reaction_anonymous = await db.toggle_reaction_state(message_id, user_id, emoji)
+                        # The frame names nobody the row hides: a reaction made while anonymous is
+                        # hidden when it is taken back too, whatever the setting is now
                         await broadcast_to_channel(current_channel, {
                             "type": "reaction_update",
                             "message_id": message_id,
@@ -27981,7 +28166,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "user_id": user_id,
                             "added": added,
                             "count": count
-                        }, anon_subject=user_id if my_state["anonymous"] else None)
+                        }, anon_subject=user_id if (my_state["anonymous"] or reaction_anonymous) else None)
 
                     elif msg_type == "edit_message":
                         if not current_channel:
@@ -28145,7 +28330,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         actor = {"id": user_id, "role": user_role}
                         target_user = await db.get_user_by_id(target_user_id)
-                        if not target_user or not await chat_mod_may_act(channel, actor, target_user_id):
+                        if not target_user or not (
+                                _rankless_on_anonymous(user_role, msg_anon) and target_user_id != user_id
+                                or await chat_mod_may_act(channel, actor, target_user_id)):
                             await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                             continue
                         if mod_level < CHAT_LEVEL_STAFF:
@@ -28159,7 +28346,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                                 continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
-                        await _voice_drop_for_penalty(target_user_id, channel)
+                        # A timeout a stream mod placed through an anonymous post puts nobody out of a call
+                        # at the time, whoever wrote the post: the departure (voice_user_left with the real
+                        # id, a new users list) would tie the post to the member, and the owner or an
+                        # administrator, who are not bound by it (_penalty_in_force), would not leave at all.
+                        # The penalty is read at the author's next join attempt instead.
+                        if not _rankless_on_anonymous(user_role, msg_anon):
+                            await _voice_drop_for_penalty(target_user_id, channel)
                         display_name = (ANON_MODERATOR_LABEL if _anon_actor(user_role, my_state)
                                         else my_state.get("nickname") or username)
                         target_anon = msg_anon or bool(target_user.get("chat_anonymous"))
@@ -28330,7 +28523,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not access:
                             await ws.send_json({"type": "error", "message": access.message})
                             continue
-                        timeout_info = await db.is_user_timed_out(user_id, channel["id"])
+                        timeout_info = await _penalty_in_force(channel, user_id, user_role)
                         if timeout_info:
                             await ws.send_json({"type": "error", "message": "You are timed out or muted"})
                             continue
@@ -28559,7 +28752,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Not oneself, not the owner, not another mod, not staff (one text for
                         # all of them: it must not say who an anonymous author is)
-                        if not await chat_mod_may_act(channel, actor, target_user_id, stream):
+                        if not (_rankless_on_anonymous(user_role, ban_msg_anonymous) and target_user_id != user_id
+                                or await chat_mod_may_act(channel, actor, target_user_id, stream)):
                             await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                             continue
 
@@ -28581,8 +28775,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             # Playback is refused from the next request on, not after the
                             # cached decision runs out
                             _stream_member_lost_access(stream["id"], target_user_id)
+                            await _withdraw_stream_notifications(stream, banned_user_id=target_user_id)
                             # A banned member does not stay in the room or the voice call.
-                            await _evict_unreadable_sockets(channel)
+                            await _evict_unreadable_sockets(
+                                channel, anonymous_ids=(target_user_id,) if ban_msg_anonymous else ())
                             await _voice_eject_if_not_allowed(target_user_id)
                             # Get banned user info
                             banned_user = await db.get_user_by_id(target_user_id)
@@ -28686,8 +28882,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             unban_target = pending["user_id"] if pending else None
                         else:
                             unban_target = target_user_id
-                        if not lifts_any and unban_target is not None and unban_target != user_id and not await chat_mod_may_act(
-                                channel, actor, unban_target, stream):
+                        if not lifts_any and unban_target is not None and unban_target != user_id and not (
+                                _rankless_on_anonymous(user_role, by_ban_id and pending and pending.get("anonymous"))
+                                or await chat_mod_may_act(channel, actor, unban_target, stream)):
                             await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                             continue
 
@@ -28906,7 +29103,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not voice_room.startswith("dm:"):
                             ss_channel = await db.get_chat_channel_by_name(voice_room)
                             if ss_channel:
-                                ss_timeout = await db.is_user_timed_out(user_id, ss_channel["id"])
+                                ss_timeout = await _penalty_in_force(ss_channel, user_id, user_role)
                                 if ss_timeout:
                                     await ws.send_json({"type": "error", "message": "You are timed out in this channel"})
                                     continue
@@ -31227,7 +31424,10 @@ async def http_update_chat_anonymous(request: web.Request) -> web.Response:
 
     anonymous = bool(data.get("anonymous", False))
 
+    was_anonymous = bool(((await db.get_user_by_id(token.user_id)) or {}).get("chat_anonymous"))
     await db.set_chat_anonymous(token.user_id, anonymous)
+    if anonymous and not was_anonymous:
+        _anon_activated(token.user_id)        # a new anonymous period has a new handle
 
     # Update live WS handler state immediately
     if token.user_id in chat_user_state:
@@ -32735,6 +32935,27 @@ async def _load_proxy_limit_state() -> None:
 
 
 @web.middleware
+async def static_uploads_guard_middleware(request: web.Request, handler):
+    """Nothing under static/uploads is served by the plain static route.
+
+    Uploads are answered only by their own routes (emotes, and the signed-in route that also checks thumbnails).
+    A spelling those routes do not match ("uploads%2Fchat/x", "./uploads/x", "x/../uploads/x") reaches the
+    plain static route, which would serve the file to anyone: the decision is made on the file the request
+    resolves to, not on how the path is written."""
+    resource = getattr(request.match_info.route, "resource", None)
+    if isinstance(resource, web.StaticResource):
+        try:
+            target = (STATIC_DIR / request.match_info.get("filename", "")).resolve()
+            uploads = (STATIC_DIR / "uploads").resolve()
+            inside = target == uploads or target.is_relative_to(uploads)
+        except (ValueError, OSError, RuntimeError):
+            inside = True
+        if inside:
+            return web.Response(status=404, text="Not found")
+    return await handler(request)
+
+
+@web.middleware
 async def security_headers_middleware(request: web.Request, handler):
     """Block banned IPs app-wide, then add security headers to all responses."""
     client_ip = get_client_ip(request)
@@ -33174,7 +33395,7 @@ def create_app() -> web.Application:
     # headroom; individual endpoints still enforce their own tighter caps.
     app = web.Application(
         middlewares=[request_id_middleware, security_headers_middleware, proxy_limit_middleware,
-                     fetch_metadata_middleware],
+                     fetch_metadata_middleware, static_uploads_guard_middleware],
         client_max_size=Config.FILE_MANAGER_MAX_UPLOAD + 1024 * 1024,
     )
     register_request_ids(app)

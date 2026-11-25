@@ -369,7 +369,11 @@
     <script>
         const connectionId = '{{CONNECTION_ID}}';
         const proxyBase = '{{PROXY_PATH}}';
-        const targetDisplay = '{{TARGET_DISPLAY}}';
+        // A member who was only given this connection sees its name in the address bar instead of the
+        // target (targetHidden): the label is read from the input, the script holds no address, and a
+        // path that names no origin is resolved by the server against the connection.
+        const targetHidden = {{TARGET_HIDDEN}};
+        const targetDisplay = targetHidden ? document.getElementById('url-input').defaultValue : '{{TARGET_DISPLAY_JS}}';
         const browserMode = {{BROWSER_MODE}};
         // Optional same-origin portal page to use as the home / new-tab page
         // (e.g. "/search/" for the default Web Browser when SearXNG is enabled).
@@ -397,8 +401,12 @@
             statusTextEl.textContent = text;
         }
 
+        // A member who was only given the connection reaches its own site under /proxy/<id>/~/, a path that holds no
+        // host or port (the server resolves it against the connection); another site keeps its origin in the path.
+        const ownBase = (browserMode && targetHidden) ? proxyBase + '/~' : proxyBase;
+
         function getHomeSrc() {
-            return homeUrl || (proxyBase + '/');
+            return homeUrl || (ownBase + '/');
         }
 
         // True when the iframe is showing the same-origin portal home page
@@ -421,6 +429,9 @@
                 if (browserMode) {
                     if (path.startsWith(prefix)) {
                         const remainder = path.slice(prefix.length);
+                        if (targetHidden && (remainder === '~' || remainder.startsWith('~/'))) {
+                            return targetDisplay + '/' + remainder.slice(2) + url.search + url.hash;
+                        }
                         if (remainder.match(/^https?:\/\//)) {
                             let display = remainder;
                             if (url.search) display += url.search;
@@ -440,6 +451,12 @@
         }
 
         function displayToProxyPath(display) {
+            if (targetHidden) {
+                // The name stands for the connection's target: what follows it is a path on the target
+                if (display.startsWith(targetDisplay))
+                    return ownBase + '/' + display.slice(targetDisplay.length).replace(/^\/+/, '');
+                if (display.startsWith('/')) return ownBase + display;
+            }
             if (browserMode) {
                 if (display.startsWith('http://') || display.startsWith('https://'))
                     return proxyBase + '/' + display;
@@ -547,6 +564,11 @@
                                 const remainder = curSrc.slice(curSrc.indexOf(prefix) + prefix.length);
                                 const m = remainder.match(/^(https?:\/\/[^/]+)/);
                                 if (m) curOrigin = m[1];
+                            }
+                            if (!curOrigin && targetHidden) {
+                                // No origin known here: the server resolves the path against the connection
+                                iframe.src = ownBase + escaped;
+                                return;
                             }
                             if (!curOrigin) curOrigin = 'https://' + targetDisplay.replace(/^https?:\/\//, '');
                             iframe.src = proxyBase + '/' + curOrigin + escaped;
@@ -769,7 +791,7 @@
         }
 
         function openExternal() {
-            if (browserMode) {
+            if (browserMode && !targetHidden) {
                 const display = urlInput.value;
                 if (display.startsWith('http://') || display.startsWith('https://'))
                     window.open(display, '_blank');

@@ -810,6 +810,9 @@ MIGRATIONS = [
         UNIQUE(message_id, user_id, emoji)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_chat_reactions_message ON chat_reactions(message_id)",
+    # 1.24.1: a reaction made while the reactor chats anonymously stays anonymous for readers of the
+    # history even after the reactor switches anonymous off (set when the row is inserted)
+    "ALTER TABLE chat_reactions ADD COLUMN anonymous INTEGER DEFAULT 0",
     # Upload files of deleted chat messages that are not removed yet (written in the transaction of
     # the batch that deleted the rows, so a stop or a kill between the batches and the file removal
     # cannot leave a file nothing refers to; finish_purge_files settles them)
@@ -1663,6 +1666,9 @@ class Database:
         except Exception as e:
             logger.warning(f"Webhook owner clean-up skipped: {type(e).__name__}")
 
+        # One-time: reactions of members who are anonymous now are marked anonymous
+        await self._migrate_reaction_anonymous()
+
     async def _migrate_orphaned_stream_channels(self) -> None:
         """Make the chat channels that deleting a user left behind private, and list them (idempotent).
 
@@ -1709,6 +1715,38 @@ class Database:
                                "can read or delete them): " + ", ".join(f"{r['id']}:{r['name']}" for r in found[:50]))
         except Exception as e:
             logger.warning(f"Orphaned stream channel check skipped: {type(e).__name__}: {e}")
+
+    async def _migrate_reaction_anonymous(self) -> None:
+        """Mark the existing reactions of every member who chats anonymously at this moment as
+        anonymous (column chat_reactions.anonymous, added by the migration list).
+
+        Runs once (settings row `reaction_anonymous_marked`), so a later start never marks the
+        named reactions of somebody who has turned anonymous on since. Older reactions of a member
+        who had already switched anonymous off cannot be recovered: nothing recorded whether they
+        were made anonymously, so they stay as they are. One UPDATE by primary-key-bound subquery
+        on the (small) set of anonymous members; a failure leaves the row unset and it runs again.
+        """
+        key = "reaction_anonymous_marked"
+        try:
+            cursor = await self._connection.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = await cursor.fetchone()
+            if row and row["value"] == "1":
+                return
+            cursor = await self._connection.execute(
+                "UPDATE chat_reactions SET anonymous = 1 WHERE COALESCE(anonymous, 0) = 0 "
+                "AND user_id IN (SELECT id FROM users WHERE chat_anonymous = 1)")
+            marked = cursor.rowcount
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')", (key,))
+            await self._connection.commit()
+            if marked:
+                logger.info(f"Marked {marked} existing reaction(s) of anonymous members as anonymous")
+        except Exception as e:
+            logger.warning(f"Reaction anonymity migration failed, it runs again at the next start: {e}")
+            try:
+                await self._connection.rollback()
+            except Exception:
+                pass
 
     async def _migrate_member_recording_flags(self) -> None:
         """Remove the "recording" key from the config of every connection whose owner is not an
@@ -6224,6 +6262,59 @@ class Database:
             "SELECT message_id, stream_id, channel_id FROM stream_cards WHERE stream_id = ?", (stream_id,))
         return [dict(r) for r in await cursor.fetchall()]
 
+    async def get_stream_by_thumbnail_url(self, url: str) -> Optional[dict]:
+        """The stream whose custom thumbnail is stored under this URL, or None."""
+        cursor = await self.conn.execute("SELECT id FROM user_streams WHERE thumbnail_url = ? LIMIT 1", (url,))
+        row = await cursor.fetchone()
+        return await self.get_user_stream(row["id"]) if row else None
+
+    async def owned_connection_ids(self, user_id: int) -> set:
+        cursor = await self.conn.execute("SELECT id FROM user_connections WHERE user_id = ?", (user_id,))
+        return {r["id"] for r in await cursor.fetchall()}
+
+    async def owner_health_qualified_ids(self, user_id: int, since_iso: str) -> set:
+        """Ids of the connections `user_id` owns that qualify for a status dot by the owner's OWN filing: the
+        owner's pin (their connection_user_prefs row when it names one, else the connection's older is_pinned)
+        or an open of their own since `since_iso`. A grantee's pin or open does not count here."""
+        cursor = await self.conn.execute(
+            """SELECT uc.id FROM user_connections uc
+               LEFT JOIN connection_user_prefs p ON p.user_id = uc.user_id AND p.connection_id = uc.id
+               WHERE uc.user_id = ? AND (COALESCE(p.pinned, uc.is_pinned, 0) = 1 OR p.last_opened_at >= ?)""",
+            (user_id, since_iso))
+        return {r["id"] for r in await cursor.fetchall()}
+
+    async def withdraw_stream_notifications(self, stream_id: int, user_id: Optional[int] = None,
+                                            keep_user_id: Optional[int] = None, batch: int = 500) -> int:
+        """Delete the stored stream_live and stream_reminder notifications of one stream (matched on the
+        stream_id inside the notification's JSON data, by number, never by text).
+
+        With `user_id` only that member's; without it everybody's except `keep_user_id` (the stream's
+        owner) and the administrators (role admin or superadmin), who may watch whatever the stream's
+        visibility. Deleted in bounded batches of `batch` rows with a yield between, so a large table
+        never holds the connection for long. Returns the number deleted."""
+        match = ("type IN ('stream_live', 'stream_reminder') AND "
+                 "CASE WHEN json_valid(data) THEN json_extract(data, '$.stream_id') END = ?")
+        params: list = [int(stream_id)]
+        if user_id is not None:
+            match += " AND user_id = ?"
+            params.append(int(user_id))
+        else:
+            match += (" AND user_id NOT IN (SELECT id FROM users WHERE COALESCE(NULLIF(role, ''), "
+                      "CASE WHEN is_admin = 1 THEN 'superadmin' ELSE 'user' END) IN ('admin', 'superadmin'))")
+            if keep_user_id is not None:
+                match += " AND user_id != ?"
+                params.append(int(keep_user_id))
+        total = 0
+        while True:
+            cursor = await self.conn.execute(
+                f"DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE {match} LIMIT ?)",
+                (*params, int(batch)))
+            await self.conn.commit()
+            total += cursor.rowcount
+            if cursor.rowcount < batch:
+                return total
+            await asyncio.sleep(0)
+
     async def create_notifications_bulk(self, rows: list) -> list[tuple[int, int]]:
         """Insert several notifications as one atomic write.
 
@@ -8048,22 +8139,47 @@ class Database:
 
     async def toggle_reaction(self, message_id: int, user_id: int, emoji: str) -> tuple[bool, int]:
         """Toggle a reaction on a message. Returns (added, new_count)."""
-        # Try to insert; if exists, delete instead
-        try:
-            await self.conn.execute(
-                "INSERT INTO chat_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)",
-                (message_id, user_id, emoji)
-            )
-            await self.conn.commit()
-            added = True
-        except Exception:
-            # Already exists — remove it
+        added, count, _anonymous = await self.toggle_reaction_state(message_id, user_id, emoji)
+        return added, count
+
+    async def toggle_reaction_state(self, message_id: int, user_id: int, emoji: str) -> tuple[bool, int, bool]:
+        """Toggle a reaction. Returns (added, new_count, anonymous): `anonymous` is the flag the
+        row carries. An inserted row takes it from the reactor's chat_anonymous setting at this
+        moment; a removed row reports the flag it was stored with, so the one who un-reacts after
+        switching anonymous off is still not named."""
+        cursor = await self.conn.execute(
+            "SELECT anonymous FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+            (message_id, user_id, emoji))
+        existing = await cursor.fetchone()
+        if existing is not None:
+            anonymous = bool(existing["anonymous"])
             await self.conn.execute(
                 "DELETE FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
-                (message_id, user_id, emoji)
-            )
+                (message_id, user_id, emoji))
             await self.conn.commit()
             added = False
+        else:
+            try:
+                await self.conn.execute(
+                    """INSERT INTO chat_reactions (message_id, user_id, emoji, anonymous)
+                       VALUES (?, ?, ?, COALESCE((SELECT chat_anonymous FROM users WHERE id = ?), 0))""",
+                    (message_id, user_id, emoji, user_id))
+                await self.conn.commit()
+                added = True
+            except Exception:
+                # A parallel toggle inserted it first: this one removes it
+                await self.conn.execute(
+                    "DELETE FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+                    (message_id, user_id, emoji))
+                await self.conn.commit()
+                added = False
+            anonymous = False
+            if added:
+                cursor = await self.conn.execute(
+                    "SELECT anonymous FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+                    (message_id, user_id, emoji))
+                row = await cursor.fetchone()
+                anonymous = bool(row["anonymous"]) if row else False
         # Get new count for this emoji on this message
         cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM chat_reactions WHERE message_id = ? AND emoji = ?",
@@ -8071,35 +8187,32 @@ class Database:
         )
         row = await cursor.fetchone()
         count = row[0] if row else 0
-        return added, count
+        return added, count, anonymous
 
     async def get_bulk_reactions(self, message_ids: list[int]) -> dict[int, list[dict]]:
-        """Get reactions for multiple messages, grouped by message and emoji."""
+        """Get reactions for multiple messages, grouped by message and emoji. Each entry carries
+        `anonymous_user_ids`, the reactors whose row is flagged anonymous: an internal key that
+        server._mask_reactor_ids reads and removes before anything is sent."""
         if not message_ids:
             return {}
         placeholders = ",".join("?" * len(message_ids))
         cursor = await self.conn.execute(
-            f"SELECT message_id, emoji, user_id FROM chat_reactions WHERE message_id IN ({placeholders}) ORDER BY created_at",
+            f"SELECT message_id, emoji, user_id, COALESCE(anonymous, 0) AS anonymous FROM chat_reactions "
+            f"WHERE message_id IN ({placeholders}) ORDER BY created_at",
             message_ids
         )
         rows = await cursor.fetchall()
-        # Group by message_id -> emoji -> user_ids
-        result: dict[int, dict[str, list[int]]] = {}
+        # Group by message_id -> emoji -> [(user_id, anonymous)]
+        result: dict[int, dict[str, list[tuple]]] = {}
         for row in rows:
-            mid = row["message_id"]
-            emoji = row["emoji"]
-            uid = row["user_id"]
-            if mid not in result:
-                result[mid] = {}
-            if emoji not in result[mid]:
-                result[mid][emoji] = []
-            result[mid][emoji].append(uid)
-        # Convert to list format
+            result.setdefault(row["message_id"], {}).setdefault(row["emoji"], []).append(
+                (row["user_id"], bool(row["anonymous"])))
         output = {}
         for mid, emojis in result.items():
             output[mid] = [
-                {"emoji": emoji, "count": len(uids), "user_ids": uids}
-                for emoji, uids in emojis.items()
+                {"emoji": emoji, "count": len(pairs), "user_ids": [u for u, _ in pairs],
+                 "anonymous_user_ids": [u for u, anon in pairs if anon]}
+                for emoji, pairs in emojis.items()
             ]
         return output
 
