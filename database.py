@@ -9046,15 +9046,15 @@ class Database:
         Every expired block that is deleted is recorded as an ip_unblocked security event (result
         expired), at most SWEEP_EVENT_CAP singly and one summary row for the rest.
         Returns the number of block rows deleted."""
-        expiring = await (await self.conn.execute(
-            """SELECT ip_address, kind FROM blocked_ips
-               WHERE source = 'auto' AND kind IN ('login', 'probe')
-                 AND expires_at IS NOT NULL AND expires_at <= datetime('now') ORDER BY id""")).fetchall()
+        # One statement both deletes the expired rows and reports them: a row that expires or is extended
+        # between a separate read and delete can no longer be deleted without an event, or get one while kept.
         cursor = await self.conn.execute(
             """DELETE FROM blocked_ips
                WHERE source = 'auto' AND kind IN ('login', 'probe')
-                 AND expires_at IS NOT NULL AND expires_at <= datetime('now')""")
-        removed = cursor.rowcount
+                 AND expires_at IS NOT NULL AND expires_at <= datetime('now')
+               RETURNING id, ip_address, kind""")
+        expiring = sorted(await cursor.fetchall(), key=lambda r: r["id"])
+        removed = len(expiring)
         await self.conn.execute(
             "DELETE FROM ip_ban_history WHERE last_ban_at <= datetime('now', ?)",
             (f"-{self.BAN_REPEAT_DAYS} days",))

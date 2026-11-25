@@ -97,6 +97,33 @@ def test_a_failing_event_write_does_not_undo_the_sweep():
     run(body)
 
 
+def test_a_block_that_expires_during_the_sweep_is_recorded_if_it_is_deleted():
+    """The expired rows are read and deleted by one statement: a row that runs out just before the delete
+    is deleted with an event, never without one."""
+    async def body(d):
+        await add(d, "203.0.113.5", PAST)
+        real = d.conn.execute
+        injected = []
+
+        async def execute(sql, *args, **kw):
+            if sql.lstrip().startswith("DELETE FROM blocked_ips") and not injected:
+                injected.append(1)
+                await real(
+                    "INSERT INTO blocked_ips (ip_address, reason, source, kind, expires_at) VALUES (?, 'test', 'auto', 'login', ?)",
+                    ("203.0.113.9", PAST))
+            return await real(sql, *args, **kw)
+        d.conn.execute = execute
+        try:
+            removed = await d.sweep_auto_bans()
+        finally:
+            d.conn.execute = real
+        cur = await d.conn.execute("SELECT COUNT(*) AS n FROM blocked_ips")
+        assert (await cur.fetchone())["n"] == 0
+        ips = sorted(json.loads(e["details"])["target_ip"] for e in await events(d))
+        assert removed == 2 and ips == ["203.0.113.5", "203.0.113.9"], (removed, ips)
+    run(body)
+
+
 if __name__ == "__main__":
     bad = 0
     for name, fn in sorted(globals().items()):
