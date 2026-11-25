@@ -565,7 +565,9 @@ def _folder_link_refused(real: str) -> bool:
     """A top-level uploads folder that is a link may lead to another disk, but never to a place that
     holds the installation or the archives (or to the root of a filesystem)."""
     live = os.path.realpath(str(um.PORTAL_DIR))
+    backups = os.path.realpath(str(um.BACKUPS_DIR))
     return (real == os.path.dirname(real) or _inside(live, real)
+            or _inside(real, backups) or _inside(backups, real)
             or _inside(real, os.path.realpath(str(archives_dir()))))
 
 
@@ -1244,7 +1246,7 @@ class _UploadsRestore:
         tmpname = None
         dfd = None
         try:
-            dfd = os.open(self.dest, os.O_RDONLY | os.O_DIRECTORY)
+            dfd = os.open(self.dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             fds.append(dfd)
             try:
                 for i, seg in enumerate(segs[:-1]):
@@ -1386,6 +1388,9 @@ def _check_uploads_target(into: str) -> Path:
             um._require_safe_dest_dir(target)
         except RuntimeError as e:
             raise BackupError(str(e)) from None
+        if st.st_uid != os.geteuid():
+            # Another account that owns the folder could plant links in it that point anywhere.
+            raise BackupError(f"Refusing to restore into {target}: it belongs to another account")
     elif not target.parent.is_dir():
         raise BackupError(f"Parent directory does not exist: {target.parent}")
     return target

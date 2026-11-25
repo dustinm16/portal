@@ -6462,6 +6462,7 @@
                     + '; each archive with uploads needs about that much space (it is refused when the disk is too full, and the database is still backed up). '
                     + 'Archives hold uploads that were deleted later until they are pruned. Scheduled and manual backups include them, the backup before an update does not.';
             }
+            text += ' An archive made with this on cannot be restored by version 1.24.1 or earlier, which refuses it at the first uploads file and writes nothing; restore it with version 1.24.2 or later (the restore-archive command), or take portal.db, .env and .encryption_salt out of it with tar.';
             note.textContent = text;
         }
 

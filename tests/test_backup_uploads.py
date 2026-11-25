@@ -513,6 +513,106 @@ def test_estimate_and_settings():
         check("the setting is read", cfg["include_uploads"] is True)
 
 
+def test_old_archives_and_rollback_note():
+    """An archive made by 1.24.1 or earlier (no "uploads" key in the manifest) restores unchanged
+    through the command line of this release; the admin card says archives with uploads need 1.24.2."""
+    import subprocess
+    base = Path(tempfile.mkdtemp(prefix="bkold_"))
+    try:
+        members = {
+            "portal.db": _tiny_db_bytes(base),
+            ".env": b"JWT_SECRET=abc\nPORT=8461\n",
+            ".encryption_salt": b"\x01\x02salt",
+        }
+        files = {n: {"sha256": hashlib.sha256(d).hexdigest(), "size": len(d)} for n, d in members.items()}
+        manifest = {"format": 1, "created_at": "2026-01-01T00:00:00+00:00", "portal_version": "v1.24.1", "files": files}
+        arc = base / "portal-backup-20260101-000000.tar.gz"
+        with tarfile.open(arc, "w:gz") as tar:
+            for name, data in [("manifest.json", json.dumps(manifest).encode())] + list(members.items()):
+                ti = tarfile.TarInfo(name)
+                ti.size = len(data)
+                tar.addfile(ti, io.BytesIO(data))
+        res = bm.restore_archive(str(arc), str(base / "viafn"))
+        check("an archive of 1.24.1 restores through the function", sorted(res["files"]) == sorted(members), str(res))
+        out = base / "viacli"
+        env = dict(os.environ, JWT_SECRET="x" * 64)
+        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(arc), "--into", str(out)],
+                            cwd=str(base), env=env, capture_output=True, text=True, timeout=60)
+        check("the command line of this release restores an archive of 1.24.1 unchanged",
+              cp.returncode == 0 and (out / "portal.db").read_bytes() == members["portal.db"]
+              and (out / ".env").read_bytes() == members[".env"]
+              and (out / ".encryption_salt").read_bytes() == members[".encryption_salt"]
+              and not (out / "static").exists(), f"rc={cp.returncode} {cp.stdout[-200:]} {cp.stderr[-300:]}")
+        cp = subprocess.run([sys.executable, str(ROOT / "server.py"), "restore-archive", str(arc), "--uploads-into", str(base / "up")],
+                            cwd=str(base), env=env, capture_output=True, text=True, timeout=60)
+        check("an archive without uploads is refused for the uploads restore and writes nothing",
+              cp.returncode == 1 and "holds no uploads" in cp.stderr and not (base / "up").exists(), cp.stderr[-200:])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    html = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
+    i = html.index("bk-uploads-note")
+    near = html[i:i + 4000]
+    check("the Backups card says archives with uploads cannot be restored by 1.24.1 or earlier",
+          "cannot be restored by version 1.24.1 or earlier" in near and "1.24.2 or later" in near)
+
+
+def _tiny_db_bytes(base: Path) -> bytes:
+    p = base / "tiny.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("CREATE TABLE t (a)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    conn.close()
+    return p.read_bytes()
+
+
+def test_link_into_backups_and_restore_targets():
+    with Sandbox() as sb:
+        sb.fill()
+        first = sb.archive(include_uploads=True)
+        # a link at the top of the uploads that leads to the backups folder must not be followed: every
+        # archive would otherwise hold the earlier ones and the database copy
+        (sb.uploads / "bk").symlink_to(bm.um.BACKUPS_DIR)
+        (sb.uploads / "bk2").symlink_to(bm.archives_dir())
+        info = sb.archive(include_uploads=True)
+        names = names_in(info["path"])
+        check("a link to the backups folder is not followed",
+              not any(n.startswith(("uploads/bk/", "uploads/bk2/")) for n in names), str(names[:12]))
+        check("the other files are still in the archive", "uploads/chat/a.png" in names)
+        # a restore target that is a link is refused; one owned by another account is refused
+        real = sb.base / "real"
+        real.mkdir()
+        (sb.base / "lnk").symlink_to(real)
+        try:
+            bm.restore_uploads(info["path"], str(sb.base / "lnk"))
+            refused = False
+        except bm.BackupError:
+            refused = True
+        check("a restore target that is a link is refused", refused and not os.listdir(real))
+        saved = os.geteuid
+        os.geteuid = lambda: saved() + 1
+        try:
+            try:
+                bm.restore_uploads(info["path"], str(real))
+                refused = False
+            except bm.BackupError as e:
+                refused = "another account" in str(e)
+        finally:
+            os.geteuid = saved
+        check("a restore target owned by another account is refused and nothing is written", refused and not os.listdir(real))
+        # the folder is opened without following a link even when the check before it was passed
+        h = bm._UploadsRestore(str(sb.base / "lnk"))
+        h.index = {}
+        h.phase = "write"
+        member = tarfile.TarInfo("uploads/chat/a.png")
+        h.seen["chat/a.png"] = ("0" * 64, 1)
+        try:
+            h._store(None, member, "chat/a.png")
+        except OSError:
+            pass
+        check("the restore target is opened without following a link", not os.listdir(real))
+
+
 def main():
     for name, fn in sorted((n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)):
         with_deadline(name, fn)
