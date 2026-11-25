@@ -21633,6 +21633,77 @@ _PROXY_SVG_CSP = (
 )
 
 
+_CT_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+_CT_ESSENCE = re.compile(rf"[ \t]*({_CT_TOKEN})[ \t]*/[ \t]*({_CT_TOKEN})[ \t]*(?:;(.*))?\Z", re.S)
+_CT_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
+_CT_BOUNDARY = re.compile(r"[0-9A-Za-z'()+_./:=?-]{1,70}\Z")
+_CT_FALLBACK = "application/octet-stream"
+
+
+def _ct_parameters(text: str) -> dict:
+    """The parameters of a Content-Type value, as a browser reads them: name=value pairs separated by ';',
+    a value a token or a quoted string, a pair without '=' skipped, the first of a repeated name wins."""
+    out, i, n = {}, 0, len(text)
+    while i < n:
+        j = i
+        while j < n and text[j] not in ";=":
+            j += 1
+        name = text[i:j].strip().lower()
+        if j < n and text[j] == "=":
+            j += 1
+            while j < n and text[j] in " \t":
+                j += 1
+            if j < n and text[j] == '"':
+                j += 1
+                val = []
+                while j < n and text[j] != '"':
+                    if text[j] == "\\" and j + 1 < n:
+                        j += 1
+                    val.append(text[j])
+                    j += 1
+                j += 1
+                while j < n and text[j] != ";":
+                    j += 1
+                value = "".join(val)
+            else:
+                k = j
+                while j < n and text[j] != ";":
+                    j += 1
+                value = text[k:j].strip()
+            if name and name not in out:
+                out[name] = value
+        i = j + 1
+    return out
+
+
+def _isolated_content_type(values) -> tuple:
+    """(media type, header value, charset or None) for an answer to an isolated page: the one Content-Type the
+    proxy reads, decides by, and sends. A browser reads repeated Content-Type headers and a comma list differently
+    from a proxy that looks at the first value (it takes the last valid one), and sniffs a document that has none,
+    so the proxy never passes the upstream's lines on: it sends exactly one header made from what it parsed.
+    The rule: exactly one distinct value (repeats of the same value count as one), no comma in it, and a clean
+    type/subtype in front of any parameters. Anything else (no header, an empty value, several different ones, a
+    comma list, text that is no media type) is served as application/octet-stream, which is not rendered and,
+    with nosniff, not sniffed. The header sent holds the lower-case media type, the charset the proxy decodes
+    with (when the upstream gave a usable one) and, for multipart types, the boundary."""
+    distinct = {str(v).strip().lower(): str(v) for v in values}
+    if len(distinct) != 1:
+        return _CT_FALLBACK, _CT_FALLBACK, None
+    raw = next(iter(distinct.values()))
+    m = None if ("," in raw or any(ord(c) < 32 and c != "\t" or ord(c) == 127 for c in raw)) else _CT_ESSENCE.match(raw)
+    if m is None:
+        return _CT_FALLBACK, _CT_FALLBACK, None
+    media = f"{m.group(1)}/{m.group(2)}".lower()
+    params = _ct_parameters(m.group(3) or "")
+    charset = params.get("charset")
+    charset = charset.lower() if charset and _CT_LABEL.match(charset) else None
+    value = media + (f"; charset={charset}" if charset else "")
+    boundary = params.get("boundary")
+    if media.startswith("multipart/") and boundary and _CT_BOUNDARY.match(boundary):
+        value += f'; boundary="{boundary}"'
+    return media, value, charset
+
+
 def _proxy_document_csp(content_type: str, isolated: bool = False):
     """The Content-Security-Policy a proxied response gets, by its type: the permissive HTML one
     (upstream pages need their own scripts, but no worker) for HTML, XHTML and XML documents, a
@@ -23011,17 +23082,28 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 # Proxied content is per-connection and session-scoped — never let a shared
                 # edge cache (e.g. Cloudflare) store it keyed by URL alone across sessions.
                 resp_headers["Cache-Control"] = "private, no-store"
+                if isolated:
+                    # One Content-Type, the one read here and acted on below (see _isolated_content_type): the
+                    # upstream's lines are replaced, so the browser cannot read another type than this code does.
+                    ct_media, ct_value, ct_charset = _isolated_content_type(resp.headers.getall("Content-Type", []))
+                    resp_headers.popall("Content-Type", None)
+                    if resp.status not in (204, 205, 304) or "Content-Type" in resp.headers:
+                        resp_headers["Content-Type"] = ct_value
+                    seen_ct = ct_value
+                else:
+                    ct_media = ct_charset = None
+                    seen_ct = resp.headers.get("Content-Type", "")
                 # Documents get a policy before the body is streamed or buffered (see _proxy_document_csp)
-                doc_csp = _proxy_document_csp(resp.headers.get("Content-Type", ""), isolated)
+                doc_csp = _proxy_document_csp(seen_ct, isolated)
                 if doc_csp:
                     resp_headers["Content-Security-Policy"] = doc_csp
                 if isolated:
                     _proxy_isolate_headers(resp_headers, request)
 
                 # Check if response needs URL rewriting
-                content_type = resp.headers.get("Content-Type", "").lower()      # (as the policy above reads it: any letter case)
+                content_type = seen_ct.lower()      # (as the policy above reads it: any letter case)
                 # an isolated HTML document runs scripts, so the report script goes into every one of them
-                inject_frame_js = isolated and doc_csp == _PROXY_HTML_CSP
+                inject_frame_js = isolated and ct_media == "text/html"
                 needs_rewriting = any(t in content_type for t in ("text/html", "text/css", "javascript", "application/json"))
 
                 if not needs_rewriting:
@@ -23073,7 +23155,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                     frame_js_done = False
                     charset = "utf-8"
                     try:
-                        if "charset=" in content_type:
+                        if isolated:
+                            charset = ct_charset or "utf-8"
+                        elif "charset=" in content_type:
                             charset = content_type.split("charset=")[1].split(";")[0].strip().strip('"\'')
                         text = response_body.decode(charset)
 

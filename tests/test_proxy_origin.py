@@ -415,6 +415,36 @@ async def amain():
     upstream_b = make_upstream()                              # a second site, for browser mode
     await upstream_b.start_server()
 
+    # (1.24.2) an upstream that writes its answer byte for byte (aiohttp's own server would add a Content-Type of its
+    # own to an answer that has none): repeated, comma-listed, empty, missing and odd Content-Type headers
+    html_body = b"<!doctype html><html><head><title>raw</title></head><body><script>window.R=1</script></body></html>"
+    xhtml_body = b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>x</body></html>'
+    raw_cases = {
+        "repeat": ([b"text/plain", b"text/html"], html_body), "comma": ([b"text/plain, text/html"], html_body),
+        "missing": ([], html_body), "empty": ([b""], html_body), "three": ([b"text/html", b"text/plain", b"image/png"], html_body),
+        "xhtml_comma": ([b"application/xhtml+xml, text/html"], xhtml_body), "junk": ([b"not a type"], html_body),
+        "odd": ([b'TEXT/HTML ; Charset="UTF-8"'], html_body), "semicolon": ([b"text/html;"], html_body),
+        "same_twice": ([b"text/html", b"Text/HTML"], html_body),
+        "xhtml_odd": ([b"Application/XHTML+XML; charset=utf-8"], xhtml_body),
+        "svg": ([b"IMAGE/SVG+XML"], b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>"),
+        "bytes": ([b'multipart/byteranges; boundary="abc"'], b"--abc\r\n\r\nx\r\n--abc--"),
+    }
+
+    async def raw_serve(reader, writer):
+        try:
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            path = head.split(b" ", 2)[1].decode("latin-1").split("?")[0]
+            cts, body = raw_cases.get(path.rsplit("/", 1)[-1], ([b"text/plain"], b"?"))
+            lines = b"".join(b"Content-Type: " + v + b"\r\n" for v in cts)
+            writer.write(b"HTTP/1.1 200 OK\r\n" + lines + b"Content-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+    raw_up = await asyncio.start_server(raw_serve, "127.0.0.1", 0)
+    raw_port = raw_up.sockets[0].getsockname()[1]
+
     env = await h.boot(names=("owner", "bob", "carol", "adm", "adm2"), superadmin=("adm", "adm2"))
     db = env.db
     owner, bob, adm = env.sessions["owner"], env.sessions["bob"], env.sessions["adm"]
@@ -430,16 +460,17 @@ async def amain():
         return uuid
 
     web_m = await conn("owner", "member-web")                       # a member's web connection
+    web_raw = await db.create_user_connection(env.uid["owner"], "member-raw", "http", "127.0.0.1", raw_port, "{}")   # (1.24.2) the byte-for-byte upstream
     web_a = await conn("adm", "admin-web")                          # an administrator's
     br_a = await conn("adm", "admin-browser", json.dumps({"browser_mode": True}))
     br_m = await conn("owner", "member-browser", json.dumps({"browser_mode": True}))
-    for u in (web_m, web_a, br_a, br_m):
+    for u in (web_m, web_raw, web_a, br_a, br_m):
         for who in ("bob", "adm2"):
             cid = (await (await db.conn.execute("SELECT id FROM user_connections WHERE uuid = ?", (u,))).fetchone())["id"]
             if await db.get_user_connection_by_uuid(u, env.uid[who]) is None:
                 await db.add_connection_share(cid, env.uid[who], env.uid["owner"], None)
     # the first-open notice (1.24.1) was answered with Continue by the two recipients, except for web_n below
-    for u in (web_m, web_a, br_a, br_m):
+    for u in (web_m, web_raw, web_a, br_a, br_m):
         for who in ("bob", "adm2"):
             async with env.sessions[who].post(f"{env.base}/api/connections/{u}/notice") as r:
                 assert r.status == 200, (who, r.status)
@@ -604,6 +635,37 @@ async def amain():
               st == 200 and server._PROXY_SVG_CSP in csp and server._PROXY_HTML_CSP not in csp and b"portalFrame" not in body, str(csp))
     st, hd, body = await get(owner, f"/proxy/{web_m}/fj/xhtml")
     check("E1 report script: a trusted page of the same type keeps the page policy", st == 200 and server._PROXY_HTML_CSP in hd.getall("Content-Security-Policy", []), str(st))
+
+    # (1.24.2) One Content-Type, the one the proxy acted on. A browser reads repeated headers and comma lists differently
+    # from the proxy (the last valid value), so an isolated answer carries exactly one header with one media type, and a
+    # missing, empty or ambiguous one becomes application/octet-stream (never rendered, never sniffed).
+    cap_raw = (await get(bob, f"/proxy/{web_raw}/ct/odd"))[1]["Location"].rsplit("/ct/odd", 1)[0]
+    OCT = ["application/octet-stream"]
+    for kind, want_ct, want_html, want_csp in (
+            ("repeat", OCT, False, None), ("comma", OCT, False, None), ("missing", OCT, False, None), ("empty", OCT, False, None),
+            ("xhtml_comma", OCT, False, None), ("three", OCT, False, None), ("junk", OCT, False, None),
+            ("odd", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
+            ("semicolon", ["text/html"], True, server._PROXY_HTML_CSP),
+            ("same_twice", ["text/html"], True, server._PROXY_HTML_CSP),
+            ("xhtml_odd", ["application/xhtml+xml; charset=utf-8"], False, server._PROXY_SVG_CSP),
+            ("svg", ["image/svg+xml"], False, server._PROXY_SVG_CSP),
+            ("bytes", ["multipart/byteranges; boundary=\"abc\""], False, None)):
+        st, hd, body = await get(bob, f"{cap_raw}/ct/{kind}")
+        csp = hd.getall("Content-Security-Policy", [])
+        check(f"CT {kind}: the isolated answer has exactly one Content-Type, {want_ct}", hd.getall("Content-Type", []) == want_ct, str(hd.getall("Content-Type", [])))
+        check(f"CT {kind}: ... and nosniff, and the sandbox", hd.get("X-Content-Type-Options") == "nosniff"
+              and any("sandbox" in c for c in csp) and not any("allow-same-origin" in c for c in csp), str(dict(hd)))
+        check(f"CT {kind}: the report script is in the page exactly when it is served as HTML",
+              (body.count(marker) == 1) == want_html and body.count(marker) <= 1, f"{st} {body[:100]!r}")
+        if want_csp:
+            check(f"CT {kind}: the page policy follows the same type", want_csp in csp, str(csp))
+        else:
+            check(f"CT {kind}: no page policy (it is not a document that runs)", server._PROXY_HTML_CSP not in csp and server._PROXY_SVG_CSP not in csp, str(csp))
+    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/repeat")
+    check("CT: a trusted connection keeps the upstream's headers as they were (both Content-Type lines pass through, no nosniff)",
+          st == 200 and hd.getall("Content-Type", []) == ["text/plain", "text/html"] and "X-Content-Type-Options" not in hd, str(hd.getall("Content-Type", [])))
+    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/missing")
+    check("CT: ... and a trusted answer without any is left as the proxy library makes it", st == 200 and body.count(marker) == 0, str(hd.getall("Content-Type", [])))
     async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as bare_c:
         async with bare_c.get(env.base + cap_base + "/data") as r:
             check("a sub-resource under the capability needs no cookie", r.status == 200, str(r.status))
@@ -976,6 +1038,8 @@ async def amain():
     await h.shutdown(env)
     await upstream.close()
     await upstream_b.close()
+    raw_up.close()
+    await raw_up.wait_closed()
 
 
 async def _status(ctx):

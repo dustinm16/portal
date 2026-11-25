@@ -159,6 +159,12 @@ XX_POPEN = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h
 XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
 XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
 
+# (1.24.2) A hostile page behind a Content-Type that the proxy and a browser read differently (a comma list, repeated
+# headers). It reports whether it ran and whether the report script of the embedded browser is in it.
+CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1>ct page</h1><script>"
+          "var inj=false;for(var i=0;i<document.scripts.length;i++){if((document.scripts[i].textContent||'').indexOf('portal'+'Frame')>=0)inj=true}"
+          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj})});</script></body></html>")
+
 POPUP = "<!doctype html><script>opener && opener.postMessage('popup origin=' + window.origin, '*')</script>"
 
 APP = r"""<!doctype html><html><head><title>app-title</title><link rel="stylesheet" href="/app.css"></head><body>
@@ -190,6 +196,7 @@ def serve():
     import aiohttp
     from aiohttp import web
     from aiohttp.test_utils import TestServer
+    from multidict import CIMultiDict
     from config import Config
 
     results = {}
@@ -268,6 +275,14 @@ def serve():
             raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}" + ("?r=1" if r.match_info["kind"] in ("pforge", "psrc", "popen") else ""))
 
         up.router.add_get("/xr/{kind}", xr)
+
+        def ctpage(r):
+            kind = r.match_info["kind"]
+            heads = CIMultiDict([("Content-Type", "text/plain, text/html")] if kind == "comma"
+                                else [("Content-Type", "text/plain"), ("Content-Type", "text/html")] if kind == "repeat"
+                                else [("Content-Type", "text/html")])
+            return web.Response(body=CTPAGE.replace("__KIND__", kind).encode(), headers=heads)
+        up.router.add_get("/ct/{kind}", ctpage)
         up.router.add_get("/xl/{kind}", xl)
         up.router.add_get("/xx/{kind}", xx)
         up.router.add_get("/stale2", lambda r: web.Response(text=STALE2, content_type="text/html"))
@@ -653,6 +668,28 @@ def run_browser(info):
               (r.get("fetch"), r.get("xhr")))
         check("E31: a request with a wrong capability gets no CORS grant, so the page cannot read the answer", str(r.get("badcap", "")).startswith("ERR"), r.get("badcap"))
         ctx.close()
+
+        # 3e. (1.24.2) a hostile page behind a Content-Type that the proxy reads one way and a browser another (a comma
+        # list, repeated headers): it is either not rendered as HTML (a download) or it carries the injected report script.
+        # The control is a plain text/html answer, which is rendered and carries the script.
+        for kind in ("html", "comma", "repeat"):
+            ctx = ctx_for("bob")
+            page = ctx.new_page()
+            n_before = len(results().get("ct", []))
+            started_download = False
+            try:
+                page.goto(f"{base}/proxy/{info['web_m']}/ct/{kind}")
+            except Exception as exc:
+                started_download = "Download is starting" in str(exc)
+            time.sleep(2.0)
+            got = results().get("ct", [])[n_before:]
+            if kind == "html":
+                check("CT browser: the control (one text/html) is rendered and carries the report script", got and got[-1].get("injected") is True, got)
+            else:
+                check(f"CT browser ({kind}): the page is not rendered as HTML (a download), or it carries the report script",
+                      all(g.get("injected") is True for g in got) and (started_download or bool(got)), (started_download, got))
+                check(f"CT browser ({kind}): in fact it is not rendered at all", started_download and not got, (started_download, got))
+            ctx.close()
 
         # 4. an isolated page still works: sub-resources, a module script, a form, a WebSocket, fetch
         ctx = ctx_for("bob")
