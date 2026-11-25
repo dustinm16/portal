@@ -310,6 +310,8 @@ async def run(ctx):
         status, body = await make_rule("group end", "word_filter", {"words": ["(foo|bar)"], "match_mode": "regex"})
         ctx.ok("automod: a regex rule ending in a closing parenthesis is accepted", status == 201, f"{status} {body}")
         group_rule = body.get("id")
+        # the socket allows 5 messages in 5 seconds and amalice has sent several above: let that window pass
+        await asyncio.sleep(5.5)
         mark = len(ev["amalice"])
         await ws["amalice"].send_json({"type": "message", "message": f"say FOO now {rnd}"})
         err = await _wait_for(ev["amalice"], lambda e: e.get("type") == "error" and e.get("error_code") == "automod", start=mark)

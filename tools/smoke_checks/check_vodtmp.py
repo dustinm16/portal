@@ -161,9 +161,16 @@ async def main():
     async def fake_connect(uid):
         return mock.Mock(), sftp, None
 
+    class StubDb:
+        # the sweep reads the owner's account and storage root from the database; this fresh interpreter has none
+        async def get_user_by_id(self, uid):
+            return {"id": uid, "username": "smoke"}
+        async def get_vod_storage(self, uid):
+            return {"remote_path": "/vods/Smoke_Show"}
+
     from config import Config
     out["stage_mode"] = bool(Config.STAGE_MODE)
-    with mock.patch.object(server, "_connect_vod_sftp", fake_connect):
+    with mock.patch.object(server, "_connect_vod_sftp", fake_connect), mock.patch.object(server, "db", StubDb()):
         # a staged instance only reports: nothing is uploaded or removed (the storage is no loopback test server)
         await server.recover_vod_staging(leftovers)
         out["stage_pass_remote"] = {k: v for k, v in sftp.files.items()}
