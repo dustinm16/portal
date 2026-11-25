@@ -1380,6 +1380,9 @@ def _check_uploads_target(into: str) -> Path:
     live = um.PORTAL_DIR.resolve()
     if target == live or live in target.parents:
         raise BackupError("Refusing to restore into the live installation")
+    live_uploads = _uploads_root()      # static/uploads may itself be a link to another disk: still the live folder
+    if _inside(str(target), live_uploads):
+        raise BackupError("Refusing to restore into the live installation")
     if os.path.lexists(target):
         st = os.lstat(target)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):

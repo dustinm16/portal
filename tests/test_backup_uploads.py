@@ -613,6 +613,24 @@ def test_link_into_backups_and_restore_targets():
         check("the restore target is opened without following a link", not os.listdir(real))
 
 
+def test_restore_refuses_the_live_uploads_behind_a_link():
+    with Sandbox() as sb:
+        sb.fill()
+        info = sb.archive(include_uploads=True)
+        disk = sb.base / "otherdisk"
+        shutil.move(str(sb.uploads), str(disk))
+        sb.uploads.symlink_to(disk)             # the live uploads folder lives on another disk
+        before = tree(disk)
+        for target in (disk, disk / "chat"):
+            try:
+                bm.restore_uploads(info["path"], str(target), overwrite=True)
+                refused = False
+            except bm.BackupError as e:
+                refused = "live installation" in str(e)
+            check(f"a restore into the live uploads folder behind a link is refused ({target.name})", refused)
+        check("... and nothing there changed", tree(disk) == before)
+
+
 def main():
     for name, fn in sorted((n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)):
         with_deadline(name, fn)
