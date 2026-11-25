@@ -1368,7 +1368,7 @@ for name, needles in {
     "hooks of a demoted administrator": ("the owner is no longer an administrator", "read at every send", "`server.py set-admin --remove`", "system hooks", "`404`"),
     "webrtc kick": ("webrtcsessions/kick", "64 per stream", "staged instance"),
     "channels of a deleted account": ("chat channel of each of its streams", "`orphaned_stream_channels`", "made **private**", "nothing is deleted"),
-    "small hardening": ("per ipv6 /64", "no expiry", "6to4 and teredo", "spice or proxmox", "`stored_password_cleared: true`", "`textcontent`",
+    "small hardening": ("not per ipv6 /64", "no expiry", "6to4 and teredo", "spice or proxmox", "`stored_password_cleared: true`", "`textcontent`",
                         "fixed sentence", "no default of a blocking feature changes"),
     "the allow_private rule": ("`webhook_local_allow=127.0.0.1:8081`", "never the portal's own port", "after 10 in a row", "child of the portal"),
     "not tested": ("no browser", "no real encoder", "fake of mediamtx's api", "mediamtx v1.21.3", "fake exception", "fake page", "checked by reading the source only"),
@@ -1379,6 +1379,21 @@ check("1.24.1: the static versions stated are the ones the pages load",
       and "user-connections.js?v=62" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text())
+# Counting failed sign-ins per IPv6 /64 was reverted in the lane and is not part of 1.24.1: nowhere may it be claimed.
+# (The alert burst and the security log key an IPv6 source by its /64 since earlier releases; those sentences do not
+# name the blocking of failed sign-ins and are not looked at here.)
+def _sentences_claiming_64(txt):
+    out = []
+    for sent in re.split(r"(?<=[.!?])\s+|\n", txt):
+        low = sent.lower()
+        if "/64" in low and ("failed sign-in" in low or "failed login" in low) and not re.search(r"\bnot\b|\bno\b|\bnever\b", low):
+            out.append(sent.strip()[:160])
+    return out
+_claims64 = {name: _sentences_claiming_64(txt) for name, txt in (
+    ("the 1.24.1 notes", _sec241), ("tests/test_access_hardening.py (its description)", (ROOT / "tests" / "test_access_hardening.py").read_text().split('"""')[1]),
+    ("docs/API.md", (ROOT / "docs" / "API.md").read_text()), ("static/api-docs.html", re.sub(r"<[^>]+>", "", (ROOT / "static" / "api-docs.html").read_text())))}
+check("1.24.1: no sentence of the notes or the hardening test claims failed sign-ins are counted per IPv6 /64",
+      not any(_claims64.values()) and "not per ipv6 /64" in _low241 and "not part of 1.24.1" in _low241, str(_claims64))
 _api241 = (ROOT / "docs" / "API.md").read_text()
 _html241 = (ROOT / "static" / "api-docs.html").read_text()
 check("1.24.1: the API reference and the API page state each changed contract",
