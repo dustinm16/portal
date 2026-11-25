@@ -404,6 +404,9 @@
         // Reports from the page that was on screen before the portal started a navigation are not trusted until the
         // new page has loaded (or this long has passed: a change of the fragment alone causes no load).
         const NAV_QUIET_MS = 10000;
+        // A page loaded by an address the portal gave the frame keeps that address on the bar for this long while the
+        // document in the frame has not yet answered the portal's ping; after that the tab is marked like any other.
+        const PING_GRACE_MS = 2000;
         const statusEl = document.getElementById('connection-status');
         const statusTextEl = document.getElementById('status-text');
         const errorEl = document.getElementById('browser-error');
@@ -573,7 +576,9 @@
             const t = frameTab(iframe);
             // A page the portal did not start has not yet answered the portal's ping (see startHandshake): nothing
             // it says or does not say is known, so no address is shown and the tab is marked.
-            if (browserMode && t && t.pending) return { path: '', unconfirmed: true };
+            // The exception is a page the portal started: while its answer is awaited (a short time) the address the
+            // portal gave the frame stays, and the answer then confirms it or marks another site.
+            if (browserMode && t && t.pending && !(t.pendingKnown && Date.now() - t.pendingKnown < PING_GRACE_MS)) return { path: '', unconfirmed: true };
             if (browserMode && t && t.unconfirmed) return { path: t.lastRep || '', unconfirmed: true };
             const known = knownFramePath(iframe);
             const rep = (t && t.href) ? reportedFramePath(t.href) : null;
@@ -594,7 +599,7 @@
         // address is confirmed again.
         function setFrameSrc(iframe, src) {
             const t = frameTab(iframe);
-            if (t) { t.href = ''; t.lastRep = ''; t.unconfirmed = false; t.pending = ''; t.navAt = Date.now(); }
+            if (t) { t.href = ''; t.lastRep = ''; t.unconfirmed = false; t.pending = ''; t.pendingKnown = 0; t.navAt = Date.now(); }
             iframe.src = src;
         }
         // A frame loaded a page the portal did not start (a link, a script of the page, back or forward). The portal
@@ -602,12 +607,18 @@
         // script could not be put into) must not keep the old address on the bar. So the tab stays marked until that
         // very document answers a ping the portal sends after the load (only the document now in the frame can: the
         // answer carries the ping's random id). Nothing the previous document reported counts for the new one.
-        function startHandshake(t) {
+        // A load the portal started (an address typed, a link the portal opened, a reload it asked for) gets the same
+        // ping: the address it was given may have been answered by a redirect to another site, or the page may have
+        // replaced itself before it finished loading. It keeps its address on the bar until the answer is due.
+        function startHandshake(t, portalStarted) {
             const id = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
             t.pending = id;
-            t.href = '';
-            t.lastRep = '';
+            t.pendingKnown = portalStarted ? Date.now() : 0;
+            if (!portalStarted) { t.href = ''; t.lastRep = ''; }
             try { t.iframe.contentWindow.postMessage({ type: 'portalPing', id: id }, '*'); } catch {}
+            if (portalStarted) {
+                setTimeout(function() { if (t.pending === id && t.id === activeTabId) updateUrlBar(); }, PING_GRACE_MS + 50);
+            }
         }
         function extractTitle(iframe) {
             const own = frameTab(iframe);
@@ -678,7 +689,7 @@
                         }
                     } catch(e) { /* cross-origin, ignore */ }
                 }
-                if (browserMode && !portalStarted) { startHandshake(tab); if (tab.id === activeTabId) updateUrlBar(); }
+                if (browserMode) { startHandshake(tab, portalStarted); if (tab.id === activeTabId) updateUrlBar(); }
                 tab.title = extractTitle(iframe);
                 renderTabs();
                 if (tab.id === activeTabId) {
@@ -1001,8 +1012,10 @@
                 if (own === null) return;
                 addTab(own);
             } else if (e.data.type === 'portalFrame' && fromFrame) {
-                if (fromFrame.pending && e.data.ping === fromFrame.pending) fromFrame.pending = '';
-                if (typeof e.data.href === 'string' && !(fromFrame.navAt && Date.now() - fromFrame.navAt < NAV_QUIET_MS)) {
+                // The answer to the ping comes from the document now in the frame, whoever started the load.
+                const answered = !!fromFrame.pending && e.data.ping === fromFrame.pending;
+                if (answered) fromFrame.pending = '';
+                if (typeof e.data.href === 'string' && (answered || !(fromFrame.navAt && Date.now() - fromFrame.navAt < NAV_QUIET_MS))) {
                     fromFrame.href = e.data.href.substring(0, 4096);
                     noteReportedSite(fromFrame);
                 }

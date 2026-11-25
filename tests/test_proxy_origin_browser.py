@@ -131,6 +131,7 @@ XX_FORGE = (b"<!doctype html><html><!--<head>--><head><title>xsite-forge</title>
             b"setInterval(function(){parent.postMessage({type:'portalFrame',href:h,title:'xl-forge'},'*')},200);</script></body></html>")
 XX_BADUTF = b"<!doctype html><html><head><title>xsite-badutf</title></head><body><h1>LOOKS LIKE SITE ONE \xff</h1></body></html>"
 XX_GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+XX_NOTITLE = b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1></body></html>"
 XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
 XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
 
@@ -234,9 +235,14 @@ def serve():
         def xx(r):
             kind = r.match_info["kind"]
             body, ctype = {"silent": (XX_SILENT, "text/html"), "forge": (XX_FORGE, "text/html"), "badutf": (XX_BADUTF, "text/html; charset=utf-8"),
-                           "plain": (b"LOOKS LIKE SITE ONE", "text/plain"), "image": (XX_GIF, "image/gif"), "honest": (XX_HONEST, "text/html")}[kind]
+                           "plain": (b"LOOKS LIKE SITE ONE", "text/plain"), "image": (XX_GIF, "image/gif"), "honest": (XX_HONEST, "text/html"),
+                           "notitle": (XX_NOTITLE, "text/html")}[kind]
             return web.Response(body=body, headers={"Content-Type": ctype})
 
+        def xr(r):      # (1.24.2, E1) an address that the upstream answers with a redirect to another site
+            raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}")
+
+        up.router.add_get("/xr/{kind}", xr)
         up.router.add_get("/xl/{kind}", xl)
         up.router.add_get("/xx/{kind}", xx)
         up.router.add_get("/stale2", lambda r: web.Response(text=STALE2, content_type="text/html"))
@@ -579,6 +585,33 @@ def run_browser(info):
         samples = link_case("honest")
         check("E1 (same site): a link to another page of the same site raises no marker and the bar follows the page",
               samples[-1][0].endswith("/xx/honest") and not samples[-1][1] and not samples[-1][3], samples[-3:])
+
+        # 3d2. (E1) an address the portal itself loads (typed in the bar) that the upstream answers with a redirect to another
+        # site: once the load is over the bar must name the site on screen, with the marker, whatever the page does.
+        def redirect_case(kind):
+            ctx = ctx_for("owner")
+            page = ctx.new_page()
+            page.set_default_timeout(10000)
+            page.goto(f"{base}/browser?connection={info['br_m']}")
+            wait_for(lambda: "evil-title" in page.inner_text(".tab-bar"), 10)
+            wait_for(lambda: page.evaluate("tabs.length") >= 2, 10)
+            wait_for(lambda: page.evaluate("1") and any(f.url.endswith("/popup") for f in page.frames), 10)
+            time.sleep(1)
+            page.fill("#url-input", up + "/xr/" + kind)
+            page.press("#url-input", "Enter")
+            wait_for(lambda: page.evaluate("1") and any(("/xx/" + kind) in f.url for f in page.frames), 15)
+            time.sleep(3.5)
+            samples = []
+            for _ in range(8):
+                samples.append(page.evaluate(BAR))
+                time.sleep(0.15)
+            ctx.close()
+            return samples
+        for kind in ("silent", "notitle", "image"):
+            samples = redirect_case(kind)
+            check(f"E1 (redirect, {kind}): after a typed address was answered by a redirect to another site the old address is never on the bar without the marker",
+                  not any(v[0].endswith("/xr/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
+            check(f"E1 (redirect, {kind}): the marker is shown and open-in-new-window is disabled", samples[-1][1] and samples[-1][3], samples[-1])
 
         # 3d. (E31) an isolated page can send credentialed requests to its own capability address, and only to that
         ctx = ctx_for("bob")
