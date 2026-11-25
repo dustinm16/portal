@@ -81,8 +81,8 @@ def _origin(url):
 
 def _norm(value):
     if isinstance(value, (list, tuple)):
-        return tuple(sorted(str(v) for v in value))
-    if value is None or value == "" or value is False:
+        return tuple(sorted(str(v) for v in value)) or None
+    if value is None or value == "" or value is False or value == 0:
         return None
     return str(value).strip().lower()
 

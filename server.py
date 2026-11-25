@@ -5922,11 +5922,6 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     return web.json_response(_externalize_connection(exposed))
 
 
-# Connection types that store a secret of their own in the config (not the SSH credential rules),
-# and the config keys that hold it. The plugin sends each to the configured host.
-_OWN_SECRET_KEYS = {"spice": ("password",), "proxmox": ("password", "api_token")}
-
-
 async def http_update_user_connection(request: web.Request) -> web.Response:
     """Update a user connection."""
     token, refusal = await _connection_user_auth(request)
@@ -6006,6 +6001,7 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     # Merge incoming config with existing config to preserve fields not in the form
     # (e.g., passwords, private keys, and other sensitive fields that are not shown during edit)
     password_cleared = False
+    secrets_cleared_now = []
     config = data.get("config", {})
     if isinstance(config, dict):
         existing_config = connection.get("config", {})
@@ -6043,15 +6039,24 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
                 else:
                     data["config"], password_cleared = sshpass_rules.apply_leaving(
                         existing_config, config, data["config"])
-            elif old_type in _OWN_SECRET_KEYS and (target_changed or new_type != old_type):
-                # SPICE and Proxmox keep their own secrets in the config (the password, and for
-                # Proxmox the API token). A new host, port or type is a new place to send them, so
-                # each is kept only when this request carries a new one.
-                for _key in _OWN_SECRET_KEYS[old_type]:
-                    if not (isinstance(config.get(_key), str) and config[_key]):
-                        if isinstance(existing_config.get(_key), str) and existing_config[_key]:
-                            password_cleared = True
-                        data["config"] = {k: v for k, v in data["config"].items() if k != _key}
+            # A moved target does not take the stored secrets along, for every type: the row's host or
+            # port, the origin of a URL key, a TLS port or switch, or a type handled by another plugin.
+            # Each secret is kept only when this request carries a new one. The SSH stored password has
+            # its own rule above (the same answer flag), so it is left to that.
+            plugin_of = lambda t: (CONNECTION_TYPES.get(t) or {}).get("plugin") or t
+            moved = connection_secrets.dial_changed(
+                connection.get("host"), connection.get("port"),
+                data.get("host", connection.get("host")), data.get("port", connection.get("port")),
+                existing_config, data["config"]) or plugin_of(old_type) != plugin_of(new_type)
+            data["config"], secrets_cleared = connection_secrets.clear_on_move(
+                moved=moved, existing=existing_config, incoming=config, merged=data["config"],
+                skip=("password",) if (old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES) else ())
+            if password_cleared and "password" not in secrets_cleared and (
+                    old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES):
+                secrets_cleared = sorted(secrets_cleared + ["password"])
+            if any(k in secrets_cleared for k in ("password", "api_token")) and not password_cleared:
+                password_cleared = True       # what SPICE and Proxmox already answered
+            secrets_cleared_now = secrets_cleared
 
     # Enforce config size limit
     config_check = data.get("config", {})
@@ -6084,6 +6089,8 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
             body = {"status": "updated"}
             if password_cleared:
                 body["stored_password_cleared"] = True
+            if secrets_cleared_now:
+                body["stored_secrets_cleared"] = list(secrets_cleared_now)
             return web.json_response(body)
         else:
             return web.json_response({"error": "No changes"}, status=404)

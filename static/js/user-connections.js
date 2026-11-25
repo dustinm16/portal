@@ -1423,7 +1423,11 @@ async function submitConnection(event) {
         Portal.flashButtonSuccess(submitBtn);
         const saved = await response.json().catch(() => ({}));
         Portal.toast(isEdit ? 'Connection updated' : 'Connection added', 'success');
-        if (saved.stored_password_cleared) {
+        if (Array.isArray(saved.stored_secrets_cleared) && saved.stored_secrets_cleared.length) {
+            // The connection now points somewhere else: what was stored for the old place is gone.
+            Portal.toast('The connection now points somewhere else, so these stored values were removed: ' +
+                saved.stored_secrets_cleared.join(', ') + '. Enter them again to keep using them.', 'info');
+        } else if (saved.stored_password_cleared) {
             Portal.toast('The stored password was removed. Enter it again to keep using it.', 'info');
         }
         setTimeout(() => closeModal('add-connection-modal'), 800);
