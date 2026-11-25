@@ -1354,6 +1354,35 @@ check("1.24.0: the rollback item does not call a rollback fully safe and gives t
       and "1.23.1" in _rb240 and "1.23.0" not in _rb240
       and "moderator" in _rb240 and "private" in _rb240)
 
+# --- 1.24.1: one coherent section (release notes assembled from four lanes) ---------------------------
+_s241 = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0\n)", text, re.S)
+_s241 = _s241.group(1) if _s241 else ""
+check("1.24.1 notes: one heading each for what you will notice, what to do after upgrading and breaking changes, in that order",
+      all(_s241.count(h) == 1 for h in ("\n**What you will notice**\n", "\n**What you should do after upgrading**\n", "\n**Breaking changes**\n"))
+      and _s241.index("\n**What you will notice**\n") < _s241.index("\n**What you should do after upgrading**\n") < _s241.index("\n**Breaking changes**\n"))
+check("1.24.1 notes: exactly one Database, Static files, Rollback and Not tested bullet, after Breaking changes",
+      all(len(re.findall(rf"^- \*\*{n}\.\*\*", _s241, re.M)) == 1 for n in ("Database", "Static files", "Rollback", "Not tested"))
+      and _s241.index("- **Database.**") > _s241.index("\n**Breaking changes**\n"))
+check("1.24.1 notes: no section of the release is named after the lane that built it",
+      not re.search(r"\bthe (authorisation|privacy|library|proxied pages) part\b|\blane\b", _s241, re.I))
+_db241_txt = _s241.split("- **Database.**", 1)[1].split("- **Static files.**", 1)[0] if "- **Database.**" in _s241 else ""
+check("1.24.1 notes: the Database bullet names every column, table and setting the code adds",
+      all(n in _db241_txt for n in ("chat_reactions.anonymous", "user_connections.proxy_trusted_fp", "user_connections.proxy_trusted_by",
+                                   "proxy_share_notice", "reaction_anonymous_marked", "orphaned_stream_channels", "orphaned_stream_channels_handled", "WEBHOOK_LOCAL_ALLOW"))
+      and all(n in (ROOT / "database.py").read_text(encoding="utf-8") for n in (
+          "ADD COLUMN anonymous INTEGER DEFAULT 0", "ADD COLUMN proxy_trusted_fp", "ADD COLUMN proxy_trusted_by",
+          "CREATE TABLE IF NOT EXISTS proxy_share_notice", "reaction_anonymous_marked", "'orphaned_stream_channels'", "'orphaned_stream_channels_handled'")))
+_st241_txt = _s241.split("- **Static files.**", 1)[1].split("- **Rollback.**", 1)[0] if "- **Static files.**" in _s241 else ""
+_named241 = re.findall(r"`([a-z-]+\.js)` v(\d+)", _st241_txt)
+_pages241 = "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html"))
+check("1.24.1 notes: every script version the Static files bullet names is the one a page loads",
+      len(_named241) >= 8 and all(f"/{n}?v={v}" in _pages241 for n, v in _named241), str(_named241))
+check("1.24.1 notes: the Rollback bullet says what is lost and what does not come back",
+      all(n in _s241.split("- **Rollback.**", 1)[-1] if "- **Rollback.**" in _s241 else False for n in ("What is lost on 1.24.0", "What does not come back", "WEBHOOK_LOCAL_ALLOW", "jsDelivr")))
+check("1.24.1 notes: no ready-made request spellings of the upload or header problems are published",
+      not re.search(r"%2e|%2F|uploads%2|/\./uploads|x/\.\./uploads|max-age=0|fresh frame", _s241 + (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+                    + (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"), re.I))
+
 # --- 1.24.1: access lane (security release) --------------------------------------------------------
 m241 = re.search(r"### Upgrade notes for 1\.24\.1\n(.*?)(?=\n### Upgrade notes for 1\.24\.0\n)", text, re.S)
 _sec241 = m241.group(1) if m241 else ""
@@ -1361,7 +1390,7 @@ _low241 = _sec241.lower()
 check("1.24.1 authorisation notes sit directly before the 1.24.0 notes", bool(m241))
 check("1.24.1 authorisation notes carry no emoji", not re.search(_EMOJI, _sec241))
 for name, needles in {
-    "the three groups and the closing sections": ("breaking changes", "behaviour changes", "**database**", "**static files**", "**rollback**", "**not tested.**"),
+    "the closing bullets": ("- **database.**", "- **static files.**", "- **rollback.**", "- **not tested.**"),
     "end now and stop relays": ("`\"confirm\": true`", "`400`", "`regenerate_key` of end now no longer defaults to true", "stop-relays"),
     "connections need the whole authority": ("whole authority", "`403`", "member's default key", "`/connect`", "`get`) is unchanged", "`/proxy/{conn_id}`", "`auth_header` and `extra_headers`"),
     "regenerate while live": ("\"end_live_session\": true", "`409`", "path the session was published on", "recording is finished and kept"),
@@ -1375,7 +1404,7 @@ for name, needles in {
 }.items():
     check(f"1.24.1 authorisation states: {name}", all(n in _low241 for n in needles), str([n for n in needles if n not in _low241]))
 check("1.24.1: the static versions stated are the ones the pages load",
-      "`user-connections.js` is version 62" in _sec241 and "`streams.js` version 54" in _sec241 and "`live-ops-admin.js` version 4" in _sec241
+      "`user-connections.js` v62" in _sec241 and "`streams.js` v54" in _sec241 and "`live-ops-admin.js` v4" in _sec241
       and "user-connections.js?v=62" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/streams.js?v=54" in (ROOT / "static" / "index.html").read_text()
       and "/static/js/live-ops-admin.js?v=4" in (ROOT / "static" / "admin.html").read_text())
@@ -1537,7 +1566,7 @@ _low241v = _sec241v.lower()
 check("1.24.1 vendor notes sit directly before the 1.24.0 notes", bool(m241v))
 check("1.24.1 vendor notes carry no emoji", not re.search(_EMOJI, _sec241v))
 check("1.24.1 vendor notes have the administrators list, a behaviour changes group, Breaking changes and a Not tested paragraph",
-      all(g in _sec241v for g in ("**For administrators, in short**", "**Behaviour changes:", "**Breaking changes**", "**Not tested**")))
+      all(g in _sec241v for g in ("**What you will notice**", "**What you should do after upgrading**", "**Breaking changes**", "- **Not tested.**")))
 _vend_lib = {"hls.js": "1.5.17", "xterm": "5.3.0", "xterm-addon-fit": "0.8.0", "chart.js": "4.4.7", "highlight.js": "11.12.0",
              "marked": "18.3.0", "dompurify": "3.5.0", "novnc": "1.4.0"}
 check("1.24.1 vendor: the notes name every library with the version in its vendored README and the Third-Party table lists it",
@@ -1553,7 +1582,7 @@ for name, needles in {
         "marked.min.js", "qrcode@1.5.3", "build/", "inferred from the package", "not compared with what the cdn served"),
     "Chart.js lost its integrity attribute": ("integrity attribute", "sha384"),
     "what was run in a browser and what was not": ("headless chromium", "offline flags", "not proven", "54 vendored files", "not part of the repository"),
-    "rollback and no database change": ("no setting, `.env` entry, command or database change", "1.24.0 starts on the same database"),
+    "rollback and no database change": ("no setting, `.env` entry, command or database change", "1.24.0 starts on the migrated database"),
 }.items():
     check(f"1.24.1 vendor states: {name}", all(n in _low241v for n in needles), str([n for n in needles if n not in _low241v]))
 check("1.24.1 vendor: the README no longer says the pages load libraries from the CDN, and the Privacy and Security bullets name what is true",
@@ -1578,7 +1607,7 @@ check("1.24.1 notes sit directly before the 1.24.0 notes", bool(m241))
 check("1.24.1 notes carry no emoji", not re.search(_EMOJI, _sec241))
 for name, needles in {
     "a Breaking changes group, behaviour that stays, trusted marks, known gaps and Not tested": (
-        "**breaking changes**", "**what stays as it was**", "**trusted marks (superadmin)**", "**known and not changed**", "**not tested**"),
+        "**breaking changes**", "*what stays as it was*", "*trust marks (superadmin)*", "*known and not changed*", "- **not tested.**"),
     "the loss list: storage, cookies, service workers, nested frames": (
         "no local storage", "no `document.cookie`", "no service workers", "no frames inside"),
     "the cookie finding and what fixes it": ("no cookie of any kind", "separate host name", "chromium 156"),
@@ -1587,7 +1616,7 @@ for name, needles in {
     "the seat belt is not a wall": ("seat belt, not a wall", "without a `referer`"),
     "every caller considered": ("the portal's own pages", "embedded browser", "/api/push/", "obs", "api clients"),
     "cookies and Clear-Site-Data": ("clear-site-data", "any letter case", "dot segment"),
-    "marks and audit": ("connection.proxy_trust", "shared web connections", "1.24.0 ignores them"),
+    "marks and audit": ("connection.proxy_trust", "shared web connections", "ignores what 1.24.1 added"),
     "known gaps": ("websocket sockets", "sandboxed popup"),
     "Not tested names the browsers": ("firefox, safari", "roughly 25 applications"),
 }.items():
@@ -1635,7 +1664,7 @@ _low241 = _sec241.lower()
 check("1.24.1 privacy notes sit directly before the 1.24.0 notes", bool(m241))
 check("1.24.1 privacy notes carry no emoji", not re.search(_EMOJI, _sec241))
 check("1.24.1 privacy notes have Breaking changes, Behaviour changes, Database and Not tested",
-      all(h in _sec241 for h in ("**Breaking changes**", "**Behaviour changes**", "**Database**", "**Not tested**")))
+      all(h in _sec241 for h in ("**Breaking changes**", "**What you will notice**", "- **Database.**", "- **Not tested.**")))
 _srv241 = (ROOT / "server.py").read_text(encoding="utf-8")
 check("1.24.1: the health-dot window stated is the one the code uses and the notes name the owner's own pin",
       _ch241.RECENT_DAYS == 7 and "last 7 days" in _sec241 and "owner's own pin" in _sec241
