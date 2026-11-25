@@ -132,6 +132,14 @@ XX_FORGE = (b"<!doctype html><html><!--<head>--><head><title>xsite-forge</title>
 XX_BADUTF = b"<!doctype html><html><head><title>xsite-badutf</title></head><body><h1>LOOKS LIKE SITE ONE \xff</h1></body></html>"
 XX_GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 XX_NOTITLE = b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1></body></html>"
+# (1.24.2) an untitled page that stops the injected script's answer to the ping (a setter on Object.prototype that
+# throws, as the answer used to set .ping on a plain object) and answers with a forged address of the typed site.
+XX_PFORGE = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1><script>"
+             b"Object.defineProperty(Object.prototype,'ping',{set:function(){throw 1}});"
+             b"var to=location.search.indexOf('r=1')>=0?'/xr/pforge':'/xl/pforge';"
+             b"var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/pforge',to).split('?')[0];"
+             b"addEventListener('message',function(e){if(e.data&&e.data.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:e.data.id},'*')});"
+             b"</script></body></html>")
 XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
 XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
 
@@ -236,11 +244,11 @@ def serve():
             kind = r.match_info["kind"]
             body, ctype = {"silent": (XX_SILENT, "text/html"), "forge": (XX_FORGE, "text/html"), "badutf": (XX_BADUTF, "text/html; charset=utf-8"),
                            "plain": (b"LOOKS LIKE SITE ONE", "text/plain"), "image": (XX_GIF, "image/gif"), "honest": (XX_HONEST, "text/html"),
-                           "notitle": (XX_NOTITLE, "text/html")}[kind]
+                           "notitle": (XX_NOTITLE, "text/html"), "pforge": (XX_PFORGE, "text/html")}[kind]
             return web.Response(body=body, headers={"Content-Type": ctype})
 
         def xr(r):      # (1.24.2, E1) an address that the upstream answers with a redirect to another site
-            raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}")
+            raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}" + ("?r=1" if r.match_info["kind"] == "pforge" else ""))
 
         up.router.add_get("/xr/{kind}", xr)
         up.router.add_get("/xl/{kind}", xl)
@@ -577,7 +585,7 @@ def run_browser(info):
                 time.sleep(0.15)
             ctx.close()
             return samples
-        for kind in ("silent", "forge", "badutf", "plain", "image"):
+        for kind in ("silent", "forge", "badutf", "plain", "image", "pforge"):
             samples = link_case(kind)
             check(f"E1 ({kind}): the old site's address is never on the bar without the marker after a link to another site",
                   not any(v[0].endswith("/xl/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
@@ -607,7 +615,7 @@ def run_browser(info):
                 time.sleep(0.15)
             ctx.close()
             return samples
-        for kind in ("silent", "notitle", "image"):
+        for kind in ("silent", "notitle", "image", "pforge"):
             samples = redirect_case(kind)
             check(f"E1 (redirect, {kind}): after a typed address was answered by a redirect to another site the old address is never on the bar without the marker",
                   not any(v[0].endswith("/xr/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])

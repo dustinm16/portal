@@ -22607,16 +22607,18 @@ def _proxy_isolated_entry(request: web.Request, token, conn_uuid: str, request_p
 # called (the parent cannot read an opaque-origin frame), and it carries out back, forward and reload.
 # It also answers the parent's per-document ping (the answer carries the ping's id), which is how the parent
 # learns that the document on screen is one that runs this script. window.parent is captured first, so a
-# later script of the page cannot redirect the reports.
+# later script of the page cannot redirect the reports. Each message is one object literal and the title is read
+# inside its own try, so a setter on Object.prototype or a throwing document.title cannot stop the answer.
 _ISOLATED_FRAME_JS = (
     '<script>(function(){"use strict";var P=window.parent,last="";'
-    'function post(id){try{var m={type:"portalFrame",href:location.href,title:document.title||""};'
-    'if(id)m.ping=id;P.postMessage(m,"*")}catch(e){}}'
-    'function send(){var h=location.href,t=document.title||"";if(h+"|"+t!==last){last=h+"|"+t;post("")}}'
+    'function T(){try{return document.title||""}catch(e){return ""}}'
+    'function post(id){try{P.postMessage(id?{type:"portalFrame",href:location.href,title:T(),ping:id}'
+    ':{type:"portalFrame",href:location.href,title:T()},"*")}catch(e){}}'
+    'function send(){var h=location.href,t=T();if(h+"|"+t!==last){last=h+"|"+t;post("")}}'
     'send();setInterval(send,700);addEventListener("popstate",send);addEventListener("hashchange",send);'
     'addEventListener("load",send);'
     'addEventListener("message",function(e){if(e.source!==P||!e.data)return;var d=e.data;'
-    'if(d.type==="portalPing"){if(typeof d.id==="string")post(d.id.substring(0,64))}'
+    'if(d.type==="portalPing"){if(typeof d.id==="string"&&d.id.length<=64)post(d.id)}'
     'else if(d.type==="portalNav"){var a=d.action;'
     'if(a==="back")history.back();else if(a==="forward")history.forward();else if(a==="reload")location.reload()}})'
     '})();</script>'
