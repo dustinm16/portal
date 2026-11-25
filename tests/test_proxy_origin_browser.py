@@ -140,6 +140,22 @@ XX_PFORGE = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</
              b"var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/pforge',to).split('?')[0];"
              b"addEventListener('message',function(e){if(e.data&&e.data.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:e.data.id},'*')});"
              b"</script></body></html>")
+# (1.24.2) pages that stop the injected script's answer to the ping without touching Object.prototype, and answer with
+# a forged address of the typed site: "psrc" makes MessageEvent.prototype.source read null (the injected listener
+# returns early), "popen" calls document.open(), which removes every listener the window had, the injected one too.
+XX_PSRC = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1><script>"
+           b"var g=Object.getOwnPropertyDescriptor(MessageEvent.prototype,'data').get;"
+           b"Object.defineProperty(MessageEvent.prototype,'source',{get:function(){return null},configurable:true});"
+           b"var to=location.search.indexOf('r=1')>=0?'/xr/psrc':'/xl/psrc';"
+           b"var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/psrc',to).split('?')[0];"
+           b"addEventListener('message',function(e){var d=g.call(e);if(d&&d.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:d.id},'*')});"
+           b"</script></body></html>")
+XX_POPEN = (b"<!doctype html><html><head></head><body><h1>LOOKS LIKE SITE ONE</h1><script>"
+            b"var to=location.search.indexOf('r=1')>=0?'/xr/popen':'/xl/popen';"
+            b"var h=location.href.replace('/http://localhost'+':','/http://127.0.0.1'+':').replace('/xx/popen',to).split('?')[0];"
+            b"document.open();document.write('<h1>LOOKS LIKE SITE ONE</h1>');document.close();"
+            b"addEventListener('message',function(e){if(e.data&&e.data.type==='portalPing')parent.postMessage({type:'portalFrame',href:h,ping:e.data.id},'*')});"
+            b"</script></body></html>")
 XX_HONEST = b"<!doctype html><html><head><title>xsite-honest</title></head><body>same site</body></html>"
 XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>second site</h1></body></html>"
 
@@ -244,11 +260,12 @@ def serve():
             kind = r.match_info["kind"]
             body, ctype = {"silent": (XX_SILENT, "text/html"), "forge": (XX_FORGE, "text/html"), "badutf": (XX_BADUTF, "text/html; charset=utf-8"),
                            "plain": (b"LOOKS LIKE SITE ONE", "text/plain"), "image": (XX_GIF, "image/gif"), "honest": (XX_HONEST, "text/html"),
-                           "notitle": (XX_NOTITLE, "text/html"), "pforge": (XX_PFORGE, "text/html")}[kind]
+                           "notitle": (XX_NOTITLE, "text/html"), "pforge": (XX_PFORGE, "text/html"),
+                           "psrc": (XX_PSRC, "text/html"), "popen": (XX_POPEN, "text/html")}[kind]
             return web.Response(body=body, headers={"Content-Type": ctype})
 
         def xr(r):      # (1.24.2, E1) an address that the upstream answers with a redirect to another site
-            raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}" + ("?r=1" if r.match_info["kind"] == "pforge" else ""))
+            raise web.HTTPFound(f"http://localhost:{r.url.port}/xx/{r.match_info['kind']}" + ("?r=1" if r.match_info["kind"] in ("pforge", "psrc", "popen") else ""))
 
         up.router.add_get("/xr/{kind}", xr)
         up.router.add_get("/xl/{kind}", xl)
@@ -585,7 +602,7 @@ def run_browser(info):
                 time.sleep(0.15)
             ctx.close()
             return samples
-        for kind in ("silent", "forge", "badutf", "plain", "image", "pforge"):
+        for kind in ("silent", "forge", "badutf", "plain", "image", "pforge", "psrc", "popen"):
             samples = link_case(kind)
             check(f"E1 ({kind}): the old site's address is never on the bar without the marker after a link to another site",
                   not any(v[0].endswith("/xl/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])
@@ -615,7 +632,7 @@ def run_browser(info):
                 time.sleep(0.15)
             ctx.close()
             return samples
-        for kind in ("silent", "notitle", "image", "pforge"):
+        for kind in ("silent", "notitle", "image", "pforge", "psrc", "popen"):
             samples = redirect_case(kind)
             check(f"E1 (redirect, {kind}): after a typed address was answered by a redirect to another site the old address is never on the bar without the marker",
                   not any(v[0].endswith("/xr/" + kind) and not v[1] for v in samples), [v for v in samples if not v[1]][:2])

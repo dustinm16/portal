@@ -22607,15 +22607,18 @@ def _proxy_isolated_entry(request: web.Request, token, conn_uuid: str, request_p
 # called (the parent cannot read an opaque-origin frame), and it carries out back, forward and reload.
 # It also answers the parent's per-document ping (the answer carries the ping's id), which is how the parent
 # learns that the document on screen is one that runs this script. window.parent is captured first, so a
-# later script of the page cannot redirect the reports. Each message is one object literal and the title is read
+# later script of the page cannot redirect the reports. The first report (flagged "first") is sent while the script
+# runs, before any script of the page: the parent counts it, for marking another site only, even in the quiet time
+# after an address the portal started, because a page can silence its later answers but not that one. Each message is one object literal and the title is read
 # inside its own try, so a setter on Object.prototype or a throwing document.title cannot stop the answer.
 _ISOLATED_FRAME_JS = (
     '<script>(function(){"use strict";var P=window.parent,last="";'
     'function T(){try{return document.title||""}catch(e){return ""}}'
-    'function post(id){try{P.postMessage(id?{type:"portalFrame",href:location.href,title:T(),ping:id}'
+    'function post(id,f){try{P.postMessage(id?{type:"portalFrame",href:location.href,title:T(),ping:id}'
+    ':f?{type:"portalFrame",href:location.href,title:T(),first:1}'
     ':{type:"portalFrame",href:location.href,title:T()},"*")}catch(e){}}'
-    'function send(){var h=location.href,t=T();if(h+"|"+t!==last){last=h+"|"+t;post("")}}'
-    'send();setInterval(send,700);addEventListener("popstate",send);addEventListener("hashchange",send);'
+    'function send(f){var h=location.href,t=T();if(h+"|"+t!==last){last=h+"|"+t;post("",f)}}'
+    'send(1);setInterval(send,700);addEventListener("popstate",send);addEventListener("hashchange",send);'
     'addEventListener("load",send);'
     'addEventListener("message",function(e){if(e.source!==P||!e.data)return;var d=e.data;'
     'if(d.type==="portalPing"){if(typeof d.id==="string"&&d.id.length<=64)post(d.id)}'

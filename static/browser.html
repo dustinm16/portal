@@ -552,13 +552,16 @@
         // it again: a page that reports another site and then navigates itself, or a link to another site that
         // reports its own address, cannot make the old address look current. A report that is not under this
         // connection is never shown and counts for nothing.
-        function noteReportedSite(t) {
-            if (!browserMode || !t.href) return;
+        // markOnly: the report is the first one of a document the portal started (see the message handler); it may
+        // only mark the tab, never set what the bar shows.
+        function noteReportedSite(t, href, markOnly) {
+            if (href === undefined) href = t.href;
+            if (!browserMode || !href) return;
             const known = knownFramePath(t.iframe);
             if (known === null || !known.startsWith(proxyBase + '/')) return;
-            const rep = reportedFramePath(t.href);
+            const rep = reportedFramePath(href);
             if (rep === null) return;
-            t.lastRep = rep;
+            if (!markOnly) t.lastRep = rep;
             if (proxyHostKey(rep.split(/[?#]/)[0]) !== proxyHostKey(known.split(/[?#]/)[0])) t.unconfirmed = true;
         }
         // What the address bar may show for a frame: { path, unconfirmed }. A page the portal can read is shown as
@@ -1018,6 +1021,12 @@
                 if (typeof e.data.href === 'string' && (answered || !(fromFrame.navAt && Date.now() - fromFrame.navAt < NAV_QUIET_MS))) {
                     fromFrame.href = e.data.href.substring(0, 4096);
                     noteReportedSite(fromFrame);
+                }
+                // A document the portal loaded that runs the report script sends one report before any script of the
+                // page. A page can silence its later answers (and forge one), but not that report, so it counts, for
+                // marking another site only, although the quiet time after the portal started the load would drop it.
+                else if (e.data.first === 1 && typeof e.data.href === 'string' && !answered) {
+                    noteReportedSite(fromFrame, e.data.href.substring(0, 4096), true);
                 }
                 if (typeof e.data.title === 'string') fromFrame.frameTitle = e.data.title.substring(0, 200);
                 const shown = extractTitle(fromFrame.iframe);

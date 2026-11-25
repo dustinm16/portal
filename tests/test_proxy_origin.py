@@ -588,6 +588,8 @@ async def amain():
         check(f"E1 report script: '{kind}' page has nothing of its own before the script but a byte order mark, space, comments and a doctype",
               at >= 0 and not before.replace(b"\xef\xbb\xbf", b"").replace(b"<!-- note -->", b"").strip().lower().replace(b"<!doctype html>", b""), repr(before[:80]))
         check(f"E1 report script: '{kind}' page still has its own text", body.replace(marker, b"").count(FRAME_BODIES[kind][0][-12:]) == 1 or kind == "badutf", repr(body[-40:]))
+    check("E1 report script: the report sent while the script runs, before any script of the page, is flagged first (and only that one)",
+          served["comment"].count(b"first:1") == 1 and b"send(1);setInterval(send,700)" in served["comment"], repr(served["comment"][:700]))
     body = served["comment"]
     check("E1 report script: a doctype stays first among the elements (no quirks mode) and the page's comment follows the script",
           body.startswith(b"<!doctype html><script>") and body.find(b"<!--<head>") > body.find(marker) >= 0, repr(body[:80]))
