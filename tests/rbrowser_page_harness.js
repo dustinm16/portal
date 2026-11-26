@@ -1073,10 +1073,11 @@ async function adminCardChecks(file) {
   const NOW = 1900000000000;
   let clock = NOW;
   const calls = [], toasts = [];
+  let clipAnswer = 'both';
   let getStatus = 200, putStatus = 200, putBody = {}, endStatus = 200, release = null;
   const answer = () => ({
     settings: { rbrowser_enabled: true, rbrowser_min_role: 'user', rbrowser_max_sessions: 2, rbrowser_idle_minutes: 15, rbrowser_memory_mb: 2048,
-      rbrowser_cpu_percent: 150, rbrowser_clipboard: 'both', rbrowser_home_url: 'https://duckduckgo.com/', rbrowser_upload_kbps: 4000, rbrowser_extra_deny: ['10.0.0.0/8'] },
+      rbrowser_cpu_percent: 150, rbrowser_clipboard: clipAnswer, rbrowser_home_url: 'https://duckduckgo.com/', rbrowser_upload_kbps: 4000, rbrowser_extra_deny: ['10.0.0.0/8'] },
     availability: { available: false, missing: ['Xvfb', 'xrandr', 'weird name; rm -rf /'], reasons: ['Xvfb is not installed'], chromium_version: '131.0.1', chromium_age_days: 60, kernel_upload_limit: false },
     preflight: { ok: false, checks: [{ name: 'egress', ok: true, detail: 'all refused' }, { name: 'bind', ok: false, detail: 'bind succeeded <b>x</b>' }] },
     seats: { max: 2, cpu_percent: 125 },
@@ -1201,6 +1202,44 @@ async function adminCardChecks(file) {
   await btns(form, 'Save settings')[0].fire('click', { detail: 1 });
   await tick();
   check('admin: a successful Save reads the card again', /Saved/.test(els['rbrowser-admin-note'].textContent) && calls[calls.length - 1].method === 'GET');
+
+  // ---- the clipboard choice offers the server's canonical values and reads the old name to_browser as in
+  const clipOpts = () => byId('rbrowser-set-rbrowser_clipboard').children.map(o => [o.attrs.value, o.textContent]);
+  check('admin: the clipboard list offers both, in and off with plain labels',
+    JSON.stringify(clipOpts()) === JSON.stringify([['both', 'Both ways'], ['in', 'Into the browser only'], ['off', 'Off']]), JSON.stringify(clipOpts()));
+  check('admin: the clipboard list never offers to_browser', !clipOpts().some(o => o[0] === 'to_browser'));
+  clipAnswer = 'to_browser';
+  byId('rbrowser-set-rbrowser_memory_mb').value = '2100';
+  await byId('rbrowser-set-rbrowser_memory_mb').fire('input', {});
+  await btns(form, 'Save settings')[0].fire('click', { detail: 1 });
+  await tick();
+  const form2 = els['rbrowser-admin-settings'];
+  const sel2 = form2.find(e => e.attrs.id === 'rbrowser-set-rbrowser_clipboard')[0];
+  check('admin: a stored to_browser is shown as Into the browser only (in)', sel2.value === 'in', String(sel2.value));
+  const n1 = calls.length;
+  form2.find(e => e.attrs.id === 'rbrowser-set-rbrowser_memory_mb')[0].value = '2200';
+  await form2.find(e => e.attrs.id === 'rbrowser-set-rbrowser_memory_mb')[0].fire('input', {});
+  await btns(form2, 'Save settings')[0].fire('click', { detail: 1 });
+  await tick();
+  const put2 = calls.slice(n1).find(c => c.method === 'PUT');
+  check('admin: saving something else does not send the clipboard because to_browser reads as in', put2 && !('rbrowser_clipboard' in JSON.parse(put2.body)), put2 && put2.body);
+  const sel2b = els['rbrowser-admin-settings'].find(e => e.attrs.id === 'rbrowser-set-rbrowser_clipboard')[0];
+  sel2b.value = 'both';
+  await sel2b.fire('change', {});
+  clipAnswer = 'both';
+  const n2 = calls.length;
+  await btns(form2, 'Save settings')[0].fire('click', { detail: 1 });
+  await tick();
+  const put3 = calls.slice(n2).find(c => c.method === 'PUT');
+  check('admin: choosing a clipboard value sends the canonical name', put3 && JSON.parse(put3.body).rbrowser_clipboard === 'both', put3 && put3.body);
+  const sel3 = els['rbrowser-admin-settings'].find(e => e.attrs.id === 'rbrowser-set-rbrowser_clipboard')[0];
+  sel3.value = 'in';
+  await sel3.fire('change', {});
+  const n3 = calls.length;
+  await btns(els['rbrowser-admin-settings'], 'Save settings')[0].fire('click', { detail: 1 });
+  await tick();
+  const put4 = calls.slice(n3).find(c => c.method === 'PUT');
+  check('admin: choosing Into the browser only sends in, never to_browser', put4 && JSON.parse(put4.body).rbrowser_clipboard === 'in', put4 && put4.body);
 
   // ---- not an administrator: the card stays hidden
   getStatus = 404;

@@ -31,7 +31,8 @@
         { key: 'rbrowser_idle_minutes', label: 'Idle minutes', kind: 'int', min: 5, max: 120, hint: '5 to 120.' },
         { key: 'rbrowser_memory_mb', label: 'Memory per session (MB)', kind: 'int', min: 1024, max: 4096, hint: '1024 to 4096.' },
         { key: 'rbrowser_cpu_percent', label: 'CPU per session (percent)', kind: 'int', min: 50, max: 400, hint: '50 to 400; the server may use less (see below).' },
-        { key: 'rbrowser_clipboard', label: 'Clipboard', kind: 'choice', values: ['both', 'to_browser', 'off'], hint: 'both, to_browser (typed text only) or off.' },
+        { key: 'rbrowser_clipboard', label: 'Clipboard', kind: 'choice', values: ['both', 'in', 'off'],
+          labels: { both: 'Both ways', 'in': 'Into the browser only', off: 'Off' }, hint: 'Both ways, into the browser only (typed text), or off.' },
         { key: 'rbrowser_home_url', label: 'Home page', kind: 'text', max: 300, hint: 'An https address, at most 300 characters.' },
         { key: 'rbrowser_upload_kbps', label: 'Upload limit (kbit/s)', kind: 'int', min: 500, max: 50000, zero: true, hint: '0 for no kernel rule, or 500 to 50000.' },
         { key: 'rbrowser_extra_deny', label: 'Extra blocked networks', kind: 'list', max: 32, hint: 'One CIDR per line, at most 32.' }
@@ -108,6 +109,13 @@
         var who = row.username ? '"' + row.username + '"' : 'this member';
         return 'End the Web Browser session of ' + who + ' now? Their browser closes at once and nothing in it is kept. '
             + 'They are told that an administrator ended it, and the end is written to the audit log before it happens.';
+    }
+
+    /* What the form shows for a stored value. The server's canonical clipboard values are both, in and off; the older name
+       to_browser is read as in, so the list never shows a value it cannot offer. */
+    function shown(def, v) {
+        if (def.key === 'rbrowser_clipboard' && v === 'to_browser') return 'in';
+        return v;
     }
 
     function listText(v) {
@@ -259,12 +267,12 @@
             var grid = el('div', { class: 'rbrowser-admin-grid' });
             SETTINGS.forEach(function (def) {
                 var id = 'rbrowser-set-' + def.key;
-                var input, v = cur[def.key];
+                var input, v = shown(def, cur[def.key]);
                 if (def.kind === 'bool') {
                     input = el('input', { type: 'checkbox', id: id });
                     input.checked = v === true;
                 } else if (def.kind === 'choice') {
-                    input = el('select', { id: id }, def.values.map(function (o) { return el('option', { value: o, text: o }); }));
+                    input = el('select', { id: id }, def.values.map(function (o) { return el('option', { value: o, text: (def.labels && def.labels[o]) || o }); }));
                     input.value = def.values.indexOf(v) >= 0 ? v : def.values[0];
                 } else if (def.kind === 'list') {
                     input = el('textarea', { id: id, rows: '3', spellcheck: 'false', autocomplete: 'off' });
@@ -304,7 +312,7 @@
                 var v = fieldValue(def);
                 if (v === undefined) return;
                 bad = problem(def, v);
-                if (!bad && !sameValue(def, v, cur[def.key])) changes[def.key] = v;
+                if (!bad && !sameValue(def, v, shown(def, cur[def.key]))) changes[def.key] = v;
             });
             if (bad) { say(bad, true); return; }
             if (!Object.keys(changes).length) { say('Nothing to save.', false); return; }
