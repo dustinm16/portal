@@ -42,7 +42,7 @@
        table is listed but never put into the command. */
     var APT_PACKAGE = {
         chromium: 'chromium', 'chromium-browser': 'chromium', Xvfb: 'xvfb', x11vnc: 'x11vnc', xauth: 'xauth',
-        xrandr: 'x11-xserver-utils', 'matchbox-window-manager': 'matchbox-window-manager', iptables: 'iptables'
+        xrandr: 'x11-xserver-utils', xsel: 'xsel', iptables: 'iptables'
     };
 
     function el(tag, props, children) {

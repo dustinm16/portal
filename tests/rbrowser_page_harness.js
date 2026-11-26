@@ -1078,7 +1078,7 @@ async function adminCardChecks(file) {
   const answer = () => ({
     settings: { rbrowser_enabled: true, rbrowser_min_role: 'user', rbrowser_max_sessions: 2, rbrowser_idle_minutes: 15, rbrowser_memory_mb: 2048,
       rbrowser_cpu_percent: 150, rbrowser_clipboard: clipAnswer, rbrowser_home_url: 'https://duckduckgo.com/', rbrowser_upload_kbps: 4000, rbrowser_extra_deny: ['10.0.0.0/8'] },
-    availability: { available: false, missing: ['Xvfb', 'xrandr', 'weird name; rm -rf /'], reasons: ['Xvfb is not installed'], chromium_version: '131.0.1', chromium_age_days: 60, kernel_upload_limit: false },
+    availability: { available: false, missing: ['Xvfb', 'xrandr', 'xsel', 'matchbox-window-manager', 'weird name; rm -rf /'], reasons: ['Xvfb is not installed'], chromium_version: '131.0.1', chromium_age_days: 60, kernel_upload_limit: false },
     preflight: { ok: false, checks: [{ name: 'egress', ok: true, detail: 'all refused' }, { name: 'bind', ok: false, detail: 'bind succeeded <b>x</b>' }] },
     seats: { max: 2, cpu_percent: 125 },
     sessions: [
@@ -1115,7 +1115,7 @@ async function adminCardChecks(file) {
   check('admin: the first call is GET /api/admin/rbrowser', calls[0] && calls[0].url === '/api/admin/rbrowser' && calls[0].method === 'GET', JSON.stringify(calls[0]));
   const avail = els['rbrowser-admin-avail'].textContent;
   check('admin: availability says what is missing and the reasons', /cannot run the browser/.test(avail) && /Missing: Xvfb, xrandr/.test(avail) && /Xvfb is not installed/.test(avail), avail);
-  check('admin: the apt line is built from the closed package table only', /sudo apt-get install -y --no-install-recommends xvfb x11-xserver-utils$/.test(els['rbrowser-admin-avail'].find(e => e.className === 'rbrowser-admin-code')[0].textContent));
+  check('admin: the apt line is built from the closed package table only', /sudo apt-get install -y --no-install-recommends xvfb x11-xserver-utils xsel$/.test(els['rbrowser-admin-avail'].find(e => e.className === 'rbrowser-admin-code')[0].textContent));
   check('admin: a missing name that is not in the table is listed but not put into the command', !/rm -rf/.test(els['rbrowser-admin-avail'].find(e => e.className === 'rbrowser-admin-code')[0].textContent));
   check('admin: the Chromium version and a warning for a file older than 45 days', /Chromium 131\.0\.1 \(the file is 60 days old\)/.test(avail) && /older than 45 days/.test(avail), avail);
   check('admin: the kernel upload limit state is shown', /Kernel upload limit: not in force/.test(avail));
