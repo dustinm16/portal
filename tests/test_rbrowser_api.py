@@ -107,18 +107,24 @@ async def main():
     async with aiohttp_plain().put(url, json={"rbrowser_max_sessions": 3}, headers={"Authorization": f"Bearer {cookie}"}) as r:
         check("PUT: a superadmin's bearer token is not a browser sign-in", r.status in (401, 403), str(r.status))
     # finding 1 attack on the settings route: a /api/token script token (scope *) of a superadmin sent as the session cookie.
-    # _backup_superadmin(cookie_only=True) must refuse it, because its row is not named web_session
-    async with aiohttp_plain().post(f"{base}/api/token", json={"username": "owner", "password": h.PW, "name": "script", "scopes": ["*"]}) as r:
-        stok = (await r.json()).get("token") if r.status in (200, 201) else None
+    # _backup_superadmin(cookie_only=True) must refuse it, because its row is not named web_session. The token is the superadmin's own ("adm"):
+    # a member's token would be refused for being a member's, whatever the web_session check does.
+    async with aiohttp_plain().post(f"{base}/api/token", json={"username": "adm", "password": h.PW, "name": "script", "scopes": ["*"]}) as r:
+        tj = await r.json() if r.status in (200, 201) else {}
+        stok = tj.get("token")
     check("a superadmin script token for the settings cookie test was made", bool(stok))
+    check("that token has the full scope *, so only its name can refuse it", "*" in (tj.get("scopes") or []), str(tj.get("scopes")))
     if stok:
         cfg_before = dict(server._rbrowser_cfg)
         async with aiohttp_plain().put(url, json={"rbrowser_max_sessions": 3},
                                        headers={"Cookie": f"{server.Config.SESSION_COOKIE_NAME}={stok}"}) as r:
+            body = await r.json()
             check("PUT: a superadmin script token sent as the session cookie is 403", r.status == 403, str(r.status))
+            check("the refusal names the browser-login requirement", "browser login session" in str(body.get("error", "")).lower(), str(body))
         async with aiohttp_plain().put(url, json={"rbrowser_enabled": False},
                                        headers={"Cookie": f"{server.Config.SESSION_COOKIE_NAME}={stok}"}) as r:
-            check("PUT: the same for a switch-off is 403", r.status == 403, str(r.status))
+            body = await r.json()
+            check("PUT: the same for a switch-off is 403", r.status == 403 and "browser login session" in str(body.get("error", "")).lower(), str(r.status))
         check("and the settings are unchanged", server._rbrowser_cfg == cfg_before)
     async with adm.put(url, json={"rbrowser_nope": 1}) as r:
         check("PUT: an unknown key is 400", r.status == 400 and "Unknown" in (await r.json())["error"])
