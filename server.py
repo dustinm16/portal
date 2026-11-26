@@ -171,6 +171,10 @@ import stream_schedule
 import overlay_chat
 import webpush
 import session_devices
+import rbrowser
+import rbrowser_launch
+import rbrowser_policy
+import rbrowser_rfb
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -629,6 +633,8 @@ async def close_user_websockets(user_id: int, except_token_id: str = None,
             return_exceptions=True
         )
         await _voice_revoke_user(user_id, _spared)
+    # A Web Browser session of a revoked sign-in ends at once (the caller's own _spared decides; nothing when the feature never started)
+    _rbrowser_revoked(user_id, _spared)
     return len(targets)
 
 # Server start time for uptime tracking
@@ -3428,6 +3434,7 @@ Disallow: /overlay
 Disallow: /github
 Disallow: /terminal
 Disallow: /vnc
+Disallow: /rbrowser
 Disallow: /spice
 Disallow: /proxmox
 Disallow: /mediamtx
@@ -19976,6 +19983,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     # Determine connection type for metrics
     if path == "/ws/terminal/local":
         _plugin = "terminal"
+    elif path.startswith("/ws/rbrowser/"):
+        _plugin = "rbrowser"
     elif "/terminal/" in path:
         _plugin = "terminal"
     elif "/vnc/" in path:
@@ -20009,6 +20018,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await handle_local_terminal_ws(mws, token, client_ip)
         elif path.startswith("/ws/user-connection/"):
             await handle_user_connection_ws(mws, path, token, client_ip)
+        elif path.startswith("/ws/rbrowser/"):
+            await handle_rbrowser_ws(mws, path, token, request)
         else:
             await handle_relay_ws(mws, path, token, client_ip)
     finally:
@@ -20030,6 +20041,179 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         logger.info(f"WebSocket closed for user {token.user_id} from {client_ip}")
 
     return ws
+
+
+RBROWSER_SEND_LIMIT_S = 20            # a send to the member that takes longer closes the socket (4013 slow)
+RBROWSER_CONTROL_MAX = 256            # bytes of a control text frame
+RBROWSER_READ_CHUNK = 65536
+_RBROWSER_WORD = re.compile(r"[a-z_]{1,24}")
+
+
+class _RbrowserBucket:
+    """Token bucket for the unit-to-member direction: `take(n)` says how long to wait before the next read. The cap turns
+    excess into dropped frames (RFB is client-pull), not into queued bytes."""
+
+    def __init__(self, rate_bytes_per_s: float, burst: float, clock=monotonic):
+        self.rate, self.burst, self._clock = float(rate_bytes_per_s), float(burst), clock
+        self.tokens, self._at = float(burst), clock()
+
+    def take(self, n: int) -> float:
+        now = self._clock()
+        self.tokens = min(self.burst, self.tokens + (now - self._at) * self.rate)
+        self._at = now
+        self.tokens -= n
+        return 0.0 if self.tokens >= 0 else -self.tokens / self.rate
+
+
+async def _rbrowser_close(ws, code: int, text: bytes) -> None:
+    try:
+        await asyncio.wait_for(ws.close(code=code, message=text), 3.0)
+    except Exception:
+        pass
+
+
+async def _rbrowser_browser_signin(request: web.Request, token: Optional[TokenPayload]) -> bool:
+    """True only for the real browser sign-in: the session cookie, the user's full scope AND a token row named "web_session".
+    /api/token refuses that name, so a script or API token sent in the Cookie header is not the browser sign-in."""
+    if token is None or request.get(_AUTH_KIND) != "cookie" or not has_full_user_scope(token):
+        return False
+    try:
+        row = await db.get_token(token.token_id)
+    except Exception:
+        return False
+    return bool(row) and row.get("name") == "web_session"
+
+
+async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Request) -> None:
+    """/ws/rbrowser/{sid}: the member's remote-browser picture and input, between the page and the unit's x11vnc socket.
+
+    Only the browser sign-in that created the session may attach (the web_session cookie, full scope, same user AND same token id);
+    nobody else can, an administrator included. The member's bytes pass rbrowser_rfb.ClientFilter; the unit's bytes are
+    not parsed (T6). Nothing of either direction is logged, counted beyond its length, or stored."""
+    # 1. the credential: the browser sign-in with the user's full scope
+    if not await _rbrowser_browser_signin(request, token):
+        await _rbrowser_close(ws, 4003, b"not allowed")
+        return
+    # 2. the session: one reason text for missing, not yours and made by another sign-in
+    sid = path[len("/ws/rbrowser/"):]
+    session = rbrowser.get(sid) if _RBROWSER_SID_RE.fullmatch(sid) else None
+    if (session is None or session.state != "running" or session.user_id != token.user_id
+            or session.token_id != token.token_id):
+        await _rbrowser_close(ws, 4004, b"no such session")
+        return
+    # 3. the feature and the role, read now (not cached from create)
+    user = await db.get_user_by_id(token.user_id)
+    if not _rbrowser_cfg["rbrowser_enabled"] or not user or not _rbrowser_role_ok(_rbrowser_user_role(user)):
+        await _rbrowser_close(ws, 4003, b"not allowed")
+        return
+    if maintenance.global_state(await _maintenance_global_flag()) is not None and not await _maintenance_exempt(token):
+        await _rbrowser_close(ws, 4503, b"Maintenance")
+        return
+    # 4. one viewer, always: the previous one of this sign-in is closed first
+    old = session.viewer
+    if old is not None and old is not ws:
+        await _rbrowser_close(old, 4012, b"opened in another window")
+    rbrowser.mark_attached(session, ws)
+    try:
+        reader, writer = await rbrowser.open_stream(session)
+    except rbrowser.StreamRefused as e:
+        rbrowser.mark_detached(session, ws)
+        await _rbrowser_drain_events()
+        if e.ended:                                   # the registry ended the session and closed the viewer (4013, the reason)
+            await _rbrowser_audit_end(session)
+            await _rbrowser_close(ws, 4013, (session.end_reason or "crash").encode())
+        else:
+            await _rbrowser_close(ws, 4004, b"no such session")
+        return
+    except asyncio.CancelledError:
+        rbrowser.mark_detached(session, ws)
+        raise
+    except Exception as e:
+        rbrowser.mark_detached(session, ws)
+        logger.warning(f"rbrowser: attach failed: {type(e).__name__}")
+        await _rbrowser_close(ws, 4013, b"crash")
+        return
+    if session.viewer is not ws or session.state != "running":    # another window of this sign-in attached meanwhile, or it ended
+        writer.close()
+        await _rbrowser_close(ws, 4012 if session.state == "running" else 4013,
+                              b"opened in another window" if session.state == "running" else (session.end_reason or "crash").encode())
+        return
+
+    flt = rbrowser_rfb.ClientFilter()          # the clipboard is off in both directions, always (D4): ClientCutText is a violation
+    bucket = _RbrowserBucket(rbrowser_launch.STREAM_KBPS * 125.0, rbrowser_launch.STREAM_KBPS * 125.0)
+    outcome = {"close": None}
+
+    async def to_client():
+        """unit -> member. The unit's bytes are passed on as they come (not parsed); a slow member stops the read."""
+        try:
+            while True:
+                data = await reader.read(RBROWSER_READ_CHUNK)
+                if not data:
+                    outcome["close"] = (1001, b"stream ended")        # the page reconnects; a dead unit is then found and ended
+                    return
+                try:
+                    await asyncio.wait_for(ws.send_bytes(data), RBROWSER_SEND_LIMIT_S)
+                except asyncio.TimeoutError:
+                    outcome["close"] = (4013, b"slow")                # the session stays for the detach window
+                    return
+                session.bytes_out += len(data)
+                wait = bucket.take(len(data))
+                if wait > 0:
+                    await asyncio.sleep(wait)
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, RuntimeError):
+            outcome["close"] = (1001, b"stream ended")
+
+    async def to_unit():
+        """member -> unit. Binary frames go through the filter (whole, bounded messages only); text frames are control
+        frames and never reach the unit."""
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.BINARY:
+                    try:
+                        forward, types = flt.feed(msg.data)
+                    except rbrowser_rfb.Violation as v:
+                        word = v.reason if isinstance(v.reason, str) and _RBROWSER_WORD.fullmatch(v.reason) else "protocol"
+                        outcome["close"] = (4013, b"protocol")
+                        await security_event("rbrowser_protocol_violation", user_id=token.user_id, details={"reason": word})
+                        return
+                    if forward:
+                        writer.write(forward)
+                        await writer.drain()
+                        session.bytes_in += len(forward)
+                    if 4 in types or 5 in types:
+                        rbrowser.note_activity(session)
+                elif msg.type == WSMsgType.TEXT:
+                    if len(msg.data) <= RBROWSER_CONTROL_MAX and len(msg.data.encode("utf-8", "replace")) <= RBROWSER_CONTROL_MAX:
+                        try:
+                            obj = json.loads(msg.data)
+                        except ValueError:
+                            obj = None
+                        if isinstance(obj, dict) and obj.get("op") == "here" and len(obj) == 1:
+                            rbrowser.note_activity(session, here=True)
+                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                    return
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, RuntimeError):
+            return
+
+    tasks = [asyncio.ensure_future(to_client()), asyncio.ensure_future(to_unit())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            writer.close()
+        except Exception:
+            pass
+        rbrowser.mark_detached(session, ws)
+    if outcome["close"] is not None and not ws.closed:
+        await _rbrowser_close(ws, *outcome["close"])
 
 
 async def handle_ping_ws(ws: web.WebSocketResponse, token: TokenPayload) -> None:
@@ -21547,7 +21731,7 @@ async def _ws_refuse_in_maintenance(ws, token, row) -> bool:
 async def _ws_target(path: str, token):
     """(row, name) of the connection or service a /ws path reaches for this member, access
     included, or (None, None). Mirrors websocket_handler's dispatch."""
-    if path in ("/", "/ws", "/ws/chat", "/ws/terminal/local"):
+    if path in ("/", "/ws", "/ws/chat", "/ws/terminal/local") or path.startswith("/ws/rbrowser/"):
         return None, None
     m = re.match(r"^/ws/user-connection/([A-Za-z0-9_-]+)$", path)
     if m:
@@ -27701,6 +27885,8 @@ RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_de
 # public must not reach anybody who may not see it (a moderator gets 404 on its watch, detail and health
 # routes), so a moderator does not read these entries either.
 LIVE_OPS_AUDIT_ACTIONS = ("stream_end_now", "stream_stop_relays")
+# That a member has a Web Browser session, since when and for how long (never what is on it) is not a moderator's business either.
+RBROWSER_AUDIT_ACTIONS = ("rbrowser_start", "rbrowser_end", "rbrowser_admin_end")
 # Making and revoking an overlay link name the stream (its id and name) and its owner, for a stream that
 # is not public too: a moderator does not read these either.
 STREAM_OVERLAY_AUDIT_ACTIONS = ("stream_overlay_create", "stream_overlay_revoke")
@@ -27890,7 +28076,7 @@ async def http_delete_recording(request: web.Request) -> web.Response:
 
 
 SUPERADMIN_ONLY_AUDIT_ACTIONS = ("webhook_system_create", "webhook_system_update", "webhook_system_delete",
-                                 "webhook_allow_private", "alert_notify_change")
+                                 "webhook_allow_private", "alert_notify_change", "rbrowser_settings_update")
 
 
 async def http_get_audit_log(request: web.Request) -> web.Response:
@@ -27934,7 +28120,7 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
         # who looked at which session recording, and which stream an administrator ended or stopped the
         # relays of, is for administrators only
         filters["exclude_actions"] = (tuple(filters.get("exclude_actions", ())) + RECORDING_AUDIT_ACTIONS
-                                      + LIVE_OPS_AUDIT_ACTIONS + STREAM_OVERLAY_AUDIT_ACTIONS)
+                                      + LIVE_OPS_AUDIT_ACTIONS + STREAM_OVERLAY_AUDIT_ACTIONS + RBROWSER_AUDIT_ACTIONS)
     entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
     total = await db.get_audit_log_count(**filters)
     return web.json_response({"entries": entries, "total": total})
@@ -33933,6 +34119,775 @@ async def _load_proxy_limit_state() -> None:
     _proxy_buckets.clear()
 
 
+# =========================================================================
+# Web Browser on the server (rbrowser, 1.25.0)
+#
+# A member's own browser runs on this host in a locked-down unit and arrives as pixels over one WebSocket
+# (/ws/rbrowser/{sid}, handle_rbrowser_ws). rbrowser.py is the registry, the unit and the checks; this part is
+# settings, the member and administrator API, the page route, the sweeper and the hooks. Nothing here logs,
+# stores or returns a URL, a page title, a key code, a pointer position or clipboard text.
+# =========================================================================
+
+RBROWSER_SETTING_PREFIX = "rbrowser_"
+RBROWSER_DEFAULTS = {
+    "rbrowser_enabled": False,
+    "rbrowser_min_role": "admin",
+    "rbrowser_max_sessions": 2,
+    "rbrowser_idle_minutes": 15,
+    "rbrowser_memory_mb": 2048,
+    "rbrowser_cpu_percent": 150,
+    "rbrowser_clipboard": "both",
+    "rbrowser_home_url": rbrowser_policy.DEFAULT_HOME_URL,
+    "rbrowser_upload_kbps": 4000,
+    "rbrowser_extra_deny": [],
+}
+RBROWSER_INT_LIMITS = {
+    "rbrowser_max_sessions": (1, 8), "rbrowser_idle_minutes": (5, 120),
+    "rbrowser_memory_mb": (1024, 4096), "rbrowser_cpu_percent": (50, 400),
+}
+RBROWSER_UPLOAD_KBPS_RANGE = (500, 50000)       # or 0: no kernel rule
+RBROWSER_ROLES = ("admin", "moderator", "user")
+RBROWSER_CLIPBOARD_MODES = ("off", "in", "both")          # off: no text panel; in: send text only; both: send text and Copy from the browser
+RBROWSER_CLIPBOARD_ALIASES = {"to_browser": "in"}         # the name the unit and the first admin card use for "in"
+RBROWSER_TICK_S = 5
+RBROWSER_SETTING_KEYS = tuple(RBROWSER_DEFAULTS)
+# How the member's own sign-in is rated: starting a session (6 per 10 minutes), resizing (1 a second), copying text out (12 a minute)
+_rbrowser_start_rate = _viewers_mod.RateWindow(6, 600.0)
+_rbrowser_resize_rate = _viewers_mod.RateWindow(1, 1.0)
+_rbrowser_clip_rate = _viewers_mod.RateWindow(12, 60.0)
+_RBROWSER_NO_STORE = {"Cache-Control": "no-store"}
+_RBROWSER_SID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
+
+# The ONE dict that every call into the registry receives (create, tick, seats, host_prepare, startup): the registry compares a
+# key made from it on every call, so two different dicts would flip the key and keep create at 503. The ten settings are
+# updated in place; portal_version, portal_unit, hidden_extra, stage_mode, portal_port and stage_dir are fixed when the state is loaded.
+_rbrowser_cfg: dict = dict(RBROWSER_DEFAULTS, rbrowser_extra_deny=[], portal_port=0, portal_version="", portal_unit="",
+                           hidden_extra=[], stage_mode=False, stage_dir="")
+_rbrowser_state: dict = {"started": False, "sweeper": None}
+_rbrowser_admin_lock = asyncio.Lock()
+_rbrowser_tasks: set = set()
+_rbrowser_audited: "OrderedDict[str, None]" = OrderedDict()
+
+
+def _rbrowser_spawn(coro) -> "asyncio.Task":
+    """A background task that something holds on to until it is done (a bare create_task can be collected)."""
+    t = asyncio.ensure_future(coro)
+    _rbrowser_tasks.add(t)
+    t.add_done_callback(_rbrowser_tasks.discard)
+    return t
+
+
+def _rbrowser_decode(key: str, raw):
+    """The stored text of a setting as its value; a missing or unusable one gives the default."""
+    default = RBROWSER_DEFAULTS[key]
+    if raw is None:
+        return copy.deepcopy(default)
+    raw = str(raw)
+    try:
+        if key == "rbrowser_enabled":
+            return raw.strip() == "1"
+        if key == "rbrowser_min_role":
+            return raw.strip() if raw.strip() in RBROWSER_ROLES else default
+        if key == "rbrowser_clipboard":
+            v = RBROWSER_CLIPBOARD_ALIASES.get(raw.strip(), raw.strip())
+            return v if v in RBROWSER_CLIPBOARD_MODES else default
+        if key == "rbrowser_home_url":
+            return rbrowser_policy.validate_home_url(raw.strip())
+        if key == "rbrowser_extra_deny":
+            return rbrowser_policy.validate_extra_deny(json.loads(raw))
+        n = int(raw.strip())
+        if key == "rbrowser_upload_kbps":
+            lo, hi = RBROWSER_UPLOAD_KBPS_RANGE
+            return n if n == 0 or lo <= n <= hi else default
+        lo, hi = RBROWSER_INT_LIMITS[key]
+        return n if lo <= n <= hi else default
+    except (ValueError, TypeError):
+        return copy.deepcopy(default)
+
+
+def _rbrowser_encode(key: str, value) -> str:
+    if key == "rbrowser_enabled":
+        return "1" if value else "0"
+    if key == "rbrowser_extra_deny":
+        return json.dumps(list(value))
+    return str(value)
+
+
+def _rbrowser_validate(key: str, value):
+    """(canonical value, None) or (None, error text). Strict: a bool is not a number, a number is not a string."""
+    if key == "rbrowser_enabled":
+        return (value, None) if isinstance(value, bool) else (None, "rbrowser_enabled must be true or false")
+    if key == "rbrowser_min_role":
+        if isinstance(value, str) and value in RBROWSER_ROLES:
+            return value, None
+        return None, "rbrowser_min_role must be admin, moderator or user"
+    if key == "rbrowser_clipboard":
+        v = RBROWSER_CLIPBOARD_ALIASES.get(value, value) if isinstance(value, str) else value
+        if isinstance(v, str) and v in RBROWSER_CLIPBOARD_MODES:
+            return v, None
+        return None, "rbrowser_clipboard must be off, in or both"
+    if key == "rbrowser_home_url":
+        try:
+            return rbrowser_policy.validate_home_url(value), None
+        except ValueError as e:
+            return None, f"rbrowser_home_url: {str(e)[:120]}"
+    if key == "rbrowser_extra_deny":
+        if isinstance(value, bool) or not isinstance(value, (list, str)):
+            return None, "rbrowser_extra_deny must be a list of CIDR networks"
+        try:
+            return rbrowser_policy.validate_extra_deny(value), None
+        except (ValueError, TypeError) as e:
+            return None, f"rbrowser_extra_deny: {str(e)[:120]}"
+    if key == "rbrowser_upload_kbps":
+        lo, hi = RBROWSER_UPLOAD_KBPS_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not (value == 0 or lo <= value <= hi):
+            return None, f"rbrowser_upload_kbps must be 0 or a whole number from {lo} to {hi}"
+        return value, None
+    lo, hi = RBROWSER_INT_LIMITS[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        return None, f"{key} must be a whole number from {lo} to {hi}"
+    return value, None
+
+
+def _rbrowser_portal_unit() -> str:
+    """The systemd unit this process runs in (the last path element of its cgroup when that is a .service), or ''."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as fh:
+            for line in fh:
+                path = line.strip().partition(":")[2].partition(":")[2]
+                for part in reversed(path.split("/")):
+                    if part.endswith(".service") and re.fullmatch(r"[A-Za-z0-9:_.@-]+\.service", part):
+                        return part
+                    break
+    except OSError:
+        pass
+    return ""
+
+
+def _rbrowser_hidden_extra() -> list:
+    """The storage roots of this install that a session unit must not see (the install directory is added by the registry):
+    the database directory, the recordings folder, the VOD staging and playback cache folders and the backup archives."""
+    roots = [os.path.dirname(os.path.abspath(Config.DATABASE_PATH)), Config.RECORDINGS_DIR, Config.VOD_TEMP_DIR,
+             getattr(Config, "VOD_TEMP_DIR_DEFAULT", ""), Config.VOD_PLAY_CACHE_DIR, str(backup_manager.archives_dir().parent)]
+    out = []
+    for r in roots:
+        if not isinstance(r, str) or not r:
+            continue
+        p = os.path.normpath(os.path.abspath(r))
+        try:
+            rbrowser_launch.quote_property_path(p)       # a path the unit cannot express would stop every start
+        except Exception:
+            logger.warning("rbrowser: a storage folder cannot be hidden from the browser unit and is left out")
+            continue
+        if p not in out:
+            out.append(p)
+    return sorted(out)
+
+
+async def _load_rbrowser_state() -> None:
+    """Read the saved settings (a missing or unusable value keeps its default; the feature is OFF by default) and fix the values
+    of the cfg dict that no setting names. Called once at start-up, next to the proxy-limit loader. Touches nothing in rbrowser."""
+    cfg = {}
+    for key in RBROWSER_SETTING_KEYS:
+        try:
+            raw = await db.get_setting(key)
+        except Exception:
+            raw = None
+        cfg[key] = _rbrowser_decode(key, raw)
+    try:
+        version = await update_manager._get_portal_version()
+    except Exception:
+        version = "unknown"
+    cfg.update(portal_port=int(Config.PORT), portal_version=str(version), portal_unit=_rbrowser_portal_unit(),
+               hidden_extra=_rbrowser_hidden_extra(), stage_mode=bool(Config.STAGE_MODE), stage_dir="")
+    _rbrowser_cfg.clear()
+    _rbrowser_cfg.update(cfg)
+
+
+def _rbrowser_role_ok(role: str) -> bool:
+    return get_role_level(role) >= get_role_level(_rbrowser_cfg["rbrowser_min_role"])
+
+
+def _rbrowser_user_role(user) -> str:
+    if not user:
+        return "user"
+    return user.get("role") or ("admin" if user.get("is_admin") else "user")
+
+
+def _rbrowser_clip_view(session=None) -> str:
+    """The clipboard mode the page is told: the setting now, and for a running session no more than its unit was started with."""
+    rank = {"off": 0, "in": 1, "both": 2}
+    mode = _rbrowser_cfg["rbrowser_clipboard"]
+    if session is not None:
+        unit = {"both": "both", "to_browser": "in"}.get(session.clipboard, "off")
+        if rank[unit] < rank[mode]:
+            mode = unit
+    return mode
+
+
+def _rbrowser_session_body(s) -> dict:
+    d = rbrowser.deadlines(s, _rbrowser_cfg)
+    return {"sid": s.sid, "ws": f"/ws/rbrowser/{s.sid}", "width": s.width, "height": s.height,
+            "idle_deadline": d["idle_deadline"], "max_deadline": d["max_deadline"],
+            "clipboard": _rbrowser_clip_view(s), "net_warning": bool(s.net_warning)}
+
+
+def _rbrowser_availability_view(av: dict) -> dict:
+    out = {"available": bool(av.get("available")), "missing": [str(m) for m in av.get("missing", [])][:20],
+           "reasons": [str(r)[:200] for r in av.get("reasons", [])][:20],
+           "chromium_version": str(av.get("chromium_version") or ""), "chromium_age_days": av.get("chromium_age_days"),
+           "kernel_upload_limit": bool(av.get("kernel_upload_limit")), "checking": bool(av.get("checking"))}
+    if av.get("upload_reason"):
+        out["upload_reason"] = str(av["upload_reason"])[:200]
+    return out
+
+
+async def _rbrowser_session_rows() -> list:
+    rows = []
+    for s in rbrowser.all():
+        if s.state != "running":
+            continue
+        try:
+            u = await rbrowser.usage(s)
+        except Exception:
+            u = {}
+        user = await db.get_user_by_id(s.user_id)
+        mb = 1024 * 1024
+        rows.append({"sid_prefix": s.sid[:6], "user_id": s.user_id, "username": (user or {}).get("username", ""),
+                     "started": s.started, "state": rbrowser.activity_state(s), "attached": s.viewer is not None,
+                     "memory_mb": u.get("memory_mb", 0), "cpu_seconds": u.get("cpu_seconds", 0),
+                     "net_in_mb": round(float(u.get("net_in", 0) or 0) / mb, 1),
+                     "net_out_mb": round(float(u.get("net_out", 0) or 0) / mb, 1)})
+    return rows
+
+
+async def _rbrowser_admin_view() -> dict:
+    """What the administrator's card shows. No URL, title or picture of a session, and no field for one."""
+    settings = {k: copy.deepcopy(_rbrowser_cfg[k]) for k in RBROWSER_SETTING_KEYS}
+    out = {"settings": settings, "defaults": copy.deepcopy(RBROWSER_DEFAULTS), "availability": {}, "preflight": {}, "seats": {},
+           "sessions": [], "units_not_confirmed_stopped": 0}
+    try:
+        out["availability"] = _rbrowser_availability_view(rbrowser.availability())
+    except Exception as e:
+        out["availability"] = {"available": False, "missing": [], "reasons": ["the availability check failed"]}
+        logger.warning(f"rbrowser: availability failed: {type(e).__name__}")
+    try:
+        out["preflight"] = rbrowser.last_preflight() or {}
+        out["seats"] = rbrowser.seats(_rbrowser_cfg)
+        out["sessions"] = await _rbrowser_session_rows()
+        out["units_not_confirmed_stopped"] = len(rbrowser.left_units())
+    except Exception as e:
+        logger.warning(f"rbrowser: admin view incomplete: {type(e).__name__}")
+    return out
+
+
+async def http_get_rbrowser_admin(request: web.Request) -> web.Response:
+    """GET /api/admin/rbrowser - settings, availability, the last check, seats and the running sessions (administrator)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(await _rbrowser_admin_view(), headers=_RBROWSER_NO_STORE)
+
+
+async def http_put_rbrowser_admin(request: web.Request) -> web.Response:
+    """PUT /api/admin/rbrowser - change settings (superadmin, browser sign-in only). A flat object of the keys to change."""
+    user, err = await _backup_superadmin(request, cookie_only=True)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    unknown = sorted(str(k) for k in data if k not in RBROWSER_DEFAULTS)
+    if unknown:
+        return web.json_response({"error": f"Unknown setting: {unknown[0][:40]}"}, status=400)
+    new = {}
+    for key, value in data.items():
+        canon, bad = _rbrowser_validate(key, value)
+        if bad:
+            return web.json_response({"error": bad}, status=400)
+        new[key] = canon
+    async with _rbrowser_admin_lock:
+        before = {k: copy.deepcopy(_rbrowser_cfg[k]) for k in RBROWSER_SETTING_KEYS}
+        changed = {k: v for k, v in new.items() if before.get(k) != v}
+        if changed:
+            try:        # all the changed keys in one transaction; memory follows only after the write succeeded
+                await db.set_settings({k: _rbrowser_encode(k, v) for k, v in changed.items()})
+            except Exception as e:
+                logger.warning(f"Could not save the Web Browser settings: {type(e).__name__}")
+                return web.json_response({"error": "Could not save the settings"}, status=500)
+            _rbrowser_cfg.update(copy.deepcopy(changed))
+            # The log line and the security event name the keys only (the home address and the deny list are not repeated there)
+            await security_event("rbrowser_settings_changed", request=request, user=user, details={"keys": sorted(changed)})
+            await audit_log("rbrowser_settings_update", user["id"], user.get("username", "unknown"),
+                            details={"was": {k: before[k] for k in changed}, "now": changed})
+            logger.info(f"Web Browser settings changed by user {user['id']}: {sorted(changed)}")
+            await _rbrowser_apply(before, changed)
+    view = await _rbrowser_admin_view()
+    view["saved"] = True
+    return web.json_response(view, headers=_RBROWSER_NO_STORE)
+
+
+async def _rbrowser_apply(before: dict, changed: dict) -> None:
+    """What a saved change does to the running feature (under _rbrowser_admin_lock). A running unit is never altered, except that
+    switching the feature off or raising the role ends the sessions affected (settings_changed)."""
+    try:
+        if "rbrowser_enabled" in changed:
+            if changed["rbrowser_enabled"]:
+                await _rbrowser_start()
+            else:
+                await _rbrowser_switch_off()
+            return
+        if not _rbrowser_state["started"]:
+            return
+        if "rbrowser_min_role" in changed:
+            for s in list(rbrowser.all()):
+                role = _rbrowser_user_role(await db.get_user_by_id(s.user_id))
+                if not _rbrowser_role_ok(role):
+                    await rbrowser.end(s, "settings_changed")
+                    await _rbrowser_audit_end(s)
+        if "rbrowser_upload_kbps" in changed:
+            await rbrowser.host_prepare(_rbrowser_cfg)
+        else:
+            rbrowser.registry().remember(_rbrowser_cfg)       # a setting that enters the preflight key: the next create runs the check
+        await _rbrowser_drain_events()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: applying the settings failed: {type(e).__name__}")
+
+
+async def http_post_rbrowser_preflight(request: web.Request) -> web.Response:
+    """POST /api/admin/rbrowser/preflight - run the sandbox check now and answer {ok, checks} (superadmin). Up to about 40 s."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    if not _rbrowser_state["started"]:
+        return web.json_response({"error": "The Web Browser is switched off or not available on this server"}, status=409)
+    try:
+        result = await rbrowser.preflight(force=True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: the check could not run: {type(e).__name__}")
+        return web.json_response({"error": "The check could not run"}, status=500)
+    await _rbrowser_drain_events()
+    return web.json_response({"ok": bool(result.get("ok")),
+                              "checks": [{"name": str(c.get("name", ""))[:60], "ok": bool(c.get("ok")), "detail": str(c.get("detail", ""))[:300]}
+                                         for c in result.get("checks", [])[:30]]}, headers=_RBROWSER_NO_STORE)
+
+
+async def http_post_rbrowser_admin_end(request: web.Request) -> web.Response:
+    """POST /api/admin/rbrowser/sessions/{sid_prefix}/end with {"confirm": true} - end a member's session (administrator).
+    The audit entry is written first. An administrator can end a session; nothing lets one watch or join it."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict) or data.get("confirm") is not True:
+        return web.json_response({"error": "Confirmation required"}, status=400)
+    prefix = request.match_info.get("sid_prefix", "")
+    s = rbrowser.find_prefix(prefix) if _RBROWSER_SID_RE.fullmatch(prefix) else None
+    if s is None or s.state != "running":
+        return web.json_response({"error": "No such session"}, status=404)
+    admin = await db.get_user_by_id(token.user_id)
+    member = await db.get_user_by_id(s.user_id)
+    await audit_log("rbrowser_admin_end", token.user_id, (admin or {}).get("username", "unknown"),
+                    target_id=s.user_id, target_type="user", target_name=_log_text((member or {}).get("username", ""), 80),
+                    details={"sid_prefix": s.sid[:6]})
+    await rbrowser.end(s, "admin_end")
+    await _rbrowser_audit_end(s)
+    try:
+        await send_notification(s.user_id, "rbrowser_ended", "Web Browser session ended",
+                                "An administrator ended your Web Browser session.")
+    except Exception as e:
+        logger.warning(f"rbrowser: notification not sent: {type(e).__name__}")
+    await _rbrowser_drain_events()
+    return web.json_response({"ended": True}, headers=_RBROWSER_NO_STORE)
+
+
+# ---- the member's API ------------------------------------------------------------------------------------------
+
+async def _rbrowser_member(request: web.Request, *, session_credential: bool = True):
+    """(token, user, None) for a signed-in member, or (None, None, answer). With session_credential the credential must be the
+    browser sign-in (the cookie) with the user's full scope: no API key, no bearer, no ?token=, no stream key."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, None, unauthorized_response(request)
+    if session_credential and not await _rbrowser_browser_signin(request, token):
+        return None, None, full_scope_required_response()
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return None, None, unauthorized_response(request)
+    return token, user, None
+
+
+def _rbrowser_refused(e) -> web.Response:
+    headers = dict(_RBROWSER_NO_STORE)
+    body = e.body if isinstance(e.body, dict) else {}
+    if isinstance(body.get("retry_after"), int):
+        headers["Retry-After"] = str(body["retry_after"])
+    return web.json_response(body, status=e.status, headers=headers)
+
+
+async def http_rbrowser_status(request: web.Request) -> web.Response:
+    """GET /api/rbrowser/status - {available, enabled, allowed, busy, checking, clipboard, boot_id[, reason]} for any signed-in member."""
+    token, user, err = await _rbrowser_member(request, session_credential=False)
+    if err:
+        return err
+    role = _rbrowser_user_role(user)
+    is_admin = role in ("admin", "superadmin")
+    enabled = bool(_rbrowser_cfg["rbrowser_enabled"])
+    cookie_ok = await _rbrowser_browser_signin(request, token)
+    available = busy = checking = False
+    reasons: list = []
+    if enabled:
+        try:
+            av = rbrowser.availability()
+            available = bool(av.get("available"))
+            reasons = [str(r)[:200] for r in av.get("reasons", [])]
+            checking = bool(rbrowser.checking())
+            if available:
+                busy = len(rbrowser.all()) >= int(rbrowser.seats(_rbrowser_cfg).get("max", 1))
+        except Exception as e:
+            logger.warning(f"rbrowser: status failed: {type(e).__name__}")
+            available, reasons = False, ["the availability check failed"]
+    body = {"available": available, "enabled": enabled, "allowed": bool(enabled and cookie_ok and _rbrowser_role_ok(role)),
+            "busy": busy, "checking": checking, "clipboard": _rbrowser_cfg["rbrowser_clipboard"], "boot_id": rbrowser.boot_id()}
+    if is_admin:
+        body["reason"] = "; ".join(reasons[:4]) if reasons else ("switched off" if not enabled else "")
+    return web.json_response(body, headers=_RBROWSER_NO_STORE)
+
+
+async def _rbrowser_allowed_member(request: web.Request):
+    """(token, user, None) for a member who may use the feature now (enabled, role, browser sign-in), else (None, None, answer)."""
+    token, user, err = await _rbrowser_member(request)
+    if err:
+        return None, None, err
+    if not _rbrowser_cfg["rbrowser_enabled"] or not _rbrowser_role_ok(_rbrowser_user_role(user)):
+        return None, None, web.json_response({"error": "Not allowed"}, status=403, headers=_RBROWSER_NO_STORE)
+    return token, user, None
+
+
+async def http_rbrowser_get_session(request: web.Request) -> web.Response:
+    """GET /api/rbrowser/session - the member's running session (200), 409 {elsewhere} when another sign-in of theirs made it, 404."""
+    token, user, err = await _rbrowser_allowed_member(request)
+    if err:
+        return err
+    s = rbrowser.for_user(user["id"])
+    if s is None or s.state != "running":
+        return web.json_response({"error": "No session"}, status=404, headers=_RBROWSER_NO_STORE)
+    if s.token_id != token.token_id:
+        return web.json_response({"elsewhere": True}, status=409, headers=_RBROWSER_NO_STORE)
+    return web.json_response(_rbrowser_session_body(s), headers=_RBROWSER_NO_STORE)
+
+
+async def http_rbrowser_create_session(request: web.Request) -> web.Response:
+    """POST /api/rbrowser/session {width, height, takeover?} - start (201) or return (200) the member's session."""
+    token, user, err = await _rbrowser_allowed_member(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    width, height, takeover = data.get("width"), data.get("height"), data.get("takeover", False)
+    if any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 20000 for v in (width, height)) or not isinstance(takeover, bool):
+        return web.json_response({"error": "width and height must be whole numbers, takeover true or false"}, status=400)
+    # The same sign-in asking again gets its session back: no limiter hit, no maintenance check
+    existing = rbrowser.for_user(user["id"])
+    if existing is not None and existing.state == "running" and existing.token_id == token.token_id:
+        return web.json_response(_rbrowser_session_body(existing), headers=_RBROWSER_NO_STORE)
+    if rbrowser.checking():             # while the sandbox check runs the page waits; the wait must not use up the start limit
+        return _rbrowser_refused(rbrowser.Refused(503, {"retry_after": 10}))
+    blocked = await _maintenance_block(request, token, None, "the Web Browser", use_global=True, force_json=True)
+    if blocked:
+        return blocked
+    if not _rbrowser_start_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_start", "Too many sessions started. Wait a few minutes.", user_id=user["id"],
+                              headers={"Retry-After": "60"})
+    try:
+        s = await rbrowser.create(user["id"], token.token_id, width, height, _rbrowser_cfg, takeover=takeover)
+    except rbrowser.Refused as e:
+        await _rbrowser_drain_events()
+        return _rbrowser_refused(e)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: create failed: {type(e).__name__}")
+        await _rbrowser_drain_events()
+        return web.json_response({"error": "start_failed"}, status=503, headers=_RBROWSER_NO_STORE)
+    if existing is not None and existing is not s and existing.state == "ended":
+        await _rbrowser_audit_end(existing)             # the takeover ended it (replaced)
+    # The settings were read before the unit started; a switch-off or a role change during the start is answered here, not
+    # left as a running unit with no sweeper (the switch-off lists its sessions before this one is in the list).
+    # The sign-in is checked again too: a sign-out or a disabled account during the start revokes the token while the unit is
+    # not yet in the registry's per-user list, so the revocation sweep finds nothing to end (get_token refuses a revoked row).
+    now_user = await db.get_user_by_id(user["id"])
+    if (not _rbrowser_cfg["rbrowser_enabled"] or not _rbrowser_state["started"] or not now_user
+            or not _rbrowser_role_ok(_rbrowser_user_role(now_user))
+            or not await _rbrowser_browser_signin(request, token)):
+        if s.state != "ended":
+            await rbrowser.end(s, "settings_changed")
+        await _rbrowser_audit_end(s)
+        await _rbrowser_drain_events()
+        return web.json_response({"error": "Not allowed"}, status=403, headers=_RBROWSER_NO_STORE)
+    fresh = s is not existing
+    if fresh:
+        await audit_log("rbrowser_start", user["id"], user.get("username", "unknown"), details={"sid_prefix": s.sid[:6]})
+        logger.info(f"rbrowser session started: user {user['id']} sid {s.sid[:6]} unit {s.unit}")
+    await _rbrowser_drain_events()
+    return web.json_response(_rbrowser_session_body(s), status=201 if fresh else 200, headers=_RBROWSER_NO_STORE)
+
+
+async def http_rbrowser_delete_session(request: web.Request) -> web.Response:
+    """DELETE /api/rbrowser/session - end the member's own session (204). Any browser sign-in of the member may end it."""
+    token, user, err = await _rbrowser_member(request)
+    if err:
+        return err
+    s = rbrowser.for_user(user["id"])
+    if s is None:
+        return web.json_response({"error": "No session"}, status=404, headers=_RBROWSER_NO_STORE)
+    await rbrowser.end(s, "closed")
+    await _rbrowser_audit_end(s)
+    await _rbrowser_drain_events()
+    return web.Response(status=204, headers=_RBROWSER_NO_STORE)
+
+
+async def _rbrowser_own_session(request: web.Request):
+    """(session, user, None) for the session this very sign-in made, else (None, None, answer)."""
+    token, user, err = await _rbrowser_allowed_member(request)
+    if err:
+        return None, None, err
+    s = rbrowser.for_user(user["id"])
+    if s is None or s.state != "running":
+        return None, None, web.json_response({"error": "No session"}, status=404, headers=_RBROWSER_NO_STORE)
+    if s.token_id != token.token_id:
+        return None, None, web.json_response({"elsewhere": True}, status=409, headers=_RBROWSER_NO_STORE)
+    return s, user, None
+
+
+async def http_rbrowser_resize(request: web.Request) -> web.Response:
+    """POST /api/rbrowser/session/resize {width, height} (CSS pixels) - one a second."""
+    s, user, err = await _rbrowser_own_session(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    width = data.get("width") if isinstance(data, dict) else None
+    height = data.get("height") if isinstance(data, dict) else None
+    if any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 20000 for v in (width, height)):
+        return web.json_response({"error": "width and height must be whole numbers"}, status=400)
+    if not _rbrowser_resize_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_resize", "Too many resizes", user_id=user["id"], headers={"Retry-After": "1"})
+    ok = await rbrowser.resize(s, width, height)
+    return web.json_response({"ok": bool(ok)}, headers=_RBROWSER_NO_STORE)
+
+
+async def http_rbrowser_clipboard(request: web.Request) -> web.Response:
+    """POST /api/rbrowser/session/clipboard - the text of the remote browser's clipboard, {"text", "truncated"}. Only with the
+    setting rbrowser_clipboard = both, by the sign-in that made the session. The text is page-controlled: never logged,
+    audited or stored here."""
+    s, user, err = await _rbrowser_own_session(request)
+    if err:
+        return err
+    if _rbrowser_cfg["rbrowser_clipboard"] != "both":
+        return web.json_response({"error": "Copying from the browser is switched off"}, status=403, headers=_RBROWSER_NO_STORE)
+    if not _rbrowser_clip_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_clipboard", "Too many copy requests", user_id=user["id"], headers={"Retry-After": "5"})
+    r = await rbrowser.clip(s)
+    if not r.get("ok"):
+        return web.json_response({"error": "The text could not be read"}, status=502, headers=_RBROWSER_NO_STORE)
+    return web.json_response({"text": r["text"], "truncated": bool(r["truncated"])}, headers=_RBROWSER_NO_STORE)
+
+
+async def http_rbrowser_page(request: web.Request) -> web.Response:
+    """GET /rbrowser - the page, for signed-in members (anybody else goes to /login). Its own, stricter CSP is set by
+    security_headers_middleware; the page has no inline script."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+    blocked = await _maintenance_block(request, token, None, "the Web Browser", use_global=True)
+    if blocked:
+        return blocked
+    try:
+        html = load_static_file("rbrowser.html")
+    except Exception:
+        return web.Response(status=404, text="Not found")
+    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+
+
+_RBROWSER_HOST_RE = re.compile(r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?")
+
+
+def _rbrowser_csp(request: web.Request) -> str:
+    """The route CSP of /rbrowser: no inline script, no blob: script, no foreign wss:. The request host is put in only when it
+    is a plain host name or address (a crafted Host header must not add directives)."""
+    host = request.host or ""
+    ws_src = f" wss://{host}" if _RBROWSER_HOST_RE.fullmatch(host) else ""
+    return ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            f"connect-src 'self'{ws_src}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+
+# ---- audit, security events, the sweeper, lifecycle -----------------------------------------------------------------
+
+async def _rbrowser_audit_end(s) -> None:
+    """The audit entry of an ended session (once per session). Details: the reason and the minutes. Never anything of a page."""
+    if s.sid in _rbrowser_audited:
+        return
+    _rbrowser_audited[s.sid] = None
+    while len(_rbrowser_audited) > 500:
+        _rbrowser_audited.popitem(last=False)
+    try:
+        user = await db.get_user_by_id(s.user_id)
+        minutes = max(0, int(((s.ended_at or time()) - s.started) // 60))
+        await audit_log("rbrowser_end", s.user_id, (user or {}).get("username", "unknown"),
+                        details={"reason": s.end_reason or "crash", "minutes": minutes})
+        logger.info(f"rbrowser session ended: user {s.user_id} sid {s.sid[:6]} reason {s.end_reason or 'crash'} minutes {minutes}")
+    except Exception as e:
+        logger.warning(f"rbrowser: end not audited: {type(e).__name__}")
+
+
+_RBROWSER_EVENT_WORD = re.compile(r"[a-z_]{1,32}")
+
+
+async def _rbrowser_drain_events() -> None:
+    """Security events from the registry (take_events is the only place they come from). A marker is mapped through the
+    registry's EVENT_OF table, nothing else; the detail is a fixed word (a check name, a budget name, the marker name)."""
+    try:
+        events = rbrowser.take_events()
+    except Exception:
+        return
+    for ev in events:
+        try:
+            kind = ev.get("kind")
+            if kind == "marker":
+                name = rbrowser.EVENT_OF.get(ev.get("marker"))
+                detail = str(ev.get("detail") or "")
+                if name in secevents.EVENTS:
+                    await security_event(name, user_id=ev.get("user_id"),
+                                         details={"detail": detail if _RBROWSER_EVENT_WORD.fullmatch(detail) else "unknown"})
+            elif kind == "preflight_failed":
+                checks = [str(c)[:40] for c in ev.get("checks", [])][:10]
+                await security_event(rbrowser.EVENT_OF["preflight_failed"], details={"checks": checks})
+            elif kind == "unit_left_running":
+                logger.warning(f"rbrowser: a unit could not be confirmed stopped: {_log_text(ev.get('unit'), 60)}")
+            elif kind == "unknown_unit_stopped":
+                logger.warning("rbrowser: a unit the registry did not know was stopped")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"rbrowser: an event was not recorded: {type(e).__name__}")
+
+
+async def _rbrowser_sweeper() -> None:
+    """One task, every 5 seconds: the registry's tick only while a session exists or a unit is not confirmed stopped; the
+    registry's events are taken on every pass."""
+    while True:
+        await asyncio.sleep(RBROWSER_TICK_S)
+        try:
+            if rbrowser.all() or rbrowser.left_units() or rbrowser.counters().get("stopping"):
+                for s, _reason in await rbrowser.tick(_rbrowser_cfg):
+                    await _rbrowser_audit_end(s)
+            await _rbrowser_drain_events()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"rbrowser: sweeper step failed: {type(e).__name__}")
+
+
+async def _rbrowser_start() -> None:
+    """Start the feature: nothing at all when it is switched off (rbrowser is not called). Otherwise the registry's start-up
+    (it does nothing unless the host can run units) and the sweeper."""
+    if not _rbrowser_cfg["rbrowser_enabled"]:
+        return
+    try:
+        await rbrowser.startup(_rbrowser_cfg)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: start-up failed: {type(e).__name__}")
+    _rbrowser_state["started"] = True
+    task = _rbrowser_state["sweeper"]
+    if task is None or task.done():
+        _rbrowser_state["sweeper"] = asyncio.ensure_future(_rbrowser_sweeper())
+    await _rbrowser_drain_events()
+
+
+async def _rbrowser_stop_sweeper() -> None:
+    task, _rbrowser_state["sweeper"] = _rbrowser_state["sweeper"], None
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def _rbrowser_switch_off() -> None:
+    """The feature was switched off: every session ends (settings_changed), the sweeper stops, the host is unprepared."""
+    if not _rbrowser_state["started"]:
+        return
+    sessions = list(rbrowser.all())
+    for s in sessions:
+        await rbrowser.end(s, "settings_changed")
+        await _rbrowser_audit_end(s)
+    await _rbrowser_stop_sweeper()
+    try:
+        await rbrowser.shutdown()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: shutdown failed: {type(e).__name__}")
+    _rbrowser_state["started"] = False
+    await _rbrowser_drain_events()
+
+
+async def _rbrowser_stop() -> None:
+    """Portal stop: every unit is stopped (the registry bounds it), then the sessions are audited. Nothing when never started."""
+    if not _rbrowser_state["started"]:
+        return
+    sessions = list(rbrowser.all())
+    await _rbrowser_stop_sweeper()
+    for t in list(_rbrowser_tasks):
+        t.cancel()
+    try:
+        await rbrowser.shutdown()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"rbrowser: shutdown failed: {type(e).__name__}")
+    for s in sessions:
+        await _rbrowser_audit_end(s)
+    _rbrowser_state["started"] = False
+    await _rbrowser_drain_events()
+
+
+def _rbrowser_revoked(user_id: int, spared) -> None:
+    """A member's credentials were revoked: a session whose sign-in is not spared ends at once (signed_out). Scheduled, not
+    awaited: the unit's stop must not make every sign-out wait. Nothing when the feature never started."""
+    if not _rbrowser_state["started"]:
+        return
+
+    async def work():
+        s = rbrowser.for_user(user_id)
+        try:
+            await rbrowser.on_revocation(user_id, spared)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"rbrowser: revocation failed: {type(e).__name__}")
+        if s is not None and s.state == "ended":
+            await _rbrowser_audit_end(s)
+    _rbrowser_spawn(work())
+
+
 _uploads_root_cache: Optional[tuple] = None
 
 
@@ -34022,6 +34977,10 @@ async def security_headers_middleware(request: web.Request, handler):
             "base-uri 'self'; "
             "form-action 'self';"
         )
+        if request.path == "/rbrowser" and response.status == 200:
+            # The page parses an attacker-influenced byte stream on the portal origin: its own, stricter policy
+            csp = _rbrowser_csp(request)
+            response.headers['Content-Security-Policy'] = csp
         response.headers.setdefault('Content-Security-Policy', csp)
 
     # Suppress server version to prevent information leakage
@@ -34766,6 +35725,17 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/connections/maintenance", http_admin_connections_in_maintenance)
     app.router.add_post("/api/admin/connections/{id}/maintenance/clear", http_admin_clear_connection_maintenance)
     app.router.add_get("/api/admin/proxy-limit", http_get_proxy_limit)
+    app.router.add_get("/api/admin/rbrowser", http_get_rbrowser_admin)
+    app.router.add_put("/api/admin/rbrowser", http_put_rbrowser_admin)
+    app.router.add_post("/api/admin/rbrowser/preflight", http_post_rbrowser_preflight)
+    app.router.add_post("/api/admin/rbrowser/sessions/{sid_prefix}/end", http_post_rbrowser_admin_end)
+    app.router.add_get("/rbrowser", http_rbrowser_page)
+    app.router.add_get("/api/rbrowser/status", http_rbrowser_status)
+    app.router.add_get("/api/rbrowser/session", http_rbrowser_get_session)
+    app.router.add_post("/api/rbrowser/session", http_rbrowser_create_session)
+    app.router.add_delete("/api/rbrowser/session", http_rbrowser_delete_session)
+    app.router.add_post("/api/rbrowser/session/resize", http_rbrowser_resize)
+    app.router.add_post("/api/rbrowser/session/clipboard", http_rbrowser_clipboard)
     app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
     app.router.add_post("/api/admin/cf-ranges/pending/approve", http_approve_cf_pending)
@@ -35098,6 +36068,7 @@ class PortalServer:
             logger.warning(f"Sweep of expired automatic bans failed: {type(e).__name__}")
         await _load_login_ban_state()
         await _load_proxy_limit_state()
+        await _load_rbrowser_state()
         _blocked_ips = await db.get_active_blocked_ips()
         if _blocked_ips:
             logger.info(f"Loaded {len(_blocked_ips)} active IP block(s)")
@@ -35108,6 +36079,8 @@ class PortalServer:
         # Exemption state is complete now: lift stored automatic bans on addresses it covers
         await _drop_exempt_auto_bans()
         _log_proxy_trust_at_startup()
+        # The Web Browser on the server: nothing at all happens (rbrowser is not called) unless it is switched on
+        await _rbrowser_start()
 
         # Start traffic metrics recorder
         if Config.METRICS_ENABLED:
@@ -35669,6 +36642,9 @@ class PortalServer:
         # A running prune starts winding down now (it ends at its next batch boundary), so that happens
         # while the open connections drain instead of after it
         _ask_prunes_to_stop()
+
+        # Web Browser sessions end first (every unit is stopped, bounded); nothing when the feature never started
+        await _rbrowser_stop()
 
         # The reminder tick ends before the pusher and the database go
         task, self._saved_task = self._saved_task, None

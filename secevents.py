@@ -90,6 +90,14 @@ EVENTS = {
     "cert_renewal_failed": "security",
     "push_key_reset": "security",
     "maintenance_changed": "security",
+    # Web Browser on the server (rbrowser, 1.25.0): check names only, never a page, an address or text from a session
+    "rbrowser_settings_changed": "security",
+    "rbrowser_preflight_failed": "security",
+    "rbrowser_listener_found": "security",
+    "rbrowser_socket_mismatch": "security",
+    "rbrowser_display_mismatch": "security",
+    "rbrowser_protocol_violation": "security",
+    "rbrowser_traffic_limit": "security",
 }
 
 # Events an outsider can cause without any credential (or with a stolen
@@ -101,6 +109,8 @@ AGGREGATED = frozenset({
     # A key whose prefix matches, used from outside its bound networks: the prefix is 12 bits,
     # so anybody can make this happen without knowing the key.
     "api_key_ip_denied",
+    # A member's own session breaking the byte rules or its traffic budget: counted per member, a loop cannot flood the table
+    "rbrowser_protocol_violation", "rbrowser_traffic_limit",
 })
 
 # Admin and configuration actions. They need an authenticated staff session (or run from
@@ -114,6 +124,9 @@ CAP_EXEMPT = frozenset({
     "cf_ranges_approved", "cf_ranges_dismissed",
     "security_retention_changed", "security_events_pruned", "security_log_export",
     "webhook_allow_private", "push_key_reset", "maintenance_changed",
+    # rbrowser: a settings change by a superadmin, and the findings of the host checks (a few per day at most, never to be lost)
+    "rbrowser_settings_changed", "rbrowser_preflight_failed", "rbrowser_listener_found", "rbrowser_socket_mismatch",
+    "rbrowser_display_mismatch",
 })
 CAP_EXEMPT_WITH_USER = frozenset({"ip_blocked", "ip_unblocked"})
 

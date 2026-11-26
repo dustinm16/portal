@@ -462,6 +462,12 @@ EXEMPT = {
     "http_delete_user_connection": "deletes the record", "http_toggle_connection_pin": "a pin on the dashboard",
     "handle_overlay_websocket": "the chat overlay reads one stream's chat for an OBS browser source, nothing is proxied or dialled",
     "http_set_connection_prefs": "a member files a connection on the dashboard, nothing is dialled",
+    # the Web Browser on the server (rbrowser): starting a session and the page carry the check (CHECKED below)
+    "http_rbrowser_status": "reads a few flags; the dashboard card needs it during maintenance",
+    "http_rbrowser_get_session": "reads the member's own existing session; nothing is started",
+    "http_rbrowser_delete_session": "a member ends their own session; maintenance must not keep one open",
+    "http_rbrowser_resize": "acts on the member's own running session; the attach (websocket_handler) carries the check",
+    "http_rbrowser_clipboard": "reads the clipboard of the member's own running session; the attach carries the check",
 }
 # The routes that carry the check, by handler name.
 CHECKED = {
@@ -469,12 +475,13 @@ CHECKED = {
     "websocket_handler": "/ws", "http_terminal_page": "/terminal", "http_vnc_page": "/vnc",
     "http_media_page": "/media", "http_spice_page": "/spice", "http_proxmox_page": "/proxmox",
     "http_github_page": "/github", "http_connect_user_connection": "/api/connections/{id}/connect",
+    "http_rbrowser_page": "/rbrowser", "http_rbrowser_create_session": "/api/rbrowser/session",
 }
 LOOKUPS = re.compile(r"get_accessible_connection\(|get_service_by_id\(|get_service_for_path\(|get_user_connection\(|"
                      r"_get_sftp_connection\(|get_user_connection_by_uuid\(")
 # URL prefixes that mean "a way to use a service or a connection".
 PREFIXES = ("/proxy", "/search", "/browser", "/ws", "/terminal", "/vnc", "/media", "/spice", "/proxmox", "/github",
-            "/api/sftp/")
+            "/api/sftp/", "/rbrowser", "/api/rbrowser/")
 
 
 def routes_check(app):
@@ -531,8 +538,9 @@ def routes_check(app):
             continue
         if "use_global=True" in src and n != "_maintenance_block":
             glob.append(n)
-    check("routes: only /proxy, /browser and /search ask for the global flag",
-          sorted(glob) == ["_proxy_connection_authed", "http_browser_page", "http_searxng_proxy"], str(sorted(glob)))
+    check("routes: only /proxy, /browser, /search and the Web Browser page and start ask for the global flag",
+          sorted(glob) == ["_proxy_connection_authed", "http_browser_page", "http_rbrowser_create_session", "http_rbrowser_page",
+                           "http_searxng_proxy"], str(sorted(glob)))
 
 
 def braces_in_names():
