@@ -1738,10 +1738,15 @@ async def t_theme(r):
         n = 4
         for label, bad in (("a bad colour", ("red", "dark")), ("a bad mode", ("#1a1a2e", "auto")), ("both bad", ("#12", "x")), ("None values", (None, None)),
                            ("a string", "dark"), ("one value", ("#1a1a2e",)), ("three values", ("#1a1a2e", "dark", "x")), ("a dict", {"color": "#1a1a2e"}),
-                           ("a number", 5), ("long text", ("#" + "a" * 100000, "dark" * 1000))):
+                           ("a number", 5), ("long text", ("#" + "a" * 100000, "dark" * 1000)),
+                           # exactly 7 characters: only the pattern rejects these, not the length test
+                           ("seven not-hex", ("#gggggg", "dark")), ("seven with a quote", ('#12"45}', "dark")), ("seven with a newline", ("#16213\n", "dark")),
+                           ("seven with a NUL", ("#1621\x00e", "dark")), ("seven with a unicode digit", ("#16213\u0663", "dark"))):
             sx = await r.make(user=n, token=f"t{n}", theme=bad)
             sp = r.launcher.specs[sx.unit]
             want = {("red", "dark"): (None, "dark"), ("#1a1a2e", "auto"): ("#1a1a2e", None)}.get(bad if isinstance(bad, tuple) else None, (None, None))
+            if isinstance(bad, tuple) and len(bad) == 2 and isinstance(bad[0], str) and len(bad[0]) == 7 and bad[1] == "dark":
+                want = (None, "dark")
             check(f"theme: {label} never fails the start; each value is judged alone, the bad one is the neutral default",
                   sx.state == "running" and (sp.theme_color, sp.theme_mode) == want, str((sp.theme_color, sp.theme_mode)))
             await r.reg.end(sx, "user")

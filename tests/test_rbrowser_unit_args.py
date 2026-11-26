@@ -1314,7 +1314,8 @@ async def stop_safety_tests():
     # the source: nothing between the tmp directory and the try
     import inspect as _i
     ssrc = _i.getsource(L.SystemdLauncher.start)
-    check("start: systemd-run runs inside the try that takes the unit back", ssrc.index("try:") < ssrc.index("await self._run([sysrun]") < ssrc.index("_take_back"))
+    check("start: systemd-run runs inside the try that takes the unit back", ssrc.index("try:") < ssrc.index("await self._spawn(sysrun") < ssrc.index("_take_back")
+          and "await self._run([sysrun] + args" in _i.getsource(L.SystemdLauncher._spawn) and ssrc.count("_take_back") >= 2)
 
 
 from rbrowser import UnitLeftRunning  # noqa: E402
@@ -1755,8 +1756,9 @@ check("live test: the guard function comes before the first import that is not a
 check("live test: every gate of the round 1 table is present",
       set(re.findall(r'@gate\("(G\d\d\w*)"', _live_src)) == {"G00", "G01", "G01b", "G02", "G02b", "G02c", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G09b", "G10", "G11",
                                                               "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24", "G25"})
-check("live test: G25 (1.26.0) is a round 1 gate, written for the theme file and the pictures, and is not a hard gate",
-      "G25" in re.findall(r'@gate\("(G\d\d\w*)"', _live_src) and "G25" not in _live_src.split("HARD_GATES = (")[1].split(")")[0]
+check("live test: G25 (1.26.0) is a round 1 gate, written for the theme file and the pictures, and a HARD gate (a FAIL blocks the release); its unit run uses build_unit_args(theme_file=)",
+      "G25" in re.findall(r'@gate\("(G\d\d\w*)"', _live_src) and "G25" in _live_src.split("HARD_GATES = (")[1].split(")")[0] and "theme_file=path" in _live_src.split('@gate("G25"')[1]
+      and "add_bind" not in _live_src.split('@gate("G25"')[1]
       and "make_theme" in _live_src and "theme_color=" in _live_src and "prefers-color-scheme" in _live_src and "file:///etc/hostname" in _live_src)
 check("live test: it removes everything in finally and handles SIGTERM", "finally:\n        if rig is not None:\n            cleanup(rig)" in _live_src and "signal.SIGTERM" in _live_src)
 # ---- the live test's guards and bounds (pure parts imported under another name: its guards only run as __main__)
@@ -2230,7 +2232,7 @@ check("theme: a spec without a theme gives exactly the arguments of a host witho
       BA(spec(theme_color=None, theme_mode=None)) == base_args and not any("portal-theme" in a or "RB_THEME_MODE" in a for a in base_args))
 check("theme: the colour in the spec alone changes nothing in the arguments (the launcher decides on the file)", BA(spec(theme_color="#1a1a2e")) == base_args)
 themed = BA(TS, theme_file=THEME_FILE_PATH)
-bind = f"BindReadOnlyPaths={THEME_FILE_PATH}:{THEME_DEST}"
+bind = f"BindReadOnlyPaths=-{THEME_FILE_PATH}:{THEME_DEST}"
 pt = props(themed)
 check("theme: the file is bound read-only over the placeholder, once, after the /etc/chromium bind and before /etc/chromium.d",
       pt.count(bind) == 1 and pt.index(bind) == pt.index("BindReadOnlyPaths=/run/portal-rb-static/chromium:/etc/chromium") + 1
@@ -2314,7 +2316,7 @@ async def theme_launcher_tests():
     check("theme launcher: the file is owned by the portal's own user (root in production), mode 0444, a plain file",
           seen["st"].st_uid == os.getuid() and stat.S_IMODE(seen["st"].st_mode) == 0o444 and stat.S_ISREG(seen["st"].st_mode))
     check("theme launcher: systemd-run gets the bind of that very file and RB_THEME_MODE",
-          call[1:] == BA(TS, theme_file=tpath) and f"BindReadOnlyPaths={tpath}:{THEME_DEST}" in props(call))
+          call[1:] == BA(TS, theme_file=tpath) and f"BindReadOnlyPaths=-{tpath}:{THEME_DEST}" in props(call))
     check("theme launcher: nothing else of the spec's theme reaches the call (no colour text outside the file path)", not any("1a1a2e" in a.lower() for a in call))
     await ln.stop(res.unit)
     check("theme launcher: stop removes the file with the unit's other per-ident files", not os.path.exists(tpath) and not os.path.exists(f"{TMPD}/0123456789ab"))
@@ -2378,6 +2380,76 @@ async def theme_launcher_tests():
           not seen["file_at_start"] and call[1:] == BA(spec(), L.PROBE_PREFIX, "probe.py", 19))
     await lnp.stop(r4.unit)
     check("theme launcher: no per-session file survives any of the above", os.listdir(td) == ["blocked"] or sorted(os.listdir(td)) == ["blocked"])
+
+    # round 1 fix: the bind is optional ("-"): a source that is gone when the namespace is built is skipped, not a failed unit
+    check("theme launcher: the file bind carries the '-' prefix (a missing source is skipped), exactly once, and no other bind has one",
+          [a for a in props(BA(TS, theme_file=THEME_FILE_PATH)) if a.startswith("BindReadOnlyPaths=-")] == [f"BindReadOnlyPaths=-{THEME_FILE_PATH}:{THEME_DEST}"])
+
+    # round 1 fix: systemd refusing the themed unit never fails the start: it is taken back and started once more without the bind
+    class FailThemedHost(Host):
+        def __init__(self, mode, **kw):
+            super().__init__(**kw)
+            self.mode = mode            # "rc": systemd-run answers non-zero; "failed": the unit goes `failed` while starting
+            self.sysruns = []
+
+        async def run(self, argv, timeout=10.0):
+            if os.path.basename(argv[0]) == "systemd-run":
+                themed_call = any("portal-theme" in a for a in argv)
+                self.sysruns.append(themed_call)
+                if themed_call:
+                    if self.mode == "rc":
+                        self.calls.append((list(argv), timeout))
+                        return L.Ran(1)
+                    self.state = "failed"
+                else:
+                    self.state = "active"; self.stopped = False; self.polls = 0     # the second start comes up
+            return await super().run(argv, timeout)
+
+    L.write_static_tree(L.HostPaths(static=sd, run_dir=f"{sd}/r", state=f"{sd}/s", tmp_dir=f"{sd}/t"), POLICY)
+    for label, mode in (("systemd-run is refused", "rc"), ("the unit fails while starting", "failed")):
+        hf = FailThemedHost(mode); seen = {}
+        lnf = mk(hf, seen)
+        rf = await lnf.start(TS)
+        calls = [c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]
+        check(f"theme launcher: {label} with the theme bind: the start is retried once without it and succeeds, mode kept",
+              rf.unit.endswith("0123456789ab.service") and hf.sysruns == [True, False] and len(calls) == 2
+              and calls[1][1:] == BA(spec(theme_color="#1a1a2e", theme_mode="dark")) and "RB_THEME_MODE=dark" in calls[1]
+              and not any("portal-theme" in a for a in calls[1]) and not os.path.exists(tpath), str((hf.sysruns, len(calls))))
+        await lnf.stop(rf.unit)
+    # without a theme bind there is no second try: a plain failure stays one (and takes the unit back)
+    hf = Host(); hf.sysrun_rc = 1
+    lnf = mk(hf)
+    check("theme launcher: a start without the bind that fails is not retried",
+          await _raises_async(LaunchError, lnf.start(spec(theme_color=None, theme_mode=None)))
+          and len([c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]) == 1)
+    # both attempts fail: the error reaches the caller, nothing is left behind
+    hf = Host(); hf.sysrun_rc = 1
+    lnf = mk(hf)
+    check("theme launcher: when the retry fails too the start fails and no theme file is left",
+          await _raises_async(LaunchError, lnf.start(TS)) and len([c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]) == 2
+          and not os.path.exists(tpath))
+
+    # round 1 fix: make_theme checks the document with a check of its own, not only the validator that built it
+    real_tp = rbrowser_policy.theme_policy
+    lnm = mk(Host())
+    try:
+        for label, doc in (("an extra security key", {"BrowserThemeColor": "#1a1a2e", "DeveloperToolsAvailability": 1}),
+                           ("only another key", {"URLAllowlist": ["*"]}),
+                           ("a quote in the value", {"BrowserThemeColor": '#12"45}'}),
+                           ("a newline in the value", {"BrowserThemeColor": "#16213\n"}),
+                           ("not hex", {"BrowserThemeColor": "#gggggg"}),
+                           ("an upper-case value", {"BrowserThemeColor": "#1A1A2E"}),
+                           ("a non-string value", {"BrowserThemeColor": 1}),
+                           ("a unicode digit", {"BrowserThemeColor": "#16213\u0663"})):
+            rbrowser_policy.theme_policy = lambda c, m, _d=doc: _d
+            check(f"theme launcher: make_theme refuses a document with {label} and writes nothing",
+                  raises(LaunchError, lnm.make_theme, "0123456789ab", "#1a1a2e", "dark") and not os.path.exists(tpath))
+        rbrowser_policy.theme_policy = real_tp
+        check("theme launcher: make_theme writes the one-key document of a good colour", lnm.make_theme("0123456789ab", "#1A1A2E", "dark") == tpath
+              and _json.load(open(tpath)) == {"BrowserThemeColor": "#1a1a2e"})
+        lnm.remove_theme("0123456789ab")
+    finally:
+        rbrowser_policy.theme_policy = real_tp
 
 
 asyncio.run(theme_launcher_tests())

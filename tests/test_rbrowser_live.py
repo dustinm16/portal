@@ -20,7 +20,9 @@ Optional environment (each unlocks a gate that cannot be measured without it):
 Round 1 (after lane A1): the unit gates G1 to G11 (G01b: a listener in a unit with the ingress filter cannot be reached, the control without it can) and G18, the policy gates G13 to G16, input G17 and G21,
 the phone width G20, the measured performance G22, the CPU test G8, the upload limit G19, the hairpin G24, the
 egress table of 6.1 (printed as G00) and the 20 resizes (G23). Round 2 is filled by lane A2.
-1.26.0 adds G25: the remote Chromium follows the member's portal theme (tab strip colour, prefers-color-scheme, the security
+1.26.0 adds G25 (a HARD gate for this release: a FAIL blocks it; it covers systemd's own handling of the optional file bind
+`BindReadOnlyPaths=-<theme file>:/etc/chromium/policies/managed/portal-theme.json` inside the read-only /etc/chromium bind,
+and it needs a host whose rbrowser state is not prepared, see the refusal below): the remote Chromium follows the member's portal theme (tab strip colour, prefers-color-scheme, the security
 policy still applies, the per-session theme file is root-owned, read-only in the unit and gone after the stop).
 
 Output: one line per gate, `Gnn PASS|FAIL|FALLBACK detail`. A gate that needs a person to look at a picture
@@ -122,7 +124,7 @@ WARMUP_S = 3.0
 BARS = {"text_fps": 10, "news_fps": 6, "video_fps": 5, "x11vnc_cores": 0.5, "throttled_pct": 20, "latency_ms": 150}
 TYPE_CHUNK, TYPE_INTERVAL_MS = 40, 30
 G17_TEXT = "\u00e9 \u00df \u20ac \u201cq\u201d \u041f\u0440\u0438\u0432\u0435\u0442 \U0001f600"
-HARD_GATES = ("G01", "G01b", "G02", "G02b", "G02c", "G09b", "G10", "G18")    # ids are the design's G1, G2, G2b, ... with two digits
+HARD_GATES = ("G01", "G01b", "G02", "G02b", "G02c", "G09b", "G10", "G18", "G25")    # ids are the design's G1, G2, G2b, ... with two digits
 CLIENT_ARGS = ["--no-sandbox"]    # only this test's local browser, as root, on loopback; never the unit's browser
 
 
@@ -797,8 +799,8 @@ class Rig:
         self.units.append(res.unit)
         return Session(self, spec, res)
 
-    def custom_args(self, spec, command, mutate=None, wait=False, script="session.py"):
-        args = self.L.build_unit_args(spec, self.TP, script, 5, ingress_pin=self.pin)
+    def custom_args(self, spec, command, mutate=None, wait=False, script="session.py", theme_file=None):
+        args = self.L.build_unit_args(spec, self.TP, script, 5, ingress_pin=self.pin, theme_file=theme_file)
         assert args[-4:] == ["/usr/bin/python3", "-I", "-S", f"/mnt/{script}"]
         args = args[:-4]
         if mutate:
@@ -807,12 +809,12 @@ class Rig:
             args = [a for a in args if a not in ("--no-block", "--quiet")] + ["--wait"]
         return args + list(command)
 
-    def run_unit(self, command, mutate=None, wait=True, spec=None, timeout=120, script="session.py"):
+    def run_unit(self, command, mutate=None, wait=True, spec=None, timeout=120, script="session.py", theme_file=None):
         """systemd-run of an arbitrary command with the session's properties. -> (systemd-run rc, stderr, unit)"""
         spec = spec or self.spec()
         unit = f"{self.TP}{spec.ident}.service"
         self.launcher.make_tmp(spec.ident)        # D6: the unit's /tmp is a directory of the capped tmpfs; the launcher makes it for a session
-        argv = [self.L.find_tool("systemd-run")] + self.custom_args(spec, command, mutate, wait, script)
+        argv = [self.L.find_tool("systemd-run")] + self.custom_args(spec, command, mutate, wait, script, theme_file)
         self.units.append(unit)
         rc, out, err = sh(argv, timeout)
         return rc, err, unit
@@ -3158,9 +3160,8 @@ def g25(rig, ctx):
     path = rig.launcher.make_theme(ident, *G25_DARK)
     unit_res = None
     try:
-        def add_bind(args):
-            return args + ["-p", f"BindReadOnlyPaths={path}:{L.THEME_DEST}"]
-        rc, err, unit = rig.run_unit(["/usr/bin/python3", "-I", "-S", "-c", G25_UNIT_SNIPPET], mutate=add_bind, spec=spec, script="session.py")
+        # the production argument list itself (build_unit_args with theme_file), not a bind added by hand
+        rc, err, unit = rig.run_unit(["/usr/bin/python3", "-I", "-S", "-c", G25_UNIT_SNIPPET], spec=spec, script="session.py", theme_file=path)
         text = rig.journal(unit)
         rig.wait_gone(unit, 20)
         for line in text.splitlines():

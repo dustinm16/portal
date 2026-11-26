@@ -322,7 +322,9 @@ def build_unit_args(spec: LaunchSpec, unit_prefix: str = UNIT_PREFIX, script: st
     # the probe's headless Chromium cannot run under DeveloperToolsAvailability=2 (see rbrowser_policy.probe_policy)
     p(f"BindReadOnlyPaths={STATIC_DIR}/{'chromium-probe' if script == 'probe.py' else 'chromium'}:/etc/chromium")
     if theme_file is not None:
-        p(f"BindReadOnlyPaths={theme_file}:{THEME_DEST}")     # after the /etc/chromium bind: systemd mounts parents first
+        # after the /etc/chromium bind: systemd mounts parents first. The "-" makes a source that is gone when the namespace is built
+        # (a sweep, a crash) a bind that is skipped, so the placeholder "{}" shows and the session runs without the colour.
+        p(f"BindReadOnlyPaths=-{theme_file}:{THEME_DEST}")
     p(f"BindReadOnlyPaths={STATIC_DIR}/chromium.d:/etc/chromium.d")
     for path in hidden_paths(spec.hidden_extra):
         p("InaccessiblePaths=" + quote_property_path(path))
@@ -1353,18 +1355,32 @@ class SystemdLauncher:
         unit = f"{self.unit_prefix}{spec.ident}.service"
         self.make_tmp(spec.ident)
         try:
+            themed = want_theme
             if want_theme:
                 try:
                     self.make_theme(spec.ident, color, mode)
                 except (OSError, LaunchError):
+                    themed = False
                     args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin)
             # Inside the try, like everything after it: a systemd-run that timed out (rc 124) or was cancelled may have queued the
             # start job (--no-block) all the same, so every way out of here takes the unit back (stopping a unit that does not
             # exist is harmless and is confirmed by show()).
-            r = await self._run([sysrun] + args, 10.0)
-            if r.rc != 0:
-                raise LaunchError(f"systemd-run failed ({r.rc})")
-            pid, cgroup = await self._wait_main(unit)
+            try:
+                pid, cgroup = await self._spawn(sysrun, args, unit)
+            except LaunchError:
+                if not themed:
+                    raise
+                # The theme is cosmetic, so a unit that did not come up WITH the theme bind (systemd refusing the file bind, a mount
+                # point it cannot make) is taken back and started once more without it, never a failed start for the member.
+                left, cancelled = await self._take_back(unit)
+                if cancelled:
+                    raise asyncio.CancelledError()
+                if left is not None:
+                    raise left
+                self.remove_theme(spec.ident)
+                themed = False
+                args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin)
+                pid, cgroup = await self._spawn(sysrun, args, unit)
             uid = parse_status_uid(self._read(f"/proc/{pid}/status"))
             if uid is None:
                 raise LaunchError("the unit's user id could not be read")
@@ -1382,6 +1398,13 @@ class SystemdLauncher:
             raise
         return LaunchResult(unit=unit, runtime_dir=f"{self.run_dir}/s-{spec.ident}", expect_uid=uid,
                             expect_cgroup=cgroup, main_pid=pid, ingress_pin=self.ingress_pin)
+
+    async def _spawn(self, sysrun: str, args: list, unit: str):
+        """systemd-run, then wait until the unit is `active`: (main pid, cgroup). Raises LaunchError."""
+        r = await self._run([sysrun] + args, 10.0)
+        if r.rc != 0:
+            raise LaunchError(f"systemd-run failed ({r.rc})")
+        return await self._wait_main(unit)
 
     async def _take_back(self, unit: str):
         """The clean-up stop of a failed or cancelled start(), run as a task of its own and awaited through shield(): a second
@@ -1457,6 +1480,11 @@ class SystemdLauncher:
             raise LaunchError("the theme directory is not a directory")
         os.makedirs(self.theme_dir, mode=0o700, exist_ok=True)
         os.chmod(self.theme_dir, 0o700)
+        # A check of its own, not the validator that built the document: whatever theme_policy() returned, the file holds exactly the
+        # one theme key and a plain #rrggbb value, or nothing is written.
+        if (not isinstance(doc, dict) or list(doc) != ["BrowserThemeColor"] or not isinstance(doc["BrowserThemeColor"], str)
+                or not re.fullmatch(r"#[0-9a-f]{6}", doc["BrowserThemeColor"], re.ASCII)):
+            raise LaunchError("the theme document is not exactly the theme colour")
         path = self._theme_path(ident)
         _write_atomic(path, rbrowser_policy.policy_text(doc).encode(), 0o444)
         return path

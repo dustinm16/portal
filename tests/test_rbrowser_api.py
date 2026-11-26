@@ -331,6 +331,13 @@ async def main():
         ("an eight digit colour", {"color": "#16213eff", "mode": "dark"}, (None, "dark")),
         ("a colour with a newline", {"color": "#16213e\n", "mode": "dark"}, (None, "dark")),
         ("a long colour", {"color": long, "mode": "dark"}, (None, "dark")),
+        # exactly 7 characters, so the length test alone does not reject them: only the pattern does
+        ("seven characters, not hex", {"color": "#gggggg", "mode": "dark"}, (None, "dark")),
+        ("seven characters with a quote and a brace", {"color": '#12"45}', "mode": "dark"}, (None, "dark")),
+        ("seven characters ending in a newline", {"color": "#16213\n", "mode": "dark"}, (None, "dark")),
+        ("seven characters with a NUL", {"color": "#1621\x00e", "mode": "dark"}, (None, "dark")),
+        ("seven characters, no hash", {"color": "1621 3e", "mode": "dark"}, (None, "dark")),
+        ("seven characters, a unicode digit", {"color": "#16213\u0663", "mode": "dark"}, (None, "dark")),
         ("a long mode", {"color": "#16213e", "mode": "d" * 5000}, ("#16213e", None)),
         ("an unknown mode keeps a good colour", {"color": "#16213e", "mode": "auto"}, ("#16213e", None)),
         ("a mode in upper case is not a mode", {"color": "#16213e", "mode": "DARK"}, ("#16213e", None)),
