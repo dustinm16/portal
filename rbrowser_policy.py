@@ -435,3 +435,44 @@ PROBE_POLICY_DROP = ("DeveloperToolsAvailability",)
 def probe_policy(policy: dict) -> dict:
     """The policy of a headless probe unit: every key of `policy` except PROBE_POLICY_DROP."""
     return {k: v for k, v in policy.items() if k not in PROBE_POLICY_DROP}
+
+
+# ---- the member's portal theme (release 1.26.0): two validated values, nothing else
+#
+# The page sends a colour (#rrggbb) and a mode (dark | light). The colour reaches Chromium only as the managed policy
+# BrowserThemeColor, in a file of its own that theme_policy() builds from the validated value (never from a member's
+# string); the mode reaches the supervisor as RB_THEME_MODE (rbrowser_unit/session.py turns "dark" into
+# --force-dark-mode). The measurement (Chromium 156 under Xvfb) is in the 1.26.0 notes: BrowserThemeColor colours the tab
+# strip and toolbar and picks the text contrast; the BrowserColorScheme policy changed neither the browser UI nor
+# prefers-color-scheme here, --force-dark-mode changed both and did not recolour page content.
+THEME_COLOR_RE = re.compile(r"#[0-9a-f]{6}")
+THEME_MODES = ("dark", "light")
+THEME_POLICY_KEYS = ("BrowserThemeColor",)     # the only keys the per-session theme file may hold
+THEME_FILE_NAME = "portal-theme.json"
+# Chromium merges every file of the managed directory in file-name order and the LATER name wins a duplicate key (measured: with
+# portal.json, a.json and z.json each setting BrowserThemeColor, z.json won; portal-theme.json against portal.json: portal.json won).
+# "portal-theme.json" sorts before "portal.json" ('-' is 0x2d, '.' is 0x2e), so even a duplicate key could never override the main file.
+THEME_PLACEHOLDER_TEXT = "{}\n"
+
+
+def normalise_theme(color, mode) -> tuple:
+    """(color or None, mode or None). The colour is "#rrggbb" after lower-casing, the mode "dark" or "light"; anything else
+    (a wrong type, other text, a missing value) is None, which means the neutral default. Never raises."""
+    c = m = None
+    if isinstance(color, str) and len(color) == 7:
+        low = color.lower()
+        if THEME_COLOR_RE.fullmatch(low):
+            c = low
+    if isinstance(mode, str) and len(mode) <= 5:
+        low = mode.lower()
+        if low in THEME_MODES:
+            m = low
+    return c, m
+
+
+def theme_policy(color, mode) -> dict:
+    """The policy document of the per-session theme file: exactly THEME_POLICY_KEYS (BrowserThemeColor) and only when the
+    colour is valid; {} otherwise. The mode is validated and takes no key (it is the supervisor's --force-dark-mode).
+    Built from the validated values only, so no member-supplied text can add a key or change a value."""
+    c, _m = normalise_theme(color, mode)
+    return {"BrowserThemeColor": c} if c else {}

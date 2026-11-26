@@ -116,6 +116,8 @@ class LaunchSpec:
     deny: list = field(default_factory=list)          # CIDR strings, rbrowser_policy.deny_list()
     hidden_extra: list = field(default_factory=list)  # install directory and every storage root
     portal_unit: str = ""         # unit the portal runs in ("portal.service"), "" when it is not in one
+    theme_color: str | None = None   # "#rrggbb" (lower case) or None: the member's portal theme colour (1.26.0); None = the neutral default
+    theme_mode: str | None = None    # "dark" | "light" or None; both are validated again by the launcher and the supervisor
 
 
 @dataclass
@@ -475,8 +477,9 @@ def _clean_path(p) -> bool:
 class _Ext:
     """What the registry keeps next to a Session (never shown, never logged)."""
 
-    def __init__(self, ident: str, pin: str, unit: str):
+    def __init__(self, ident: str, pin: str, unit: str, theme: tuple = (None, None)):
         self.ident = ident
+        self.theme = theme                  # (colour or None, mode or None), validated; fixed for the life of the session
         self.pin = pin
         self.unit = unit
         self.evt = asyncio.Event()          # set when a placeholder became running or was ended
@@ -765,7 +768,7 @@ class Registry:
             s["max"] = max(1, s["max"] // 2)
         return s
 
-    def spec(self, ident: str, width: int, height: int, cfg) -> LaunchSpec:
+    def spec(self, ident: str, width: int, height: int, cfg, theme: tuple = (None, None)) -> LaunchSpec:
         chromium = ""
         try:
             chromium = (self.L.availability(stage_mode=False).get("paths") or {}).get("chromium", "")
@@ -774,7 +777,7 @@ class Registry:
         return LaunchSpec(ident=ident, width=width, height=height, clipboard=clipboard_unit_value(_cfg(cfg, "rbrowser_clipboard", "both")),
                           home_url=self.home_url(cfg), chromium=chromium or "", memory_mb=_cfg_int(cfg, "rbrowser_memory_mb", 2048, 1024, 4096),
                           cpu_percent=self.seats(cfg)["cpu_percent"], deny=self.deny(cfg), hidden_extra=self.hidden_extra(cfg),
-                          portal_unit=str(_cfg(cfg, "portal_unit", "") or ""))
+                          portal_unit=str(_cfg(cfg, "portal_unit", "") or ""), theme_color=theme[0], theme_mode=theme[1])
 
     # ------------------------------------------------------------ availability
 
@@ -978,8 +981,21 @@ class Registry:
         if self._preflight is None or not self._preflight.get("ok"):      # no start before a preflight has passed
             raise Refused(503, {"error": "unavailable"})
 
-    async def create(self, user_id, token_id, width, height, cfg, takeover=False) -> Session:
+    def _theme(self, theme) -> tuple:
+        """The member's theme as a validated (colour or None, mode or None) pair. Anything that is not a pair of valid values is
+        the neutral default; it never fails a start."""
+        try:
+            import rbrowser_policy       # the pure validator itself, never an injected stand-in: a theme is never trusted unchecked
+            color, mode = theme
+            return rbrowser_policy.normalise_theme(color, mode)
+        except Exception:
+            return (None, None)
+
+    async def create(self, user_id, token_id, width, height, cfg, takeover=False, theme=None) -> Session:
+        """`theme` is None or (colour, mode) as the page sent them; the registry validates them again (rbrowser_policy.normalise_theme)
+        and hands the validated pair to the launcher for this session only. It is not part of the preflight key."""
         self.remember(cfg)
+        theme = self._theme(theme)
         self._preflight_gate(cfg, compare=False)          # the early answer; the one that counts is made again under the lock
         try:
             w, h = snap_size(width, height)
@@ -1012,7 +1028,7 @@ class Registry:
                                    state="starting", runtime_dir="", expect_uid=-1, expect_cgroup="", width=w, height=h, started=now,
                                    last_activity=now, detached_since=now, ident=ident, ingress_pin=self.pin,
                                    clipboard=clipboard_unit_value(_cfg(cfg, "rbrowser_clipboard", "both")))
-                    ext = _Ext(ident, self.pin, sess.unit)
+                    ext = _Ext(ident, self.pin, sess.unit, theme)
                     self._sessions[sess.sid] = sess
                     self._by_user[user_id] = sess
                     self._x[sess.sid] = ext
@@ -1033,7 +1049,7 @@ class Registry:
         launcher = self._launcher
         res = None
         try:
-            spec = self.spec(sess.ident, sess.width, sess.height, cfg)
+            spec = self.spec(sess.ident, sess.width, sess.height, cfg, ext.theme)
             res = await asyncio.wait_for(launcher.start(spec), START_BOUND_S)
             if ext.cancelled:
                 raise Refused(503, {"error": "ended"})
@@ -1954,9 +1970,10 @@ async def preflight(force: bool = False) -> dict:
     return await registry().preflight(force)
 
 
-async def create(user_id: int, token_id: str, width: int, height: int, cfg, takeover: bool = False) -> Session:
-    """Raises Refused(status, body_dict). Serialised by Registry.lock."""
-    return await registry().create(user_id, token_id, width, height, cfg, takeover)
+async def create(user_id: int, token_id: str, width: int, height: int, cfg, takeover: bool = False, theme=None) -> Session:
+    """Raises Refused(status, body_dict). Serialised by Registry.lock. `theme`: None or (colour "#rrggbb", mode "dark"|"light") as
+    the page sent them; validated again, invalid values mean the neutral default."""
+    return await registry().create(user_id, token_id, width, height, cfg, takeover, theme=theme)
 
 
 def get(sid: str) -> Session | None:

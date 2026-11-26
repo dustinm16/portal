@@ -74,6 +74,8 @@ PROFILE_DIR = f"{WORK_DIR}/profile"
 TMP_DIR = f"{WORK_DIR}/tmp"
 SCREEN = f"{MAX_W}x{MAX_H}x24"
 HOME_URL_MAX = 300
+THEME_MODES = ("dark", "light")                  # RB_THEME_MODE (the member's portal theme, 1.26.0)
+THEME_DARK_FLAG = "--force-dark-mode"
 CLIPBOARD_MODES = ("both", "to_browser", "off")   # RB_CLIPBOARD: only "both" lets the `clip` request answer
 # x11vnc with the selection exchange off in both directions (decision D4). -nosel alone is "no exchange at all"; the
 # other four are named as well so that a build that reads one of them differently still has nothing to exchange.
@@ -171,8 +173,17 @@ def x11vnc_argv(binary, display, xauth, sock):
              "-safer", "-nocmds", "-q", *NO_CLIPBOARD_FLAGS])
 
 
-def chromium_argv(binary, w, h, home):
-    return [binary, *CHROMIUM_FLAGS, f"--window-size={w},{h}", home]
+def valid_theme_mode(mode):
+    """RB_THEME_MODE: exactly "dark" or "light". Anything else is not an error: the member just gets the neutral default."""
+    return mode if mode in THEME_MODES else None
+
+
+def chromium_argv(binary, w, h, home, theme_mode=None):
+    """`theme_mode` "dark" adds --force-dark-mode (measured on Chromium 156 under Xvfb: it makes the browser's own UI dark and the pages'
+    prefers-color-scheme report dark, and recolours no page content; the colour policy BrowserColorScheme did neither). "light" and None add
+    nothing: light is what Chromium does without a desktop. The switch is a constant here; no part of the mode reaches the command line."""
+    extra = [THEME_DARK_FLAG] if valid_theme_mode(theme_mode) == "dark" else []
+    return [binary, *CHROMIUM_FLAGS, *extra, f"--window-size={w},{h}", home]
 
 
 def child_env(display=None, xauth=None):
@@ -896,7 +907,7 @@ def read_config(environ, exists=os.path.isdir):
     if not rt.startswith("/") or ":" in rt or not exists(rt):
         raise SupervisorError("no runtime directory")
     return {"geometry": geometry, "clipboard": clipboard, "home": home, "chromium": chromium,
-            "runtime_dir": rt.rstrip("/")}
+            "runtime_dir": rt.rstrip("/"), "theme_mode": valid_theme_mode(environ.get("RB_THEME_MODE"))}
 
 
 # ================================================================ the side-effect half
@@ -1229,7 +1240,7 @@ def run(cfg):
         # 5. the window manager: before Chromium maps its first window. Failing to become the window manager ends the session.
         wm = WindowManager(holder)
         # 6. Chromium
-        chromium = start_chromium(chromium_argv(cfg["chromium"], w, h, cfg["home"]), env)
+        chromium = start_chromium(chromium_argv(cfg["chromium"], w, h, cfg["home"], cfg.get("theme_mode")), env)
         children.append(("chromium", chromium))
         # 7. the control socket
         ctl = make_ctl_socket(f"{rt}/ctl.sock")

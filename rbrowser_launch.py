@@ -45,6 +45,12 @@ RUN_DIR = "/run/portal-rb"
 WORK_DIR = "/run/work"             # the unit's capped scratch tmpfs; equals rbrowser_unit/session.py WORK_DIR (a test pins it)
 STATIC_DIR = "/run/portal-rb-static"
 STATE_DIR = "/run/portal-rb-state"
+# The member's portal theme (1.26.0): one root-owned file per session in THEME_DIR (inside the root-only state directory, so a unit
+# never sees the directory), bound read-only over the placeholder of the same name that write_static_tree() puts into the static
+# managed-policy directory. The static tree stays the single source of every security policy; this file holds BrowserThemeColor only.
+THEME_DIR = f"{STATE_DIR}/theme"
+THEME_FILE = rbrowser_policy.THEME_FILE_NAME
+THEME_DEST = f"/etc/chromium/policies/managed/{THEME_FILE}"
 CHAIN = "PORTAL-RB"
 SESSION_LIFETIME_MIN = 240
 RUNTIME_MAX_SEC = SESSION_LIFETIME_MIN * 60 + 60
@@ -234,17 +240,33 @@ def check_ingress_pin(pin) -> str:
     return pin
 
 
+def check_theme_file(path, ident, script) -> str:
+    """The per-session theme file BindReadOnlyPaths= is given: a plain absolute path that ends in <ident>.json, for a session only (the
+    preflight probe has no theme). Raises LaunchError otherwise."""
+    if (script != "session.py" or not isinstance(path, str) or not path.startswith("/") or not _SAFE_PATH_CHARS.fullmatch(path)
+            or "//" in path or any(seg in (".", "..") for seg in path.split("/")[1:]) or path.rsplit("/", 1)[-1] != f"{ident}.json"):
+        raise LaunchError("bad theme file")
+    return path
+
+
 def build_unit_args(spec: LaunchSpec, unit_prefix: str = UNIT_PREFIX, script: str = "session.py", nice: int = 5, *,
-                    ingress_pin: str) -> list:
+                    ingress_pin: str, theme_file: str | None = None) -> list:
     """The systemd-run arguments of design 4.2, as an argument list (without the program name): one element per
     argument, no shell, no literal quotes except in a quoted InaccessiblePaths item. Raises LaunchError on
     anything it cannot express, which makes create() fail closed.
 
     `unit_prefix` is portal-rb- for a session, portal-rbprobe- for the preflight, portal-rbtest- for the live
     test. The probe uses script='probe.py' and nice=19 and otherwise the same properties. `ingress_pin` is the path
-    prepare_host() returns as "ingress_pin"; it has no default, so no unit can be built without the filter."""
+    prepare_host() returns as "ingress_pin"; it has no default, so no unit can be built without the filter.
+
+    Theme (1.26.0): `theme_file` is the per-session root-owned policy file (SystemdLauncher.make_theme); when given, it is bound read-only
+    over the placeholder next to the main policy file. spec.theme_mode, when "dark" or "light", becomes RB_THEME_MODE. Without them the
+    arguments are exactly those of a host without a theme (the preflight probe never has either)."""
     _check_spec(spec)
     check_ingress_pin(ingress_pin)
+    _color, theme_mode = rbrowser_policy.normalise_theme(spec.theme_color, spec.theme_mode)
+    if theme_file is not None:
+        check_theme_file(theme_file, spec.ident, script)
     # No --collect (T1): a unit that ends in error stays loaded as `failed` until somebody resets it, so the registry can still read its
     # ExecMainStatus and ExecMainCode afterwards (a status of 3 is the supervisor's display mismatch). SystemdLauncher.stop() and
     # reset_failed() are what removes it. host_run's helper units keep --collect: nobody reads their exit status after the wait.
@@ -299,6 +321,8 @@ def build_unit_args(spec: LaunchSpec, unit_prefix: str = UNIT_PREFIX, script: st
     p(f"BindReadOnlyPaths={STATIC_DIR}/bin:/mnt")
     # the probe's headless Chromium cannot run under DeveloperToolsAvailability=2 (see rbrowser_policy.probe_policy)
     p(f"BindReadOnlyPaths={STATIC_DIR}/{'chromium-probe' if script == 'probe.py' else 'chromium'}:/etc/chromium")
+    if theme_file is not None:
+        p(f"BindReadOnlyPaths={theme_file}:{THEME_DEST}")     # after the /etc/chromium bind: systemd mounts parents first
     p(f"BindReadOnlyPaths={STATIC_DIR}/chromium.d:/etc/chromium.d")
     for path in hidden_paths(spec.hidden_extra):
         p("InaccessiblePaths=" + quote_property_path(path))
@@ -333,6 +357,8 @@ def build_unit_args(spec: LaunchSpec, unit_prefix: str = UNIT_PREFIX, script: st
     a.extend(["-E", f"RB_CLIPBOARD={spec.clipboard}"])
     a.extend(["-E", f"RB_HOME={spec.home_url}"])
     a.extend(["-E", f"RB_CHROMIUM={spec.chromium}"])
+    if theme_mode and script == "session.py":
+        a.extend(["-E", f"RB_THEME_MODE={theme_mode}"])
     a.extend(["/usr/bin/python3", "-I", "-S", f"/mnt/{script}"])
     return a
 
@@ -598,6 +624,9 @@ def write_static_tree(paths: HostPaths, policy: dict, source_dir=None) -> None:
     for name, data in scripts.items():
         _write_atomic(f"{s}/bin/{name}", data)
     _write_atomic(f"{s}/chromium/policies/managed/portal.json", rbrowser_policy.policy_text(policy).encode())
+    # The placeholder a session's theme file is bound over (build_unit_args): an empty policy document, so a session without a theme
+    # reads nothing from it. Only the session tree has it; the probe tree never does.
+    _write_atomic(f"{s}/chromium/policies/managed/{THEME_FILE}", rbrowser_policy.THEME_PLACEHOLDER_TEXT.encode())
     _write_atomic(f"{s}/chromium/master_preferences", MASTER_PREFERENCES.encode())
     _write_atomic(f"{s}/chromium-probe/policies/managed/portal.json", rbrowser_policy.policy_text(rbrowser_policy.probe_policy(policy)).encode())
     _write_atomic(f"{s}/chromium-probe/master_preferences", MASTER_PREFERENCES.encode())
@@ -1283,9 +1312,11 @@ class SystemdLauncher:
     def __init__(self, unit_prefix: str = UNIT_PREFIX, *, run=default_run, read_text=_read, sleep=asyncio.sleep,
                  script: str = "session.py", nice: int = 5, run_dir: str = RUN_DIR, which=find_tool,
                  ingress_pin: str | None = None, bpf=rbrowser_bpf, cgroup_root: str = CGROUP_ROOT, tmp_dir: str = RUN_TMP,
-                 mountinfo=None, want_dev_of=dev_of):
+                 mountinfo=None, want_dev_of=dev_of, theme_dir: str = THEME_DIR, static_dir: str = STATIC_DIR):
         _need(unit_prefix in (UNIT_PREFIX, PROBE_PREFIX, TEST_PREFIX), "unknown unit prefix")
         self.unit_prefix = unit_prefix
+        self.theme_dir = theme_dir          # the per-session theme files (root-only; never visible in a unit)
+        self.static_dir = static_dir        # where the placeholder the theme file is bound over is looked for
         self._run = run
         self._read = read_text
         self._sleep = sleep
@@ -1310,13 +1341,23 @@ class SystemdLauncher:
             raise LaunchError("not a unit name of this launcher")
 
     async def start(self, spec: LaunchSpec) -> LaunchResult:
-        args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin)
+        # The theme is cosmetic: a host whose static tree has no placeholder yet (prepare_host has not run since the upgrade) or a theme
+        # file that cannot be written starts the session without it, never fails it.
+        color, mode = rbrowser_policy.normalise_theme(spec.theme_color, spec.theme_mode)
+        want_theme = bool(color) and self.script == "session.py" and os.path.isfile(self._placeholder())
+        args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin,
+                               theme_file=self._theme_path(spec.ident) if want_theme else None)
         sysrun = self._which("systemd-run")
         if not sysrun:
             raise LaunchError("systemd-run not found")
         unit = f"{self.unit_prefix}{spec.ident}.service"
         self.make_tmp(spec.ident)
         try:
+            if want_theme:
+                try:
+                    self.make_theme(spec.ident, color, mode)
+                except (OSError, LaunchError):
+                    args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin)
             # Inside the try, like everything after it: a systemd-run that timed out (rc 124) or was cancelled may have queued the
             # start job (--no-block) all the same, so every way out of here takes the unit back (stopping a unit that does not
             # exist is harmless and is confirmed by show()).
@@ -1397,6 +1438,37 @@ class SystemdLauncher:
         except OSError as e:
             raise LaunchError(f"the unit's tmp directory could not be made ({e.__class__.__name__})") from None
 
+    def _placeholder(self) -> str:
+        return f"{self.static_dir}/chromium/policies/managed/{THEME_FILE}"
+
+    def _theme_path(self, ident: str) -> str:
+        return f"{self.theme_dir}/{ident}.json"
+
+    def make_theme(self, ident: str, color, mode) -> str | None:
+        """The session's theme policy file: root-owned (the portal runs as root), mode 0444, written atomically into the root-only theme
+        directory BEFORE systemd-run, with the document rbrowser_policy.theme_policy() builds from the two validated values. Returns its
+        path, or None when there is nothing to write (no valid colour). Raises LaunchError or OSError."""
+        if not _HEX12.fullmatch(ident):
+            raise LaunchError("unit id must be 12 lowercase hex characters")
+        doc = rbrowser_policy.theme_policy(color, mode)
+        if not doc:
+            return None
+        if os.path.islink(self.theme_dir) or (os.path.exists(self.theme_dir) and not os.path.isdir(self.theme_dir)):
+            raise LaunchError("the theme directory is not a directory")
+        os.makedirs(self.theme_dir, mode=0o700, exist_ok=True)
+        os.chmod(self.theme_dir, 0o700)
+        path = self._theme_path(ident)
+        _write_atomic(path, rbrowser_policy.policy_text(doc).encode(), 0o444)
+        return path
+
+    def remove_theme(self, ident: str) -> None:
+        """Remove the session's theme file (never follows a link)."""
+        if isinstance(ident, str) and _HEX12.fullmatch(ident):
+            try:
+                os.unlink(self._theme_path(ident))
+            except OSError:
+                pass
+
     def remove_tmp(self, ident: str) -> None:
         """Remove the unit's tmp directory (never follows a link; the directory is removed with whatever the unit left)."""
         if isinstance(ident, str) and _HEX12.fullmatch(ident):
@@ -1412,11 +1484,22 @@ class SystemdLauncher:
         try:
             names = sorted(os.listdir(self.tmp_dir))
         except OSError:
-            return gone
+            names = []
         for n in names:
             if _HEX12.fullmatch(n) and n not in keep:
                 self.remove_tmp(n)
                 gone.append(n)
+        # the same sweep covers the per-session theme files (a unit that ended by itself, a crash between make_theme and the start)
+        try:
+            files = sorted(os.listdir(self.theme_dir))
+        except OSError:
+            files = []
+        for f in files:
+            m = re.fullmatch(r"([0-9a-f]{12})\.json", f)
+            if m and m.group(1) not in keep:
+                self.remove_theme(m.group(1))
+                if m.group(1) not in gone:
+                    gone.append(m.group(1))
         return gone
 
     def filter_attached(self, cgroup: str, pin: str | None = None) -> bool:
@@ -1471,6 +1554,7 @@ class SystemdLauncher:
                 raise UnitLeftRunning(unit)
         self.unstopped.discard(unit)
         self.remove_tmp(unit[len(self.unit_prefix):-len(".service")])
+        self.remove_theme(unit[len(self.unit_prefix):-len(".service")])
         # without --collect a unit that ended in error (a SIGKILL, an exit status) stays loaded as `failed`: it is reset here, after the
         # stop is confirmed, so that nothing piles up whichever path led to the stop
         await self.reset_failed(unit)
