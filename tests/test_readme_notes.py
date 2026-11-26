@@ -2072,7 +2072,7 @@ check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as 
 _idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.25.0: the Static files item names the script versions the pages load",
       "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
-      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # both moved to 2 in 1.25.1
+      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1 and to 3 in 1.26.0, rbrowser.css to 2 in 1.25.1
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
 check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",
@@ -2084,6 +2084,33 @@ check("1.25.0: the README states the two pictures, the Security list names the l
       and "optional Web Browser (off by default" in text.split("## Security", 1)[1].split("## Backups and Rollback", 1)[0])
 check("1.25.0: no known stale sentence about the browser (a window manager package, Latin-1-only copying, a configurable resolver)",
       not any(w in _feat250 + _s250 for w in ("matchbox", "Latin-1", "configured DoH", "configurable resolver", "cannot watch")))
+
+# ---- 1.26.0: the remote browser follows the portal theme ----
+_m126 = re.search(r"### Upgrade notes for 1\.26\.0\n(.*?)(?=\n### )", text, re.S)
+_s126 = _m126.group(1) if _m126 else ""
+check("1.26.0: README has an 'Upgrade notes for 1.26.0' section above the 1.25.1 one", _m126 is not None and text.index("### Upgrade notes for 1.26.0") < text.index("### Upgrade notes for 1.25.1"))
+check("1.26.0: the notes say it is cosmetic, per session, nothing to migrate, and that a theme change applies to the next session / a running session keeps its look",
+      "cosmetic" in _s126 and "per session" in _s126 and "nothing is migrated" in _s126 and "keeps the look it started with" in _s126 and "Going back to 1.25.1 needs nothing" in _s126)
+_pol126 = (ROOT / "rbrowser_policy.py").read_text(encoding="utf-8")
+check("1.26.0: the notes name the merge rule and the file names, and they are the ones in the code",
+      "portal-theme.json" in _s126 and "sorts before `portal.json`" in _s126 and "later by name wins" in _s126 and "BrowserThemeColor" in _s126
+      and 'THEME_FILE_NAME = "portal-theme.json"' in _pol126 and "THEME_POLICY_KEYS = (\"BrowserThemeColor\",)" in _pol126
+      and "portal-theme.json" < "portal.json")
+check("1.26.0: the notes say what was measured and that a real unit run of G25 is the release gate, and G25 exists",
+      "Chromium 156.0.8078.108" in _s126 and "**Not run in this release's tests:**" in _s126 and "`G25`" in _s126 and "release gate" in _s126
+      and "G25" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
+check("1.26.0: the notes say the remote toolbar row is not the same pixel colour as the page's toolbar",
+      "**not** the same pixel colour" in _s126 and "within about 22" in _s126)
+check("1.26.0: the Static files item names rbrowser.js v3 and rbrowser.html loads it at that version, rbrowser.css stays at v2",
+      "`rbrowser.js` v3" in _s126 and "/static/js/rbrowser.js?v=3" in _page250 and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
+check("1.26.0: the README's Theme paragraph is in the Web Browser section and the old sentence that themes do not change the picture is gone",
+      "**Theme.** The remote Chromium takes the member's portal theme when a session starts" in text and "themes do not change the picture" not in text
+      and text.index("**Theme.** The remote Chromium") < text.index("**What it does not do.** No downloads"))
+check("1.26.0: the API reference documents the optional theme field in both places, never a 400",
+      all("theme" in (ROOT / f).read_text(encoding="utf-8") and "never a" in (ROOT / f).read_text(encoding="utf-8") for f in ("docs/API.md", "static/api-docs.html"))
+      and '"theme"?' in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") and '"theme"?' in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))
+check("1.26.0: About and Guides say the remote browser follows the portal theme and a change applies to the next session",
+      "next session" in (ROOT / "static" / "about.html").read_text(encoding="utf-8") and "next session" in (ROOT / "static" / "guides.html").read_text(encoding="utf-8"))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
