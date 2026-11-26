@@ -21704,15 +21704,71 @@ def _isolated_content_type(values) -> tuple:
     return media, value, charset
 
 
+# The charset labels a browser knows (the WHATWG Encoding Standard), by how the proxy reads a page that carries one.
+# "sb": a single-byte encoding, all of them ASCII-compatible: read as latin-1, which keeps every byte, and the label
+# is sent as it was. A multibyte encoding is read with the Python codec of that name. "pass": a label the browser
+# turns into an empty page ("replacement"): the bytes and the label are kept. Anything not listed here (cp037 and
+# other EBCDIC names, utf-7, ...) is no charset to a browser, so it is none to the proxy.
+_WHATWG_CHARSET_GROUPS = (
+    ("utf-8", "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8"),
+    ("utf-16-le", "csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"),
+    ("utf-16-be", "utf-16be"),
+    ("sb", "866 cp866 csibm866 ibm866 "
+           "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 latin2 "
+           "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 latin3 "
+           "csisolatin4 iso-8859-4 iso-ir-110 iso8859-4 iso88594 iso_8859-4 iso_8859-4:1988 l4 latin4 "
+           "csisolatincyrillic cyrillic iso-8859-5 iso-ir-144 iso8859-5 iso88595 iso_8859-5 iso_8859-5:1988 "
+           "arabic asmo-708 csiso88596e csiso88596i csisolatinarabic ecma-114 iso-8859-6 iso-8859-6-e iso-8859-6-i "
+           "iso-ir-127 iso8859-6 iso88596 iso_8859-6 iso_8859-6:1987 "
+           "csisolatingreek ecma-118 elot_928 greek greek8 iso-8859-7 iso-ir-126 iso8859-7 iso88597 iso_8859-7 "
+           "iso_8859-7:1987 sun_eu_greek "
+           "csiso88598e csisolatinhebrew hebrew iso-8859-8 iso-8859-8-e iso-ir-138 iso8859-8 iso88598 iso_8859-8 "
+           "iso_8859-8:1988 visual csiso88598i iso-8859-8-i logical "
+           "csisolatin6 iso-8859-10 iso-ir-157 iso8859-10 iso885910 l6 latin6 iso-8859-13 iso8859-13 iso885913 "
+           "iso-8859-14 iso8859-14 iso885914 csisolatin9 iso-8859-15 iso8859-15 iso885915 iso_8859-15 l9 iso-8859-16 "
+           "cskoi8r koi koi8 koi8-r koi8_r koi8-ru koi8-u csmacintosh mac macintosh x-mac-roman "
+           "dos-874 iso-8859-11 iso8859-11 iso885911 tis-620 windows-874 "
+           "cp1250 windows-1250 x-cp1250 cp1251 windows-1251 x-cp1251 "
+           "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 "
+           "iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252 "
+           "cp1253 windows-1253 x-cp1253 "
+           "cp1254 csisolatin5 iso-8859-9 iso-ir-148 iso8859-9 iso88599 iso_8859-9 iso_8859-9:1989 l5 latin5 "
+           "windows-1254 x-cp1254 cp1255 windows-1255 x-cp1255 cp1256 windows-1256 x-cp1256 "
+           "cp1257 windows-1257 x-cp1257 cp1258 windows-1258 x-cp1258 x-mac-cyrillic x-mac-ukrainian x-user-defined"),
+    ("gb18030", "chinese csgb2312 csiso58gb231280 gb2312 gb_2312 gb_2312-80 gbk iso-ir-58 x-gbk gb18030"),
+    ("big5hkscs", "big5 big5-hkscs cn-big5 csbig5 x-x-big5"),
+    ("euc_jp", "cseucpkdfmtjapanese euc-jp x-euc-jp"),
+    ("iso2022_jp", "csiso2022jp iso-2022-jp"),
+    ("cp932", "csshiftjis ms932 ms_kanji shift-jis shift_jis sjis windows-31j x-sjis"),
+    ("cp949", "cseuckr csksc56011987 euc-kr iso-ir-149 korean ks_c_5601-1987 ks_c_5601-1989 ksc5601 ksc_5601 windows-949"),
+    ("pass", "csiso2022kr hz-gb-2312 iso-2022-cn iso-2022-cn-ext iso-2022-kr replacement"),
+)
+_WHATWG_CHARSETS = {label: kind for kind, labels in _WHATWG_CHARSET_GROUPS for label in labels.split()}
+def _charset_reading(label: str, meta: bool = False):
+    """The reading of a page that carries a charset label a browser knows (see _isolated_html_reading), or None."""
+    kind = _WHATWG_CHARSETS.get(label)
+    if kind is None:
+        return None
+    if kind in ("utf-16-le", "utf-16-be"):
+        # a header's UTF-16 is read as such and sent on as UTF-8; in a meta tag a browser takes it for UTF-8
+        return ("utf-8" if meta else kind), "utf-8", "utf-8", True
+    if kind == "utf-8":
+        return "utf-8", "utf-8", label, True
+    if kind in ("sb", "pass"):
+        return "latin-1", "latin-1", label, kind == "sb"
+    return kind, kind, label, True
+
+
 def _isolated_html_reading(body: bytes, declared) -> tuple:
     """How the proxy reads (and then writes) the text/html answer to an isolated page, so that the browser reads
     the document the way the proxy did: (codec to decode with, codec to write with, charset to send or None,
     whether the proxy may rewrite the text).
     A byte order mark decides first, as it does in a browser: UTF-32 and UTF-16 are decoded and sent as UTF-8
-    without the mark (charset=utf-8), UTF-8 stays UTF-8. Otherwise a charset the upstream gave and Python knows is
-    used and sent. Otherwise the body is UTF-8 when it decodes strictly as such (sent as charset=utf-8); if it does
-    not, it is read as latin-1, a round trip that keeps every byte, and sent with no charset, so the browser chooses
-    as it would have without the proxy; the text is then left alone but for the report script."""
+    without the mark (charset=utf-8), UTF-8 stays UTF-8. Otherwise a charset label the upstream gave in its header
+    and a browser knows (_WHATWG_CHARSETS; any other label is none, as it is to a browser) is used and sent.
+    Otherwise the body is UTF-8 when it decodes strictly as such (sent as charset=utf-8); if it does not, it is read
+    as latin-1, a round trip that keeps every byte, and sent with no charset, so the browser chooses; the text is
+    then left alone but for the report script."""
     for bom, codec in ((b"\xff\xfe\x00\x00", "utf-32"), (b"\x00\x00\xfe\xff", "utf-32"),
                        (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
         if body.startswith(bom):
@@ -21724,17 +21780,15 @@ def _isolated_html_reading(body: bytes, declared) -> tuple:
             return codec, "utf-8", "utf-8", True
     if body.startswith(b"\xef\xbb\xbf"):
         return "utf-8", "utf-8", "utf-8", True
-    if declared:
-        try:
-            "".encode(declared)
-            return declared, declared, declared, True
-        except (LookupError, UnicodeError, ValueError):
-            pass
+    found = _charset_reading(declared) if declared else None
+    if found is not None:
+        return found
     try:
         body.decode("utf-8")
         return "utf-8", "utf-8", "utf-8", True
     except UnicodeDecodeError:
-        return "latin-1", "latin-1", None, False
+        pass
+    return "latin-1", "latin-1", None, False
 
 
 def _proxy_document_csp(content_type: str, isolated: bool = False):

@@ -436,6 +436,9 @@ async def amain():
     # body must come out as once the report script is taken away (bytes), or None when it is the body itself)
     cs_doc = "<!doctype html><html><head><title>caf\u00e9</title></head><body>caf\u00e9 \u20ac</body></html>"
     cs_latin = b'<!doctype html><html><head><meta charset="windows-1252"><title>t</title></head><body>caf\xe9 \x80</body></html>'
+    cs_ascii = b"<!doctype html><html><head><title>t</title></head><body>x</body></html>"
+    cs_hebrew = b"<!doctype html><title>t</title>" + "\u05e9\u05dc\u05d5\u05dd".encode("iso8859_8")
+    cs_jis_meta = ('<!doctype html><meta charset="iso-2022-jp"><title>t</title>' + "\u65e5\u672c\u8a9e").encode("iso2022_jp")
     charset_cases = {
         "cs_u16le": ([b"text/html"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
         "cs_u16be": ([b"text/html"], b"\xfe\xff" + cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
@@ -448,6 +451,15 @@ async def amain():
         "cs_none_latin": ([b"text/html"], cs_latin, "text/html", None),
         "cs_unknown_utf8": ([b"text/html; charset=no-such-charset"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
         "cs_unknown_latin": ([b"text/html; charset=no-such-charset"], cs_latin, "text/html", None),
+        # no label of any kind, not UTF-8: every byte is kept, no charset is sent
+        "cs_nometa_latin": ([b"text/html"], cs_latin.replace(b'<meta charset="windows-1252">', b""), "text/html", None),
+        # a label a browser does not know (EBCDIC) is none: the ASCII page is UTF-8 and the proxy's script stays readable
+        "cs_ebcdic": ([b"text/html; charset=cp037"], cs_ascii, "text/html; charset=utf-8", None),
+        "cs_utf7": ([b"text/html; charset=utf-7"], cs_ascii, "text/html; charset=utf-8", None),
+        # a label a browser knows but Python does not name that way is used and sent as it was
+        "cs_hebrew_i": ([b"text/html; charset=iso-8859-8-i"], cs_hebrew, "text/html; charset=iso-8859-8-i", None),
+        "cs_sjis_label": ([b"text/html; charset=windows-31j"], cs_ascii + "\u65e5\u672c".encode("cp932"), "text/html; charset=windows-31j", None),
+        "cs_1252_undefined": ([b"text/html; charset=windows-1252"], b"<!doctype html><title>t</title>\x81\x8d", "text/html; charset=windows-1252", None),
     }
     for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
         raw_cases[_name] = (_cts, _body)

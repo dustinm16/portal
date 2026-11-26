@@ -164,7 +164,17 @@ XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>s
 # headers). It reports whether it ran and whether the report script of the embedded browser is in it.
 CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1>ct page</h1><script>"
           "var inj=false;for(var i=0;i<document.scripts.length;i++){if((document.scripts[i].textContent||'').indexOf('portal'+'Frame')>=0)inj=true}"
-          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj,charset:document.characterSet})});</script></body></html>")
+          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj,charset:document.characterSet,text:document.body?document.body.innerText:''})});</script></body></html>")
+
+# (1.24.2) Pages whose charset the proxy has to read the way a browser does, so that the report script is still a script to the
+# browser: name -> (builds the body from the report page, Content-Type). The report page says what charset the browser used, what
+# its text was and whether the report script is among its scripts. The last one hides, in a leading comment, an ESC that
+# switches a browser reading ISO-2022-JP into another mode (the page is read as that by its meta tag).
+HE_TEXT, JA_TEXT = "\u05e9\u05dc\u05d5\u05dd", "\u65e5\u672c\u8a9e"
+CS_BROWSER_KINDS = {
+    "cs_ebcdic": (lambda page: page.encode(), "text/html; charset=cp037"),
+    "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
+}
 
 # (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and
 # load again and again (as a single page app does), on one site; the portal then navigates the tab to another honest page on
@@ -304,6 +314,11 @@ def serve():
                 # rewriting either: it reports to an address under its own path)
                 body = body.replace("fetch('/__report", "fetch(location.pathname.split('/ct/')[0]+'/__report")
                 return web.Response(body=body.replace("<head>", '<head><meta charset="windows-1252">').replace("ct page", "ct page \u00e9").encode("latin-1"), headers=heads)
+            if kind in CS_BROWSER_KINDS:
+                # (1.24.2) charsets: the proxy and the browser must read these pages the same way (see CS_BROWSER_KINDS)
+                build, ctype = CS_BROWSER_KINDS[kind]
+                page = CTPAGE.replace("__KIND__", kind).replace("fetch('/__report", "fetch(location.pathname.split('/ct/')[0]+'/__report")
+                return web.Response(body=build(page), headers=CIMultiDict([("Content-Type", ctype)]))
             return web.Response(body=body.encode(), headers=heads)
         up.router.add_get("/ct/{kind}", ctpage)
         up.router.add_get("/xl/{kind}", xl)
@@ -743,7 +758,7 @@ def run_browser(info):
         # 3e. (1.24.2) a hostile page behind a Content-Type that the proxy reads one way and a browser another (a comma
         # list, repeated headers): it is either not rendered as HTML (a download) or it carries the injected report script.
         # The control is a plain text/html answer, which is rendered and carries the script.
-        for kind in ("html", "comma", "repeat", "u16", "latin"):
+        for kind in ("html", "comma", "repeat", "u16", "latin", *CS_BROWSER_KINDS):
             ctx = ctx_for("bob")
             page = ctx.new_page()
             n_before = len(results().get("ct", []))
@@ -761,6 +776,13 @@ def run_browser(info):
                 check(f"CS browser ({kind}): a page served as text/html without a charset is rendered and carries the report script",
                       bool(got) and got[-1].get("injected") is True and not started_download, (started_download, got))
                 print(f"note: CS browser ({kind}): the browser read the page as {got[-1].get('charset') if got else None}")
+            elif kind in CS_BROWSER_KINDS:
+                g = got[-1] if got else {}
+                want_cs, want_text = {"cs_ebcdic": ("UTF-8", "ct page"), "cs_hebrew_i": ("ISO-8859-8-I", HE_TEXT),
+                                                  check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
+                      bool(got) and g.get("injected") is True and not started_download, (started_download, got))
+                check(f"CS browser ({kind}): the browser read it as {want_cs}", g.get("charset") == want_cs, g)
+                check(f"CS browser ({kind}): and its text is {want_text!r}, not escape codes or bytes of another charset", want_text in str(g.get("text", "")), g)
             elif kind == "html":
                 check("CT browser: the control (one text/html) is rendered and carries the report script", got and got[-1].get("injected") is True, got)
             else:
