@@ -472,6 +472,12 @@ async def amain():
         "cs_nonascii_comment": ([b"text/html"], b"<!-- \xe9 --><!doctype html><title>a</title>\xff", "text/html", None),
         # ... but a page the proxy reads as UTF-8 keeps its leading comment in front of the script
         "cs_utf8_comment": ([b"text/html"], "<!-- caf\u00e9 --><!doctype html><head><title>a</title></head>".encode(), "text/html; charset=utf-8", None),
+        # (1.24.2) a meta tag the browser's pre-scan does not see (it is in the text of a script or a title) does not name the
+        # charset: the real one after it does (windows-1251 here would turn the UTF-8 text into mojibake)
+        "cs_meta_in_script": ([b"text/html"], ('<!doctype html><html><head><script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8"><title>T</title></head>'
+                                                "<body>\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9").encode("utf-8"), "text/html; charset=utf-8", None),
+        "cs_meta_in_title": ([b"text/html"], ('<!doctype html><html><head><title>about &lt;<meta charset=windows-1251></title><meta charset="utf-8"></head>'
+                                               "<body>\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9").encode("utf-8"), "text/html; charset=utf-8", None),
     }
     for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
         raw_cases[_name] = (_cts, _body)
@@ -749,7 +755,27 @@ async def amain():
             ("a meta without a charset", b'<meta name="a" content="charset=big5">', None),
             ("spaces around", b"<meta  charset =  'gbk' >", "gbk"),
             ("not a meta tag", b'<metadata charset="big5">', None),
-            ("nothing", b"plain text", None)):
+            ("nothing", b"plain text", None),
+            # the text of these elements is no tag to a browser's pre-scan (each row was checked in Chromium, see CS_BROWSER_KINDS)
+            ("in a script string", b'<script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8">', "utf-8"),
+            ("in a title", b'<title>a &lt;<meta charset=windows-1251></title><meta charset="utf-8">', "utf-8"),
+            ("in a textarea", b'<textarea><meta charset=windows-1251></textarea><meta charset="utf-8">', "utf-8"),
+            ("in a style", b'<style>/*<meta charset=windows-1251>*/</style><meta charset="utf-8">', "utf-8"),
+            ("in an xmp", b'<xmp><meta charset=windows-1251></xmp><meta charset="utf-8">', "utf-8"),
+            ("in an iframe", b'<iframe><meta charset=windows-1251></iframe><meta charset="utf-8">', "utf-8"),
+            ("in a noembed", b'<noembed><meta charset=windows-1251></noembed><meta charset="utf-8">', "utf-8"),
+            ("in a noframes", b'<noframes><meta charset=windows-1251></noframes><meta charset="utf-8">', "utf-8"),
+            ("in a script comment", b'<script><!-- <meta charset=windows-1251> --></script><meta charset="utf-8">', "utf-8"),
+            ("an upper-case end tag with a space", b"<SCRIPT>a</SCRIPT ><meta charset=windows-1251>", "windows-1251"),
+            ("a title holds no tags", b"<title><script></title><meta charset=windows-1251>", "windows-1251"),
+            ("a noscript is read as tags, as a browser does", b'<noscript><meta charset=windows-1251></noscript><meta charset="utf-8">', "windows-1251"),
+            ("after a body tag, as a browser does", b"<body>x<meta charset=windows-1251>", "windows-1251"),
+            ("after a div", b"<div></div><meta charset=windows-1251>", "windows-1251"),
+            ("an unterminated script holds the rest", b'<script>var s="<meta charset=windows-1251>"; <meta charset="utf-8">', None),
+            ("a self-closing script still opens raw text", b"<script/><meta charset=windows-1251>", None),
+            ("a plaintext holds the rest", b"<plaintext><meta charset=windows-1251>", None),
+            ("a double-escaped script comment is left to the fallback", b'<script><!-- <script> </script> <meta charset=windows-1251> </script> --></script><meta charset="utf-8">', None),
+            ("an end tag only closes its own element", b'<style></script><meta charset=windows-1251></style><meta charset="utf-8">', "utf-8")):
         check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
     # (1.24.2) where the report script stands when the proxy does not know how the browser decodes the page (bytes kept)
     for kind in ("cs_esc_meta", "cs_esc_nometa", "cs_nonascii_comment"):

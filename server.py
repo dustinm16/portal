@@ -21779,10 +21779,29 @@ def _meta_attribute(head: bytes, i: int):
     return name, head[k:i].lower(), i
 
 
+# The elements whose contents a browser's pre-scan reads as text, not as tags (it skips to the matching end tag).
+# <noscript> is not one of them: the pre-scan of a browser reads its contents as tags.
+_META_RAW_TEXT = frozenset((b"script", b"style", b"title", b"textarea", b"xmp", b"iframe", b"noembed", b"noframes", b"plaintext"))
+_META_RAW_END = {name: re.compile(rb"</" + name + rb"[ \t\n\r\f/>]", re.I) for name in _META_RAW_TEXT - {b"plaintext"}}
+_META_DOUBLE_ESCAPE = re.compile(rb"<!--.*?<script[ \t\n\r\f/>]", re.I | re.S)
+
+
+def _meta_raw_text_end(head: bytes, i: int, name: bytes):
+    """Where the raw text of the element `name` ends (the position of its end tag), or None when the proxy cannot say
+    where a browser would end it: no end tag in the bytes, <plaintext> (it has none), or a script that opens a
+    double-escaped comment (<!-- ... <script>) before the end tag found, which a browser ends elsewhere."""
+    end = _META_RAW_END[name].search(head, i) if name in _META_RAW_END else None
+    if end is None or (name == b"script" and _META_DOUBLE_ESCAPE.search(head, i, end.start())):
+        return None
+    return end.start()
+
+
 def _meta_declared_charset(body: bytes):
     """The first label in the first 1024 bytes of a page, from <meta charset> or <meta http-equiv=content-type
     content="...charset=...">, that a browser knows (a simplified form of the browser's pre-scan: comments and other
-    tags are skipped), lower case; None when there is none."""
+    tags are skipped, and so is the text of script, style, title, textarea, xmp, iframe, noembed and noframes, which
+    a browser does not read as tags), lower case; None when there is none, or when the proxy cannot tell where such
+    an element ends (see _meta_raw_text_end)."""
     head = body[:1024]
     n, i = len(head), 0
     while i < n:
@@ -21807,14 +21826,22 @@ def _meta_declared_charset(body: bytes):
             if label in _WHATWG_CHARSETS:
                 return label
         elif head[i:i + 1] == b"<" and head[i + 1:i + 2].isalpha() or head[i:i + 2] == b"</" and head[i + 2:i + 3].isalpha():
+            closing = head[i + 1] == 0x2f
             i += 1
+            k = i + closing
+            i = k
             while i < n and head[i] not in _META_SPACE + b"/>":
                 i += 1
+            name = head[k:i].lower()
             while True:
                 got = _meta_attribute(head, i)
                 if got is None:
                     break
                 i = got[2]
+            if not closing and name in _META_RAW_TEXT:
+                i = _meta_raw_text_end(head, i, name)
+                if i is None:
+                    return None
         elif head[i:i + 2] in (b"<!", b"</", b"<?"):
             j = head.find(b">", i)
             i = n if j < 0 else j + 1

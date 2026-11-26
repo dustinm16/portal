@@ -171,11 +171,15 @@ CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1
 # its text was and whether the report script is among its scripts. The last one hides, in a leading comment, an ESC that
 # switches a browser reading ISO-2022-JP into another mode (the page is read as that by its meta tag).
 HE_TEXT, JA_TEXT = "\u05e9\u05dc\u05d5\u05dd", "\u65e5\u672c\u8a9e"
+RU_TEXT = "\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9"
 CS_BROWSER_KINDS = {
     "cs_ebcdic": (lambda page: page.encode(), "text/html; charset=cp037"),
     "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
     "cs_jis_meta": (lambda page: page.replace("<head>", '<head><meta charset="iso-2022-jp">').replace("ct page", JA_TEXT).encode("iso2022_jp"), "text/html"),
     "cs_esc": (lambda page: b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp">' + page.encode() + b"\xff", "text/html"),
+    # a meta tag inside the text of a script or a title is no tag to the browser: the real one after it names UTF-8
+    "cs_meta_script": (lambda page: page.replace("<head>", '<head><script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
+    "cs_meta_title": (lambda page: page.replace("<head>", '<head><title>about &lt;<meta charset=windows-1251></title><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
 }
 
 # (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and
@@ -781,7 +785,8 @@ def run_browser(info):
             elif kind in CS_BROWSER_KINDS:
                 g = got[-1] if got else {}
                 want_cs, want_text = {"cs_ebcdic": ("UTF-8", "ct page"), "cs_hebrew_i": ("ISO-8859-8-I", HE_TEXT),
-                                      "cs_jis_meta": ("ISO-2022-JP", JA_TEXT), "cs_esc": ("ISO-2022-JP", "ct page")}[kind]
+                                      "cs_jis_meta": ("ISO-2022-JP", JA_TEXT), "cs_esc": ("ISO-2022-JP", "ct page"),
+                                      "cs_meta_script": ("UTF-8", RU_TEXT), "cs_meta_title": ("UTF-8", RU_TEXT)}[kind]
                 check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
                       bool(got) and g.get("injected") is True and not started_download, (started_download, got))
                 check(f"CS browser ({kind}): the browser read it as {want_cs}", g.get("charset") == want_cs, g)
