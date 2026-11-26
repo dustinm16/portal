@@ -177,6 +177,8 @@ CS_BROWSER_KINDS = {
     "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
     "cs_jis_meta": (lambda page: page.replace("<head>", '<head><meta charset="iso-2022-jp">').replace("ct page", JA_TEXT).encode("iso2022_jp"), "text/html"),
     "cs_esc": (lambda page: b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp">' + page.encode() + b"\xff", "text/html"),
+    # x-user-defined in a meta tag is windows-1252 to the browser (the proxy sends it as that)
+    "cs_meta_xud": (lambda page: page.replace("<head>", '<head><meta charset="x-user-defined">').replace("ct page", "caf\u00e9 \u20ac").encode("cp1252"), "text/html"),
     # a meta tag inside the text of a script or a title is no tag to the browser: the real one after it names UTF-8
     "cs_meta_script": (lambda page: page.replace("<head>", '<head><script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
     "cs_meta_title": (lambda page: page.replace("<head>", '<head><title>about &lt;<meta charset=windows-1251></title><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
@@ -786,6 +788,7 @@ def run_browser(info):
                 g = got[-1] if got else {}
                 want_cs, want_text = {"cs_ebcdic": ("UTF-8", "ct page"), "cs_hebrew_i": ("ISO-8859-8-I", HE_TEXT),
                                       "cs_jis_meta": ("ISO-2022-JP", JA_TEXT), "cs_esc": ("ISO-2022-JP", "ct page"),
+                                      "cs_meta_xud": ("windows-1252", "caf\u00e9 \u20ac"),
                                       "cs_meta_script": ("UTF-8", RU_TEXT), "cs_meta_title": ("UTF-8", RU_TEXT)}[kind]
                 check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
                       bool(got) and g.get("injected") is True and not started_download, (started_download, got))

@@ -21858,6 +21858,9 @@ def _charset_reading(label: str, meta: bool = False):
     if kind in ("utf-16-le", "utf-16-be"):
         # a header's UTF-16 is read as such and sent on as UTF-8; in a meta tag a browser takes it for UTF-8
         return ("utf-8" if meta else kind), "utf-8", "utf-8", True
+    if meta and label == "x-user-defined":
+        # in a meta tag a browser takes it for windows-1252 (as a header label it stays what it is, a charset of its own)
+        return "latin-1", "latin-1", "windows-1252", True
     if kind == "utf-8":
         return "utf-8", "utf-8", label, True
     if kind in ("sb", "pass"):

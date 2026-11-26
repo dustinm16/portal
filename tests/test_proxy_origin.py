@@ -471,6 +471,9 @@ async def amain():
         "cs_esc_nometa": ([b"text/html"], b'<!--\x1b$B-->\x1b(B--><title>a</title>\xff', "text/html", None),
         "cs_nonascii_comment": ([b"text/html"], b"<!-- \xe9 --><!doctype html><title>a</title>\xff", "text/html", None),
         # ... but a page the proxy reads as UTF-8 keeps its leading comment in front of the script
+        # a meta tag naming x-user-defined is windows-1252 to a browser, so it is sent as that (as the header label it would turn bytes 0x80-0xFF into private-use characters)
+        "cs_meta_xud": ([b"text/html"], '<!doctype html><html><head><meta charset="x-user-defined"><title>T</title></head><body>caf\u00e9 \u20ac'.encode("cp1252"), "text/html; charset=windows-1252", None),
+        "cs_header_xud": ([b"text/html; charset=x-user-defined"], '<!doctype html><title>T</title>caf\u00e9 \u20ac'.encode("cp1252"), "text/html; charset=x-user-defined", None),
         "cs_utf8_comment": ([b"text/html"], "<!-- caf\u00e9 --><!doctype html><head><title>a</title></head>".encode(), "text/html; charset=utf-8", None),
         # (1.24.2) a meta tag the browser's pre-scan does not see (it is in the text of a script or a title) does not name the
         # charset: the real one after it does (windows-1251 here would turn the UTF-8 text into mojibake)
@@ -777,6 +780,10 @@ async def amain():
             ("a double-escaped script comment is left to the fallback", b'<script><!-- <script> </script> <meta charset=windows-1251> </script> --></script><meta charset="utf-8">', None),
             ("an end tag only closes its own element", b'<style></script><meta charset=windows-1251></style><meta charset="utf-8">', "utf-8")):
         check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
+    check("meta label reading: x-user-defined in a meta tag is windows-1252 (read as latin-1, sent as windows-1252); in a header it is kept",
+          server._charset_reading("x-user-defined", True) == ("latin-1", "latin-1", "windows-1252", True)
+          and server._charset_reading("x-user-defined") == ("latin-1", "latin-1", "x-user-defined", True)
+          and server._charset_reading("utf-16", True)[2] == "utf-8", str(server._charset_reading("x-user-defined", True)))
     # (1.24.2) where the report script stands when the proxy does not know how the browser decodes the page (bytes kept)
     for kind in ("cs_esc_meta", "cs_esc_nometa", "cs_nonascii_comment"):
         body = await served_cs(kind)
