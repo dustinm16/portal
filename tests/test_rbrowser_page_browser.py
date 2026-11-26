@@ -14,7 +14,7 @@ noVNC canvas shows the fake server's picture (size and the colour of the fake's 
 (Fit, Text, About, Quality, Keyboard focusing the hidden field, End with its question not under the opening click and
 ignoring a click straight after it opens); text typed in the Keyboard field, sent from the text panel and pasted becomes key
 events at the fake server; the text panel and the "Copy from the browser" button follow the clipboard setting (off, in, both)
-and the received text is shown as text; a light and a dark theme change the page colours; ending removes the session;
+and the received text is shown as text; a light and a dark theme change the page colours; a session started on a light theme sends its toolbar colour and mode with the create request; ending removes the session;
 the admin card loads, shows the running session without an address or title, saves a setting and shows it again after a reload.
 It proves Chromium only and not a real remote browser, a real phone keyboard, or the picture quality.
 
@@ -366,6 +366,29 @@ def run_browser(info):
             end_session(page, L, True)
         page.close()
         ctx.close()
+
+        # ------------------------------------------------------------------ 1b. the portal theme goes with the create
+        L = "theme at start (Nord Light)"
+        ctx = ctx_for("bob", viewport={"width": 1280, "height": 768})
+        ctx.add_init_script("try { localStorage.setItem('portal-theme', 'nord-light'); } catch (e) {}")
+        page = ctx.new_page()
+        watch = Watch(page)
+        posts = []
+        page.on("request", lambda rq: posts.append(rq.post_data) if rq.method == "POST" and rq.url.endswith("/api/rbrowser/session") else None)
+        page.goto(base + "/rbrowser")
+        if wait_connected(page, L):
+            bar = page.evaluate("getComputedStyle(document.getElementById('rb-toolbar')).backgroundColor")
+            mode = page.evaluate("document.documentElement.getAttribute('data-theme-mode')")
+            sent = json.loads(posts[0]) if posts else {}
+            check(f"{L}: the page is on a light theme (toolbar {bar}, mode {mode})", mode == "light" and bar == "rgb(229, 233, 240)", f"{bar} {mode}")
+            check(f"{L}: the create request carries the toolbar colour and light mode, and nothing else about the theme",
+                  sent.get("theme") == {"color": "#e5e9f0", "mode": "light"} and set(sent) == {"width", "height", "theme"}, sent)
+            page.evaluate("fetch('/api/rbrowser/session', {method: 'DELETE'})")
+            check(f"{L}: the session is ended again", bool(wait_for(lambda: counts()["sessions"] == 0, 10)), counts())
+        clean(page, watch, L)
+        page.close()
+        ctx.close()
+        time.sleep(1.2)         # the resize limiter is one a second per member: the next section's first resize must not meet this one's
 
         # ------------------------------------------------------------------ 2. phone, clipboard into the browser only
         L = "phone 390x844 (in only)"

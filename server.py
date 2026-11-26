@@ -34662,7 +34662,11 @@ async def http_rbrowser_get_session(request: web.Request) -> web.Response:
 
 
 async def http_rbrowser_create_session(request: web.Request) -> web.Response:
-    """POST /api/rbrowser/session {width, height, takeover?} - start (201) or return (200) the member's session."""
+    """POST /api/rbrowser/session {width, height, takeover?, theme?} - start (201) or return (200) the member's session.
+
+    theme is optional: {"color": "#rrggbb", "mode": "dark"|"light"}, the member's portal theme at the moment the page starts
+    a session (1.26.0). It is cosmetic and never an error: anything that is not that (a wrong type, a bad value, extra keys) counts
+    as absent for that value, is never echoed, logged or audited, and the registry judges the two values again (rbrowser_policy)."""
     token, user, err = await _rbrowser_allowed_member(request)
     if err:
         return err
@@ -34675,6 +34679,10 @@ async def http_rbrowser_create_session(request: web.Request) -> web.Response:
     width, height, takeover = data.get("width"), data.get("height"), data.get("takeover", False)
     if any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 20000 for v in (width, height)) or not isinstance(takeover, bool):
         return web.json_response({"error": "width and height must be whole numbers, takeover true or false"}, status=400)
+    theme = None
+    raw_theme = data.get("theme")
+    if isinstance(raw_theme, dict):            # only strings are handed on; rbrowser_policy.normalise_theme decides what they are worth
+        theme = tuple(v if isinstance(v, str) else None for v in (raw_theme.get("color"), raw_theme.get("mode")))
     # The same sign-in asking again gets its session back: no limiter hit, no maintenance check
     existing = rbrowser.for_user(user["id"])
     if existing is not None and existing.state == "running" and existing.token_id == token.token_id:
@@ -34688,7 +34696,7 @@ async def http_rbrowser_create_session(request: web.Request) -> web.Response:
         return await _limited(request, "rbrowser_start", "Too many sessions started. Wait a few minutes.", user_id=user["id"],
                               headers={"Retry-After": "60"})
     try:
-        s = await rbrowser.create(user["id"], token.token_id, width, height, _rbrowser_cfg, takeover=takeover)
+        s = await rbrowser.create(user["id"], token.token_id, width, height, _rbrowser_cfg, takeover=takeover, theme=theme)
     except rbrowser.Refused as e:
         await _rbrowser_drain_events()
         return _rbrowser_refused(e)

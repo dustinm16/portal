@@ -133,10 +133,12 @@ function world(opts) {
     getElementById: id => els[id] || null,
     createElement: t => new El(t.toUpperCase(), '', false),
     addEventListener(t, f, capture) { (w.docListeners[t] = w.docListeners[t] || []).push({ f, capture: !!capture }); },
-    documentElement: { requestFullscreen() { w.fullscreen = true; return Promise.resolve(); } },
+    documentElement: { requestFullscreen() { w.fullscreen = true; return Promise.resolve(); },
+      getAttribute(k) { return k === 'data-theme-mode' && opts.themeMode ? opts.themeMode : null; } },
     fullscreenEnabled: opts.fullscreen !== false,
   };
-  const win = { innerWidth: 1000, innerHeight: 700, listeners: {}, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); } };
+  const win = { innerWidth: 1000, innerHeight: 700, listeners: {},
+    getComputedStyle: opts.computed === undefined ? undefined : (el) => { w.styled = (w.styled || []).concat(el.id); if (opts.computed === 'throw') throw new Error('no style'); return { backgroundColor: opts.computed }; }, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); } };
   w.win = win;
   const storage = {
     getItem: k => { if (opts.storageThrows) throw new Error('denied'); return w.store.has(k) ? w.store.get(k) : null; },
@@ -359,6 +361,51 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     await w.els['rb-action'].click();
     const posts = w.calls.filter(c => c.method === 'POST');
     check('the first create has no takeover, the second has', posts.length === 2 && posts[0].body.takeover === undefined && posts[1].body.takeover === true);
+  });
+
+  // ---- the portal theme at session start ----
+  await withDeadline('theme', async () => {
+    const h = P.colourToHex;
+    check('colour: rgb() of a computed style becomes #rrggbb', h('rgb(22, 33, 62)') === '#16213e' && h('rgb(0, 0, 0)') === '#000000' && h('rgb(255,255,255)') === '#ffffff');
+    check('colour: rgba() keeps the colour and ignores the alpha, a fully transparent one is no colour',
+      h('rgba(22, 33, 62, 0.5)') === '#16213e' && h('rgba(22, 33, 62, 1)') === '#16213e' && h('rgba(0, 0, 0, 0)') === '' && h('rgb(22 33 62 / 40%)') === '#16213e' && h('rgb(22 33 62 / 0)') === '');
+    check('colour: hex in three, six and eight digits, any case', h('#ABC') === '#aabbcc' && h(' #16213E ') === '#16213e' && h('#16213eff') === '#16213e' && h('#16213e00') === '');
+    check('colour: anything else is no colour (names, gradients, out of range, junk, not text)',
+      ['red', 'linear-gradient(red, blue)', 'rgb(300, 0, 0)', 'rgb(1, 2)', '#12', '#12345g', 'var(--x)', 'color(srgb 1 0 0)', '', null, undefined, 5, {}].every(v => h(v) === ''));
+    // the page sends it with the first create
+    let w = world({ computed: 'rgb(22, 33, 62)' });
+    happy(w);
+    await w.ctl.start();
+    let post = w.calls.filter(c => c.method === 'POST')[0];
+    check('create carries the toolbar colour and dark mode', post && JSON.stringify(post.body.theme) === '{"color":"#16213e","mode":"dark"}' && post.body.width === 992, JSON.stringify(post && post.body));
+    check('the colour was read from the toolbar element', (w.styled || []).join() === 'rb-toolbar', String(w.styled));
+    w = world({ computed: 'rgb(229, 233, 240)', themeMode: 'light' });
+    happy(w);
+    await w.ctl.start();
+    post = w.calls.filter(c => c.method === 'POST')[0];
+    check('a light theme sends light and its colour', JSON.stringify(post.body.theme) === '{"color":"#e5e9f0","mode":"light"}', JSON.stringify(post.body));
+    // not readable: nothing is sent and the start is the same as before
+    for (const [label, o] of [['no getComputedStyle', {}], ['a throwing getComputedStyle', { computed: 'throw' }], ['a transparent toolbar', { computed: 'rgba(0, 0, 0, 0)' }], ['a colour name', { computed: 'red' }]]) {
+      w = world(o);
+      happy(w);
+      await w.ctl.start();
+      post = w.calls.filter(c => c.method === 'POST')[0];
+      check('theme unreadable (' + label + '): create has no theme key and the session still starts', post && !('theme' in post.body) && w.sockets.length === 1, JSON.stringify(post && post.body));
+    }
+    // read again at every create: a takeover after a theme change sends the new one
+    w = world({ computed: 'rgb(22, 33, 62)' });
+    w.route('GET /api/rbrowser/status', status());
+    w.route('GET /api/rbrowser/session', json(409, { elsewhere: true }));
+    w.route('POST /api/rbrowser/session', json(201, sessionInfo(w)));
+    await w.ctl.start();
+    check('a session of another sign-in creates nothing, so nothing is sent before the member asks', !w.calls.some(c => c.method === 'POST'));
+    await w.els['rb-action'].click();
+    post = w.calls.filter(c => c.method === 'POST')[0];
+    check('takeover sends the theme too', post && post.body.takeover === true && post.body.theme && post.body.theme.color === '#16213e', JSON.stringify(post && post.body));
+    // the resize and the other calls carry no theme
+    w = world({ computed: 'rgb(22, 33, 62)' });
+    await connect(w);
+    check('only the create carries a theme', w.calls.filter(c => c.body && 'theme' in c.body).length === 1);
   });
 
   // ---- close codes ----

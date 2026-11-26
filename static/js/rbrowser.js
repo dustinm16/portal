@@ -150,6 +150,47 @@ function reasonText(reason) {
     return END_FALLBACK;
 }
 
+// A CSS colour as "#rrggbb" (lower case), or '' when it is not one of rgb()/rgba() with plain numbers or a hex colour.
+// The alpha value is ignored, except that a fully transparent colour means "no colour was set" and gives ''.
+function colourToHex(text) {
+    if (typeof text !== 'string') return '';
+    const t = text.trim().toLowerCase();
+    let m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(t);
+    if (m) {
+        let h = m[1];
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        if (h.length === 8) { if (h.slice(6) === '00') return ''; h = h.slice(0, 6); }
+        return '#' + h;
+    }
+    m = /^rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*(?:[,/]\s*(\d*\.?\d+%?)\s*)?\)$/.exec(t);
+    if (!m) return '';
+    if (m[4] !== undefined && parseFloat(m[4]) === 0) return '';
+    let out = '#';
+    for (let i = 1; i <= 3; i++) {
+        const n = Number(m[i]);
+        if (n > 255) return '';
+        out += (n < 16 ? '0' : '') + n.toString(16);
+    }
+    return out;
+}
+
+// The member's portal theme as the server wants it at session start: the colour of the page's own toolbar (the same variable
+// .rb-toolbar uses, --bg-secondary) and the mode (light only where theme.js set html[data-theme-mode="light"]). Null when the
+// colour cannot be read; the server then keeps the neutral look. Nothing else about the theme is ever sent.
+function readTheme(doc, win) {
+    try {
+        const bar = doc.getElementById('rb-toolbar');
+        if (!bar || !win || typeof win.getComputedStyle !== 'function') return null;
+        const color = colourToHex(win.getComputedStyle(bar).backgroundColor);
+        if (!color) return null;
+        const root = doc.documentElement;
+        const light = !!root && typeof root.getAttribute === 'function' && root.getAttribute('data-theme-mode') === 'light';
+        return { color: color, mode: light ? 'light' : 'dark' };
+    } catch (e) {
+        return null;
+    }
+}
+
 // ---- The page ---------------------------------------------------------------------------------------------
 function create(env) {
     const doc = env.doc;
@@ -417,6 +458,8 @@ function create(env) {
         const size = measure();
         const body = { width: size.width, height: size.height };
         if (takeover) body.takeover = true;
+        const theme = readTheme(doc, win);       // read now, at session start: a later theme change applies to the next session
+        if (theme) body.theme = theme;
         const r = await api('POST', '/api/rbrowser/session', body);
         if (myGen !== generation) return;
         if (r.ok) { attach(r.data); return; }
@@ -1126,7 +1169,7 @@ function create(env) {
 
 globalThis.PortalRbrowser = {
     create: create, clampSize: clampSize, keysymFor: keysymFor, keysymsForText: keysymsForText,
-    parseDeadline: parseDeadline, reasonText: reasonText, normaliseClip: normaliseClip,
+    colourToHex: colourToHex, readTheme: readTheme, parseDeadline: parseDeadline, reasonText: reasonText, normaliseClip: normaliseClip,
     QUALITY_LEVELS: QUALITY_LEVELS, DEFAULT_QUALITY: DEFAULT_QUALITY, MIN_W: MIN_W,
     TYPE_CHUNK: TYPE_CHUNK, TYPE_INTERVAL_MS: TYPE_INTERVAL_MS, TYPE_MAX_CHARS: TYPE_MAX_CHARS,
     END_REASONS: END_REASONS,

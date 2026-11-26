@@ -374,6 +374,13 @@ async def run(ctx):
             ctx.ok("rbrowser: and a third person still cannot attach to it", code in (4003, 4004), f"{code}")
             st, j = await jsend(m2, "DELETE", api + "/session")
             ctx.ok("rbrowser: the member ends their session (204)", st == 204, f"{st}")
+            # the portal theme (1.26.0) is optional and cosmetic: a start with one and a start with garbage both succeed, and nothing is echoed
+            st, j = await jsend(m2, "POST", api + "/session", {"width": 390, "height": 700, "theme": {"color": "#16213e", "mode": "dark"}})
+            ctx.ok("rbrowser: a start with a portal theme answers 201 and does not echo it", st == 201 and "theme" not in (j or {}) and "16213e" not in str(j), f"{st}")
+            st2, _ = await jsend(m2, "DELETE", api + "/session")
+            st, j = await jsend(m2, "POST", api + "/session", {"width": 390, "height": 700, "theme": {"color": "#fff;}", "mode": ["x"], "name": "y" * 3000}})
+            ctx.ok("rbrowser: a start with a garbage theme answers 201 too (never a 400)", st2 == 204 and st == 201, f"{st2} {st}")
+            await jsend(m2, "DELETE", api + "/session")
             st, j = await jsend(sa, "PUT", adm_api, {"rbrowser_min_role": "admin"})
 
             # end

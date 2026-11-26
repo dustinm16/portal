@@ -284,6 +284,90 @@ async def main():
         async with bob2.post(f"{base}/api/rbrowser/session", json=bad) as r:
             check(f"create: a bad body {str(bad)[:40]} is 400", r.status == 400)
 
+    # ---------------------------------------------------------------- the portal theme (1.26.0): optional, cosmetic, never an error
+    launcher = rbrowser.registry()._launcher
+    saved_rate = server._rbrowser_start_rate
+    server._rbrowser_start_rate = server._viewers_mod.RateWindow(1000, 600.0)       # this block starts about thirty sessions
+
+    def spec_of(sid_):
+        sess = rbrowser.get(sid_)
+        return launcher.specs.get(sess.unit) if sess else None
+
+    async def themed_create(theme_value, who=None, extra=None, raw=None):
+        who = who or bob2
+        payload = raw if raw is not None else {**body, **(extra or {})}
+        if raw is None and theme_value is not ABSENT:
+            payload["theme"] = theme_value
+        async with who.post(f"{base}/api/rbrowser/session", json=payload) as r:
+            j = await r.json()
+            st = r.status
+        sp = spec_of(j.get("sid")) if st in (200, 201) else None
+        pair = (sp.theme_color, sp.theme_mode) if sp else None
+        text = json.dumps(j)
+        if st in (200, 201):
+            async with who.delete(f"{base}/api/rbrowser/session") as r:
+                pass
+        return st, pair, text
+
+    ABSENT = object()
+    st, pair, text = await themed_create({"color": "#16213e", "mode": "dark"})
+    check("theme: a valid pair starts a session (201) and the fake launcher received exactly it", st == 201 and pair == ("#16213e", "dark"), f"{st} {pair}")
+    check("theme: the answer is the same shape and does not echo it", "16213e" not in text and "theme" not in text, text)
+    st, pair, _ = await themed_create({"color": "#E5E9F0", "mode": "light"})
+    check("theme: an upper-case colour is accepted and lower-cased; light is passed on", st == 201 and pair == ("#e5e9f0", "light"), f"{st} {pair}")
+    st, pair, _ = await themed_create(ABSENT)
+    check("theme: absent means the neutral default, nothing passed", st == 201 and pair == (None, None), f"{st} {pair}")
+    long = "#" + "a" * 5000
+    cases = [
+        ("a string instead of an object", "dark", (None, None)),
+        ("a list", ["#16213e", "dark"], (None, None)),
+        ("null", None, (None, None)),
+        ("a number", 7, (None, None)),
+        ("an empty object", {}, (None, None)),
+        ("a bad colour keeps a good mode", {"color": "red", "mode": "light"}, (None, "light")),
+        ("a CSS injection in the colour", {"color": "#fff;}", "mode": "dark"}, (None, "dark")),
+        ("a CSS injection that ends a rule", {"color": "#16213e;} body{display:none", "mode": "dark"}, (None, "dark")),
+        ("a three digit colour", {"color": "#fff", "mode": "dark"}, (None, "dark")),
+        ("an eight digit colour", {"color": "#16213eff", "mode": "dark"}, (None, "dark")),
+        ("a colour with a newline", {"color": "#16213e\n", "mode": "dark"}, (None, "dark")),
+        ("a long colour", {"color": long, "mode": "dark"}, (None, "dark")),
+        ("a long mode", {"color": "#16213e", "mode": "d" * 5000}, ("#16213e", None)),
+        ("an unknown mode keeps a good colour", {"color": "#16213e", "mode": "auto"}, ("#16213e", None)),
+        ("a mode in upper case is not a mode", {"color": "#16213e", "mode": "DARK"}, ("#16213e", None)),
+        ("an object as the colour", {"color": {"a": 1}, "mode": "dark"}, (None, "dark")),
+        ("a number as the colour", {"color": 123456, "mode": "dark"}, (None, "dark")),
+        ("true as the mode", {"color": "#16213e", "mode": True}, ("#16213e", None)),
+        ("a list as the mode", {"color": "#16213e", "mode": ["dark"]}, ("#16213e", None)),
+        ("extra keys are ignored", {"color": "#16213e", "mode": "dark", "name": "nord", "css": "x{}"}, ("#16213e", "dark")),
+    ]
+    for label, value, want in cases:
+        st, pair, text = await themed_create(value)
+        check(f"theme: {label}: never a 400, the pair is {want}", st == 201 and pair == want and "theme" not in text, f"{st} {pair} {text[:80]}")
+    async with bob2.post(f"{base}/api/rbrowser/session", json={"width": "x", "height": 720, "theme": {"color": "#16213e", "mode": "dark"}}) as r:
+        check("theme: a bad size is still refused with 400 (the theme does not change that)", r.status == 400)
+    # a repeat create of the running session returns it unchanged; a takeover starts a new one with the theme of that create
+    async with bob2.post(f"{base}/api/rbrowser/session", json={**body, "theme": {"color": "#16213e", "mode": "dark"}}) as r:
+        j1 = await r.json()
+    async with bob2.post(f"{base}/api/rbrowser/session", json={**body, "theme": {"color": "#e5e9f0", "mode": "light"}}) as r:
+        j2 = await r.json()
+        st2 = r.status
+    check("theme: a repeated create of the running session is the same session, its theme unchanged",
+          st2 == 200 and j1["sid"] == j2["sid"] and (spec_of(j1["sid"]).theme_color, spec_of(j1["sid"]).theme_mode) == ("#16213e", "dark"))
+    async with bob.post(f"{base}/api/rbrowser/session", json={**body, "takeover": True, "theme": {"color": "#e5e9f0", "mode": "light"}}) as r:
+        j3 = await r.json()
+        st3 = r.status
+    check("theme: a takeover starts a new session with the theme of that create", st3 == 201 and j3["sid"] != j1["sid"]
+          and (spec_of(j3["sid"]).theme_color, spec_of(j3["sid"]).theme_mode) == ("#e5e9f0", "light"))
+    async with bob.delete(f"{base}/api/rbrowser/session") as r:
+        check("theme: the themed session ends as any other (204)", r.status == 204)
+    check("theme: no log line carries a colour or a CSS fragment", not [ln for ln in log.lines if "16213e" in ln.lower() or "e5e9f0" in ln.lower() or "display:none" in ln])
+    cur = await db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE details LIKE '%16213e%' OR details LIKE '%e5e9f0%' OR details LIKE '%display:none%'")
+    check("theme: no audit row carries a colour or a CSS fragment", (await cur.fetchone())[0] == 0)
+    src_h = inspect.getsource(server.http_rbrowser_create_session)
+    check("theme: the create handler never logs or audits the theme", not re.findall(r"(logger\.\w+|audit_log|security_event)\([^\n]*theme", src_h))
+    server._rbrowser_start_rate = saved_rate
+    check("theme: no new route was added for it", "/api/rbrowser/theme" not in inspect.getsource(server))
+
     # ---------------------------------------------------------------- credentials: only the browser sign-in
     async with aiohttp_plain().post(f"{base}/api/token", json={"username": "owner", "password": h.PW, "name": "t", "scopes": ["*"]}) as r:
         tok = (await r.json()).get("token") if r.status in (200, 201) else None
