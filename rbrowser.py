@@ -778,11 +778,13 @@ class Registry:
 
     # ------------------------------------------------------------ availability
 
-    def availability(self) -> dict:
+    def availability(self, cfg=None) -> dict:
+        """`cfg` is used only while the registry has none of its own (the feature was never started in this process), so
+        that stage mode is honoured by the admin card before the first switch-on."""
         if self.stage_fake:
             return {"available": True, "missing": [], "reasons": [], "chromium_version": "", "chromium_age_days": None,
                     "kernel_upload_limit": False, "paths": {"chromium": ""}, "checking": False}
-        stage = _truthy(_cfg(self.cfg, "stage_mode", False))
+        stage = _truthy(_cfg(self.cfg if self.cfg is not None else cfg, "stage_mode", False))
         av = dict(self.L.availability(stage_mode=stage))
         av["reasons"] = list(av.get("reasons", []))
         av["missing"] = list(av.get("missing", []))
@@ -1942,9 +1944,9 @@ def reset() -> None:
     _REG = None
 
 
-def availability() -> dict:
+def availability(cfg=None) -> dict:
     """{"available","missing","reasons","chromium_version","chromium_age_days","kernel_upload_limit", "checking", ...}"""
-    return registry().availability()
+    return registry().availability(cfg)
 
 
 async def preflight(force: bool = False) -> dict:

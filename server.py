@@ -34441,7 +34441,7 @@ async def _rbrowser_admin_view() -> dict:
     out = {"settings": settings, "defaults": copy.deepcopy(RBROWSER_DEFAULTS), "availability": {}, "preflight": {}, "seats": {},
            "sessions": [], "units_not_confirmed_stopped": 0}
     try:
-        out["availability"] = _rbrowser_availability_view(rbrowser.availability())
+        out["availability"] = _rbrowser_availability_view(rbrowser.availability(_rbrowser_cfg))
     except Exception as e:
         out["availability"] = {"available": False, "missing": [], "reasons": ["the availability check failed"]}
         logger.warning(f"rbrowser: availability failed: {type(e).__name__}")
@@ -34622,7 +34622,7 @@ async def http_rbrowser_status(request: web.Request) -> web.Response:
     reasons: list = []
     if enabled:
         try:
-            av = rbrowser.availability()
+            av = rbrowser.availability(_rbrowser_cfg)
             available = bool(av.get("available"))
             reasons = [str(r)[:200] for r in av.get("reasons", [])]
             checking = bool(rbrowser.checking())

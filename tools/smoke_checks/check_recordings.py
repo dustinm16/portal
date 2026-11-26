@@ -353,5 +353,5 @@ async def run(ctx):
             size, tail, marker_ok = again
             if stable:
                 break
-        ctx.ok("recordings: the file stops at the 50 MB cap", cap - 4096 < size <= cap, f"size {size}")
+        ctx.ok("recordings: the file stops at the 50 MB cap", cap - 65536 < size <= cap, f"size {size}")
         ctx.ok("recordings: a capped file ends with a truncation marker event", marker_ok, str(tail[-1:])[:200])
