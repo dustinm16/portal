@@ -324,6 +324,172 @@ async def main():
     srv.close()
     await srv.wait_closed()
 
+    # ---------------------------------------------------------------- one viewer per session: replacement, deterministic
+    # A unit that streams for real and counts its concurrent connections (never two viewers pumping one session at once).
+    unit_conns = {"now": 0, "max": 0, "total": 0, "closed": 0}
+
+    async def streamer(reader, writer):
+        unit_conns["now"] += 1
+        unit_conns["total"] += 1
+        unit_conns["max"] = max(unit_conns["max"], unit_conns["now"])
+        try:
+            writer.write(b"RFB 003.008\n")
+
+            async def watch():
+                while await reader.read(65536):
+                    pass
+            w = asyncio.ensure_future(watch())
+            try:
+                while not w.done():
+                    writer.write(b"\x00" * 8192)
+                    await writer.drain()
+                    await asyncio.wait({w}, timeout=0.002)       # wakes at once when the portal closes its side
+            finally:
+                w.cancel()
+        except Exception:
+            pass
+        finally:
+            unit_conns["now"] -= 1
+            unit_conns["closed"] += 1
+            writer.close()
+    srv = await asyncio.start_unix_server(streamer, path=path)
+
+    def window(w):
+        """Reads the window like a page does and keeps sending framebuffer requests, so there is unread data on the way in."""
+        res = {"bytes": 0, "code": None, "reason": None, "ws": w}
+
+        async def rd():
+            while True:
+                m = await w.receive()
+                if m.type == aiohttp.WSMsgType.BINARY:
+                    res["bytes"] += len(m.data)
+                elif m.type == aiohttp.WSMsgType.CLOSE:
+                    res["code"], res["reason"] = m.data, m.extra
+                    return
+                elif m.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                    res["code"] = w.close_code if w.close_code is not None else 1006
+                    return
+
+        async def snd():
+            try:
+                while not w.closed:
+                    await w.send_bytes(struct.pack(">BBHHHH", 3, 1, 0, 0, 64, 64))
+                    await asyncio.sleep(0.001)
+            except Exception:
+                pass
+        res["rd"], res["snd"] = asyncio.ensure_future(rd()), asyncio.ensure_future(snd())
+        return res
+
+    async def open_window(sess_, sid_):
+        w = await attach(sess_, sid_)
+        await w.send_bytes(b"RFB 003.008\n")
+        await w.send_bytes(b"\x01")
+        await w.send_bytes(b"\x01")
+        return window(w)
+
+    async def until(pred, limit=5.0):
+        end = time.monotonic() + limit
+        while time.monotonic() < end:
+            if pred():
+                return True
+            await asyncio.sleep(0.01)
+        return pred()
+
+    cur = await open_window(bob, sid)
+    check("a streaming window is attached", await until(lambda: cur["bytes"] > 50_000) and unit_conns["now"] == 1)
+    codes, reasons, starved = [], [], 0
+    for i in range(100):
+        nxt = await open_window(bob, sid)
+        try:
+            await asyncio.wait_for(cur["rd"], 10)
+        except asyncio.TimeoutError:
+            pass
+        codes.append(cur["code"])
+        reasons.append(cur["reason"])
+        cur["snd"].cancel()
+        if not await until(lambda: nxt["bytes"] > 20_000, 5):
+            starved += 1
+        cur = nxt
+    check("100 replacements of a streaming window, each with an unread-data sender: the old window sees 4012 every time",
+          codes == [4012] * 100, str({c: codes.count(c) for c in set(codes)}))
+    check("and the reason text 'opened in another window' every time", all(r in ("opened in another window", b"opened in another window") for r in reasons), str(set(reasons)))
+    check("the new window streams every time", starved == 0, str(starved))
+    check("never two connections to the unit at once (never two viewers pumping)", unit_conns["max"] == 1, str(unit_conns))
+    check("one viewer record for the session, and it is the current window",
+          list(server._rbrowser_viewers) == [sid] and server._rbrowser_viewers[sid].ws is sess_b.viewer)
+
+    # a refused attach does not disturb the current viewer
+    viewer_before, rec_before = sess_b.viewer, server._rbrowser_viewers[sid]
+    bob3 = await h.login(base, "bob")
+    n_conn = unit_conns["total"]
+    b0 = cur["bytes"]
+    for what in ("another member", "another sign-in", "no such session", "feature off", "maintenance"):
+        if what == "feature off":
+            server._rbrowser_cfg["rbrowser_enabled"] = False
+        if what == "maintenance":
+            async with adm.put(f"{base}/api/admin/maintenance", json={"active": True, "message": "x"}) as r:
+                assert r.status == 200
+            await asyncio.sleep(0.1)
+        who, target = {"another member": (carol, sid), "another sign-in": (bob3, sid), "no such session": (bob, "doesnotexist12345")}.get(what, (bob, sid))
+        w = await attach(who, target)
+        _, code = await drain_for(w, 2)
+        want = {"another member": 4004, "another sign-in": 4004, "no such session": 4004, "feature off": 4003, "maintenance": 4503}[what]
+        b1 = cur["bytes"]
+        await asyncio.sleep(0.3)
+        check(f"refused attach ({what}): {want}, and the current viewer is untouched (same socket, same record, still streaming)",
+              code == want and cur["code"] is None and sess_b.viewer is viewer_before and server._rbrowser_viewers.get(sid) is rec_before
+              and cur["bytes"] > b1 and not cur["ws"].closed, str((code, cur["code"])))
+        if what == "feature off":
+            server._rbrowser_cfg["rbrowser_enabled"] = True
+        if what == "maintenance":
+            async with adm.put(f"{base}/api/admin/maintenance", json={"active": False, "message": ""}) as r:
+                assert r.status == 200
+            await asyncio.sleep(0.1)
+    check("a refused attach never opened the unit", unit_conns["total"] == n_conn and unit_conns["now"] == 1, str(unit_conns))
+
+    # a new window whose previous one cannot finish closing in time: the previous one is aborted, the new one streams
+    old_wait = server.RBROWSER_REPLACE_WAIT_S
+    real_close = server._rbrowser_close
+    stuck = sess_b.viewer
+    rec_old = server._rbrowser_viewers[sid]
+
+    async def hung_close(w, *a, **k):
+        if w is stuck:
+            await asyncio.sleep(60)
+        return await real_close(w, *a, **k)
+    server.RBROWSER_REPLACE_WAIT_S = 0.5
+    server._rbrowser_close = hung_close
+    t0 = time.monotonic()
+    nxt = await open_window(bob, sid)
+    ok_stream = await until(lambda: nxt["bytes"] > 20_000, 6)
+    took = time.monotonic() - t0
+    server.RBROWSER_REPLACE_WAIT_S = old_wait
+    server._rbrowser_close = real_close
+    check("an old window that cannot close in time is aborted and the new one streams (bounded wait)", ok_stream and took < 5, f"{took:.2f}s")
+    check("the aborted viewer's record is finished and the unit has one connection (the new one)",
+          rec_old.done.is_set() and server._rbrowser_viewers.get(sid) is not rec_old and await until(lambda: unit_conns["now"] == 1) and unit_conns["max"] == 1,
+          str(unit_conns))
+    check("the aborted window's socket is gone", await until(lambda: cur["rd"].done(), 3))
+    cur["snd"].cancel()
+    cur = nxt
+
+    # two windows arriving together: one survives, the others are told 4012, never two pumping
+    wins = await asyncio.gather(*[open_window(bob, sid) for _ in range(3)])
+    await until(lambda: sum(1 for x in wins if x["code"] == 4012) >= 2 and cur["code"] is not None, 8)
+    live = [x for x in wins if x["code"] is None]
+    check("three windows at once: exactly one stays, the others see 4012", len(live) == 1 and sorted(x["code"] for x in wins if x["code"] is not None) == [4012, 4012] and cur["code"] == 4012,
+          str([x["code"] for x in wins]))
+    await asyncio.sleep(0.3)
+    check("and the unit has one connection, never more than one in the whole run", unit_conns["now"] == 1 and unit_conns["max"] == 1, str(unit_conns))
+    for x in wins + [cur]:
+        x["snd"].cancel()
+        await x["ws"].close()
+    await asyncio.sleep(0.4)
+    check("every exit closed the unit socket and left no viewer record", unit_conns["now"] == 0 and sid not in server._rbrowser_viewers and sess_b.viewer is None,
+          str((unit_conns, list(server._rbrowser_viewers))))
+    srv.close()
+    await srv.wait_closed()
+
     # ---------------------------------------------------------------- a dead unit socket ends the session
     # (the registry's own check; the bridge only reports it)
     ws = await attach(bob, sid)

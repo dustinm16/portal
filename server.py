@@ -20065,9 +20065,48 @@ class _RbrowserBucket:
         return 0.0 if self.tokens >= 0 else -self.tokens / self.rate
 
 
-async def _rbrowser_close(ws, code: int, text: bytes) -> None:
+RBROWSER_REPLACE_WAIT_S = 3.0         # a new window waits this long for the previous one to close itself, then aborts it
+RBROWSER_CLOSE_WAIT_S = 2.0           # the previous window's own close handshake (must stay shorter than RBROWSER_REPLACE_WAIT_S)
+
+
+class _RbrowserViewer:
+    """The one viewer record of a session: its socket, the task that serves it, `replaced` (a newer window asks it to go) and
+    `done` (set when its pumps are stopped, the unit socket is closed and its own socket is closed)."""
+    __slots__ = ("ws", "task", "replaced", "done")
+
+    def __init__(self, ws, task):
+        self.ws, self.task = ws, task
+        self.replaced, self.done = asyncio.Event(), asyncio.Event()
+
+
+_rbrowser_viewers: dict = {}          # sid -> _RbrowserViewer; at most one entry per session
+
+
+async def _rbrowser_claim(sid: str, rec: _RbrowserViewer) -> None:
+    """Make `rec` the viewer of `sid`. A previous viewer is asked to go (`replaced`) and waited for, bounded; one that does not finish in
+    time is aborted. There is no await between "the slot is empty" and "the slot is mine", so two viewers never hold it."""
+    while True:
+        cur = _rbrowser_viewers.get(sid)
+        if cur is None:
+            _rbrowser_viewers[sid] = rec
+            return
+        cur.replaced.set()
+        waiter = asyncio.ensure_future(cur.done.wait())
+        try:
+            await asyncio.wait({waiter}, timeout=RBROWSER_REPLACE_WAIT_S)
+        finally:
+            waiter.cancel()
+        if not cur.done.is_set():
+            logger.warning("rbrowser: the previous window did not finish closing in time; aborted")
+            if cur.task is not None:
+                cur.task.cancel()
+            if _rbrowser_viewers.get(sid) is cur:
+                del _rbrowser_viewers[sid]
+
+
+async def _rbrowser_close(ws, code: int, text: bytes, wait: float = 3.0) -> None:
     try:
-        await asyncio.wait_for(ws.close(code=code, message=text), 3.0)
+        await asyncio.wait_for(ws.close(code=code, message=text), wait)
     except Exception:
         pass
 
@@ -20109,111 +20148,141 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
     if maintenance.global_state(await _maintenance_global_flag()) is not None and not await _maintenance_exempt(token):
         await _rbrowser_close(ws, 4503, b"Maintenance")
         return
-    # 4. one viewer, always: the previous one of this sign-in is closed first
-    old = session.viewer
-    if old is not None and old is not ws:
-        await _rbrowser_close(old, 4012, b"opened in another window")
-    rbrowser.mark_attached(session, ws)
-    try:
-        reader, writer = await rbrowser.open_stream(session)
-    except rbrowser.StreamRefused as e:
-        rbrowser.mark_detached(session, ws)
-        await _rbrowser_drain_events()
-        if e.ended:                                   # the registry ended the session and closed the viewer (4013, the reason)
-            await _rbrowser_audit_end(session)
-            await _rbrowser_close(ws, 4013, (session.end_reason or "crash").encode())
-        else:
-            await _rbrowser_close(ws, 4004, b"no such session")
-        return
-    except asyncio.CancelledError:
-        rbrowser.mark_detached(session, ws)
-        raise
-    except Exception as e:
-        rbrowser.mark_detached(session, ws)
-        logger.warning(f"rbrowser: attach failed: {type(e).__name__}")
-        await _rbrowser_close(ws, 4013, b"crash")
-        return
-    if session.viewer is not ws or session.state != "running":    # another window of this sign-in attached meanwhile, or it ended
-        writer.close()
-        await _rbrowser_close(ws, 4012 if session.state == "running" else 4013,
-                              b"opened in another window" if session.state == "running" else (session.end_reason or "crash").encode())
-        return
-
-    flt = rbrowser_rfb.ClientFilter()          # the clipboard is off in both directions, always (D4): ClientCutText is a violation
-    bucket = _RbrowserBucket(rbrowser_launch.STREAM_KBPS * 125.0, rbrowser_launch.STREAM_KBPS * 125.0)
+    # 4. one viewer, always. Everything that can refuse this attach is above; from here the previous window of this sign-in is
+    #    asked to go (it closes itself, in its own task, with 4012) and this one waits for that before it touches the unit.
+    sid = session.sid
+    rec = _RbrowserViewer(ws, asyncio.current_task())
+    close_with = None                  # (code, text): the close this task sends at the very end, after both pumps are stopped
+    reader = writer = None
+    tasks: list = []
+    cancelled = False
     outcome = {"close": None}
-
-    async def to_client():
-        """unit -> member. The unit's bytes are passed on as they come (not parsed); a slow member stops the read."""
+    try:
+        await _rbrowser_claim(sid, rec)
+        if session.state != "running" or rbrowser.get(sid) is not session:      # it ended while this window waited
+            close_with = (4013, (session.end_reason or "crash").encode())
+            return
+        if rec.replaced.is_set():                                                # a third window came while this one waited
+            close_with = (4012, b"opened in another window")
+            return
+        rbrowser.mark_attached(session, ws)
         try:
-            while True:
-                data = await reader.read(RBROWSER_READ_CHUNK)
-                if not data:
-                    outcome["close"] = (1001, b"stream ended")        # the page reconnects; a dead unit is then found and ended
-                    return
-                try:
-                    await asyncio.wait_for(ws.send_bytes(data), RBROWSER_SEND_LIMIT_S)
-                except asyncio.TimeoutError:
-                    outcome["close"] = (4013, b"slow")                # the session stays for the detach window
-                    return
-                session.bytes_out += len(data)
-                wait = bucket.take(len(data))
-                if wait > 0:
-                    await asyncio.sleep(wait)
+            reader, writer = await rbrowser.open_stream(session)
+        except rbrowser.StreamRefused as e:
+            rbrowser.mark_detached(session, ws)
+            await _rbrowser_drain_events()
+            if e.ended:                                   # the registry ended the session and closed the viewer (4013, the reason)
+                await _rbrowser_audit_end(session)
+                close_with = (4013, (session.end_reason or "crash").encode())
+            else:
+                close_with = (4004, b"no such session")
+            return
         except asyncio.CancelledError:
             raise
-        except (ConnectionError, OSError, RuntimeError):
-            outcome["close"] = (1001, b"stream ended")
-
-    async def to_unit():
-        """member -> unit. Binary frames go through the filter (whole, bounded messages only); text frames are control
-        frames and never reach the unit."""
-        try:
-            async for msg in ws:
-                if msg.type == WSMsgType.BINARY:
-                    try:
-                        forward, types = flt.feed(msg.data)
-                    except rbrowser_rfb.Violation as v:
-                        word = v.reason if isinstance(v.reason, str) and _RBROWSER_WORD.fullmatch(v.reason) else "protocol"
-                        outcome["close"] = (4013, b"protocol")
-                        await security_event("rbrowser_protocol_violation", user_id=token.user_id, details={"reason": word})
-                        return
-                    if forward:
-                        writer.write(forward)
-                        await writer.drain()
-                        session.bytes_in += len(forward)
-                    if 4 in types or 5 in types:
-                        rbrowser.note_activity(session)
-                elif msg.type == WSMsgType.TEXT:
-                    if len(msg.data) <= RBROWSER_CONTROL_MAX and len(msg.data.encode("utf-8", "replace")) <= RBROWSER_CONTROL_MAX:
-                        try:
-                            obj = json.loads(msg.data)
-                        except ValueError:
-                            obj = None
-                        if isinstance(obj, dict) and obj.get("op") == "here" and len(obj) == 1:
-                            rbrowser.note_activity(session, here=True)
-                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                    return
-        except asyncio.CancelledError:
-            raise
-        except (ConnectionError, OSError, RuntimeError):
+        except Exception as e:
+            logger.warning(f"rbrowser: attach failed: {type(e).__name__}")
+            close_with = (4013, b"crash")
+            return
+        if session.viewer is not ws or session.state != "running" or rec.replaced.is_set():
+            close_with = ((4012, b"opened in another window") if session.state == "running"
+                          else (4013, (session.end_reason or "crash").encode()))
             return
 
-    tasks = [asyncio.ensure_future(to_client()), asyncio.ensure_future(to_unit())]
-    try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        flt = rbrowser_rfb.ClientFilter()          # the clipboard is off in both directions, always (D4): ClientCutText is a violation
+        bucket = _RbrowserBucket(rbrowser_launch.STREAM_KBPS * 125.0, rbrowser_launch.STREAM_KBPS * 125.0)
+
+        async def to_client():
+            """unit -> member. The unit's bytes are passed on as they come (not parsed); a slow member stops the read."""
+            try:
+                while True:
+                    data = await reader.read(RBROWSER_READ_CHUNK)
+                    if not data:
+                        outcome["close"] = (1001, b"stream ended")        # the page reconnects; a dead unit is then found and ended
+                        return
+                    try:
+                        await asyncio.wait_for(ws.send_bytes(data), RBROWSER_SEND_LIMIT_S)
+                    except asyncio.TimeoutError:
+                        outcome["close"] = (4013, b"slow")                # the session stays for the detach window
+                        return
+                    session.bytes_out += len(data)
+                    wait = bucket.take(len(data))
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionError, OSError, RuntimeError):
+                outcome["close"] = (1001, b"stream ended")
+
+        async def to_unit():
+            """member -> unit. Binary frames go through the filter (whole, bounded messages only); text frames are control
+            frames and never reach the unit."""
+            try:
+                async for msg in ws:
+                    if msg.type == WSMsgType.BINARY:
+                        try:
+                            forward, types = flt.feed(msg.data)
+                        except rbrowser_rfb.Violation as v:
+                            word = v.reason if isinstance(v.reason, str) and _RBROWSER_WORD.fullmatch(v.reason) else "protocol"
+                            outcome["close"] = (4013, b"protocol")
+                            await security_event("rbrowser_protocol_violation", user_id=token.user_id, details={"reason": word})
+                            return
+                        if forward:
+                            writer.write(forward)
+                            await writer.drain()
+                            session.bytes_in += len(forward)
+                        if 4 in types or 5 in types:
+                            rbrowser.note_activity(session)
+                    elif msg.type == WSMsgType.TEXT:
+                        if len(msg.data) <= RBROWSER_CONTROL_MAX and len(msg.data.encode("utf-8", "replace")) <= RBROWSER_CONTROL_MAX:
+                            try:
+                                obj = json.loads(msg.data)
+                            except ValueError:
+                                obj = None
+                            if isinstance(obj, dict) and obj.get("op") == "here" and len(obj) == 1:
+                                rbrowser.note_activity(session, here=True)
+                    elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                        return
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionError, OSError, RuntimeError):
+                return
+
+        tasks = [asyncio.ensure_future(to_client()), asyncio.ensure_future(to_unit())]
+        gone = asyncio.ensure_future(rec.replaced.wait())
+        try:
+            await asyncio.wait(tasks + [gone], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            gone.cancel()
+        if rec.replaced.is_set() and outcome["close"] is None:
+            close_with = (4012, b"opened in another window")
+        else:
+            close_with = outcome["close"]
+    except asyncio.CancelledError:
+        cancelled = True            # aborted by a newer window that did not wait any longer: only synchronous clean-up below
+        raise
     finally:
+        # every exit: both pumps stopped, the unit socket closed, then (not before) this task closes its own socket
         for t in tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            writer.close()
+            if writer is not None:
+                writer.close()
         except Exception:
             pass
-        rbrowser.mark_detached(session, ws)
-    if outcome["close"] is not None and not ws.closed:
-        await _rbrowser_close(ws, *outcome["close"])
+        try:
+            if not cancelled:
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                rbrowser.mark_detached(session, ws)
+                if close_with is not None and not ws.closed:
+                    await _rbrowser_close(ws, close_with[0], close_with[1], RBROWSER_CLOSE_WAIT_S)
+            else:
+                rbrowser.mark_detached(session, ws)
+        finally:
+            if _rbrowser_viewers.get(sid) is rec:
+                del _rbrowser_viewers[sid]
+            rec.done.set()
 
 
 async def handle_ping_ws(ws: web.WebSocketResponse, token: TokenPayload) -> None:
