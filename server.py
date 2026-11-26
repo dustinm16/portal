@@ -21744,6 +21744,85 @@ _WHATWG_CHARSET_GROUPS = (
     ("pass", "csiso2022kr hz-gb-2312 iso-2022-cn iso-2022-cn-ext iso-2022-kr replacement"),
 )
 _WHATWG_CHARSETS = {label: kind for kind, labels in _WHATWG_CHARSET_GROUPS for label in labels.split()}
+_ISO2022_ESCAPE = re.compile(rb"\x1b[$(]")
+_META_SPACE = b" \t\n\r\f"
+
+
+def _meta_attribute(head: bytes, i: int):
+    """One attribute of a tag in the first bytes of a page, as a browser's pre-scan reads it: (name, value, next
+    position), or None at the end of the tag (or of the bytes). Names and values are lower-case bytes."""
+    n = len(head)
+    while i < n and (head[i] in _META_SPACE or head[i] == 0x2f):
+        i += 1
+    if i >= n or head[i] == 0x3e:
+        return None
+    k = i
+    i += 1 if head[i] == 0x3d else 0
+    while i < n and head[i] not in _META_SPACE + b"/>=":
+        i += 1
+    name = head[k:i].lower()
+    while i < n and head[i] in _META_SPACE:
+        i += 1
+    if i >= n or head[i] != 0x3d:
+        return name, b"", i
+    i += 1
+    while i < n and head[i] in _META_SPACE:
+        i += 1
+    if i < n and head[i] in b"\"'":
+        q = head[i]
+        j = head.find(bytes([q]), i + 1)
+        j = n if j < 0 else j
+        return name, head[i + 1:j].lower(), j + 1
+    k = i
+    while i < n and head[i] not in _META_SPACE + b">":
+        i += 1
+    return name, head[k:i].lower(), i
+
+
+def _meta_declared_charset(body: bytes):
+    """The first label in the first 1024 bytes of a page, from <meta charset> or <meta http-equiv=content-type
+    content="...charset=...">, that a browser knows (a simplified form of the browser's pre-scan: comments and other
+    tags are skipped), lower case; None when there is none."""
+    head = body[:1024]
+    n, i = len(head), 0
+    while i < n:
+        if head.startswith(b"<!--", i):
+            j = head.find(b"-->", i + 2)
+            i = n if j < 0 else j + 3
+        elif head[i:i + 5].lower() == b"<meta" and head[i + 5:i + 6] and head[i + 5] in _META_SPACE + b"/":
+            attrs, i = {}, i + 5
+            while True:
+                got = _meta_attribute(head, i)
+                if got is None:
+                    break
+                i = got[2]
+                attrs.setdefault(got[0], got[1])
+            label = None
+            if b"charset" in attrs:
+                label = attrs[b"charset"]
+            elif attrs.get(b"http-equiv") == b"content-type" and b"content" in attrs:
+                m = re.search(rb"charset[ \t\n\r\f]*=[ \t\n\r\f]*(?:\"([^\"]*)\"|'([^']*)'|([^ \t\n\r\f;]*))", attrs[b"content"])
+                label = m and (m.group(1) or m.group(2) or m.group(3))
+            label = label.strip(_META_SPACE).decode("latin-1") if label else None
+            if label in _WHATWG_CHARSETS:
+                return label
+        elif head[i:i + 1] == b"<" and head[i + 1:i + 2].isalpha() or head[i:i + 2] == b"</" and head[i + 2:i + 3].isalpha():
+            i += 1
+            while i < n and head[i] not in _META_SPACE + b"/>":
+                i += 1
+            while True:
+                got = _meta_attribute(head, i)
+                if got is None:
+                    break
+                i = got[2]
+        elif head[i:i + 2] in (b"<!", b"</", b"<?"):
+            j = head.find(b">", i)
+            i = n if j < 0 else j + 1
+        else:
+            i += 1
+    return None
+
+
 def _charset_reading(label: str, meta: bool = False):
     """The reading of a page that carries a charset label a browser knows (see _isolated_html_reading), or None."""
     kind = _WHATWG_CHARSETS.get(label)
@@ -21765,10 +21844,12 @@ def _isolated_html_reading(body: bytes, declared) -> tuple:
     whether the proxy may rewrite the text).
     A byte order mark decides first, as it does in a browser: UTF-32 and UTF-16 are decoded and sent as UTF-8
     without the mark (charset=utf-8), UTF-8 stays UTF-8. Otherwise a charset label the upstream gave in its header
-    and a browser knows (_WHATWG_CHARSETS; any other label is none, as it is to a browser) is used and sent.
-    Otherwise the body is UTF-8 when it decodes strictly as such (sent as charset=utf-8); if it does not, it is read
-    as latin-1, a round trip that keeps every byte, and sent with no charset, so the browser chooses; the text is
-    then left alone but for the report script."""
+    and a browser knows (_WHATWG_CHARSETS; any other label is none, as it is to a browser) is used and sent. Then
+    a <meta> charset in the first 1024 bytes that a browser knows is used and sent (the proxy puts scripts in front
+    of the page's own tags, so the browser could no longer find it in its first 1024 bytes). Otherwise the body is
+    UTF-8 when it decodes strictly as such and holds no ISO-2022 escape (a 7-bit encoding that is valid UTF-8 too;
+    sent as charset=utf-8); if not, it is read as latin-1, a round trip that keeps every byte, and sent with no
+    charset, so the browser chooses; the text is then left alone but for the report script."""
     for bom, codec in ((b"\xff\xfe\x00\x00", "utf-32"), (b"\x00\x00\xfe\xff", "utf-32"),
                        (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
         if body.startswith(bom):
@@ -21781,11 +21862,15 @@ def _isolated_html_reading(body: bytes, declared) -> tuple:
     if body.startswith(b"\xef\xbb\xbf"):
         return "utf-8", "utf-8", "utf-8", True
     found = _charset_reading(declared) if declared else None
+    if found is None:
+        meta = _meta_declared_charset(body)
+        found = _charset_reading(meta, True) if meta else None
     if found is not None:
         return found
     try:
         body.decode("utf-8")
-        return "utf-8", "utf-8", "utf-8", True
+        if not _ISO2022_ESCAPE.search(body):
+            return "utf-8", "utf-8", "utf-8", True
     except UnicodeDecodeError:
         pass
     return "latin-1", "latin-1", None, False
@@ -23552,7 +23637,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                             # the header says what the body now is, which is what the proxy read
                             resp_headers["Content-Type"] = "text/html" + (f"; charset={reading[2]}" if reading[2] else "")
                     except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
-                        pass
+                        if reading and "Content-Type" in resp_headers:
+                            # (the bytes are kept) the charset that was chosen is sent as it is, so the browser reads
+                            # the page with it even though the proxy's script now stands in front of the page's meta tag
+                            resp_headers["Content-Type"] = "text/html" + (f"; charset={reading[2]}" if reading[2] else "")
                     if inject_frame_js and not frame_js_done:
                         # The text could not be decoded (or the charset is unknown): the page still runs scripts in
                         # the browser, so the script (plain ASCII) goes in at byte level. Text that is not

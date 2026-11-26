@@ -448,9 +448,11 @@ async def amain():
         "cs_u8bom_declared": ([b"text/html; charset=windows-1252"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
         "cs_1252": ([b"text/html; charset=windows-1252"], cs_latin, "text/html; charset=windows-1252", None),
         "cs_none_utf8": ([b"text/html"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_none_latin": ([b"text/html"], cs_latin, "text/html", None),
+        # a meta tag in the first bytes names the charset, as it does for a browser: it is sent, so the browser need not find it
+        # again behind the scripts the proxy puts in front of it
+        "cs_none_latin": ([b"text/html"], cs_latin, "text/html; charset=windows-1252", None),
         "cs_unknown_utf8": ([b"text/html; charset=no-such-charset"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_unknown_latin": ([b"text/html; charset=no-such-charset"], cs_latin, "text/html", None),
+        "cs_unknown_latin": ([b"text/html; charset=no-such-charset"], cs_latin, "text/html; charset=windows-1252", None),
         # no label of any kind, not UTF-8: every byte is kept, no charset is sent
         "cs_nometa_latin": ([b"text/html"], cs_latin.replace(b'<meta charset="windows-1252">', b""), "text/html", None),
         # a label a browser does not know (EBCDIC) is none: the ASCII page is UTF-8 and the proxy's script stays readable
@@ -460,6 +462,9 @@ async def amain():
         "cs_hebrew_i": ([b"text/html; charset=iso-8859-8-i"], cs_hebrew, "text/html; charset=iso-8859-8-i", None),
         "cs_sjis_label": ([b"text/html; charset=windows-31j"], cs_ascii + "\u65e5\u672c".encode("cp932"), "text/html; charset=windows-31j", None),
         "cs_1252_undefined": ([b"text/html; charset=windows-1252"], b"<!doctype html><title>t</title>\x81\x8d", "text/html; charset=windows-1252", None),
+        # ISO-2022-JP is 7-bit: valid UTF-8 as well, but the meta tag decides, and without one nothing is claimed
+        "cs_jis_meta": ([b"text/html"], cs_jis_meta, "text/html; charset=iso-2022-jp", None),
+        "cs_jis_nometa": ([b"text/html"], cs_jis_meta.replace(b'<meta charset="iso-2022-jp">', b""), "text/html", None),
     }
     for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
         raw_cases[_name] = (_cts, _body)
@@ -718,6 +723,27 @@ async def amain():
             check(f"CS {kind}: a page that is not text to the proxy gets the report script and nothing else, byte for byte",
                   body.replace(script_b, b"", 1) == raw_body, f"{body[:120]!r}")
         check(f"CS {kind}: it is a page, not a download", "Content-Disposition" not in hd, str(dict(hd)))
+    # (1.24.2) what the proxy made of the pages above
+    async def served_cs(kind):
+        return (await get(bob, f"{cap_raw}/ct/{kind}"))[2]
+    body = await served_cs("cs_jis_meta")
+    check("CS cs_jis_meta: an ISO-2022-JP page is decoded, so the script goes in as text and the Japanese text is as it was",
+          b"\x1b$B" in body and body.endswith(b"\x1b(B") and script_b in body, f"{body[-40:]!r}")
+    # the pre-scan of a meta tag, as a browser's: comments and attributes are not tags, only the first 1024 bytes count
+    pre = server._meta_declared_charset
+    for what, doc, want in (
+            ("charset attribute", b'<meta charset="Shift_JIS">', "shift_jis"),
+            ("unquoted", b"<meta charset=utf-8>", "utf-8"),
+            ("http-equiv", b'<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-2">', "iso-8859-2"),
+            ("in a comment", b'<!-- <meta charset="shift_jis"> --><title>t</title>', None),
+            ("in an attribute value", b'<div title="<meta charset=big5>">x</div>', None),
+            ("an unknown label is skipped", b'<meta charset="cp037"><meta charset="koi8-r">', "koi8-r"),
+            ("past 1024 bytes", b"<!-- " + b"x" * 1100 + b' --><meta charset="big5">', None),
+            ("a meta without a charset", b'<meta name="a" content="charset=big5">', None),
+            ("spaces around", b"<meta  charset =  'gbk' >", "gbk"),
+            ("not a meta tag", b'<metadata charset="big5">', None),
+            ("nothing", b"plain text", None)):
+        check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_u16le")
     check("CS: a trusted connection gets the UTF-16 answer byte for byte, with the Content-Type it had",
           st == 200 and body == charset_cases["cs_u16le"][1] and hd.getall("Content-Type", []) == ["text/html"], f"{hd.getall('Content-Type', [])} {body[:20]!r}")

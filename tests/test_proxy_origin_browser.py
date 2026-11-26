@@ -174,6 +174,7 @@ HE_TEXT, JA_TEXT = "\u05e9\u05dc\u05d5\u05dd", "\u65e5\u672c\u8a9e"
 CS_BROWSER_KINDS = {
     "cs_ebcdic": (lambda page: page.encode(), "text/html; charset=cp037"),
     "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
+    "cs_jis_meta": (lambda page: page.replace("<head>", '<head><meta charset="iso-2022-jp">').replace("ct page", JA_TEXT).encode("iso2022_jp"), "text/html"),
 }
 
 # (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and
@@ -779,7 +780,8 @@ def run_browser(info):
             elif kind in CS_BROWSER_KINDS:
                 g = got[-1] if got else {}
                 want_cs, want_text = {"cs_ebcdic": ("UTF-8", "ct page"), "cs_hebrew_i": ("ISO-8859-8-I", HE_TEXT),
-                                                  check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
+                                      "cs_jis_meta": ("ISO-2022-JP", JA_TEXT), "cs_esc": ("ISO-2022-JP", "ct page")}[kind]
+                check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
                       bool(got) and g.get("injected") is True and not started_download, (started_download, got))
                 check(f"CS browser ({kind}): the browser read it as {want_cs}", g.get("charset") == want_cs, g)
                 check(f"CS browser ({kind}): and its text is {want_text!r}, not escape codes or bytes of another charset", want_text in str(g.get("text", "")), g)
