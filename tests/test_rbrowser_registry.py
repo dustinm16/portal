@@ -115,6 +115,7 @@ class TLauncher(FakeLauncher):
         return await super().start(spec)
 
     async def stop(self, unit):
+        self._check_unit(unit)
         self.stop_calls.append(unit)
         if self.stop_gate is not None:
             await self.stop_gate.wait()
@@ -216,6 +217,18 @@ CFG = {"rbrowser_enabled": True, "rbrowser_max_sessions": 2, "rbrowser_idle_minu
        "rbrowser_cpu_percent": 150, "rbrowser_clipboard": "both", "rbrowser_upload_kbps": 4000, "portal_port": 443}
 
 
+def fake_launcher_kw(calls=None):
+    """launcher_kw for a Registry: the SystemdLauncher it builds itself (the probe launcher, the start-up sweep) gets a fake run and which, so
+    no test reaches the host's systemctl. Every call is appended to `calls` when it is given."""
+    log = calls if calls is not None else []
+
+    async def run(argv, timeout):
+        log.append(list(argv))
+        return types.SimpleNamespace(rc=0, out="", err="")
+
+    return dict(run=run, which=lambda n: "/usr/bin/" + n, read_text=lambda p: "")
+
+
 class Rig:
     def __init__(self, tmp, **over):
         self.tmp = tmp
@@ -237,7 +250,8 @@ class Rig:
                 await self.probe_gate.wait()
             return self.probe_result
 
-        kw = dict(launcher=self.launcher, launch_mod=self.L, bpf=self.bpf, clock=self.clock, sleep=nosleep, host_facts=lambda: FACTS,
+        self.host_calls = []         # every systemctl-style call a real SystemdLauncher built by the registry would have made
+        kw = dict(launcher=self.launcher, launch_mod=self.L, launcher_kw=fake_launcher_kw(self.host_calls), bpf=self.bpf, clock=self.clock, sleep=nosleep, host_facts=lambda: FACTS,
                   ncpu=4, mem_total=15 * 1024 ** 3, cgroup_root=os.path.join(tmp, "cg"), tmp_dir=os.path.join(tmp, "tmp"),
                   cache_path=os.path.join(tmp, "pf.json"), probe_runner=probe_runner, versions=lambda: dict(self.versions),
                   listener_scan=self._scan, read_file=self.read_file)
@@ -665,7 +679,7 @@ async def t_sweeper_allow_list(r):
     ev = r.reg.take_events()
     check("an event is queued for the stopped unit (no name in it)", [e["kind"] for e in ev] == ["unknown_unit_stopped"] and "unit" not in ev[0])
     # the same with the test prefix: portal-rbtest-<12hex> is a session unit of that registry, the helper and probe names are not
-    r2 = Registry(prefix="portal-rbtest-", launcher=r.launcher, launch_mod=r.L, clock=r.clock, sleep=nosleep, ncpu=4, mem_total=15 * 1024 ** 3,
+    r2 = Registry(launcher_kw=fake_launcher_kw(), prefix="portal-rbtest-", launcher=r.launcher, launch_mod=r.L, clock=r.clock, sleep=nosleep, ncpu=4, mem_total=15 * 1024 ** 3,
                   tmp_dir=os.path.join(r.tmp, "tmp"))
     r.launcher.stop_calls.clear()
     r.launcher.extra = {"portal-rbtest-host-ffffffffffff.service": {"ActiveState": "active", "MainPID": "1"},
@@ -735,7 +749,7 @@ async def t_listener(r):
 # ---------------------------------------------------------------- startup, prepare, shutdown
 
 async def t_startup_nothing(r):
-    reg = Registry(launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3, launcher=r.launcher)
+    reg = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3, launcher=r.launcher)
     await reg.startup({"rbrowser_enabled": False})
     check("startup with the feature off calls nothing", r.L.prepare_calls == [] and r.bpf.pruned == [] and r.launcher.show_calls == [] and not reg.ready)
     r.L.available = False
@@ -748,7 +762,7 @@ async def t_startup_prepare(r):
     # orphan from an earlier run, and a probe unit that must not be touched
     await FakeLauncher.start(r.launcher, rbrowser.LaunchSpec(ident="aaaaaaaaaaaa", width=1, height=1, clipboard="off", home_url="", chromium="", memory_mb=1, cpu_percent=1))
     r.launcher.extra["portal-rbprobe-cccccccccccc.service"] = {"ActiveState": "active", "MainPID": "1"}
-    reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4,
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4,
                    mem_total=15 * 1024 ** 3, cache_path=os.path.join(r.tmp, "pf2.json"), probe_runner=_ok_probe, versions=lambda: {"v": 1},
                    tmp_dir=os.path.join(r.tmp, "tmp"), prepare_kw={"bpf_base": "/sys/fs/bpf/portal-rb-ingress"}, read_file=r.read_file,
                    listener_scan=lambda pids: False)
@@ -780,7 +794,7 @@ async def _ok_probe(spec):
 
 async def t_failed_prepare(r):
     r.L.ok = False
-    reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
     await reg.startup(CFG)
     av = reg.availability()
     check("a failed prepare_host: unavailable with its reason", not reg.ready and av["available"] is False and any("ingress filter" in x for x in av["reasons"]), str(av["reasons"]))
@@ -797,7 +811,7 @@ async def t_failed_prepare(r):
 
 async def t_prepare_serialised(r):
     r.L.delay = 0.02
-    reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
                    probe_runner=_ok_probe, cache_path=os.path.join(r.tmp, "pf3.json"), versions=lambda: {})
     await reg.host_prepare(CFG)
     await asyncio.gather(reg.host_prepare(CFG), reg.shutdown(), reg.host_prepare(CFG))
@@ -806,14 +820,14 @@ async def t_prepare_serialised(r):
 
 async def t_slice_penalty(r):
     r.L.slice_ok = False
-    reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
     await reg.host_prepare(CFG)
     check("a slice that could not be set halves the seats", reg.seats(CFG)["max"] == 1)
     r.L.slice_ok = True
 
 
 async def t_shutdown_left(r):
-    reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
                    probe_runner=_ok_probe, cache_path=os.path.join(r.tmp, "pf4.json"), versions=lambda: {}, read_file=r.read_file,
                    listener_scan=lambda pids: False)
     await reg.host_prepare(CFG)
@@ -927,7 +941,7 @@ async def t_misc(r):
 
 
 async def t_stage_fake_startup(r):
-    reg = Registry(launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
+    reg = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3,
                    environ={"PORTAL_RBROWSER_FAKE": "1"})
     await reg.startup(dict(CFG, stage_mode=True, stage_dir=os.path.join(r.tmp, "stage")))
     check("stage mode with the variable: the fake launcher, no host preparation", reg.ready and isinstance(reg.launcher, FakeLauncher) and r.L.prepare_calls == [] and reg.availability()["available"])
@@ -938,7 +952,7 @@ async def t_stage_fake_startup(r):
     wr.close()
     check("and attaches through open_stream with the listener check in place (stage reader and scan, no host cgroup)", s.state == "running")
     await reg.shutdown()
-    reg2 = Registry(launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3, environ={"PORTAL_RBROWSER_FAKE": "1"})
+    reg2 = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3, environ={"PORTAL_RBROWSER_FAKE": "1"})
     r.L.available = False
     await reg2.startup(dict(CFG, stage_mode=False))
     check("the variable without stage mode selects the real path (and here it is unavailable)", not reg2.stage_fake and not reg2.ready and r.L.prepare_calls == [])
@@ -1219,7 +1233,7 @@ async def t_shutdown_with_probe(r):
 
     def make_reg():
         pl = TLauncher(os.path.join(r.tmp, "probe"), unit_prefix="portal-rbprobe-")
-        reg = Registry(launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4,
+        reg = Registry(launcher_kw=fake_launcher_kw(), launcher=r.launcher, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4,
                        mem_total=15 * 1024 ** 3, cache_path=os.path.join(r.tmp, "pf5.json"), versions=lambda: {}, run=journal,
                        read_file=r.read_file, listener_scan=lambda pids: False, cgroup_root=os.path.join(r.tmp, "cg"))
         reg.ready, reg.pin, reg.prep, reg.cfg, reg._probe_launcher = True, r.reg.pin, {"ok": True, "reasons": []}, CFG, pl
@@ -1539,7 +1553,7 @@ async def t_exit_code_of_status_3(r):
 async def t_probe_sweep_fullmatch(r):
     l = r.launcher
     pl = TLauncher(os.path.join(r.tmp, "probe3"), unit_prefix=rbrowser.PROBE_PREFIX)
-    reg = Registry(launcher=l, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, prefix=rbrowser.UNIT_PREFIX,
+    reg = Registry(launcher_kw=fake_launcher_kw(), launcher=l, launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, prefix=rbrowser.UNIT_PREFIX,
                    probe_prefix=rbrowser.PROBE_PREFIX, cache_path=os.path.join(r.tmp, "pf2.json"), tmp_dir=os.path.join(r.tmp, "tmp"))
     reg._probe_launcher = pl
     good = f"{rbrowser.PROBE_PREFIX}0a0a0a0a0a0a.service"
