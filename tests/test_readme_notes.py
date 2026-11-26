@@ -2096,6 +2096,8 @@ check("1.26.0: the notes name the merge rule and the file names, and they are th
       "portal-theme.json" in _s126 and "sorts before `portal.json`" in _s126 and "later by name wins" in _s126 and "BrowserThemeColor" in _s126
       and 'THEME_FILE_NAME = "portal-theme.json"' in _pol126 and "THEME_POLICY_KEYS = (\"BrowserThemeColor\",)" in _pol126
       and "portal-theme.json" < "portal.json")
+check("1.26.0: the README does not claim that the theme can never fail a session start, and it names the counter of the fallback",
+      "can never fail a session start" not in text and "theme_fallbacks" in _s126 and "can still fail" in _s126)
 check("1.26.0: the notes say what was measured and that a real unit run of G25 is the release gate, and G25 exists",
       "Chromium 156.0.8078.108" in _s126 and "**Not run in this release's tests:**" in _s126 and "`G25`" in _s126 and "release gate" in _s126
       and "G25" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))

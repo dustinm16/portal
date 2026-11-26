@@ -855,7 +855,8 @@ class Registry:
         c = dict(self._counters)
         c["ended"] = dict(c["ended"])
         c["markers"] = dict(c["markers"])
-        c.update(sessions=len(self.all()), stopping=len(self._stopping), left=len(self._left), ticks=self._ticks)
+        c.update(sessions=len(self.all()), stopping=len(self._stopping), left=len(self._left), ticks=self._ticks,
+                 theme_fallbacks=int(getattr(self._launcher, "theme_fallbacks", 0) or 0))
         return c
 
     def left_units(self) -> list:

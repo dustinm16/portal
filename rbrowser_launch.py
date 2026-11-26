@@ -1340,6 +1340,7 @@ class SystemdLauncher:
         self._unit_re = re.compile(re.escape(unit_prefix) + _UNIT_RE)
         self._glob = f"{unit_prefix}{GLOB_SHOW}.service"
         self.unstopped: set = set()        # units whose stop() could not be confirmed; the registry and the sweeper keep them on their list
+        self.theme_fallbacks = 0           # themed starts that had to be taken back and started again without the theme (the registry's counters show it)
         self._cleanups: set = set()        # the clean-up stop tasks of start() that are still running
 
     def _check_unit(self, unit):
@@ -1376,6 +1377,9 @@ class SystemdLauncher:
                     raise
                 # The theme is cosmetic, so a unit that did not come up WITH the theme bind (systemd refusing the file bind, a mount
                 # point it cannot make) is taken back and started once more without it, never a failed start for the member.
+                # Counted and logged (one neutral line: no colour, no user, no session) so that an operator can see a bind systemd refuses.
+                self.theme_fallbacks += 1
+                log.warning("rbrowser: theme bind refused, started without it")
                 left, cancelled = await self._take_back(unit)
                 if cancelled:
                     raise asyncio.CancelledError()

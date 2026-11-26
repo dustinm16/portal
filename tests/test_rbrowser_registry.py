@@ -349,6 +349,8 @@ async def t_failing_launcher(r):
     check("a later create works", s.state == "running")
     c = r.reg.counters()
     check("counters: started 1, start_failed 1, ended[start_failed] 1", c["started"] == 1 and c["start_failed"] == 1 and c["ended"].get("start_failed") == 1, str(c))
+    check("counters: theme_fallbacks is 0 for a launcher without the count and follows the launcher's own count", c["theme_fallbacks"] == 0
+          and (setattr(r.launcher, "theme_fallbacks", 3) or r.reg.counters()["theme_fallbacks"] == 3))
 
 
 async def t_failed_start_unit_left(r):

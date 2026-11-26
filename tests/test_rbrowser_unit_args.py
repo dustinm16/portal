@@ -2408,10 +2408,23 @@ async def theme_launcher_tests():
             return await super().run(argv, timeout)
 
     L.write_static_tree(L.HostPaths(static=sd, run_dir=f"{sd}/r", state=f"{sd}/s", tmp_dir=f"{sd}/t"), POLICY)
+    import logging as _lgf
+    _frecs = []
+
+    class _FGrab(_lgf.Handler):
+        def emit(self, record):
+            _frecs.append(record)
+    _fh = _FGrab(level=_lgf.DEBUG)
+    _lgf.getLogger("portal").addHandler(_fh)
     for label, mode in (("systemd-run is refused", "rc"), ("the unit fails while starting", "failed")):
         hf = FailThemedHost(mode); seen = {}
         lnf = mk(hf, seen)
+        del _frecs[:]
         rf = await lnf.start(TS)
+        _msgs = [r.getMessage() for r in _frecs if r.levelno >= _lgf.WARNING]
+        check(f"theme launcher: {label}: the fallback is counted and logged as one neutral line (no colour, no mode, no user, no session id)",
+              lnf.theme_fallbacks == 1 and _msgs == ["rbrowser: theme bind refused, started without it"]
+              and not any(x in m for m in _msgs for x in ("1a1a2e", "dark", "0123456789ab", "portal-theme")) and all(not r.args for r in _frecs), str((lnf.theme_fallbacks, _msgs)))
         calls = [c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]
         check(f"theme launcher: {label} with the theme bind: the start is retried once without it and succeeds, mode kept",
               rf.unit.endswith("0123456789ab.service") and hf.sysruns == [True, False] and len(calls) == 2
@@ -2420,12 +2433,13 @@ async def theme_launcher_tests():
         check(f"theme launcher: {label}: the unit's /tmp directory (the bind source) exists at BOTH systemd-run calls, the retry makes it again",
               hf.tmp_seen == [True, True], str(hf.tmp_seen))
         await lnf.stop(rf.unit)
+    _lgf.getLogger("portal").removeHandler(_fh)
     # a unit that is only slow (never reaches active within the budget) is not a theme problem: no second try
     hf = Host(script=[("activating", 0)])
     lnf = mk(hf)
     check("theme launcher: a start that times out (slow host) is not retried without the theme",
           await _raises_async(LaunchError, lnf.start(TS)) and len([c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]) == 1
-          and not os.path.exists(tpath))
+          and not os.path.exists(tpath) and lnf.theme_fallbacks == 0)
     # without a theme bind there is no second try: a plain failure stays one (and takes the unit back)
     hf = Host(); hf.sysrun_rc = 1
     lnf = mk(hf)
