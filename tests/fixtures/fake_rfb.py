@@ -5,8 +5,10 @@ None, ServerInit 800x600 with a fixed name, one small raw rectangle for every Fr
 records every client message it receives (the tests read `records`), can send ServerCutText, and can be told
 to stall (stop answering update requests).
 
-The optional control socket answers the unit supervisor's two operations: one JSON line per request,
-{"op":"ping"} and {"op":"resize","w":..,"h":..} get {"ok": true}, anything else {"ok": false}.
+The optional control socket answers the unit supervisor's operations: one JSON line per request,
+{"op":"ping"} and {"op":"resize","w":..,"h":..} get {"ok": true}, {"op":"clip"} gets {"ok": true, "text": CLIP_TEXT,
+"truncated": false} (a fixed demo text, so the "Copy from the browser" path can be shown in stage mode), anything
+else {"ok": false}.
 
     srv = FakeRfb("/tmp/x/vnc.sock", ctl_path="/tmp/x/ctl.sock")
     await srv.start(); ...; await srv.stop()
@@ -25,6 +27,7 @@ HEIGHT = 600
 RECT_W = 4
 RECT_H = 4
 RECT_PIXEL = b"\x10\x20\x30\x00"
+CLIP_TEXT = "fake clipboard text"
 
 _PIXEL_FORMAT = struct.pack(">BBBBHHHBBBxxx", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
 
@@ -140,13 +143,16 @@ class FakeRfb:
             line = await asyncio.wait_for(reader.readline(), 5)
             self.ctl_requests.append(line)
             ok = False
+            reply = None
             if 0 < len(line) <= 4096:
                 try:
                     req = json.loads(line)
-                    ok = isinstance(req, dict) and req.get("op") in ("ping", "resize")
+                    ok = isinstance(req, dict) and req.get("op") in ("ping", "resize", "clip")
+                    if ok and req.get("op") == "clip":
+                        reply = {"ok": True, "text": CLIP_TEXT, "truncated": False}
                 except ValueError:
                     ok = False
-            writer.write(json.dumps({"ok": ok}).encode() + b"\n")
+            writer.write(json.dumps(reply if reply is not None else {"ok": ok}).encode() + b"\n")
             await writer.drain()
         except (asyncio.TimeoutError, ConnectionError, OSError):
             pass
