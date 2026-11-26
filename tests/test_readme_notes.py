@@ -2029,7 +2029,7 @@ _routes250 = sorted({m_.group(2) for m_ in re.finditer(r'app\.router\.add_(get|p
 check("1.25.0: every rbrowser route of the code (and the socket) is in the notes",
       len(_routes250) == 8 and all(r.replace("{sid_prefix}", "{sid_prefix}") in _s250 for r in _routes250) and "/ws/rbrowser/{sid}" in _s250
       and ('"/ws/rbrowser/' in _srv250 or "/ws/rbrowser/" in _srv250), str(_routes250))
-_codes250 = sorted({int(c) for c in re.findall(r"_rbrowser_close\((?:old|ws), (\d{4})", _srv250)})
+_codes250 = sorted({int(c) for c in re.findall(r"(?:_rbrowser_close\((?:old|ws), |close_with = \()(\d{4})", _srv250)})
 check("1.25.0: every close code the socket handler writes is in the notes",
       _codes250 == [4003, 4004, 4012, 4013, 4503] and all(f"`{c}`" in _s250 for c in _codes250) and "`1001`" in _s250 and "outcome[\"close\"] = (1001," in _srv250, str(_codes250))
 import secevents as _sec250
