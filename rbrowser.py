@@ -1156,7 +1156,13 @@ class Registry:
         ext.evt.set()
         if viewer is not None:
             if stop_inline:
-                await self._close_viewer(viewer, reason)
+                try:
+                    await self._close_viewer(viewer, reason)
+                except asyncio.CancelledError:
+                    # the caller was aborted (a viewer replaced by a newer window) before the unit was stopped: nobody else would
+                    # stop it or finish the books, and the seat would stay taken. The stop goes on in the registry's own task.
+                    self._spawn(self._finish_stop(session))
+                    raise
             else:
                 self._spawn(self._close_viewer(viewer, reason))        # the tick must not wait for a slow socket
         if was == "starting":

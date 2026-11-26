@@ -423,7 +423,10 @@ async def main():
     bob3 = await h.login(base, "bob")
     n_conn = unit_conns["total"]
     b0 = cur["bytes"]
-    for what in ("another member", "another sign-in", "no such session", "feature off", "maintenance"):
+    for what in ("another member", "another sign-in", "no such session", "feature off", "maintenance", "role too low", "bearer token",
+                 "script token as cookie", "cross-site upgrade"):
+        if what == "role too low":
+            server._rbrowser_cfg["rbrowser_min_role"] = "admin"
         if what == "feature off":
             server._rbrowser_cfg["rbrowser_enabled"] = False
         if what == "maintenance":
@@ -431,9 +434,22 @@ async def main():
                 assert r.status == 200
             await asyncio.sleep(0.1)
         who, target = {"another member": (carol, sid), "another sign-in": (bob3, sid), "no such session": (bob, "doesnotexist12345")}.get(what, (bob, sid))
-        w = await attach(who, target)
-        _, code = await drain_for(w, 2)
-        want = {"another member": 4004, "another sign-in": 4004, "no such session": 4004, "feature off": 4003, "maintenance": 4503}[what]
+        if what in ("bearer token", "script token as cookie"):
+            hdr = {"Authorization": f"Bearer {tok}"} if what == "bearer token" else {"Cookie": f"{server.Config.SESSION_COOKIE_NAME}={tok}"}
+            async with plain() as ps:
+                w = await ps.ws_connect(f"{wsb}/ws/rbrowser/{sid}", headers=hdr)
+                _, code = await drain_for(w, 2)
+        elif what == "cross-site upgrade":
+            try:
+                await bob.ws_connect(f"{wsb}/ws/rbrowser/{sid}", headers={"Sec-Fetch-Site": "cross-site"})
+                code = 101
+            except aiohttp.WSServerHandshakeError as e:
+                code = e.status
+        else:
+            w = await attach(who, target)
+            _, code = await drain_for(w, 2)
+        want = {"another member": 4004, "another sign-in": 4004, "no such session": 4004, "feature off": 4003, "maintenance": 4503,
+                "role too low": 4003, "bearer token": 4003, "script token as cookie": 4003, "cross-site upgrade": 403}[what]
         b1 = cur["bytes"]
         await asyncio.sleep(0.3)
         check(f"refused attach ({what}): {want}, and the current viewer is untouched (same socket, same record, still streaming)",
@@ -441,6 +457,8 @@ async def main():
               and cur["bytes"] > b1 and not cur["ws"].closed, str((code, cur["code"])))
         if what == "feature off":
             server._rbrowser_cfg["rbrowser_enabled"] = True
+        if what == "role too low":
+            server._rbrowser_cfg["rbrowser_min_role"] = "user"
         if what == "maintenance":
             async with adm.put(f"{base}/api/admin/maintenance", json={"active": False, "message": ""}) as r:
                 assert r.status == 200
@@ -487,6 +505,141 @@ async def main():
     await asyncio.sleep(0.4)
     check("every exit closed the unit socket and left no viewer record", unit_conns["now"] == 0 and sid not in server._rbrowser_viewers and sess_b.viewer is None,
           str((unit_conns, list(server._rbrowser_viewers))))
+
+    # ---- a window aborted while it is still inside open_stream (the end it caused is still audited), and a session that ends while
+    # a new window waits in the hand-over
+    async def n_end_rows(uid):
+        c = await db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'rbrowser_end' AND actor_id = ?", (uid,))
+        return (await c.fetchone())[0]
+
+    cuid = env.uid["carol"]
+    release = asyncio.Event()
+
+    async def seats_free():
+        return await until(lambda: not reg._stopping and not reg._left and carol_sid_gone(), 6)
+
+    def carol_sid_gone():
+        return reg._by_user.get(cuid) is None
+
+    async def abort_in_open_stream(label, a_reads):
+        """Window A is inside open_stream (the listener check is due and slow, then cannot tell, so A ends the session and waits for the
+        unit to stop, which hangs); window B arrives and aborts A after RBROWSER_REPLACE_WAIT_S."""
+        release.clear()
+        sid_h = await make(carol)
+        sess_h = rbrowser.get(sid_h)
+        reg._x[sid_h].last_listener = reg.clock() - rbrowser.LISTENER_RECHECK_S - 5
+        real_check, real_stop = reg._listener_check, reg._launcher.stop
+
+        async def slow_unknown(session, ext):
+            await asyncio.sleep(0.3)
+            return "unknown"
+
+        async def hung_stop(unit, *a, **k):
+            if unit == sess_h.unit:
+                await release.wait()
+            return await real_stop(unit, *a, **k)
+        reg._listener_check, reg._launcher.stop = slow_unknown, hung_stop
+        server.RBROWSER_REPLACE_WAIT_S = 0.8
+        rows0 = await n_end_rows(cuid)
+        wa = await attach(carol, sid_h)
+        win_a = window(wa) if a_reads else None
+        await asyncio.sleep(0.1)
+        rec_a = server._rbrowser_viewers.get(sid_h)
+        check(f"{label}: window A is inside open_stream (its record holds the slot, the session is running)", rec_a is not None and sess_h.state == "running")
+        wb = await attach(carol, sid_h)
+        _, code_b = await drain_for(wb, 6)
+        reg._listener_check = real_check
+        server.RBROWSER_REPLACE_WAIT_S = old_wait
+        check(f"{label}: A ended the session and was aborted; B is told 4013", sess_h.state == "ended" and code_b == 4013, f"{sess_h.state} {code_b}")
+        await until(lambda: sid_h not in server._rbrowser_viewers, 3)
+        check(f"{label}: A's record is finished and no viewer record is left", rec_a.done.is_set() and sid_h not in server._rbrowser_viewers,
+              f"{rec_a.done.is_set()} {list(server._rbrowser_viewers)}")
+        await asyncio.sleep(0.3)
+        check(f"{label}: the end is audited exactly once although the window that ended it was aborted", await n_end_rows(cuid) == rows0 + 1,
+              f"{rows0} -> {await n_end_rows(cuid)}")
+        check(f"{label}: the unit is still being stopped or kept for the sweeper (seat held)", sess_h.unit in reg._stopping or sess_h.unit in reg._left,
+              str((list(reg._stopping), list(reg._left))))
+        release.set()
+        reg._launcher.stop = real_stop
+        await reg._retry_left(reg._launcher)                   # the sweeper's retry for a unit left on _left
+        check(f"{label}: the unit is stopped in the end and the seat is free", await seats_free(), str((list(reg._stopping), list(reg._left))))
+        if win_a is not None:
+            win_a["snd"].cancel()
+        await wa.close()
+
+    async def n_end_rows(uid):
+        c = await db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'rbrowser_end' AND actor_id = ?", (uid,))
+        return (await c.fetchone())[0]
+
+    await abort_in_open_stream("abort while A still closes its viewer", False)      # the cancel lands in the registry's viewer close
+    await abort_in_open_stream("abort while the unit stops", True)                  # the cancel lands in launcher.stop (unit moves to _left)
+
+    # a cancel that lands while the registry's events are being recorded: the events already taken are still recorded
+    sid_f = await make(carol)
+    sess_f = rbrowser.get(sid_f)
+    reg._x[sid_f].last_listener = reg.clock() - rbrowser.LISTENER_RECHECK_S - 5
+    real_check, real_sec = reg._listener_check, server.security_event
+
+    async def slow_found(session, ext):
+        await asyncio.sleep(0.2)
+        return "found"
+
+    async def slow_security_event(*a, **k):
+        await asyncio.sleep(1.2)                       # longer than the hand-over wait: the abort lands in here
+        return await real_sec(*a, **k)
+    reg._listener_check, server.security_event = slow_found, slow_security_event
+    server.RBROWSER_REPLACE_WAIT_S = 0.8
+    wa = await attach(carol, sid_f)
+    win_f = window(wa)                                  # A reads, so its viewer close is quick and the abort lands in the recording
+    await asyncio.sleep(0.1)
+    rec_a = server._rbrowser_viewers.get(sid_f)
+    wb = await attach(carol, sid_f)
+    _, code_b = await drain_for(wb, 6)
+    reg._listener_check = real_check
+    server.RBROWSER_REPLACE_WAIT_S = old_wait
+    check("a listener finding made while a newer window waits: B gets 4013 and A is aborted inside the event recording",
+          code_b == 4013 and sess_f.state == "ended" and sess_f.marker == "listener_found", f"{code_b} {sess_f.state}")
+    await asyncio.sleep(1.5)
+    server.security_event = real_sec
+    await secevents.log.flush()
+    c = await db.conn.execute("SELECT COUNT(*) FROM security_events WHERE event = 'rbrowser_listener_found' AND user_id = ?", (cuid,))
+    check("the finding was still recorded as a security event although its handler was aborted", (await c.fetchone())[0] >= 1)
+    win_f["snd"].cancel()
+    await wa.close()
+    await seats_free()
+
+    sid_e = await make(carol)
+    sess_e = rbrowser.get(sid_e)
+    rbrowser_stuck = {"ws": None}
+
+    async def hung_close_e(w, *a, **k):
+        if w is rbrowser_stuck["ws"]:
+            await asyncio.sleep(60)
+        return await real_close(w, *a, **k)
+    wa = await attach(carol, sid_e)
+    await wa.send_bytes(b"RFB 003.008\n")
+    await asyncio.sleep(0.3)
+    rbrowser_stuck["ws"] = sess_e.viewer
+    rec_a = server._rbrowser_viewers.get(sid_e)
+    check("window A is the viewer of the second session", rec_a is not None and sess_e.viewer is not None)
+    server._rbrowser_close = hung_close_e
+    server.RBROWSER_REPLACE_WAIT_S = 1.5
+    rows0 = await n_end_rows(cuid)
+    wb = await attach(carol, sid_e)
+    await asyncio.sleep(0.3)
+    check("B waits in the hand-over (A cannot close)", not rec_a.done.is_set() and server._rbrowser_viewers.get(sid_e) is rec_a)
+    async with adm.post(f"{base}/api/admin/rbrowser/sessions/{sid_e[:6]}/end", json={"confirm": True}) as r:
+        check("an administrator ends the session while B waits", r.status == 200, str(r.status))
+    _, code_b = await drain_for(wb, 6)
+    server._rbrowser_close = real_close
+    server.RBROWSER_REPLACE_WAIT_S = old_wait
+    check("B gets 4013 (it ended while it waited) and never streams", code_b == 4013 and sess_e.state == "ended" and sess_e.end_reason == "admin_end", f"{code_b} {sess_e.state}")
+    await until(lambda: sid_e not in server._rbrowser_viewers, 3)
+    check("no viewer record is left and A's record is finished", sid_e not in server._rbrowser_viewers and rec_a.done.is_set())
+    await asyncio.sleep(0.3)
+    check("the end is audited once", await n_end_rows(cuid) == rows0 + 1, f"{rows0} -> {await n_end_rows(cuid)}")
+    await wa.close()
+
     srv.close()
     await srv.wait_closed()
 

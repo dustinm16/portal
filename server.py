@@ -20160,6 +20160,9 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
     try:
         await _rbrowser_claim(sid, rec)
         if session.state != "running" or rbrowser.get(sid) is not session:      # it ended while this window waited
+            if session.state == "ended":
+                # the previous window may have been aborted before it could audit the end it caused: audit it here (once per session)
+                await asyncio.shield(_rbrowser_spawn(_rbrowser_settle(session)))
             close_with = (4013, (session.end_reason or "crash").encode())
             return
         if rec.replaced.is_set():                                                # a third window came while this one waited
@@ -20170,9 +20173,9 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
             reader, writer = await rbrowser.open_stream(session)
         except rbrowser.StreamRefused as e:
             rbrowser.mark_detached(session, ws)
-            await _rbrowser_drain_events()
+            # drain the registry's events and audit the end in a task of its own: a newer window may abort this one right here
+            await asyncio.shield(_rbrowser_spawn(_rbrowser_settle(session)))
             if e.ended:                                   # the registry ended the session and closed the viewer (4013, the reason)
-                await _rbrowser_audit_end(session)
                 close_with = (4013, (session.end_reason or "crash").encode())
             else:
                 close_with = (4004, b"no such session")
@@ -20265,6 +20268,8 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
         for t in tasks:
             if not t.done():
                 t.cancel()
+        if cancelled and session.state == "ended":
+            _rbrowser_spawn(_rbrowser_settle(session))       # aborted mid-end: the end is still audited and its events still drained
         try:
             if writer is not None:
                 writer.close()
@@ -34826,6 +34831,14 @@ async def _rbrowser_audit_end(s) -> None:
         logger.info(f"rbrowser session ended: user {s.user_id} sid {s.sid[:6]} reason {s.end_reason or 'crash'} minutes {minutes}")
     except Exception as e:
         logger.warning(f"rbrowser: end not audited: {type(e).__name__}")
+
+
+async def _rbrowser_settle(session) -> None:
+    """Drain the registry's events and, when the session has ended, audit the end (idempotent). Run as a task of its own
+    (`_rbrowser_spawn`) so that cancelling a viewer handler cannot drop events already taken or skip the audit row."""
+    await _rbrowser_drain_events()
+    if session.state == "ended":
+        await _rbrowser_audit_end(session)
 
 
 _RBROWSER_EVENT_WORD = re.compile(r"[a-z_]{1,32}")
