@@ -34628,8 +34628,10 @@ async def http_rbrowser_create_session(request: web.Request) -> web.Response:
         await _rbrowser_audit_end(existing)             # the takeover ended it (replaced)
     # The settings were read before the unit started; a switch-off or a role change during the start is answered here, not
     # left as a running unit with no sweeper (the switch-off lists its sessions before this one is in the list).
-    # The sign-in is checked again too: a sign-out or a disabled account during the start revokes the token while the unit is
-    # not yet in the registry's per-user list, so the revocation sweep finds nothing to end (get_token refuses a revoked row).
+    # The sign-in is read again here, after create(): a revocation (sign-out, a disabled account) that lands between the request's own
+    # sign-in check at the top of the handler and the moment the registry puts its placeholder in the per-user list is not seen by the
+    # revocation sweep, because the sweep only ends sessions that are in that list. Nothing else would end such a unit, so the
+    # check is made again now that the session exists (get_token refuses a revoked row) and the unit is ended here when it fails.
     now_user = await db.get_user_by_id(user["id"])
     if (not _rbrowser_cfg["rbrowser_enabled"] or not _rbrowser_state["started"] or not now_user
             or not _rbrowser_role_ok(_rbrowser_user_role(now_user))
