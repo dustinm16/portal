@@ -272,7 +272,7 @@ check("1.18.0: the sweeper interval and the close code stated are the ones in th
 check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0, user-connections.js and dashboard.js again in 1.22.0)",
       re.search(r"user-connections\.js\?v=(59|62|63)", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
-      and re.search(r"dashboard\.js\?v=(60|61)", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
+      and re.search(r"dashboard\.js\?v=(60|61|62)", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
 check("1.18.0: the admin.js and portal.css versions stated are the ones the 1.18.0 pages loaded (admin.js moved on in 1.19.0, portal.css in 1.22.0)",
       re.search(r"js/admin\.js\?v=(39|[4-9]\d)", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
@@ -490,6 +490,8 @@ MOVED_ON_1_24 = {"user-connections.js": 62, "streams.js": 54, "live-ops-admin.js
 # ... and in 1.24.2 (the time left on a granted service's card, the service form's Desktop preset port and the SFTP form's remove-password box; the chat, watch and streams pages; the Live streams figures that keep moving while a question is open and the xterm version of the Recordings script): the versions the pages load now
 MOVED_ON_1_24_2 = {"admin.js": 42, "user-connections.js": 63, "push.js": 7, "voice.js": 16, "chat-notify.js": 2, "chat-retention.js": 4,
                    "live-ops-admin.js": 6, "recordings-admin.js": 5, "dashboard.js": 61}
+# ... and in 1.25.0 (the Web Browser card on the dashboard, shown only when the status answer says allowed): the version the page loads now
+MOVED_ON_1_25_0 = {"dashboard.js": 62}
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
 for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
@@ -944,7 +946,7 @@ check("1.22.0: docs/API.md and api-docs.html document the prefs route and the pr
           (ROOT / "docs" / "API.md").read_text(encoding="utf-8"), (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))))
 check("the dashboard page loads the versions the 1.22.0 notes name",
       all(f'{f}?v={v}"' in (ROOT / "static" / "index.html").read_text()
-          for f, v in (("conn-organise.js", 4), ("dashboard.js", MOVED_ON_1_24_2["dashboard.js"]), ("user-connections.js", 63), ("portal.css", 56))))
+          for f, v in (("conn-organise.js", 4), ("dashboard.js", MOVED_ON_1_25_0["dashboard.js"]), ("user-connections.js", 63), ("portal.css", 56))))
 
 # --- 1.22.0: connection health checks ---------------------------------------------------------------
 sys.path.insert(0, str(ROOT))
@@ -1917,7 +1919,9 @@ _loaded242 = {}
 for _f, _v in re.findall(r"`([a-z-]+\.js)` v(\d+)", _db242):
     _loaded242[_f] = _v
 check("1.24.2 notes: every script version the Static files item states is the one the pages load",
-      len(_loaded242) >= 9 and all(f"/{_f}?v={_v}" in "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")) for _f, _v in _loaded242.items()),
+      len(_loaded242) >= 9 and all(f"/{_f}?v={_v}" in "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html"))
+                                   or (_f in MOVED_ON_1_25_0 and f"/{_f}?v={MOVED_ON_1_25_0[_f]}" in "".join(p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")))
+                                   for _f, _v in _loaded242.items()),
       str(_loaded242))
 _rb242 = _s242.split("\n**Rollback**\n", 1)[1].split("\n**Not tested**\n", 1)[0] if _m242 else ""
 check("1.24.2 notes: Rollback names the encrypted address, the activity log cut to 50, the refused archive with uploads and the trust marks",

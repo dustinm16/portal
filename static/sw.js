@@ -62,7 +62,7 @@ function portalWindow(c) {
         var u = new URL(c.url);
         if (u.origin !== self.location.origin) return false;
         if (c.frameType && c.frameType !== 'top-level') return false;
-        return u.pathname.indexOf('/proxy/') !== 0 && u.pathname !== '/browser';
+        return u.pathname.indexOf('/proxy/') !== 0 && u.pathname !== '/browser' && u.pathname !== '/rbrowser';
     } catch (e) {
         return false;
     }

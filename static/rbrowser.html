@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Web Browser - Open Relay Portal</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=56">
+    <link rel="stylesheet" href="/static/css/rbrowser.css?v=1">
+    <script src="/static/js/theme.js?v=3"></script>
+</head>
+<body class="rb-page">
+    <div id="rb-app" class="rb-app">
+        <header class="rb-toolbar" id="rb-toolbar">
+            <a class="btn btn-secondary rb-btn" id="rb-dashboard" href="/">Dashboard</a>
+            <div class="connection-status connecting" id="rb-status" role="status">
+                <span class="status-dot"></span>
+                <span id="rb-status-text">Loading...</span>
+            </div>
+            <span class="rb-spacer"></span>
+            <button type="button" class="btn btn-secondary rb-btn" id="rb-keyboard" hidden>Keyboard</button>
+            <button type="button" class="btn btn-secondary rb-btn" id="rb-text-toggle" aria-expanded="false" hidden>Text</button>
+            <label class="rb-quality" id="rb-quality-wrap" hidden>
+                <span class="rb-quality-label">Quality</span>
+                <select id="rb-quality" class="rb-select"></select>
+            </label>
+            <button type="button" class="btn btn-secondary rb-btn" id="rb-fit" aria-pressed="true" title="Fit the picture to this window" hidden>Fit</button>
+            <button type="button" class="btn btn-secondary rb-btn" id="rb-fullscreen" hidden>Fullscreen</button>
+            <button type="button" class="btn btn-secondary rb-btn" id="rb-about" aria-expanded="false" title="About this browser">About<span class="rb-long"> this browser</span></button>
+            <button type="button" class="btn btn-danger rb-btn" id="rb-end" hidden>End session</button>
+        </header>
+
+        <main class="rb-stage" id="rb-stage">
+            <div class="rb-screen" id="rb-screen"></div>
+
+            <div class="rb-banners" id="rb-banners">
+                <div class="rb-banner" id="rb-banner-idle" role="alert" hidden>
+                    <span id="rb-banner-idle-text"></span>
+                    <button type="button" class="btn btn-primary rb-btn" id="rb-here">I am here</button>
+                </div>
+                <div class="rb-banner" id="rb-banner-life" role="status" hidden>
+                    <span id="rb-banner-life-text"></span>
+                </div>
+                <div class="rb-banner" id="rb-banner-traffic" role="status" hidden>
+                    <span id="rb-banner-traffic-text"></span>
+                </div>
+                <div class="rb-banner" id="rb-banner-msg" role="status" hidden>
+                    <span id="rb-banner-msg-text"></span>
+                </div>
+            </div>
+
+            <div class="rb-overlay" id="rb-overlay" hidden>
+                <div class="rb-card" role="alertdialog" aria-labelledby="rb-overlay-title" aria-describedby="rb-overlay-text">
+                    <div class="spinner rb-spinner" id="rb-spinner" hidden></div>
+                    <strong id="rb-overlay-title"></strong>
+                    <p id="rb-overlay-text"></p>
+                    <p id="rb-overlay-note" class="rb-note" hidden></p>
+                    <div class="rb-card-actions">
+                        <button type="button" class="btn btn-primary rb-btn" id="rb-action" hidden></button>
+                        <button type="button" class="btn btn-secondary rb-btn" id="rb-action2" hidden></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rb-overlay rb-overlay-confirm" id="rb-confirm" hidden>
+                <div class="rb-card" role="alertdialog" aria-labelledby="rb-confirm-title">
+                    <strong id="rb-confirm-title">End this session?</strong>
+                    <p>The browser on the server is closed and everything open in it is lost.</p>
+                    <p id="rb-confirm-msg" class="rb-note" hidden></p>
+                    <div class="rb-card-actions">
+                        <button type="button" class="btn btn-secondary rb-btn" id="rb-end-no">Keep it</button>
+                        <button type="button" class="btn btn-danger rb-btn" id="rb-end-yes">Yes, end the session</button>
+                    </div>
+                </div>
+            </div>
+
+            <section class="rb-panel rb-textpanel" id="rb-textpanel" aria-label="Text and copying" hidden>
+                <label for="rb-textbox" class="rb-panel-label">Text to type in the browser</label>
+                <textarea id="rb-textbox" class="rb-textbox" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+                <div class="rb-panel-actions">
+                    <button type="button" class="btn btn-primary rb-btn" id="rb-send-text">Send text</button>
+                    <button type="button" class="btn btn-secondary rb-btn" id="rb-get-clip" hidden>Copy from the browser</button>
+                </div>
+                <p class="rb-note" id="rb-text-msg" role="status"></p>
+                <div id="rb-received-wrap" hidden>
+                    <span class="rb-panel-label">Text from the browser</span>
+                    <pre class="rb-received" id="rb-received"></pre>
+                    <button type="button" class="btn btn-secondary rb-btn" id="rb-copy">Copy</button>
+                </div>
+            </section>
+
+            <section class="rb-panel rb-about" id="rb-about-panel" aria-label="About this browser" hidden>
+                <div class="rb-about-head">
+                    <strong>About this browser</strong>
+                    <button type="button" class="btn btn-secondary rb-btn" id="rb-about-close">Close</button>
+                </div>
+                <p id="rb-privacy">The Web Browser runs on the server, not on your device. Websites see the server's address, not yours. The portal has no function that records, logs or stores the addresses you open, what you type, or what is on the screen, and it keeps no history: the browser's profile lives in memory and is destroyed when the session ends. The portal does log that you started and ended a session, when, and how much data it moved; administrators can see that you have a session and whether it is active. This is not protection from the people who run this portal: its administrators have full access to the server and could observe a running browser there, including sites you are signed in to. The picture of the browser travels through the portal process and through Cloudflare's network like every other page of the portal (encrypted in transit, readable at those two points). Name lookups go to a DNS-over-HTTPS resolver (Cloudflare's 1.1.1.1), which sees the names of the sites opened from the server. Do not use it for anything you would not open on a computer that belongs to someone else.</p>
+                <p class="rb-about-sub">What is worse than a browser on your own device</p>
+                <ol id="rb-limits">
+                    <li>It is a video of a browser: latency on every key and pointer move; scrolling and video are choppy at the stream cap; text is JPEG-compressed unless "Sharp" is chosen.</li>
+                    <li>No sound. No downloads, no uploads, no printing, no camera or microphone, no extensions, no page fullscreen.</li>
+                    <li>Text goes in only as typed keys; pasted text and the text panel type at most 5000 characters at a time, where an administrator has allowed them. Text comes out only through the "Copy from the browser" button, as plain text, at most 262144 bytes (longer text is cut), where an administrator has allowed it. The clipboard of your device and the clipboard in the remote browser are not linked. No password manager; nothing is remembered after the session.</li>
+                    <li>Sites see the server's address and location, a fresh profile every time (more CAPTCHAs, sign-in on every visit, some sites block data-centre addresses).</li>
+                    <li>Limited seats (2 by default), ends after 15 idle minutes, 4 hours, a portal restart or update, or when the traffic budget is used up.</li>
+                    <li>Keyboard shortcuts that your own browser or system takes (Ctrl+W, Ctrl+T, Ctrl+Tab, Alt+Tab) do not reach the remote browser except in fullscreen with keyboard lock, where supported. Where text in is allowed, Ctrl+V is taken by this page on purpose: it types the pasted text.</li>
+                    <li>Input methods for Chinese, Japanese and Korean work only through the phone-keyboard path (composed text), not key by key.</li>
+                    <li>Dead keys do not compose; type the finished character.</li>
+                </ol>
+                <p class="rb-note">The picture is the remote browser's own drawing, so portal themes do not change it.</p>
+            </section>
+        </main>
+
+        <textarea id="rb-kbd" class="rb-kbd" aria-label="Keyboard input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" rows="1" tabindex="-1"></textarea>
+    </div>
+
+    <script src="/static/js/portal.js?v=52"></script>
+    <script type="module" src="/static/js/rbrowser.js?v=1"></script>
+</body>
+</html>

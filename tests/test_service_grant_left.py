@@ -44,7 +44,7 @@ card = dash.split("function createServiceCard")[1].split("\n}\n")[0] if "functio
 span = re.search(r'<span class="service-grant-left"[^>]*>', card)
 check("the span has no inline handler and holds no text of its own",
       span is not None and "onclick" not in span.group(0) and "</span>" in card[span.end():span.end() + 8])
-check("index.html loads dashboard.js version 61", 'dashboard.js?v=61"' in index)
+check("index.html loads dashboard.js version 62 (61 added this card; 62 added the Web Browser card)", 'dashboard.js?v=62"' in index)
 
 node = shutil.which("node")
 if node and left_src and fmt_src:

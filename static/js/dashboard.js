@@ -15,7 +15,55 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadActivityFeed();
     await loadSearchNavLink();
     initDashSearch();
+    loadRbrowserCard();
 });
+
+/**
+ * The card "Web Browser (on this server)" in My Connections (release 1.25.0). Drawn only when the server says
+ * this member may use it: GET /api/rbrowser/status answers allowed:true and the feature is available and on. Any
+ * other answer (a refusal, a 404 from an older server, a body that is not JSON, a network error) leaves the
+ * dashboard exactly as it was, with no message. The card has no connection row behind it: it is a link to
+ * /rbrowser. Text goes in with textContent.
+ */
+async function loadRbrowserCard() {
+    const slot = document.getElementById('rbrowser-card-slot');
+    if (!slot) return;
+    let status = null;
+    try {
+        const res = await Portal.fetch('/api/rbrowser/status');
+        if (!res.ok) return;
+        status = await res.json();
+    } catch (e) {
+        return;
+    }
+    while (slot.firstChild) slot.removeChild(slot.firstChild);
+    slot.hidden = true;
+    if (!status || typeof status !== 'object' || status.allowed !== true || status.available === false || status.enabled === false) return;
+    const grid = document.createElement('div');
+    grid.className = 'connections-grid';
+    const card = document.createElement('div');
+    card.className = 'connection-card';
+    const name = document.createElement('div');
+    name.className = 'connection-name';
+    name.textContent = 'Web Browser (on this server)';
+    const kind = document.createElement('div');
+    kind.className = 'connection-type';
+    kind.textContent = 'Runs on the server';
+    const about = document.createElement('p');
+    about.className = 'tab-description';
+    about.textContent = 'A browser that runs on this server and is shown here as a picture. Websites see the server, not your device.';
+    const open = document.createElement('a');
+    open.className = 'btn btn-primary btn-sm connection-connect-btn';
+    open.href = '/rbrowser';
+    open.textContent = 'Open the Web Browser';
+    card.appendChild(name);
+    card.appendChild(kind);
+    card.appendChild(about);
+    card.appendChild(open);
+    grid.appendChild(card);
+    slot.appendChild(grid);
+    slot.hidden = false;
+}
 
 /**
  * Show the "Search" nav link only when the SearXNG managed service is enabled

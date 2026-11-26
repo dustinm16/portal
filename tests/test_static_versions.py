@@ -44,6 +44,13 @@ for path, found in sorted(versions.items()):
           "; ".join(f"v{v}: {sorted(p)}" for v, p in sorted(found.items())))
     check(f"{path} exists", (ROOT / "static" / path).is_file())
 
+# The Web Browser files (release 1.25.0): each is loaded by exactly the pages that should load it.
+check("rbrowser-admin.js is loaded by admin.html only", sorted(versions["js/rbrowser-admin.js"].get("1", set())) == ["admin.html"], str(dict(versions["js/rbrowser-admin.js"])))
+check("rbrowser.js and rbrowser.css are loaded by rbrowser.html only",
+      all(sorted(p for v in versions[f].values() for p in v) == ["rbrowser.html"] for f in ("js/rbrowser.js", "css/rbrowser.css")))
+check("dashboard.js is loaded by index.html at the version the dashboard card shipped with",
+      dict(versions["js/dashboard.js"]) == {"62": {"index.html"}}, str(dict(versions["js/dashboard.js"])))
+
 if failures:
     print(f"\ntest_static_versions: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

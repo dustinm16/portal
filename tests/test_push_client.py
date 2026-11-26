@@ -51,6 +51,14 @@ for page in sorted(STATIC.glob("*.html")):
               "/static/js/push.js?v=7" in text)
 check("the /search/ pages load push.js too (their navbar has a logout link)",
       "/static/js/push.js?v=7" in (ROOT / "server.py").read_text().split("_SEARXNG_HEAD_INJECT = (")[1].split(")")[0])
+# The Web Browser page (release 1.25.0) is a page of its own around somebody else's content: it loads neither push.js
+# nor the manifest (so push.js, which is unchanged and keeps its version, has nothing to skip there), and a tap on a notification never takes over an open /rbrowser
+# window (the worker would navigate it away and the session with it).
+SW = (STATIC / "sw.js").read_text()
+check("sw.js leaves /rbrowser out of the windows a notification tap may take over",
+      "u.pathname !== '/browser' && u.pathname !== '/rbrowser'" in SW)
+check("rbrowser.html loads neither push.js nor the manifest",
+      "push.js" not in (STATIC / "rbrowser.html").read_text() and "manifest" not in (STATIC / "rbrowser.html").read_text())
 check("the chat page opens a /chat?dm= link once the socket's first frame has arrived (the server checks participation)",
       "pendingDmLink" in CHAT and "openDmConversation(linked)" in CHAT)
 check("the admin card has the switch, the test button, a device count and the allow-list, and shows only on a 200",
