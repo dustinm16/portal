@@ -278,7 +278,7 @@ class Rig:
             return f.read()
 
     async def make(self, user=1, token="t1", cfg=None, **kw):
-        return await self.reg.create(user, token, kw.get("w", 1280), kw.get("h", 720), cfg or CFG, kw.get("takeover", False))
+        return await self.reg.create(user, token, kw.get("w", 1280), kw.get("h", 720), cfg or CFG, kw.get("takeover", False), theme=kw.get("theme"))
 
 
 async def case(fn):
@@ -1620,7 +1620,8 @@ async def t_probe_sweep_real_launchers(r):
                 return types.SimpleNamespace(rc=0, out=out, err="")
             return types.SimpleNamespace(rc=0, out="", err="")
 
-        kw = dict(run=run, which=lambda n: "/usr/bin/" + n, read_text=lambda p: "", bpf=r.bpf)
+        kw = dict(run=run, which=lambda n: "/usr/bin/" + n, read_text=lambda p: "", bpf=r.bpf,
+              theme_dir=os.path.join(r.tmp, "theme"), static_dir=os.path.join(r.tmp, "static"))
         slau = RL.SystemdLauncher(unit_prefix=rbrowser.UNIT_PREFIX, **kw)
         plau = RL.SystemdLauncher(unit_prefix=rbrowser.PROBE_PREFIX, script="probe.py", nice=19, **kw)
         reg = Registry(launcher=slau, launch_mod=RL, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, prefix=rbrowser.UNIT_PREFIX,
@@ -1704,13 +1705,84 @@ async def t_live_round2_guard(r):
     check("round 2 guard: a listing that failed refuses", len(live.round2_refusal(None, None, pre)) == 2)
 
 
+# ---------------------------------------------------------------- 1.26.0: the member's portal theme
+
+async def t_theme(r):
+    import dataclasses
+    import inspect
+    import logging
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, rec):
+            records.append(rec.getMessage())
+    h = _H()
+    lg = logging.getLogger()
+    old_level = lg.level
+    lg.addHandler(h)
+    lg.setLevel(logging.DEBUG)
+    try:
+        key0 = r.reg.preflight_key(CFG)
+        plain = await r.make(user=1, token="a")
+        sp = r.launcher.specs[plain.unit]
+        check("theme: a create without a theme starts a spec without one", (sp.theme_color, sp.theme_mode) == (None, None))
+        await r.reg.end(plain, "user")
+        s2 = await r.make(user=2, token="b", theme=("#1A1A2E", "Dark"))
+        sp = r.launcher.specs[s2.unit]
+        check("theme: a valid pair reaches the launcher's spec validated (lower case)", (sp.theme_color, sp.theme_mode) == ("#1a1a2e", "dark") and s2.state == "running")
+        await r.reg.end(s2, "user")
+        s3 = await r.make(user=3, token="c", theme=["#f0e6d2", "light"])
+        sp = r.launcher.specs[s3.unit]
+        check("theme: a list of two works as well", (sp.theme_color, sp.theme_mode) == ("#f0e6d2", "light"))
+        await r.reg.end(s3, "user")
+        n = 4
+        for label, bad in (("a bad colour", ("red", "dark")), ("a bad mode", ("#1a1a2e", "auto")), ("both bad", ("#12", "x")), ("None values", (None, None)),
+                           ("a string", "dark"), ("one value", ("#1a1a2e",)), ("three values", ("#1a1a2e", "dark", "x")), ("a dict", {"color": "#1a1a2e"}),
+                           ("a number", 5), ("long text", ("#" + "a" * 100000, "dark" * 1000))):
+            sx = await r.make(user=n, token=f"t{n}", theme=bad)
+            sp = r.launcher.specs[sx.unit]
+            want = {("red", "dark"): (None, "dark"), ("#1a1a2e", "auto"): ("#1a1a2e", None)}.get(bad if isinstance(bad, tuple) else None, (None, None))
+            check(f"theme: {label} never fails the start; each value is judged alone, the bad one is the neutral default",
+                  sx.state == "running" and (sp.theme_color, sp.theme_mode) == want, str((sp.theme_color, sp.theme_mode)))
+            await r.reg.end(sx, "user")
+            n += 1
+        check("theme: the Session keeps no theme (only the unit's spec and the registry's private record do)",
+              not any("theme" in f.name or "color" in f.name for f in dataclasses.fields(rbrowser.Session)) and "1a1a2e" not in repr(s2))
+        check("theme: the preflight key does not depend on the theme or on sessions that have one", r.reg.preflight_key(CFG) == key0)
+        spec_probe = r.reg.spec("0" * 12, 1280, 720, CFG)
+        args = RL.build_unit_args(spec_probe, rbrowser.PROBE_PREFIX, "probe.py", 19, ingress_pin=r.reg.pin)
+        check("theme: the probe's spec and arguments carry no theme", (spec_probe.theme_color, spec_probe.theme_mode) == (None, None)
+              and not any("portal-theme" in a or "RB_THEME" in a for a in args))
+        # a second create with another theme replaces the session: the new unit has the new theme (fixed per session, not per member)
+        s2 = await r.make(user=2, token="first", theme=("#1a1a2e", "dark"))
+        s5 = await r.make(user=2, token="other", theme=("#f0e6d2", "light"), takeover=True)
+        sp = r.launcher.specs[s5.unit]
+        check("theme: a takeover starts the new session with the theme of that create", s5 is not s2 and (sp.theme_color, sp.theme_mode) == ("#f0e6d2", "light"))
+        again = await r.make(user=2, token="other", theme=("#000000", "dark"))
+        check("theme: a repeated create of the running session returns it unchanged (the theme is fixed for its life)",
+              again is s5 and (r.launcher.specs[s5.unit].theme_color) == "#f0e6d2")
+        check("theme: rbrowser.create accepts theme=", "theme" in inspect.signature(rbrowser.create).parameters
+              and inspect.signature(rbrowser.create).parameters["theme"].default is None
+              and "theme" in inspect.signature(Registry.create).parameters)
+        check("theme: no event and no log line carries the colour", "1a1a2e" not in str(r.reg.take_events()).lower() and not any("1a1a2e" in m.lower() or "f0e6d2" in m.lower() for m in records))
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old_level)
+    # the real validator is used even when the policy module is replaced
+    class _NoPolicy:
+        pass
+    r.reg._P_mod = _NoPolicy()
+    check("theme: the registry validates with the real function whatever policy module was injected", r.reg._theme(("#ABCDEF", "dark")) == ("#abcdef", "dark")
+          and r.reg._theme("x") == (None, None))
+
+
 CASES = [t_concurrent_same_member, t_five_members_two_seats, t_failing_launcher, t_failed_start_unit_left, t_elsewhere_and_takeover, t_end_while_starting,
          t_end_idempotent, t_revocation, t_activity_here_throttle, t_idle_detach_lifetime, t_one_show_per_tick, t_exit_status, t_marker_events, t_ingress_filter,
          t_traffic, t_tmp_quota_and_sweep, t_sweep_tmp_live_set, t_sweeper_allow_list, t_unit_left_running, t_listener, t_startup_nothing,
          t_startup_prepare, t_failed_prepare, t_failed_prepare_cleanup, t_prepare_serialised, t_slice_penalty, t_shutdown_left, t_preflight, t_no_start_before_preflight, t_misc, t_stage_fake_startup,
          t_end_while_parked_start, t_end_while_parked_sockets, t_end_while_parked_listeners, t_takeover_while_listener_check_parked, t_tick_isolation,
          t_tick_listener_scan_raises, t_tick_concurrent_end, t_start_failed_cancelled_during_stop, t_tick_does_not_wait_for_a_stop,
-         t_unverifiable_listener_check, t_filter_attached_raises, t_shutdown_with_probe, t_preflight_invalidation, t_preflight_drift, t_failed_unit_reset, t_preflight_gate_in_lock, t_exit_code_of_status_3, t_probe_sweep_fullmatch, t_probe_sweep_real_launchers, t_tmp_walk_by_descriptor, t_live_round2_guard]
+         t_unverifiable_listener_check, t_filter_attached_raises, t_shutdown_with_probe, t_preflight_invalidation, t_preflight_drift, t_failed_unit_reset, t_preflight_gate_in_lock, t_exit_code_of_status_3, t_probe_sweep_fullmatch, t_probe_sweep_real_launchers, t_tmp_walk_by_descriptor, t_live_round2_guard, t_theme]
 
 
 async def main():

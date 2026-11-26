@@ -20,6 +20,8 @@ Optional environment (each unlocks a gate that cannot be measured without it):
 Round 1 (after lane A1): the unit gates G1 to G11 (G01b: a listener in a unit with the ingress filter cannot be reached, the control without it can) and G18, the policy gates G13 to G16, input G17 and G21,
 the phone width G20, the measured performance G22, the CPU test G8, the upload limit G19, the hairpin G24, the
 egress table of 6.1 (printed as G00) and the 20 resizes (G23). Round 2 is filled by lane A2.
+1.26.0 adds G25: the remote Chromium follows the member's portal theme (tab strip colour, prefers-color-scheme, the security
+policy still applies, the per-session theme file is root-owned, read-only in the unit and gone after the stop).
 
 Output: one line per gate, `Gnn PASS|FAIL|FALLBACK detail`. A gate that needs a person to look at a picture
 prints FAIL with "manual:" and the path of the picture: nothing is called PASS that was not measured.
@@ -3059,6 +3061,160 @@ def g24(rig, ctx):
     if r in ("connected", "ECONNREFUSED"):
         return "FALLBACK", f"the unit reaches {ip}:443 ({r}): put that address into rbrowser_extra_deny and into the README's set-up steps"
     return "PASS", f"{ip}:443 is not reachable from the unit ({r})"
+
+
+# ---- G25 (1.26.0): the remote Chromium matches the member's portal theme
+
+G25_DARK = ("#1a1a2e", "dark")
+G25_LIGHT = ("#f0e6d2", "light")
+G25_NEUTRAL_STRIP = (211, 227, 253)       # the tab strip of Chromium 156 without any theme (measured under Xvfb, no desktop)
+G25_TOLERANCE = 24                        # per channel: BrowserThemeColor is a seed, Chromium derives the frame from it; measured on 156:
+#                                         dark seeds (#1a1a2e, #2e3440, #002b36) come out exactly, #f0e6d2 comes out 11 off at most, saturated
+#                                         or very light seeds (#ff0000, #fdf6e3) come out far off, so this gate uses two low-chroma colours
+G25_PCS_PAGE = "data:text/html,<title>t</title><script>document.title='PCS='+matchMedia('(prefers-color-scheme:dark)').matches</script>"
+
+
+def g25_strip(nv, s):
+    """The tab strip colour: three points of the canvas (the stream is shown 1:1) at y=10 to the right of the tabs; the median per channel."""
+    pts = [nv.js("([x, y]) => { const d = document.querySelector('canvas').getContext('2d').getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; }", [x, 10])
+           for x in (500, 700, 900)]
+    return tuple(sorted(p[i] for p in pts)[1] for i in range(3))
+
+
+def g25_near(px, want, tol=G25_TOLERANCE):
+    return all(abs(a - b) <= tol for a, b in zip(px, want))
+
+
+def g25_hex(c):
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def g25_session(rig, color, mode, tag):
+    """A session with this theme: (strip pixel, the title after the prefers-color-scheme page, the unit's own files) and the pictures."""
+    s = rig.start_session(theme_color=color, theme_mode=mode)
+    ident = s.spec.ident
+    out = {"ident": ident, "file_before_stop": os.path.isfile(f"{rig.L.THEME_DIR}/{ident}.json") if color else None}
+    try:
+        s.wait_sockets()
+        time.sleep(6)
+        nv = s.open_page()
+        try:
+            out["strip"] = g25_strip(nv, s)
+            out["shot_home"] = nv.shot(f"g25-{tag}-home.png")
+            nv.nav(G25_PCS_PAGE)
+            ok, title = s.wait_title("PCS=", 15)
+            out["pcs_title"] = title
+            out["shot_pcs"] = nv.shot(f"g25-{tag}-pcs.png")
+            out["pcs_strip"] = g25_strip(nv, s)
+            # the security policy still applies: a file: URL is not in URLAllowlist, so URLBlocklist "*" must stop it (a loaded text file would
+            # make the window title its file name)
+            nv.nav("file:///etc/hostname")
+            time.sleep(3)
+            out["blocked_title"] = s.title()
+            out["shot_blocked"] = nv.shot(f"g25-{tag}-blocked.png")
+        finally:
+            nv.close()
+    finally:
+        s.stop()
+    out["file_after_stop"] = os.path.exists(f"{rig.L.THEME_DIR}/{ident}.json")
+    return out
+
+
+G25_UNIT_SNIPPET = r"""
+import json, os, stat
+d = "/etc/chromium/policies/managed"
+res = {"files": sorted(os.listdir(d))}
+st = os.stat(d + "/portal-theme.json")
+res["owner"] = st.st_uid; res["mode"] = stat.S_IMODE(st.st_mode)
+try:
+    open(d + "/portal-theme.json", "a").write("x"); res["theme_writable"] = True
+except OSError as e:
+    res["theme_writable"] = False; res["theme_errno"] = e.errno
+try:
+    open(d + "/portal.json", "a").write("x"); res["main_writable"] = True
+except OSError as e:
+    res["main_writable"] = False
+try:
+    open(d + "/other.json", "w").write("{}"); res["dir_writable"] = True
+except OSError as e:
+    res["dir_writable"] = False
+res["theme"] = json.load(open(d + "/portal-theme.json"))
+main = json.load(open(d + "/portal.json"))
+res["main_keys"] = len(main); res["url_block_first"] = main.get("URLBlocklist", [None])[0]
+res["main_has_theme_key"] = "BrowserThemeColor" in main
+print(json.dumps(res))
+"""
+
+
+@gate("G25", "the remote Chromium follows the portal theme")
+def g25(rig, ctx):
+    L = rig.L
+    notes = []
+    # (1) the unit's view: the theme file is root-owned, read-only, next to an intact main policy file
+    ident = rig.ident()
+    spec = rig.spec(ident=ident, theme_color=G25_DARK[0], theme_mode=G25_DARK[1])
+    path = rig.launcher.make_theme(ident, *G25_DARK)
+    unit_res = None
+    try:
+        def add_bind(args):
+            return args + ["-p", f"BindReadOnlyPaths={path}:{L.THEME_DEST}"]
+        rc, err, unit = rig.run_unit(["/usr/bin/python3", "-I", "-S", "-c", G25_UNIT_SNIPPET], mutate=add_bind, spec=spec, script="session.py")
+        text = rig.journal(unit)
+        rig.wait_gone(unit, 20)
+        for line in text.splitlines():
+            if line.strip().startswith("{"):
+                try:
+                    unit_res = json.loads(line)
+                except ValueError:
+                    pass
+    finally:
+        rig.launcher.remove_theme(ident)
+        rig.launcher.remove_tmp(ident)
+    if not unit_res:
+        return "FAIL", f"the in-unit check did not print its answer: {err[:120]}"
+    bad = []
+    if unit_res["files"] != ["portal-theme.json", "portal.json"]:
+        bad.append(f"managed directory holds {unit_res['files']}")
+    if unit_res["owner"] != 0 or unit_res["mode"] != 0o444:
+        bad.append(f"theme file owner {unit_res['owner']} mode {oct(unit_res['mode'])}")
+    if unit_res["theme_writable"] or unit_res["main_writable"] or unit_res["dir_writable"]:
+        bad.append("something under /etc/chromium is writable in the unit")
+    if unit_res["theme"] != {"BrowserThemeColor": G25_DARK[0]}:
+        bad.append(f"theme file holds {unit_res['theme']}")
+    if unit_res["url_block_first"] != "*" or unit_res["main_has_theme_key"] or unit_res["main_keys"] < 50:
+        bad.append("the main policy file is not the security policy")
+    if bad:
+        return "FAIL", "; ".join(bad)
+    notes.append("in the unit the theme file is root-owned 0444 and read-only, the main policy intact")
+    # (2) three real sessions
+    dark = g25_session(rig, *G25_DARK, "dark")
+    light = g25_session(rig, *G25_LIGHT, "light")
+    plain = g25_session(rig, None, None, "neutral")
+    fails = []
+    if not dark["file_before_stop"] or dark["file_after_stop"] or light["file_after_stop"]:
+        fails.append(f"theme file before stop {dark['file_before_stop']}, left after stop {dark['file_after_stop']}/{light['file_after_stop']}")
+    if os.path.isdir(L.THEME_DIR) and os.listdir(L.THEME_DIR):
+        fails.append(f"files left in the theme directory: {os.listdir(L.THEME_DIR)}")
+    if not g25_near(dark["strip"], g25_hex(G25_DARK[0])):
+        fails.append(f"dark: tab strip {dark['strip']}, asked {g25_hex(G25_DARK[0])} (+-{G25_TOLERANCE})")
+    if not g25_near(light["strip"], g25_hex(G25_LIGHT[0])):
+        fails.append(f"light: tab strip {light['strip']}, asked {g25_hex(G25_LIGHT[0])} (+-{G25_TOLERANCE})")
+    if not g25_near(plain["strip"], G25_NEUTRAL_STRIP):
+        fails.append(f"neutral: tab strip {plain['strip']}, expected the unthemed {G25_NEUTRAL_STRIP} (+-{G25_TOLERANCE})")
+    for name, r_, want in (("dark", dark, "PCS=true"), ("light", light, "PCS=false"), ("neutral", plain, "PCS=false")):
+        if want not in r_["pcs_title"]:
+            fails.append(f"{name}: prefers-color-scheme page title {r_['pcs_title']!r}, wanted {want!r}")
+    for name, r_ in (("dark", dark), ("light", light), ("neutral", plain)):
+        if r_["blocked_title"] == "hostname" or not r_["blocked_title"]:
+            fails.append(f"{name}: file:///etc/hostname was not blocked (window title {r_['blocked_title']!r})")
+    if dark["blocked_title"] != plain["blocked_title"] or light["blocked_title"] != plain["blocked_title"]:
+        fails.append(f"the blocked page looks different with a theme: {dark['blocked_title']!r} / {light['blocked_title']!r} / {plain['blocked_title']!r}")
+    detail = (f"tab strip dark {dark['strip']} (asked {G25_DARK[0]}), light {light['strip']} (asked {G25_LIGHT[0]}), neutral {plain['strip']}; "
+              f"prefers-color-scheme titles {dark['pcs_title']!r} / {light['pcs_title']!r} / {plain['pcs_title']!r}; blocked-page title {plain['blocked_title']!r} in all three; "
+              + "; ".join(notes) + f"; pictures g25-*-home/pcs/blocked.png in {rig.out}")
+    if fails:
+        return "FAIL", "; ".join(fails) + " | " + detail
+    return "PASS", detail
 
 
 # ================================================================ the run

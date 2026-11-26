@@ -379,6 +379,12 @@ import atexit as _atexit, shutil as _shutil  # noqa: E402
 _atexit.register(_shutil.rmtree, TMPD, ignore_errors=True)
 
 
+THEMED = tempfile.mkdtemp(prefix="rbtest-theme-")
+STATICD = tempfile.mkdtemp(prefix="rbtest-static-")
+_atexit.register(_shutil.rmtree, THEMED, ignore_errors=True)
+_atexit.register(_shutil.rmtree, STATICD, ignore_errors=True)
+
+
 EMPTY_CG = tempfile.mkdtemp(prefix="rbtest-cg-")      # an empty cgroup root: the slice has no directory, so no unit
 _atexit.register(_shutil.rmtree, EMPTY_CG, ignore_errors=True)
 
@@ -394,6 +400,8 @@ def LN(*a, **k):
     k.setdefault("ingress_pin", PIN)
     k.setdefault("tmp_dir", TMPD)
     k.setdefault("bpf", FakeBpf())
+    k.setdefault("theme_dir", THEMED)     # never the host's /run/portal-rb-state/theme: sweep_tmp and stop remove files there
+    k.setdefault("static_dir", STATICD)
     # PID 1's table: both areas are tmpfs mounts there (devices 0:41 and 0:40) and this "process" sees the same devices
     k.setdefault("mountinfo", lambda _t=k["tmp_dir"], _r=k.get("run_dir", L.RUN_DIR): (
         f"41 30 0:40 / {_t} rw,nosuid,nodev,noexec - tmpfs portal-rb-tmp rw,size=32768k,mode=700\n42 30 0:41 / {_r} rw,nosuid,nodev,noexec - tmpfs portal-rb rw,size=8192k\n"))
@@ -948,7 +956,7 @@ async def launcher_tests():
     check("start: a root unit is refused before the filter is asked", fb0.asked == [])
     for pin_bad in (None, "", "/tmp/portal-rb-x", "/sys/fs/bpf/other", "/sys/fs/bpf/portal-rb/../x", "/sys/fs/bpf/portal-rb x", "/sys/fs/bpf/portal-rb\nx"):
         hq = Host()
-        lq = L.SystemdLauncher(run=hq.run, read_text=hq.reader, sleep=hq.sleep, which=which_all, ingress_pin=pin_bad, bpf=FakeBpf())
+        lq = L.SystemdLauncher(run=hq.run, read_text=hq.reader, sleep=hq.sleep, which=which_all, ingress_pin=pin_bad, bpf=FakeBpf(), theme_dir=THEMED, static_dir=STATICD)
         check(f"start without a usable pin ({pin_bad!r}): LaunchError and no systemd-run call at all",
               await _raises_async(LaunchError, lq.start(spec())) and not any(os.path.basename(c[0]) == "systemd-run" for c, _ in hq.calls))
     check("build_unit_args has no default pin: a unit without the filter cannot be built",
@@ -1746,7 +1754,10 @@ check("live test: the guard function comes before the first import that is not a
       _live_src.index("refuse_unless_asked()") < _live_src.index("import asyncio") and "def refuse_unless_asked" in _live_src)
 check("live test: every gate of the round 1 table is present",
       set(re.findall(r'@gate\("(G\d\d\w*)"', _live_src)) == {"G00", "G01", "G01b", "G02", "G02b", "G02c", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G09b", "G10", "G11",
-                                                              "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24"})
+                                                              "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24", "G25"})
+check("live test: G25 (1.26.0) is a round 1 gate, written for the theme file and the pictures, and is not a hard gate",
+      "G25" in re.findall(r'@gate\("(G\d\d\w*)"', _live_src) and "G25" not in _live_src.split("HARD_GATES = (")[1].split(")")[0]
+      and "make_theme" in _live_src and "theme_color=" in _live_src and "prefers-color-scheme" in _live_src and "file:///etc/hostname" in _live_src)
 check("live test: it removes everything in finally and handles SIGTERM", "finally:\n        if rig is not None:\n            cleanup(rig)" in _live_src and "signal.SIGTERM" in _live_src)
 # ---- the live test's guards and bounds (pure parts imported under another name: its guards only run as __main__)
 _ls = _ilu.spec_from_file_location("rb_live_imported", ROOT / "tests" / "test_rbrowser_live.py")
@@ -2206,6 +2217,170 @@ if os.geteuid() != 0:
     _r = _sp.run([sys.executable, "-B", str(ROOT / "tests" / "test_rbrowser_live.py"), "--round", "1"], env={**_env, "RBROWSER_LIVE": "1"},
                  capture_output=True, text=True, timeout=30)
     check("live test: with the variable but not as root it refuses (exit 2) and starts nothing", _r.returncode == 2 and _r.stdout.startswith("refused:"), _r.stdout)
+
+
+# ---------------------------------------------------------------- 1.26.0: the member's portal theme
+import json as _json  # noqa: E402
+
+THEME_FILE_PATH = f"{THEMED}/0123456789ab.json"
+THEME_DEST = "/etc/chromium/policies/managed/portal-theme.json"
+TS = spec(theme_color="#1A1A2E", theme_mode="dark")
+base_args = BA(spec())
+check("theme: a spec without a theme gives exactly the arguments of a host without one (no bind, no RB_THEME_MODE)",
+      BA(spec(theme_color=None, theme_mode=None)) == base_args and not any("portal-theme" in a or "RB_THEME_MODE" in a for a in base_args))
+check("theme: the colour in the spec alone changes nothing in the arguments (the launcher decides on the file)", BA(spec(theme_color="#1a1a2e")) == base_args)
+themed = BA(TS, theme_file=THEME_FILE_PATH)
+bind = f"BindReadOnlyPaths={THEME_FILE_PATH}:{THEME_DEST}"
+pt = props(themed)
+check("theme: the file is bound read-only over the placeholder, once, after the /etc/chromium bind and before /etc/chromium.d",
+      pt.count(bind) == 1 and pt.index(bind) == pt.index("BindReadOnlyPaths=/run/portal-rb-static/chromium:/etc/chromium") + 1
+      and pt.index(bind) + 1 == pt.index("BindReadOnlyPaths=/run/portal-rb-static/chromium.d:/etc/chromium.d"))
+check("theme: the mode is one -E RB_THEME_MODE=dark before the program; nothing else is added",
+      "RB_THEME_MODE=dark" in themed and themed[themed.index("RB_THEME_MODE=dark") - 1] == "-E" and themed[-4:] == base_args[-4:]
+      and len(themed) == len(base_args) + 4)
+stripped = list(themed)
+i = stripped.index(bind); del stripped[i - 1:i + 1]
+j = stripped.index("RB_THEME_MODE=dark"); del stripped[j - 1:j + 1]
+check("theme: without those two additions the list is the no-theme list", stripped == base_args)
+check("theme: a light mode is passed too, a bad mode or colour never is",
+      "RB_THEME_MODE=light" in BA(spec(theme_mode="light")) and all(not any("RB_THEME_MODE" in a for a in BA(spec(theme_mode=m)))
+                                                               for m in ("evil", "", "DARK 1", "dark\n", None, 5, ["dark"])))
+check("theme: the mode is lower-cased by the validator, so only the two words can reach the environment",
+      "RB_THEME_MODE=dark" in BA(spec(theme_mode="DARK")) and not any(a.startswith("RB_THEME_MODE=") and a not in ("RB_THEME_MODE=dark", "RB_THEME_MODE=light")
+                                                                    for m in ("dark;rm", "light ", "x") for a in BA(spec(theme_mode=m))))
+for label, bad in (("relative", "run/x/0123456789ab.json"), ("another id", f"{THEMED}/aaaaaaaaaaaa.json"), ("a colon", f"{THEMED}:x/0123456789ab.json"),
+                   ("dotdot", f"{THEMED}/../0123456789ab.json"), ("a space", f"{THEMED} x/0123456789ab.json"), ("a newline", f"{THEMED}/0123456789ab.json\n"),
+                   ("no .json", f"{THEMED}/0123456789ab"), ("empty", ""), ("a number", 5), ("a double slash", f"{THEMED}//0123456789ab.json")):
+    check(f"theme: a theme file path that is {label} is refused", raises(LaunchError, BA, TS, theme_file=bad))
+check("theme: the preflight probe never gets a theme (no file allowed, no mode passed)",
+      raises(LaunchError, BA, TS, L.PROBE_PREFIX, "probe.py", 19, theme_file=THEME_FILE_PATH)
+      and BA(TS, L.PROBE_PREFIX, "probe.py", 19) == BA(spec(), L.PROBE_PREFIX, "probe.py", 19))
+check("theme: the placeholder file name is the policy module's file name and the destination sits in the managed directory",
+      L.THEME_FILE == rbrowser_policy.THEME_FILE_NAME and L.THEME_DEST == THEME_DEST)
+
+# the static tree: a placeholder in the session tree only; the main policy file is the one source of the security policy
+_pt = tempfile.mkdtemp(prefix="rbtest-static-tree-")
+_atexit.register(_shutil.rmtree, _pt, ignore_errors=True)
+_hp = L.HostPaths(static=f"{_pt}/static", run_dir=f"{_pt}/run", state=f"{_pt}/state", tmp_dir=f"{_pt}/tmp")
+L.write_static_tree(_hp, POLICY)
+_ph = f"{_pt}/static/chromium/policies/managed/portal-theme.json"
+check("static tree: the session tree has the empty placeholder, the probe tree has none, the main policy is unchanged",
+      _json.load(open(_ph)) == {} and not os.path.exists(f"{_pt}/static/chromium-probe/policies/managed/portal-theme.json")
+      and _json.load(open(f"{_pt}/static/chromium/policies/managed/portal.json")) == POLICY
+      and sorted(os.listdir(f"{_pt}/static/chromium/policies/managed")) == ["portal-theme.json", "portal.json"])
+L.write_policy(_hp, POLICY)
+check("static tree: write_policy leaves the placeholder alone", _json.load(open(_ph)) == {})
+check("static tree: the placeholder is root-owned like the rest (written by the same code, 0644)", stat.S_IMODE(os.stat(_ph).st_mode) == 0o644)
+
+
+async def theme_launcher_tests():
+    sd = tempfile.mkdtemp(prefix="rbtest-theme-static-")
+    td = tempfile.mkdtemp(prefix="rbtest-theme-dir-")
+    _atexit.register(_shutil.rmtree, sd, ignore_errors=True)
+    _atexit.register(_shutil.rmtree, td, ignore_errors=True)
+    tpath = f"{td}/0123456789ab.json"
+
+    def mk(h, seen=None, **kw):
+        async def run(argv, timeout=10.0):
+            if seen is not None and os.path.basename(argv[0]) == "systemd-run":
+                seen["file_at_start"] = os.path.isfile(tpath)
+                if seen["file_at_start"]:
+                    seen["st"] = os.stat(tpath)
+                    seen["text"] = open(tpath).read()
+                seen["dir_mode"] = stat.S_IMODE(os.stat(td).st_mode) if os.path.isdir(td) else None
+            return await h.run(argv, timeout)
+        kw.setdefault("theme_dir", td)
+        kw.setdefault("static_dir", sd)
+        return LN(run=run, read_text=h.reader, sleep=h.sleep, which=which_all, **kw)
+
+    # no placeholder yet (prepare_host has not run since the upgrade): the session starts, without the colour
+    h = Host(); seen = {}
+    ln = mk(h, seen)
+    res = await ln.start(TS)
+    call = [c for c, _ in h.calls if os.path.basename(c[0]) == "systemd-run"][0]
+    check("theme launcher: no placeholder in the static tree: the session starts without a theme file and without the bind, the mode still goes",
+          res.unit.endswith("0123456789ab.service") and not seen["file_at_start"] and not os.path.exists(tpath)
+          and call[1:] == BA(spec(theme_color="#1a1a2e", theme_mode="dark")) and "RB_THEME_MODE=dark" in call and not any("portal-theme" in a for a in call))
+    await ln.stop(res.unit)
+
+    L.write_static_tree(L.HostPaths(static=sd, run_dir=f"{sd}/r", state=f"{sd}/s", tmp_dir=f"{sd}/t"), POLICY)
+    h = Host(); seen = {}
+    ln = mk(h, seen)
+    res = await ln.start(TS)
+    call = [c for c, _ in h.calls if os.path.basename(c[0]) == "systemd-run"][0]
+    check("theme launcher: the file exists BEFORE systemd-run, with exactly the colour key, lower case, in a root-only directory",
+          seen["file_at_start"] and _json.loads(seen["text"]) == {"BrowserThemeColor": "#1a1a2e"} and set(_json.loads(seen["text"])) == set(rbrowser_policy.THEME_POLICY_KEYS)
+          and seen["dir_mode"] == 0o700, str(seen))
+    check("theme launcher: the file is owned by the portal's own user (root in production), mode 0444, a plain file",
+          seen["st"].st_uid == os.getuid() and stat.S_IMODE(seen["st"].st_mode) == 0o444 and stat.S_ISREG(seen["st"].st_mode))
+    check("theme launcher: systemd-run gets the bind of that very file and RB_THEME_MODE",
+          call[1:] == BA(TS, theme_file=tpath) and f"BindReadOnlyPaths={tpath}:{THEME_DEST}" in props(call))
+    check("theme launcher: nothing else of the spec's theme reaches the call (no colour text outside the file path)", not any("1a1a2e" in a.lower() for a in call))
+    await ln.stop(res.unit)
+    check("theme launcher: stop removes the file with the unit's other per-ident files", not os.path.exists(tpath) and not os.path.exists(f"{TMPD}/0123456789ab"))
+
+    # a failed start takes the file back
+    for label, kw in (("systemd-run fails", dict(sysrun_rc=1)), ("the unit runs as root", dict(uid=0))):
+        h = Host(); h.sysrun_rc = kw.get("sysrun_rc", 0)
+        h2 = Host(uid=kw["uid"]) if "uid" in kw else h
+        lnf = mk(h2)
+        check(f"theme launcher: {label}: LaunchError, and no theme file is left", await _raises_async(LaunchError, lnf.start(TS)) and not os.path.exists(tpath))
+    # a cancelled systemd-run takes it back too
+    h = Host(); h.sysrun_exc = asyncio.CancelledError()
+    lnc = mk(h)
+    try:
+        await lnc.start(TS)
+        cancelled = False
+    except asyncio.CancelledError:
+        cancelled = True
+    check("theme launcher: a cancelled start leaves no theme file", cancelled and not os.path.exists(tpath))
+
+    # the sweep covers the theme files: stale ones go, live ones and foreign names stay
+    for n in ("aaaaaaaaaaaa", "bbbbbbbbbbbb"):
+        open(f"{td}/{n}.json", "w").write("{}")
+    open(f"{td}/not-an-id.json", "w").write("x")
+    os.symlink("/etc/passwd", f"{td}/cccccccccccc.json")
+    got = ln.sweep_tmp(["aaaaaaaaaaaa"])
+    check("theme launcher: sweep_tmp removes stale theme files too, keeps a live unit's and names that are no unit id; a link is unlinked, not followed",
+          sorted(got) == ["bbbbbbbbbbbb", "cccccccccccc"] and os.path.exists(f"{td}/aaaaaaaaaaaa.json") and os.path.exists(f"{td}/not-an-id.json")
+          and not os.path.lexists(f"{td}/bbbbbbbbbbbb.json") and not os.path.lexists(f"{td}/cccccccccccc.json") and os.path.exists("/etc/passwd"), str(got))
+    ln.remove_theme("../x"); ln.remove_theme("aaaaaaaaaaaa/..")
+    check("theme launcher: remove_theme refuses anything that is not a 12 hex id", os.path.exists(f"{td}/aaaaaaaaaaaa.json"))
+    for n in os.listdir(td):
+        os.unlink(f"{td}/{n}")
+    check("theme launcher: a missing theme directory sweeps to nothing", LN(theme_dir=f"{td}/none", tmp_dir=f"{sd}/no-tmp").sweep_tmp([]) == [])
+
+    # nothing to write or nowhere to write: the session starts without the theme (it is cosmetic)
+    for label, sp in (("an invalid colour", spec(theme_color="red", theme_mode="dark")), ("no colour", spec(theme_color=None, theme_mode="light")),
+                      ("only a bad mode", spec(theme_color=None, theme_mode="evil"))):
+        h = Host(); seen = {}
+        lnx = mk(h, seen)
+        r2 = await lnx.start(sp)
+        call = [c for c, _ in h.calls if os.path.basename(c[0]) == "systemd-run"][0]
+        check(f"theme launcher: {label}: no file, no bind, the call is the plain one (plus the valid mode, if any)",
+              not seen["file_at_start"] and not any("portal-theme" in a for a in call) and call[1:] == BA(sp))
+        await lnx.stop(r2.unit)
+    blocker = f"{td}/blocked"
+    open(blocker, "w").write("x")
+    h = Host()
+    lnb = mk(h, theme_dir=blocker)
+    r3 = await lnb.start(TS)
+    call = [c for c, _ in h.calls if os.path.basename(c[0]) == "systemd-run"][0]
+    check("theme launcher: a theme directory that cannot be made does not fail the start; the session runs without the colour",
+          r3.unit.endswith("0123456789ab.service") and not any("portal-theme" in a for a in call) and call[1:] == BA(TS))
+    await lnb.stop(r3.unit)
+    # the probe launcher never writes a theme
+    h = Host(); seen = {}
+    lnp = mk(h, seen, unit_prefix=L.PROBE_PREFIX, script="probe.py", nice=19)
+    r4 = await lnp.start(TS)
+    call = [c for c, _ in h.calls if os.path.basename(c[0]) == "systemd-run"][0]
+    check("theme launcher: the probe launcher writes no theme file and its call has neither bind nor mode",
+          not seen["file_at_start"] and call[1:] == BA(spec(), L.PROBE_PREFIX, "probe.py", 19))
+    await lnp.stop(r4.unit)
+    check("theme launcher: no per-session file survives any of the above", os.listdir(td) == ["blocked"] or sorted(os.listdir(td)) == ["blocked"])
+
+
+asyncio.run(theme_launcher_tests())
 
 if failures:
     print(f"\ntest_rbrowser_unit_args: {len(failures)} FAILED: " + "; ".join(failures))

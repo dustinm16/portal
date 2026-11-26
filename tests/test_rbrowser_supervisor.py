@@ -1132,6 +1132,26 @@ check("headless flags: the log goes to stderr (the error code is read from it), 
       "--enable-logging=stderr" in _hf and "--disable-logging" not in _hf and "--headless=new" in _hf and not any(f.startswith("--remote-debugging") for f in _hf)
       and f"--user-data-dir={_S.WORK_DIR}/probe-t" in _hf and "--no-proxy-server" in _hf)
 
+# ---------------------------------------------------------------- 1.26.0: the member's portal theme (RB_THEME_MODE)
+_plain = S.chromium_argv("/usr/bin/chromium", 1280, 720, "https://duckduckgo.com/")
+check("theme: no mode, None, light or anything else leaves the Chromium arguments exactly as before",
+      all(S.chromium_argv("/usr/bin/chromium", 1280, 720, "https://duckduckgo.com/", m) == _plain for m in (None, "light", "", "auto", "DARK", "dark ", "--no-sandbox", 1, ["dark"])))
+_dark = S.chromium_argv("/usr/bin/chromium", 1280, 720, "https://duckduckgo.com/", "dark")
+check("theme: dark adds exactly --force-dark-mode, before the window size and the home page (the page stays last)",
+      [a for a in _dark if a not in _plain] == ["--force-dark-mode"] and len(_dark) == len(_plain) + 1 and _dark[-1] == "https://duckduckgo.com/"
+      and _dark.index("--force-dark-mode") < _dark.index("--window-size=1280,720"))
+check("theme: the switch is a constant of this file; no recolouring switch or feature of page content is anywhere in the source",
+      S.THEME_DARK_FLAG == "--force-dark-mode" and "WebContentsForceDark" not in SRC and "enable-features" not in SRC.replace("disable-features", "") and "force-dark-mode" in SRC)
+check("theme: the two modes are the only valid ones", S.THEME_MODES == ("dark", "light") and S.valid_theme_mode("dark") == "dark" and S.valid_theme_mode("light") == "light"
+      and all(S.valid_theme_mode(m) is None for m in (None, "", "Dark", "x", "dark\n", 0, ["dark"], "dark;--no-sandbox")))
+check("theme: config reads RB_THEME_MODE; absent or invalid is None and never an error",
+      S.read_config(ENV, exists=lambda p: True)["theme_mode"] is None
+      and S.read_config({**ENV, "RB_THEME_MODE": "dark"}, exists=lambda p: True)["theme_mode"] == "dark"
+      and S.read_config({**ENV, "RB_THEME_MODE": "light"}, exists=lambda p: True)["theme_mode"] == "light"
+      and all(S.read_config({**ENV, "RB_THEME_MODE": m}, exists=lambda p: True)["theme_mode"] is None for m in ("", "evil", "DARK", "dark\n", "--no-sandbox", "dark light")))
+check("theme: the mode read from the environment is what reaches chromium_argv in main()", 'chromium_argv(cfg["chromium"], w, h, cfg["home"], cfg.get("theme_mode"))' in SRC)
+check("theme: the colour never reaches the supervisor (no RB_THEME_COLOR anywhere in it)", "RB_THEME_COLOR" not in SRC and "BrowserThemeColor" not in SRC)
+
 if failures:
     print(f"\n{len(failures)} check(s) failed:")
     for f in failures:

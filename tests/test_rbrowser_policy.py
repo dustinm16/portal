@@ -343,6 +343,32 @@ check("home: build_policy refuses the same forms", raises(P.build_policy, "https
 check("DoH: the constant and a public IPv6 literal still validate", P.validate_doh_template(P.DOH_TEMPLATE) == P.DOH_TEMPLATE
       and P.validate_doh_template("https://[2606:4700:4700::1111]:853/dns-query"))
 
+# ---- the member's portal theme (1.26.0)
+check("theme: a valid colour is lower-cased and kept, the mode too", P.normalise_theme("#1A1A2E", "Dark") == ("#1a1a2e", "dark")
+      and P.normalise_theme("#f0e6d2", "light") == ("#f0e6d2", "light"))
+bad_colors = (None, "", "#fff", "#12345", "#1234567", "1a1a2e", "#1a1a2g", "#1a1a2e ", " #1a1a2e", "#1a1a2e\n", "red", "rgb(1,2,3)", 123, b"#1a1a2e",
+              ["#1a1a2e"], "#1a1a2e;", "#1a1a2e\"}", "#\u0661a1a2e", "javascript:alert(1)", "#" + "a" * 5000)
+check("theme: every malformed colour is None", all(P.normalise_theme(c, "dark")[0] is None for c in bad_colors))
+bad_modes = (None, "", "auto", "darkk", "dar", " dark", "dark\n", "DARK1", 1, True, ["dark"], "dark" * 1000, "system", "device")
+check("theme: every other mode is None", all(P.normalise_theme("#1a1a2e", m)[1] is None for m in bad_modes))
+check("theme: the two values are judged separately", P.normalise_theme("#1a1a2e", "x") == ("#1a1a2e", None)
+      and P.normalise_theme("x", "light") == (None, "light") and P.normalise_theme(None, None) == (None, None))
+check("theme: normalise never raises", all(P.normalise_theme(a, b) is not None for a in (object(), 1.5, {}, "\ud800") for b in (object(), {}, "\ud800")))
+check("theme: the colour pattern and the mode set are the decided ones",
+      P.THEME_COLOR_RE.pattern == "#[0-9a-f]{6}" and P.THEME_MODES == ("dark", "light"))
+doc = P.theme_policy("#1A1A2E", "dark")
+check("theme: the document has exactly the allowed keys", set(doc) == set(P.THEME_POLICY_KEYS) == {"BrowserThemeColor"} and doc == {"BrowserThemeColor": "#1a1a2e"})
+check("theme: the document is the same for either mode (the mode takes no policy key)", P.theme_policy("#1a1a2e", "light") == doc and P.theme_policy("#1a1a2e", None) == doc)
+check("theme: no valid colour gives an empty document", P.theme_policy(None, "dark") == {} and P.theme_policy("evil", "dark") == {} and P.theme_policy("#12", None) == {})
+main = P.build_policy("https://duckduckgo.com/", [])
+check("theme: no key of the theme document is a key of the security policy (nothing it could override or duplicate)",
+      not (set(P.theme_policy("#1a1a2e", "dark")) & set(main)) and not (set(P.THEME_POLICY_KEYS) & set(P.probe_policy(main))))
+check("theme: the theme document carries only a colour string, no list, no URL", all(isinstance(v, str) and P.THEME_COLOR_RE.fullmatch(v) for v in doc.values()))
+check("theme: the file name sorts before portal.json (Chromium lets the later file win a duplicate key; measured on 156)",
+      P.THEME_FILE_NAME == "portal-theme.json" and P.THEME_FILE_NAME < "portal.json")
+check("theme: the placeholder is an empty policy document", json.loads(P.THEME_PLACEHOLDER_TEXT) == {})
+check("theme: the main policy is unchanged by the theme work (no theme key in it)", "BrowserThemeColor" not in main and "BrowserColorScheme" not in main)
+
 if failures:
     print(f"\ntest_rbrowser_policy: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
