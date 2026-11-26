@@ -666,6 +666,10 @@ function create(env) {
         let w = stage && stage.clientWidth;
         let h = stage && stage.clientHeight;
         if (!w || !h) { w = (win && win.innerWidth) || MIN_W; h = (win && win.innerHeight) || MIN_H; }
+        // A stage narrower than the smallest remote window (a phone held upright): the picture is scaled down to fit the
+        // width, so the remote window is asked for with the stage's own shape, not with its height in pixels, or the
+        // scaled picture would leave an empty band above and below.
+        if (w < MIN_W) { h = h * MIN_W / w; w = MIN_W; }
         return clampSize(w, h);
     }
 

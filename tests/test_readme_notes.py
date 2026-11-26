@@ -2072,7 +2072,7 @@ check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as 
 _idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.25.0: the Static files item names the script versions the pages load",
       "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
-      and "`rbrowser.js` v1" in _s250 and "/static/js/rbrowser.js?v=1" in _page250 and "`rbrowser.css` v1" in _s250 and "rbrowser.css?v=1" in _page250
+      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # both moved to 2 in 1.25.1
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
 check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",

@@ -256,6 +256,15 @@
     pointer-events: none;
 }
 
+/* Between a phone and a wide desktop one row of controls is wider than the window (about 985px with every control
+   shown): the row wraps instead of pushing End session out of sight. */
+@media (max-width: 1000px) {
+    .rb-toolbar {
+        flex-wrap: wrap;
+        overflow-x: visible;
+    }
+}
+
 @media (max-width: 640px) {
     .rb-quality-label,
     .rb-long {
