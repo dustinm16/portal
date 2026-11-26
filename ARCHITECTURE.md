@@ -170,6 +170,14 @@ Two modules, no database access and no network of their own:
 ├── file_manager.py        # Local filesystem operations (admin)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user)
 ├── hostkeys.py            # SSH host-key pinning (trust on first use) for terminals, SFTP, VOD storage
+├── rbrowser.py            # Web Browser on the server: session registry, sweeper, stream checks, sandbox preflight, fake launcher for stage mode
+├── rbrowser_launch.py     # Web Browser: host preparation, availability, the systemd-run unit arguments, seats
+├── rbrowser_policy.py     # Web Browser: egress deny list and the managed Chromium policy
+├── rbrowser_bpf.py        # Web Browser: the ingress BPF filter that stops listeners
+├── rbrowser_rfb.py        # Web Browser: filter for the member's RFB client messages
+├── rbrowser_unit/         # Web Browser: what runs inside a session unit
+│   ├── session.py         #   supervisor: Xvfb, x11vnc, Chromium, window manager, control socket
+│   └── probe.py           #   the sandbox check, run in a probe unit with a session's limits
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -849,6 +857,7 @@ WS /ws/terminal/:id             - Terminal session (falls back to user-connectio
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
 WS /ws/user-connection/:id      - User connection relay (?shell= override for SSH)
+WS /ws/rbrowser/:sid           - Web Browser on the server (optional; browser sign-in only)
 WS /ws/{path}                   - Service relay (catch-all)
 ```
 
@@ -869,6 +878,7 @@ GET /watch/:id           - Stream viewer (HLS, picture-in-picture); ?chat=only =
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (feature guide)
 GET /files               - File manager (admin local + user SFTP)
+GET /rbrowser            - Web Browser on the server (optional, off by default)
 GET /sysmon              - System monitor (admin only)
 GET /live                - Public live streams (unauthenticated)
 ```

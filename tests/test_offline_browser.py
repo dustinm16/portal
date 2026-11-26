@@ -58,6 +58,22 @@ check("the launch uses both the rule and the flags, and the old demo-host-only r
 check("the launch is not a persistent profile (Playwright's throwaway profile is used)",
       "launch_persistent_context" not in src and "user_data_dir" not in src)
 
+# The server-side Web Browser (1.25.0) runs a real Chromium for members, and is not a test or a screenshot: its supervisor's flag list
+# (rbrowser_unit/session.py CHROMIUM_FLAGS, a tuple with one f-string in it, so it is read as source and not evaluated) has to carry the
+# whole offline set of the screenshot tool, so the two lists cannot drift apart. The names are resolved by the managed policy and the
+# unit's deny list, not by a resolver rule, so the rule is not part of it.
+sess = ast.parse((ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8"))
+unit_flags = set()
+for node in sess.body:
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "CHROMIUM_FLAGS":
+        unit_flags = {n.value for n in ast.walk(node.value) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+check("the supervisor of the Web Browser has a CHROMIUM_FLAGS list", len(unit_flags) > 10, str(len(unit_flags)))
+missing = [f for f in (flags or []) if f not in unit_flags]
+check("the supervisor's Chromium flag list contains every flag of OFFLINE_CHROMIUM_ARGS", flags is not None and not missing, str(missing))
+check("the supervisor never starts Chromium without its own sandbox",
+      all("no-sandbox" not in f for f in unit_flags) and "--no-sandbox" not in "\n".join(
+          l for l in (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8").splitlines() if not l.lstrip().startswith("#") and '"' in l and "never" not in l))
+
 if failed:
     print(f"\ntest_offline_browser: {len(failed)} FAILED")
     sys.exit(1)

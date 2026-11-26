@@ -732,6 +732,17 @@
                     <li><strong>Smart Sorting</strong> &mdash; Pinned connections appear first, then sorted by most recently used</li>
                 </ul>
 
+                <h3 id="web-browser">Web Browser (on the server)</h3>
+                <p>If an administrator has switched it on and your role allows it, the dashboard shows a card <strong>Web Browser (on this server)</strong> and <code>/rbrowser</code> opens a real browser that runs on the portal's server and reaches you as a picture. Use it for sites the embedded browser cannot handle. It is optional and <strong>off by default</strong>; the embedded browser above is unchanged.</p>
+                <div class="alert alert-info">
+                    <strong>Privacy:</strong> The Web Browser runs on the server, not on your device. Websites see the server's address, not yours. The portal has no function that records, logs or stores the addresses you open, what you type, or what is on the screen, and it keeps no history: the browser's profile lives in memory and is destroyed when the session ends. The portal does log that you started and ended a session, when, and how much data it moved; administrators can see that you have a session and whether it is active. This is not protection from the people who run this portal: its administrators have full access to the server and could observe a running browser there, including sites you are signed in to. The picture of the browser travels through the portal process and through Cloudflare's network like every other page of the portal (encrypted in transit, readable at those two points). Name lookups go to a DNS-over-HTTPS resolver (Cloudflare's 1.1.1.1), which sees the names of the sites opened from the server. Do not use it for anything you would not open on a computer that belongs to someone else.
+                </div>
+                <ul>
+                    <li><strong>What it does not do</strong> &mdash; no downloads, uploads, sound, printing, camera, microphone, extensions, Chromium account or password manager, and no page fullscreen. Text goes in as typed keys (the <em>Text</em> button types a block of up to 5000 characters; dead keys do not compose); text comes out only through <em>Copy from the browser</em>, where an administrator allows it.</li>
+                    <li><strong>Sessions</strong> &mdash; one per member, a few seats in all. A session ends when you end it, after the idle minutes, 5 minutes after the last window left, after 4 hours, when you sign out, or when an administrator ends it, switches the feature off or the portal restarts. The browser profile is thrown away every time.</li>
+                    <li><strong>Limits</strong> &mdash; the picture is a video: expect latency, and about 8 frames a second when scrolling text. A blocked destination (the server's own services, local networks) times out. At very small window sizes a page's drop-down list can touch the toolbar area, so the address bar in the picture is not a security indicator.</li>
+                </ul>
+
                 <div class="alert alert-info">
                     <strong>Security note:</strong> Connections to <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> are blocked for security. Only connections to remote hosts are allowed.
                 </div>
@@ -1146,6 +1157,9 @@
 
                 <h3>Device-Wide Metrics</h3>
                 <p>The Metrics tab keeps a persisted history of the <em>whole host</em>, not just Portal's traffic. Every 60&nbsp;seconds Portal records CPU and memory per service/process, every listening port and the connections on it, and the remote IPs talking to the box (with the ports they hit and the process serving them). Charts span 6&nbsp;hours to 14&nbsp;days and survive restarts; retention is set under Settings &rarr; Data Retention. Values are point-in-time samples, so very short-lived connections may not show up.</p>
+
+                <h3 id="web-browser-admin">Web Browser on the server</h3>
+                <p>Admin &rarr; Settings has a card <strong>Web Browser on the server</strong>. Every administrator can read it: whether this host can run the feature and what is missing (with the <code>apt-get</code> line), the Chromium version, the last sandbox check, the seats the host really allows and the sessions running now (member, since, active or idle, attached, memory, CPU time, data in and out) with an <em>End</em> button behind a question. There is no way to see a session's page. A superadmin signed in with the password switches it on, runs the check again and saves the ten settings (who may use it, seats, idle minutes, memory and CPU per session, clipboard mode, home page, upload limit, extra blocked networks). It is off by default; no session starts before a sandbox check has passed; switching it off ends every session. Administrators of this portal have a root shell on the server and could observe a running browser, which the privacy statement says to members. Details and limits are in the README section &ldquo;Web Browser (server-side)&rdquo;.</p>
 
                 <h3>User Management</h3>
                 <ul>

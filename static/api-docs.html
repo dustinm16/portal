@@ -369,6 +369,7 @@
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#search">Private Search</a></li>
+                    <li><a href="#rbrowser">Web Browser on the server</a></li>
                     <li><a href="#streams">User Streams</a></li>
                     <li><a href="#stream-relays">Stream Relays</a></li>
                     <li><a href="#encoder-settings">Encoder Settings</a></li>
@@ -1502,6 +1503,160 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Web Browser on the server -->
+                <h2 id="rbrowser">Web Browser on the server</h2>
+                <p>An optional Chromium that runs in a locked-down systemd unit on the portal's server and reaches the member as a picture (the README section "Web Browser (server-side)" describes the feature, its privacy statement and its limits). It is <strong>off by default</strong>. The member routes and the WebSocket accept <strong>the browser sign-in only</strong> (the session cookie of a password sign-in, full user scope): an API key, a bearer token, a <code>?token=</code> or a stream key gets <code>403</code>; <code>GET /api/rbrowser/status</code> is the one exception. Every answer carries <code>Cache-Control: no-store</code>. Nothing in any answer, log or event holds a web address, a page title, a key, a pointer position or clipboard text of a session.</p>
+
+                <div class="alert alert-info">
+                    <strong>Availability:</strong> while the feature is off, or the host cannot run it, <code>/api/rbrowser/status</code> says so and the other member routes answer <code>403</code>. No session starts before the sandbox check has passed. Close code <code>1006</code> instead of <code>4012</code> for a replaced window is a known rare issue of 1.25.0.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/rbrowser/status</span>
+                        <span class="endpoint-desc">Whether the Web Browser can be used</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{ "available", "enabled", "allowed", "busy", "checking", "clipboard", "boot_id" }</code>, plus <code>"reason"</code> (text) for an administrator. <code>allowed</code> is true only when the feature is on, the caller used the browser sign-in and the role is at least <code>rbrowser_min_role</code>. <code>busy</code>: every seat is taken. <code>checking</code>: the sandbox check is running. <code>clipboard</code>: <code>both</code>, <code>in</code> or <code>off</code>. <code>boot_id</code> changes when the portal restarts. Any signed-in credential.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/rbrowser/session</span>
+                        <span class="endpoint-desc">The caller's running session</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{ "sid", "ws", "width", "height", "idle_deadline", "max_deadline", "clipboard", "net_warning" }</code>; <code>ws</code> is the socket path <code>/ws/rbrowser/{sid}</code>. <code>404</code> when there is none, <code>409 {"elsewhere": true}</code> when another sign-in of the same member made it, <code>403</code> when not allowed.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/rbrowser/session</span>
+                        <span class="endpoint-desc">Start the member's session</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{ "width", "height", "takeover"? }</code> (whole numbers 1 to 20000, CSS pixels; <code>takeover</code> boolean). Starts the session (<code>201</code>) or returns it (<code>200</code>) when the same sign-in already has one. One session per member. The window is snapped to a multiple of 16, at least 560 wide and 480 high, at most 1920 by 1200. <code>takeover: true</code> ends a session that another sign-in of the member made and starts a new one.</p>
+                        <p>Answers: <code>400</code> bad numbers; <code>403</code> (off, role too low, or the sign-in was revoked during the start); <code>409 {"elsewhere": true}</code> (a session of another sign-in, no <code>takeover</code>); <code>409 {"busy": true, "free_in_minutes"}</code> (no free seat); <code>429</code> (6 starts per 10 minutes per member, <code>Retry-After</code>); <code>503</code> with <code>{"retry_after": 10}</code> while the sandbox check runs, <code>{"error": "unavailable"}</code> before a check has passed, or <code>{"error": "start_failed"}</code>. Global maintenance mode refuses the start with the maintenance answer.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/rbrowser/session</span>
+                        <span class="endpoint-desc">End the caller's own session</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>204</code>; any browser sign-in of the member may end it. <code>404</code> when there is none.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/rbrowser/session/resize</span>
+                        <span class="endpoint-desc">Resize the window</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{ "width", "height" }</code>. Answers <code>{ "ok": true|false }</code>; one call per second per member (<code>429</code>); <code>404</code>, <code>409 {"elsewhere"}</code> and <code>403</code> as above. Only the sign-in that made the session may resize it.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/rbrowser/session/clipboard</span>
+                        <span class="endpoint-desc">Read the remote browser's clipboard</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{ "text", "truncated" }</code>: plain text, at most 262144 bytes (longer text is cut and <code>truncated</code> is true). Only when <code>rbrowser_clipboard</code> is <code>both</code> (<code>403</code> otherwise), only for the sign-in that made the session, 12 calls a minute (<code>429</code>); <code>502 {"error"}</code> when the text could not be read. The text is never logged.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/rbrowser</span>
+                        <span class="endpoint-desc">The page</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>HTML. A request without a sign-in is redirected to <code>/login</code>. The page has its own content security policy (no inline script) and is refused during global maintenance mode.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-ws">WS</span>
+                        <span class="endpoint-path">/ws/rbrowser/{sid}</span>
+                        <span class="endpoint-desc">The picture and the member's input</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>An RFB stream over binary frames; text frames are small control frames. Only the browser sign-in that made the session may attach, and one window at a time: a second window of the same sign-in closes the first. The member's bytes pass a filter (six RFB message types, whole and bounded); anything else closes the socket with <code>4013</code> and writes a <code>rbrowser_protocol_violation</code> event.</p>
+                        <h4>Close codes</h4>
+                        <table class="param-table">
+                            <tr><th>Code</th><th>Meaning</th></tr>
+                            <tr><td><code>4003</code></td><td>Not allowed: wrong credential, feature off or role too low</td></tr>
+                            <tr><td><code>4004</code></td><td>No such session (also a session of another member or sign-in)</td></tr>
+                            <tr><td><code>4012</code></td><td>Opened in another window of the same sign-in (rarely <code>1006</code> instead, a known issue of 1.25.0)</td></tr>
+                            <tr><td><code>4013</code></td><td>The session ended; the close text is the reason (<code>idle</code>, <code>detached</code>, <code>max_lifetime</code>, <code>traffic_limit</code>, <code>closed</code>, <code>closed_in_browser</code>, <code>replaced</code>, <code>signed_out</code>, <code>admin_end</code>, <code>crash</code>, <code>portal_stop</code>, <code>start_failed</code>, <code>settings_changed</code>), or <code>slow</code> (too slow to keep up; the session stays) or <code>protocol</code> (broke the byte rules)</td></tr>
+                            <tr><td><code>4503</code></td><td>Maintenance mode</td></tr>
+                            <tr><td><code>1001</code></td><td>The stream ended; reconnect</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/rbrowser</span>
+                        <span class="endpoint-desc">Settings, host state, last check and running sessions (administrator)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>{ "settings", "defaults", "availability", "preflight", "seats", "sessions", "units_not_confirmed_stopped" }</code>. <code>availability</code>: <code>available</code>, <code>missing</code> (names), <code>reasons</code>, <code>chromium_version</code>, <code>chromium_age_days</code>, <code>kernel_upload_limit</code>, <code>checking</code>, and <code>upload_reason</code> when there is one. <code>preflight</code>: <code>{ "ok", "checks": [{ "name", "ok", "detail" }] }</code> of the last sandbox check. <code>seats</code>: <code>{ "max", "cpu_percent" }</code>, what the host really allows. Each entry of <code>sessions</code> has only <code>sid_prefix</code> (the first 6 characters), <code>user_id</code>, <code>username</code>, <code>started</code>, <code>state</code> (<code>active</code> or <code>idle</code>), <code>attached</code>, <code>memory_mb</code>, <code>cpu_seconds</code>, <code>net_in_mb</code> and <code>net_out_mb</code>. There is no field for a page and no route that shows one.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/rbrowser</span>
+                        <span class="endpoint-desc">Change the settings (superadmin, browser sign-in only)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>A flat object of the keys to change: <code>rbrowser_enabled</code> (boolean, default false), <code>rbrowser_min_role</code> (<code>admin</code>, <code>moderator</code>, <code>user</code>; default <code>admin</code>), <code>rbrowser_max_sessions</code> (1 to 8; 2), <code>rbrowser_idle_minutes</code> (5 to 120; 15), <code>rbrowser_memory_mb</code> (1024 to 4096; 2048), <code>rbrowser_cpu_percent</code> (50 to 400; 150), <code>rbrowser_clipboard</code> (<code>both</code>, <code>in</code>, <code>off</code>; <code>to_browser</code> is read as <code>in</code>), <code>rbrowser_home_url</code> (an https address, at most 300 characters; <code>https://duckduckgo.com/</code>), <code>rbrowser_upload_kbps</code> (0 or 500 to 50000; 4000) and <code>rbrowser_extra_deny</code> (at most 32 networks in CIDR form).</p>
+                        <p>Returns the body of the GET plus <code>"saved": true</code>. <code>400</code> for an unknown key or a bad value (the message names the key, never the value). Switching off, or raising the role, ends the sessions affected (<code>settings_changed</code>); switching on prepares the host and starts the sandbox check; no other change alters a running unit. Audited (<code>rbrowser_settings_update</code>) and a <code>rbrowser_settings_changed</code> security event, both naming the keys.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/rbrowser/preflight</span>
+                        <span class="endpoint-desc">Run the sandbox check now (superadmin)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Answers <code>{ "ok", "checks": [{ "name", "ok", "detail" }] }</code>; it can take about 40 seconds. <code>409</code> while the feature is off or unavailable; <code>500</code> when the check could not run.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/rbrowser/sessions/{sid_prefix}/end</span>
+                        <span class="endpoint-desc">End a member's session (administrator)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{ "confirm": true }</code> (<code>400</code> without it). Ends the session whose id starts with the 6 characters from the list (<code>404</code> when none), writes the audit entry <code>rbrowser_admin_end</code> first, and sends the member a notification. Answers <code>{ "ended": true }</code>.</p>
+                    </div>
+                </div>
+
+                <p><strong>Events.</strong> Security events (superadmin list): <code>rbrowser_settings_changed</code>, <code>rbrowser_preflight_failed</code>, <code>rbrowser_listener_found</code>, <code>rbrowser_socket_mismatch</code>, <code>rbrowser_display_mismatch</code>, <code>rbrowser_protocol_violation</code>, <code>rbrowser_traffic_limit</code>; their details are fixed words. Audit log actions: <code>rbrowser_start</code>, <code>rbrowser_end</code> (reason and minutes), <code>rbrowser_admin_end</code>, <code>rbrowser_settings_update</code>.</p>
 
                 <!-- User Streams -->
                 <h2 id="streams">User Streams</h2>

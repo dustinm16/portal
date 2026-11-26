@@ -297,6 +297,16 @@ search (id + username only) powering the pickers in both grant modals. Every
 grant / revoke writes an `audit_log` entry (`connection.share`,
 `connection.unshare`, `service.grant`, `service.ungrant`).
 
+### Web Browser on the server (optional, 1.25.0)
+
+A Chromium that runs on the portal's host and reaches a member as a picture. Off by default; nothing is started, mounted or loaded until a superadmin switches it on (ten `rbrowser_*` rows in `settings`, no table).
+
+- **Registry (`rbrowser.py`).** One session per member, seats from memory and CPU, a sweeper every 5 seconds (idle, detach, lifetime, traffic budget, temporary-area quota, listener and display checks), the sandbox **preflight** that must pass before any start, and a `FakeLauncher` (stage mode with `PORTAL_RBROWSER_FAKE=1`) so tests and the smoke run need no root. It never logs or returns a URL, title, key, pointer position or clipboard text.
+- **Unit (`rbrowser_launch.py`, `rbrowser_unit/session.py`).** Each session is a transient systemd unit with a dynamic user, limits, a kernel egress deny list (`rbrowser_policy.deny_list`), an ingress BPF filter (`rbrowser_bpf`) and a managed Chromium policy (`rbrowser_policy.build_policy`); Chromium's own sandbox stays on. Inside, a supervisor starts Xvfb, x11vnc on a unix socket, Chromium and a small window manager that shows only browser windows and pop-ups, and answers a control socket (resize, clipboard read).
+- **Bridge (`handle_rbrowser_ws` in `server.py`).** `/ws/rbrowser/{sid}` connects the member's WebSocket to the unit's VNC socket; the member's bytes pass `rbrowser_rfb.ClientFilter`; the unit's bytes are passed on unparsed. Only the browser sign-in that created the session may attach, one window at a time.
+- **Pages.** `static/rbrowser.html` with `js/rbrowser.js` (noVNC client, vendored) and `css/rbrowser.css`; the dashboard card in `dashboard.js`; the admin card in `admin.html` with `js/rbrowser-admin.js`.
+- **Routes and events.** See [API.md](API.md#web-browser-on-the-server-optional-1250) and the README upgrade notes for 1.25.0.
+
 ### 2. Authentication Model
 
 ```
@@ -369,6 +379,14 @@ Two modules, no database access and no network of their own:
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
 ├── gameservers.py         # SteamCMD game-server deploy / adopt / update / jailed file browser / backup (~1200 lines)
 ├── jobs.py                # In-memory background job registry + streaming subprocess runner (~125 lines)
+├── rbrowser.py            # Web Browser on the server: session registry, sweeper, stream checks, sandbox preflight, fake launcher for stage mode (~2,060 lines)
+├── rbrowser_launch.py     # Web Browser: host preparation, availability, the systemd-run unit arguments, seats (~1,500 lines)
+├── rbrowser_policy.py     # Web Browser: egress deny list and the managed Chromium policy (~440 lines)
+├── rbrowser_bpf.py        # Web Browser: the ingress BPF filter that stops listeners (~480 lines)
+├── rbrowser_rfb.py        # Web Browser: filter for the member's RFB client messages (~160 lines)
+├── rbrowser_unit/         # Web Browser: what runs inside a session unit
+│   ├── session.py         #   supervisor: Xvfb, x11vnc, Chromium, window manager, control socket
+│   └── probe.py           #   the sandbox check, run in a probe unit with a session's limits
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -1324,6 +1342,7 @@ WS /ws/terminal/:id             - Terminal session (falls back to user-connectio
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
 WS /ws/user-connection/{id}     - User connection relay (opaque ID, ?shell= override for SSH)
+WS /ws/rbrowser/{sid}          - Web Browser on the server: picture and input (browser sign-in only)
 WS /ws/{path}                   - Service relay (catch-all)
 ```
 

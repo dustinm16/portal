@@ -1155,6 +1155,50 @@ JSON output requires `formats: [html, json]` in the generated `settings.yml` (th
 
 ---
 
+### Web Browser on the server (optional, 1.25.0)
+
+A Chromium that runs in a locked-down systemd unit on the portal's server and reaches the member as a picture (see the README section "Web Browser (server-side)"). **Off by default**: while it is off, or the host cannot run it, `GET /api/rbrowser/status` says so and every other member route answers `403`. The member routes and the WebSocket accept **the browser sign-in only** (the session cookie of a password sign-in, full user scope): an API key, a bearer token, a `?token=` or a stream key gets `403`. `GET /api/rbrowser/status` is the one exception (any signed-in credential). Every answer carries `Cache-Control: no-store`. Nothing in any answer, log or event holds a web address, a page title, a key, a pointer position or clipboard text of a session.
+
+#### GET /api/rbrowser/status
+`{ "available", "enabled", "allowed", "busy", "checking", "clipboard", "boot_id" }`, plus `"reason"` (text) for an administrator. `allowed` is true only when the feature is on, the caller used the browser sign-in and the role is at least `rbrowser_min_role`. `busy`: every seat is taken. `checking`: the sandbox check is running. `clipboard`: `both`, `in` or `off`. `boot_id` changes when the portal restarts.
+
+#### GET /api/rbrowser/session
+The caller's running session: `{ "sid", "ws", "width", "height", "idle_deadline", "max_deadline", "clipboard", "net_warning" }` (`ws` is the socket path `/ws/rbrowser/{sid}`). `404 {"error"}` when there is none; `409 {"elsewhere": true}` when another sign-in of the same member made it; `403` when not allowed.
+
+#### POST /api/rbrowser/session
+Body `{ "width", "height", "takeover"? }` (whole numbers 1 to 20000, CSS pixels; `takeover` boolean). Starts the member's session (`201`), or returns it (`200`) when the same sign-in already has one. One session per member. The window is snapped to a multiple of 16, at least 560 wide and 480 high, at most 1920x1200. `takeover: true` ends a session another sign-in of the member made and starts a new one. Answers: `400` bad numbers, `403` (off, role too low, or the sign-in was revoked during the start), `409 {"elsewhere": true}` (a session of another sign-in, no `takeover`), `409 {"busy": true, "free_in_minutes"}` (no free seat), `429` (6 starts per 10 minutes per member, `Retry-After`), `503` with `{"retry_after": 10}` while the sandbox check runs, `{"error": "unavailable"}` before a check has passed, or `{"error": "start_failed"}`; the unit also refuses during global maintenance mode (the maintenance answer).
+
+#### DELETE /api/rbrowser/session
+Ends the caller's own session (`204`; any browser sign-in of the member). `404` when there is none.
+
+#### POST /api/rbrowser/session/resize
+Body `{ "width", "height" }`. Answers `{ "ok": true|false }`; one call per second per member (`429`); `404`, `409 {"elsewhere"}` and `403` as above. Only the sign-in that made the session may resize it.
+
+#### POST /api/rbrowser/session/clipboard
+Reads the text of the remote browser's clipboard: `{ "text", "truncated" }` (plain text, at most 262144 bytes, longer text is cut and `truncated` is true). Only when `rbrowser_clipboard` is `both` (`403` otherwise), only for the sign-in that made the session, 12 calls a minute (`429`); `502 {"error"}` when the text could not be read. The text is never logged.
+
+#### GET /rbrowser
+The page (HTML); a request without a sign-in is redirected to `/login`. It has its own content security policy (no inline script).
+
+#### WS /ws/rbrowser/{sid}
+The picture and the member's input (an RFB stream over binary frames; text frames are small control frames). Only the browser sign-in that made the session may attach, and only one window at a time: a second window of the same sign-in closes the first. The member's bytes pass a filter (six RFB message types, whole and bounded; anything else closes the socket with `4013` and writes a `rbrowser_protocol_violation` event). Close codes: `4003` not allowed (wrong credential, feature off, role too low), `4004` no such session (also a session of another member or sign-in), `4012` opened in another window, `4013` the session ended (the close text is the reason: `idle`, `detached`, `max_lifetime`, `traffic_limit`, `closed`, `closed_in_browser`, `replaced`, `signed_out`, `admin_end`, `crash`, `portal_stop`, `start_failed`, `settings_changed`) or the connection was too slow (`slow`) or broke the byte rules (`protocol`), `4503` maintenance mode, `1001` the stream ended (reconnect). Known issue in 1.25.0: a replaced window can rarely see `1006` instead of `4012`.
+
+#### GET /api/admin/rbrowser  (administrator)
+`{ "settings", "defaults", "availability", "preflight", "seats", "sessions", "units_not_confirmed_stopped" }`. `settings` holds the ten keys; `availability`: `available`, `missing` (names), `reasons`, `chromium_version`, `chromium_age_days`, `kernel_upload_limit`, `checking`, and `upload_reason` when there is one; `preflight`: `{ "ok", "checks": [{ "name", "ok", "detail" }] }` of the last sandbox check; `seats`: `{ "max", "cpu_percent" }` (what the host really allows). Each of `sessions` has only `sid_prefix` (first 6 characters), `user_id`, `username`, `started`, `state` (`active` or `idle`), `attached`, `memory_mb`, `cpu_seconds`, `net_in_mb`, `net_out_mb`; there is no field for a page, and no route that shows one.
+
+#### PUT /api/admin/rbrowser  (superadmin, browser sign-in only)
+A flat object of the keys to change: `rbrowser_enabled` (boolean), `rbrowser_min_role` (`admin`, `moderator`, `user`), `rbrowser_max_sessions` (1 to 8), `rbrowser_idle_minutes` (5 to 120), `rbrowser_memory_mb` (1024 to 4096), `rbrowser_cpu_percent` (50 to 400), `rbrowser_clipboard` (`both`, `in`, `off`; `to_browser` is read as `in`), `rbrowser_home_url` (an https address, at most 300 characters), `rbrowser_upload_kbps` (0 or 500 to 50000) and `rbrowser_extra_deny` (at most 32 networks in CIDR form). Returns the same body as the GET plus `"saved": true`. `400` for an unknown key or a bad value (the message names the key, never the value). Switching off, or raising the role, ends the sessions affected (`settings_changed`); switching on prepares the host and starts the sandbox check. A change never alters a running unit otherwise. Audited (`rbrowser_settings_update`) and a `rbrowser_settings_changed` security event, both naming the keys.
+
+#### POST /api/admin/rbrowser/preflight  (superadmin)
+Runs the sandbox check now and answers `{ "ok", "checks": [{ "name", "ok", "detail" }] }`; it can take about 40 seconds. `409` while the feature is off or unavailable; `500` when the check could not run.
+
+#### POST /api/admin/rbrowser/sessions/{sid_prefix}/end  (administrator)
+Body `{ "confirm": true }` (`400` without it). Ends the session whose id starts with the 6 characters from the list (`404` when none), audits it first (`rbrowser_admin_end`), and sends the member a notification. Answers `{ "ended": true }`.
+
+**Events.** Security events (superadmin list): `rbrowser_settings_changed`, `rbrowser_preflight_failed`, `rbrowser_listener_found`, `rbrowser_socket_mismatch`, `rbrowser_display_mismatch`, `rbrowser_protocol_violation`, `rbrowser_traffic_limit`; details are fixed words. Audit log actions: `rbrowser_start`, `rbrowser_end` (reason and minutes), `rbrowser_admin_end`, `rbrowser_settings_update`.
+
+---
+
 ### User Streams
 
 User streams allow broadcasting from OBS or other streaming software. All traffic is encrypted via RTMPS/RTSPS.
