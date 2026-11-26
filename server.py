@@ -20212,6 +20212,11 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
         except Exception:
             pass
         rbrowser.mark_detached(session, ws)
+    if outcome["close"] is None and session.viewer is not ws and session.state == "running":
+        # Another window of this sign-in took the session: its attach is closing this socket from its own task (step 4),
+        # which ends the loops above first. Returning before that task has written the close frame would drop the
+        # connection (code 1006), and the page reconnects and takes the session back. This task writes it itself.
+        outcome["close"] = (4012, b"opened in another window")
     if outcome["close"] is not None and not ws.closed:
         await _rbrowser_close(ws, *outcome["close"])
 

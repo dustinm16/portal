@@ -181,6 +181,33 @@ async def main():
     check("and the new one gets the stream", got > 20 and code is None and sess_b.viewer is not None, str((got, code)))
     ws = wnew
 
+    # Replacing a window many times while the old one is streaming: every old window is told 4012. (The close of the old socket
+    # is written by the new window's task; a handler that returned first dropped the connection, code 1006, one time in about
+    # sixty, and the page then reconnected and took the session back from the new window.) The race is timing: a run of this
+    # loop on the old code fails only now and then (about one time in sixty replacements); on the fixed code it must never.
+    async def pump(w, stop):
+        while not stop.is_set():
+            try:
+                await w.send_bytes(struct.pack(">BBHHHH", 3, 1, 0, 0, 64, 64))
+            except Exception:
+                return
+            await asyncio.sleep(0.005)
+
+    codes = []
+    for _ in range(20):
+        stop = asyncio.Event()
+        t = asyncio.ensure_future(pump(ws, stop))
+        await asyncio.sleep(0.1)
+        wnext = await attach(bob, sid)
+        _, c = await drain_for(ws, 3)
+        codes.append(c)
+        stop.set()
+        await t
+        await handshake(wnext)
+        ws = wnext
+    check("20 replacements of a streaming window: each old window gets 4012 and none an abnormal close", codes == [4012] * 20,
+          str({c: codes.count(c) for c in set(codes)}))
+
     # what the unit receives is the filter's output, not the member's bytes
     n0 = len(fake.records)
     sent_encs = [-1063131698, 7, -312, 0, -313, 7, -223, -314]
@@ -378,14 +405,14 @@ async def main():
     async with bob.post(f"{base}/logout") as r:
         pass
     _, code = await drain_for(ws, 3)
-    for _ in range(40):
+    for _ in range(20):
         if s3.state == "ended":
             break
         await asyncio.sleep(0.1)
     check("revocation (sign-out) closes the socket (4001 or the session's own close) and ends the session as signed_out",
           code in (4001, 4013) and s3.state == "ended" and s3.end_reason == "signed_out", f"{code} {s3.state} {s3.end_reason}")
     n_end = 0
-    for _ in range(40):                  # the audit row is written by the revocation task after the session ended
+    for _ in range(20):                  # the audit row is written by the revocation task after the session ended
         cur = await db.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'rbrowser_end' AND actor_id = ?", (env.uid["bob"],))
         n_end = (await cur.fetchone())[0]
         if n_end >= 3:
@@ -402,7 +429,7 @@ async def main():
     await asyncio.sleep(0.3)
     check("a revocation that spares this sign-in does not end its session", s4.state == "running")
     await server.close_user_websockets(env.uid["carol"])
-    for _ in range(40):
+    for _ in range(20):
         if s4.state == "ended":
             break
         await asyncio.sleep(0.1)

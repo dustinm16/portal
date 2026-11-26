@@ -112,6 +112,17 @@ OFFLINE_ARGS = [
 # Collected in every page before its own scripts run: content-security-policy violations, as the browser reports them.
 INIT = """
 window.__csp = [];
+window.__wsclose = [];
+(function () {
+    var Orig = window.WebSocket;
+    window.WebSocket = function (u, p) {
+        var w = p === undefined ? new Orig(u) : new Orig(u, p);
+        w.addEventListener('close', function (e) { window.__wsclose.push(e.code); });
+        return w;
+    };
+    window.WebSocket.prototype = Orig.prototype;
+    ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { window.WebSocket[k] = Orig[k]; });
+})();
 document.addEventListener('securitypolicyviolation', function (e) { window.__csp.push(e.violatedDirective + ' ' + e.blockedURI.slice(0, 40)); }, true);
 """
 
@@ -414,7 +425,7 @@ def run_browser(info):
             p2, w2 = open_page(ctx, L)
             replaced = wait_for(lambda: "another window" in (p1.locator("#rb-overlay").inner_text() if p1.locator("#rb-overlay").is_visible() else ""), 15)
             if not replaced:
-                print("DEBUG", p1.locator("#rb-status-text").inner_text(), "|", p2.locator("#rb-status-text").inner_text(), "|", p2.locator("#rb-overlay-title").inner_text(), "|", p2.locator("#rb-overlay-text").inner_text()[:80], counts(), w1.errors, w2.errors, w2.bad, w1.bad, flush=True)
+                print("DEBUG", p1.locator("#rb-status-text").inner_text(), "|", p2.locator("#rb-status-text").inner_text(), "|", p2.locator("#rb-overlay-title").inner_text(), "|", p2.locator("#rb-overlay-text").inner_text()[:80], counts(), w1.errors, w2.errors, w2.bad, w1.bad, "close codes p1", p1.evaluate("window.__wsclose"), "p2", p2.evaluate("window.__wsclose"), flush=True)
             check(f"{L}: the first window says it was opened in another window", bool(replaced), p1.locator("#rb-overlay").inner_text()[:100])
             check(f"{L}: and the second shows the picture", bool(wait_for(lambda: p2.locator("#rb-end").is_visible(), 15)))
             try:
