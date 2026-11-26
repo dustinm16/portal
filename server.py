@@ -22882,12 +22882,25 @@ _FRAME_JS_AT = re.compile(r'\A(?:\ufeff|[ \t\r\n\f]|<!--.*?-->)*(?:<!doctype[^>]
 _FRAME_JS_AT_B = re.compile(rb'\A(?:\xef\xbb\xbf|[ \t\r\n\f]|<!--.*?-->)*(?:<!doctype[^>]*>)?', re.I | re.S)
 
 
-def _insert_isolated_frame_js(doc):
-    """Put _ISOLATED_FRAME_JS into an HTML document, given as text or as bytes (an ASCII-compatible encoding)."""
+def _insert_isolated_frame_js(doc, strict: bool = False):
+    """Put _ISOLATED_FRAME_JS into an HTML document, given as text or as bytes (an ASCII-compatible encoding).
+    strict: the proxy does not know how the browser will decode the document (its bytes were kept), so the script is
+    put at the very start (after a byte order mark) when anything before the usual place is an ESC or not ASCII:
+    a browser that reads such a page as ISO-2022-JP (from a meta tag or by guessing) is switched to another mode by
+    an ESC inside a leading comment and then reads the script as part of that comment. Such a page may render in
+    quirks mode (the script then stands before its doctype)."""
     if isinstance(doc, bytes):
         at = _FRAME_JS_AT_B.match(doc).end()
+        if strict:
+            bom = len(b"\xef\xbb\xbf") if doc.startswith(b"\xef\xbb\xbf") else 0
+            if re.search(rb"[\x1b\x80-\xff]", doc[bom:at]):
+                at = bom
         return doc[:at] + _ISOLATED_FRAME_JS.encode("ascii") + doc[at:]
     at = _FRAME_JS_AT.match(doc).end()
+    if strict:
+        bom = 1 if doc.startswith("\ufeff") else 0
+        if re.search(r"[\x1b\x80-\U0010ffff]", doc[bom:at]):
+            at = bom
     return doc[:at] + _ISOLATED_FRAME_JS + doc[at:]
 
 
@@ -23630,7 +23643,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                                     text = inject_js + text
 
                         if inject_frame_js:
-                            text = _insert_isolated_frame_js(text)
+                            text = _insert_isolated_frame_js(text, strict=reading is not None and not reading[3])
                         response_body = text.encode(reading[1] if reading else charset)
                         frame_js_done = True
                         if reading and "Content-Type" in resp_headers:
@@ -23648,7 +23661,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                         if response_body[:2] in (b"\xff\xfe", b"\xfe\xff") or re.match(r"(?:utf|ucs)[-_ ]?(?:16|32|2|4)", charset.lower()):
                             resp_headers["Content-Disposition"] = "attachment"
                         else:
-                            response_body = _insert_isolated_frame_js(response_body)
+                            response_body = _insert_isolated_frame_js(response_body, strict=True)
 
                 return web.Response(
                     status=resp.status,

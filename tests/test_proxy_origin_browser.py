@@ -175,6 +175,7 @@ CS_BROWSER_KINDS = {
     "cs_ebcdic": (lambda page: page.encode(), "text/html; charset=cp037"),
     "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
     "cs_jis_meta": (lambda page: page.replace("<head>", '<head><meta charset="iso-2022-jp">').replace("ct page", JA_TEXT).encode("iso2022_jp"), "text/html"),
+    "cs_esc": (lambda page: b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp">' + page.encode() + b"\xff", "text/html"),
 }
 
 # (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and

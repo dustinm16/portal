@@ -465,6 +465,13 @@ async def amain():
         # ISO-2022-JP is 7-bit: valid UTF-8 as well, but the meta tag decides, and without one nothing is claimed
         "cs_jis_meta": ([b"text/html"], cs_jis_meta, "text/html; charset=iso-2022-jp", None),
         "cs_jis_nometa": ([b"text/html"], cs_jis_meta.replace(b'<meta charset="iso-2022-jp">', b""), "text/html", None),
+        # an ESC inside a leading comment switches a browser that reads the page as ISO-2022-JP into another mode: the
+        # script goes in at the very start, before the comment
+        "cs_esc_meta": ([b"text/html"], b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp"><title>a</title>\xff', "text/html; charset=iso-2022-jp", None),
+        "cs_esc_nometa": ([b"text/html"], b'<!--\x1b$B-->\x1b(B--><title>a</title>\xff', "text/html", None),
+        "cs_nonascii_comment": ([b"text/html"], b"<!-- \xe9 --><!doctype html><title>a</title>\xff", "text/html", None),
+        # ... but a page the proxy reads as UTF-8 keeps its leading comment in front of the script
+        "cs_utf8_comment": ([b"text/html"], "<!-- caf\u00e9 --><!doctype html><head><title>a</title></head>".encode(), "text/html; charset=utf-8", None),
     }
     for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
         raw_cases[_name] = (_cts, _body)
@@ -744,6 +751,14 @@ async def amain():
             ("not a meta tag", b'<metadata charset="big5">', None),
             ("nothing", b"plain text", None)):
         check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
+    # (1.24.2) where the report script stands when the proxy does not know how the browser decodes the page (bytes kept)
+    for kind in ("cs_esc_meta", "cs_esc_nometa", "cs_nonascii_comment"):
+        body = await served_cs(kind)
+        check(f"CS {kind}: nothing of the page stands before the report script (an ESC or a non-ASCII byte in front of it could change how a browser reads it)",
+              body.startswith(script_b), f"{body[:60]!r}")
+    body = await served_cs("cs_utf8_comment")
+    check("CS cs_utf8_comment: a page read as UTF-8 keeps its leading comment and doctype in front of the script (no quirks mode)",
+          body.startswith("<!-- caf\u00e9 --><!doctype html>".encode() + script_b), f"{body[:80]!r}")
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_u16le")
     check("CS: a trusted connection gets the UTF-16 answer byte for byte, with the Content-Type it had",
           st == 200 and body == charset_cases["cs_u16le"][1] and hd.getall("Content-Type", []) == ["text/html"], f"{hd.getall('Content-Type', [])} {body[:20]!r}")
