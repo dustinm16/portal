@@ -1977,6 +1977,105 @@ check("1.24.2: the notes say what an isolated answer's Content-Type becomes, and
       and "def _isolated_content_type(" in (ROOT / "server.py").read_text(encoding="utf-8")
       and '_CT_FALLBACK = "application/octet-stream"' in (ROOT / "server.py").read_text(encoding="utf-8"))
 
+# --- 1.25.0: the Web Browser on the server -----------------------------------------------------------------
+import ast as _ast
+_m250 = re.search(r"### Upgrade notes for 1\.25\.0\n(.*?)(?=\n### Upgrade notes for 1\.24\.2\n)", text, re.S)
+check("README has an 'Upgrade notes for 1.25.0' section directly above the 1.24.2 notes", _m250 is not None)
+_s250 = _m250.group(1) if _m250 else ""
+_feat250 = text.split("### Web Browser (server-side)\n", 1)[1].split("\n### Data Retention", 1)[0] if "### Web Browser (server-side)\n" in text else ""
+_srv250 = (ROOT / "server.py").read_text(encoding="utf-8")
+_page250 = (ROOT / "static" / "rbrowser.html").read_text(encoding="utf-8")
+_priv_page = re.search(r'id="rb-privacy">(.*?)</p>', _page250, re.S)
+_priv_page = _priv_page.group(1).replace("&#39;", "'") if _priv_page else ""
+_priv_readme = re.search(r"^> (The Web Browser runs on the server.*)$", _feat250, re.M)
+_priv_readme = _priv_readme.group(1) if _priv_readme else ""
+check("1.25.0: the privacy statement of the README is the paragraph the page shows, word for word", _priv_page != "" and _priv_page == _priv_readme,
+      (_priv_page[:60], _priv_readme[:60]))
+check("1.25.0: the statement does not claim end-to-end encryption, anonymity or that no third party is involved",
+      all(w not in _priv_readme.lower() for w in ("end-to-end", "anonymous", "no third part", "untraceable", "private from"))
+      and "Cloudflare's 1.1.1.1" in _priv_readme and "not protection from the people who run this portal" in _priv_readme.replace("This is not protection", "not protection"))
+check("1.25.0: the feature section says it is off by default, optional, not anonymous, not end-to-end, and names the fixed resolver and DuckDuckGo",
+      "**optional and off by default**" in _feat250 and "Not anonymity, and not end-to-end encryption" in _feat250
+      and "fixed in the code (it is not a setting)" in _feat250 and "DuckDuckGo" in _feat250
+      and "no sound" in _feat250 and "cannot be attributed to one member" in _feat250
+      and "every administrator of this portal has a root shell" in _feat250)
+check("1.25.0: the notes name the same limits, the administrators' root shell and the honest Not tested paragraph",
+      "off by default" in _s250 and "**administrators of this portal have a root shell on the server" in _s250
+      and "cannot be attributed to one member" in _s250 and "no sound" in _s250
+      and "\n**Not tested**\n" in _s250 and "Debian 12, systemd 252, kernel 6.1" in _s250 and "fake stream" in _s250
+      and "neither Firefox nor Safari" in _s250 and "No phone" in _s250
+      and "Switch the feature off first" in _s250.replace("**Switch the feature off first**", "Switch the feature off first")
+      and "\n**Rollback**\n" in _s250 and "No table, no column, no migration" in _s250 and "None expected." in _s250)
+# the ten settings and their defaults are the ones in server.py (read as source text)
+_defaults250 = {}
+for _node in _ast.parse(_srv250).body:
+    if isinstance(_node, _ast.Assign) and isinstance(_node.targets[0], _ast.Name) and _node.targets[0].id == "RBROWSER_DEFAULTS":
+        for _k, _v in zip(_node.value.keys, _node.value.values):
+            try:
+                _defaults250[_k.value] = _ast.literal_eval(_v)
+            except ValueError:
+                _defaults250[_k.value] = None            # rbrowser_home_url: rbrowser_policy.DEFAULT_HOME_URL
+check("1.25.0: the ten settings of the code are the ten of the notes and the feature section, with their defaults",
+      len(_defaults250) == 10 and all(f"`{k}`" in _s250 and f"`{k[len('rbrowser_'):]}`" in _feat250 for k in _defaults250)
+      and "`rbrowser_enabled` (false)" in _s250 and "`rbrowser_min_role` (`admin`)" in _s250 and "`rbrowser_max_sessions` (2)" in _s250
+      and "`rbrowser_idle_minutes` (15)" in _s250 and "`rbrowser_memory_mb` (2048)" in _s250 and "`rbrowser_cpu_percent` (150)" in _s250
+      and "`rbrowser_clipboard` (`both`;" in _s250 and "`rbrowser_upload_kbps` (4000)" in _s250 and "`rbrowser_extra_deny` (empty)" in _s250
+      and _defaults250["rbrowser_enabled"] is False and _defaults250["rbrowser_min_role"] == "admin" and _defaults250["rbrowser_max_sessions"] == 2
+      and _defaults250["rbrowser_idle_minutes"] == 15 and _defaults250["rbrowser_memory_mb"] == 2048 and _defaults250["rbrowser_cpu_percent"] == 150
+      and _defaults250["rbrowser_clipboard"] == "both" and _defaults250["rbrowser_upload_kbps"] == 4000 and _defaults250["rbrowser_extra_deny"] == [],
+      str(sorted(_defaults250)))
+# every route of the code is named in the notes; the notes name no other
+_routes250 = sorted({m_.group(2) for m_ in re.finditer(r'app\.router\.add_(get|post|put|delete)\("([^"]*rbrowser[^"]*)"', _srv250)})
+check("1.25.0: every rbrowser route of the code (and the socket) is in the notes",
+      len(_routes250) == 8 and all(r.replace("{sid_prefix}", "{sid_prefix}") in _s250 for r in _routes250) and "/ws/rbrowser/{sid}" in _s250
+      and ('"/ws/rbrowser/' in _srv250 or "/ws/rbrowser/" in _srv250), str(_routes250))
+_codes250 = sorted({int(c) for c in re.findall(r"_rbrowser_close\((?:old|ws), (\d{4})", _srv250)})
+check("1.25.0: every close code the socket handler writes is in the notes",
+      _codes250 == [4003, 4004, 4012, 4013, 4503] and all(f"`{c}`" in _s250 for c in _codes250) and "`1001`" in _s250 and "outcome[\"close\"] = (1001," in _srv250, str(_codes250))
+import secevents as _sec250
+_ev250 = sorted(k for k in _sec250.EVENTS if k.startswith("rbrowser_"))
+_adm250 = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
+check("1.25.0: the seven security events of the code are the ones the notes name, and the admin page lists them",
+      len(_ev250) == 7 and all(f"`{e}`" in _s250 and f"'{e}'" in _adm250 for e in _ev250) and "`rbrowser_settings_update`" in _s250
+      and all(a in _srv250 for a in ('"rbrowser_start"', '"rbrowser_end"', '"rbrowser_admin_end"', '"rbrowser_settings_update"')), str(_ev250))
+import rbrowser as _rb250
+import rbrowser_launch as _rl250
+import rbrowser_policy as _rp250
+check("1.25.0: the figures in the text are the constants of the code (4 hours, 5 minutes, 512 MiB, 8 GiB, 12 MiB, 32 MiB, 262144 bytes, systemd 249, 1.1.1.1, DuckDuckGo)",
+      _rb250.LIFETIME_S == 240 * 60 and _rb250.DETACH_S == 300 and _rb250.UP_VOLUME == 512 * 1024 ** 2 and _rb250.DOWN_VOLUME == 8 * 1024 ** 3
+      and _rb250.TMP_QUOTA_BYTES == 12 * 1024 ** 2 and _rl250.TMP_MB == 32 and _rb250.CLIP_TEXT_MAX == 262144 and _rl250.SYSTEMD_MIN == 249
+      and _rp250.DOH_TEMPLATE == "https://1.1.1.1/dns-query" and _rp250.DEFAULT_HOME_URL == "https://duckduckgo.com/" and "duckduckgo.com" in _rp250.SEARCH_URL
+      and "4 hours after it started" in _feat250 and "5 minutes after the last window left" in _feat250 and "512 MiB sent or 8 GiB received" in _feat250
+      and "shared 32 MiB area" in _feat250 and "more than 12 MiB" in _feat250 and "at most 262144 bytes" in _feat250
+      and "systemd 249 or newer" in _feat250 and "5000 characters" in _feat250
+      and "TYPE_MAX_CHARS = 5000" in (ROOT / "static" / "js" / "rbrowser.js").read_text(encoding="utf-8"))
+check("1.25.0: the containment named in the text is in the unit, the policy and the filter (dynamic user, egress deny, ingress filter, Chromium sandbox kept on, policy keys)",
+      all(w in (ROOT / "rbrowser_launch.py").read_text(encoding="utf-8") for w in ('p("DynamicUser=yes")', 'p("IPAddressDeny="', "IPIngressFilterPath"))
+      and "--no-sandbox" not in (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8").replace("--no-sandbox is never used", "")
+      and _rp250.build_policy("https://duckduckgo.com/", [])["DownloadRestrictions"] == 3
+      and _rp250.build_policy("https://duckduckgo.com/", [])["AllowFileSelectionDialogs"] is False
+      and _rp250.build_policy("https://duckduckgo.com/", [])["PrintingEnabled"] is False
+      and _rp250.build_policy("https://duckduckgo.com/", [])["SafeBrowsingProtectionLevel"] == 0
+      and _rp250.build_policy("https://duckduckgo.com/", [])["DnsOverHttpsMode"] == "secure"
+      and "Safe Browsing is off" in _feat250 and "Chromium's **own sandbox stays on**" in _feat250)
+_wiz250 = (ROOT / "setup.py").read_text(encoding="utf-8")
+check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as the notes say (renumbered, default No, never switches on)",
+      'print("STEP 10: Web Browser on the Server (optional)")' in _wiz250 and 'print("STEP 11: Admin User")' in _wiz250
+      and "**step 10**" in _s250 and "default answer No" in _s250 and "never switches the feature on" in _s250)
+_idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+check("1.25.0: the Static files item names the script versions the pages load",
+      "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
+      and "`rbrowser.js` v1" in _s250 and "/static/js/rbrowser.js?v=1" in _page250 and "`rbrowser.css` v1" in _s250 and "rbrowser.css?v=1" in _page250
+      and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
+      and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
+check("1.25.0: the README states the two pictures, the Security list names the limits, and the third-party table names the packages",
+      "docs/screenshots/rbrowser.png" in text and "docs/screenshots/admin-rbrowser.png" in text
+      and "**Web Browser on the server (optional, off by default, 1.25.0)**" in text and "`RestrictNamespaces` cannot be set" in text
+      and "[Chromium](https://www.chromium.org/)" in text and "x11vnc" in text.split("## Third-Party Components", 1)[1]
+      and "optional Web Browser (off by default" in text.split("## Security", 1)[1].split("## Backups and Rollback", 1)[0])
+check("1.25.0: no known stale sentence about the browser (a window manager package, Latin-1-only copying, a configurable resolver)",
+      not any(w in _feat250 + _s250 for w in ("matchbox", "Latin-1", "configured DoH", "configurable resolver", "cannot watch")))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

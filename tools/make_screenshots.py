@@ -215,6 +215,10 @@ class Stage:
         lines += [f"HOSTNAME={DEMO_HOST}", f"STREAM_HOSTNAME={DEMO_HOST}", "TRUSTED_PROXIES=127.0.0.1"]
         env_path.write_text("\n".join(lines) + "\n")
         env = ss.child_env(self.dir)
+        # 1.25.0: the Web Browser pictures use the stage's fake launcher (no unit, no Chromium on the server: a stand-in RFB server
+        # sends a tiny demo frame). It has no effect while the feature is off, which is how every other picture is taken.
+        env["PORTAL_RBROWSER_FAKE"] = "1"
+        env["TMPDIR"] = str(self.dir)           # the fake's scratch directory goes away with the stage
         res = ss.subprocess.run([ss.PYTHON, "server.py", "init"], cwd=str(self.dir), env=env,
                                 capture_output=True, text=True, timeout=120)
         creds = self.dir / "admin_credentials.txt"
@@ -2732,6 +2736,79 @@ async def seed_everything(stage: Stage) -> dict:
     finally:
         for c in clients.values():
             await c.close()
+
+
+# -- 1.25.0: the Web Browser on the server (page and admin card) ------------------------------------------------
+# The staged instance can start no unit, so the feature runs on the stage's fake launcher: the "browser" is a stand-in RFB server that
+# sends one tiny demo frame, so the picture area of the page is an empty frame and says nothing about what a real session looks like.
+# The page picture therefore shows the page itself (toolbar, status, the About panel with the privacy statement and the limits) over that
+# empty frame. Both shots switch the feature on through the real route and off again in a finally; they are defined last so that no
+# earlier picture carries the dashboard card.
+
+RBROWSER_MEMBER = "alex"
+
+
+def rbrowser_switch(s, on: bool) -> None:
+    page = api_page(s, s.admin_ctx)
+    try:
+        body = {"rbrowser_enabled": on}
+        if on:
+            body["rbrowser_min_role"] = "user"
+        api_ok(page, "PUT", "/api/admin/rbrowser", body)
+    finally:
+        page.close()
+
+
+@contextlib.contextmanager
+def rbrowser_running(s):
+    """The feature on for members, and the member's session ended and the feature off again afterwards."""
+    rbrowser_switch(s, True)
+    try:
+        yield
+    finally:
+        try:
+            page = api_page(s, s.context(RBROWSER_MEMBER))
+            try:
+                api(page, "DELETE", "/api/rbrowser/session")
+            finally:
+                page.close()
+        finally:
+            rbrowser_switch(s, False)
+
+
+def rbrowser_member_page(s, ctx):
+    page = ctx.new_page()
+    page.goto(f"{s.stage.base}/rbrowser")
+    page.wait_for_selector("#rb-status.connected", timeout=30000)      # (a string for wait_for_function would be eval, which the page policy refuses)
+    page.wait_for_timeout(1200)
+    return page
+
+
+@shot("rbrowser")
+def _rbrowser(s):
+    with rbrowser_running(s):
+        ctx = s.context(RBROWSER_MEMBER)
+        page = rbrowser_member_page(s, ctx)
+        page.click("#rb-about")
+        page.wait_for_selector("#rb-about-panel", state="visible")
+        page.wait_for_timeout(500)
+        assert_clean(s, page, "rbrowser")
+        s.save("rbrowser", page)
+        page.close()
+
+
+@shot("admin-rbrowser")
+def _admin_rbrowser(s):
+    with rbrowser_running(s):
+        ctx = s.context(RBROWSER_MEMBER)
+        member = rbrowser_member_page(s, ctx)          # a window is attached, so the list shows a running session
+        page = admin_page(s, "settings", "#rbrowser-admin-card")
+        page.wait_for_selector("#rbrowser-admin-card", state="visible", timeout=15000)
+        page.wait_for_selector("#rbrowser-admin-sessions tr", timeout=15000)
+        page.wait_for_timeout(800)
+        assert_clean(s, page, "admin-rbrowser", "#rbrowser-admin-card")
+        s.save("admin-rbrowser", page.locator("#rbrowser-admin-card"))
+        member.close()
 
 
 if __name__ == "__main__":
