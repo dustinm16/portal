@@ -443,8 +443,9 @@ def probe_policy(policy: dict) -> dict:
 # BrowserThemeColor, in a file of its own that theme_policy() builds from the validated value (never from a member's
 # string); the mode reaches the supervisor as RB_THEME_MODE (rbrowser_unit/session.py turns "dark" into
 # --force-dark-mode). The measurement (Chromium 156 under Xvfb) is in the 1.26.0 notes: BrowserThemeColor colours the tab
-# strip and toolbar and picks the text contrast; the BrowserColorScheme policy changed neither the browser UI nor
-# prefers-color-scheme here, --force-dark-mode changed both and did not recolour page content.
+# strip and the toolbar row and picks the text contrast; a policy named BrowserColorScheme (value "dark") had no observable effect on the
+# browser UI or on prefers-color-scheme in these runs (that Chromium 156 knows the key at all was not confirmed), --force-dark-mode changed
+# both and did not recolour page content.
 THEME_COLOR_RE = re.compile(r"#[0-9a-f]{6}")
 THEME_MODES = ("dark", "light")
 THEME_POLICY_KEYS = ("BrowserThemeColor",)     # the only keys the per-session theme file may hold
@@ -456,17 +457,15 @@ THEME_PLACEHOLDER_TEXT = "{}\n"
 
 
 def normalise_theme(color, mode) -> tuple:
-    """(color or None, mode or None). The colour is "#rrggbb" after lower-casing, the mode "dark" or "light"; anything else
+    """(color or None, mode or None). The colour is "#rrggbb" after lower-casing, the mode exactly "dark" or "light"; anything else
     (a wrong type, other text, a missing value) is None, which means the neutral default. Never raises."""
     c = m = None
     if isinstance(color, str) and len(color) == 7:
         low = color.lower()
         if THEME_COLOR_RE.fullmatch(low):
             c = low
-    if isinstance(mode, str) and len(mode) <= 5:
-        low = mode.lower()
-        if low in THEME_MODES:
-            m = low
+    if isinstance(mode, str) and mode in THEME_MODES:     # exact: the two words, no case folding (the supervisor judges it the same way)
+        m = mode
     return c, m
 
 

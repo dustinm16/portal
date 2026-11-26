@@ -100,6 +100,9 @@ class Session:
     marker: str | None = None     # one of MARKERS (a security finding) or None; set together with end_reason
     marker_detail: str = ""       # traffic_limit: upload_rate | upload_volume | download_rate | download_volume
     ended_at: float | None = None
+    # ---- 1.26.0: the member's portal theme, validated by rbrowser_policy.normalise_theme and fixed for the life of the session; None = neutral
+    theme_color: str | None = None   # "#rrggbb" (lower case)
+    theme_mode: str | None = None    # "dark" | "light"
 
 
 @dataclass
@@ -477,9 +480,8 @@ def _clean_path(p) -> bool:
 class _Ext:
     """What the registry keeps next to a Session (never shown, never logged)."""
 
-    def __init__(self, ident: str, pin: str, unit: str, theme: tuple = (None, None)):
+    def __init__(self, ident: str, pin: str, unit: str):
         self.ident = ident
-        self.theme = theme                  # (colour or None, mode or None), validated; fixed for the life of the session
         self.pin = pin
         self.unit = unit
         self.evt = asyncio.Event()          # set when a placeholder became running or was ended
@@ -1027,8 +1029,9 @@ class Registry:
                     sess = Session(sid=secrets.token_urlsafe(16), unit=self._unit_name(ident), user_id=user_id, token_id=token_id,
                                    state="starting", runtime_dir="", expect_uid=-1, expect_cgroup="", width=w, height=h, started=now,
                                    last_activity=now, detached_since=now, ident=ident, ingress_pin=self.pin,
-                                   clipboard=clipboard_unit_value(_cfg(cfg, "rbrowser_clipboard", "both")))
-                    ext = _Ext(ident, self.pin, sess.unit, theme)
+                                   clipboard=clipboard_unit_value(_cfg(cfg, "rbrowser_clipboard", "both")),
+                                   theme_color=theme[0], theme_mode=theme[1])
+                    ext = _Ext(ident, self.pin, sess.unit)
                     self._sessions[sess.sid] = sess
                     self._by_user[user_id] = sess
                     self._x[sess.sid] = ext
@@ -1049,7 +1052,7 @@ class Registry:
         launcher = self._launcher
         res = None
         try:
-            spec = self.spec(sess.ident, sess.width, sess.height, cfg, ext.theme)
+            spec = self.spec(sess.ident, sess.width, sess.height, cfg, (sess.theme_color, sess.theme_mode))
             res = await asyncio.wait_for(launcher.start(spec), START_BOUND_S)
             if ext.cancelled:
                 raise Refused(503, {"error": "ended"})

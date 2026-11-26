@@ -344,12 +344,12 @@ check("DoH: the constant and a public IPv6 literal still validate", P.validate_d
       and P.validate_doh_template("https://[2606:4700:4700::1111]:853/dns-query"))
 
 # ---- the member's portal theme (1.26.0)
-check("theme: a valid colour is lower-cased and kept, the mode too", P.normalise_theme("#1A1A2E", "Dark") == ("#1a1a2e", "dark")
+check("theme: a valid colour is lower-cased and kept, the mode is exact", P.normalise_theme("#1A1A2E", "dark") == ("#1a1a2e", "dark")
       and P.normalise_theme("#f0e6d2", "light") == ("#f0e6d2", "light"))
 bad_colors = (None, "", "#fff", "#12345", "#1234567", "1a1a2e", "#1a1a2g", "#1a1a2e ", " #1a1a2e", "#1a1a2e\n", "red", "rgb(1,2,3)", 123, b"#1a1a2e",
               ["#1a1a2e"], "#1a1a2e;", "#1a1a2e\"}", "#\u0661a1a2e", "javascript:alert(1)", "#" + "a" * 5000)
 check("theme: every malformed colour is None", all(P.normalise_theme(c, "dark")[0] is None for c in bad_colors))
-bad_modes = (None, "", "auto", "darkk", "dar", " dark", "dark\n", "DARK1", 1, True, ["dark"], "dark" * 1000, "system", "device")
+bad_modes = (None, "", "Dark", "LIGHT", "auto", "darkk", "dar", " dark", "dark\n", "DARK1", 1, True, ["dark"], "dark" * 1000, "system", "device")
 check("theme: every other mode is None", all(P.normalise_theme("#1a1a2e", m)[1] is None for m in bad_modes))
 check("theme: the two values are judged separately", P.normalise_theme("#1a1a2e", "x") == ("#1a1a2e", None)
       and P.normalise_theme("x", "light") == (None, "light") and P.normalise_theme(None, None) == (None, None))

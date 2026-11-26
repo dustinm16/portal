@@ -2245,8 +2245,8 @@ check("theme: without those two additions the list is the no-theme list", stripp
 check("theme: a light mode is passed too, a bad mode or colour never is",
       "RB_THEME_MODE=light" in BA(spec(theme_mode="light")) and all(not any("RB_THEME_MODE" in a for a in BA(spec(theme_mode=m)))
                                                                for m in ("evil", "", "DARK 1", "dark\n", None, 5, ["dark"])))
-check("theme: the mode is lower-cased by the validator, so only the two words can reach the environment",
-      "RB_THEME_MODE=dark" in BA(spec(theme_mode="DARK")) and not any(a.startswith("RB_THEME_MODE=") and a not in ("RB_THEME_MODE=dark", "RB_THEME_MODE=light")
+check("theme: the mode is judged exactly, so only the two words can reach the environment",
+      not any("RB_THEME_MODE" in a for a in BA(spec(theme_mode="DARK"))) and not any(a.startswith("RB_THEME_MODE=") and a not in ("RB_THEME_MODE=dark", "RB_THEME_MODE=light")
                                                                     for m in ("dark;rm", "light ", "x") for a in BA(spec(theme_mode=m))))
 for label, bad in (("relative", "run/x/0123456789ab.json"), ("another id", f"{THEMED}/aaaaaaaaaaaa.json"), ("a colon", f"{THEMED}:x/0123456789ab.json"),
                    ("dotdot", f"{THEMED}/../0123456789ab.json"), ("a space", f"{THEMED} x/0123456789ab.json"), ("a newline", f"{THEMED}/0123456789ab.json\n"),

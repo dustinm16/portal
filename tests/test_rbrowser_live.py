@@ -3065,12 +3065,14 @@ def g24(rig, ctx):
 
 # ---- G25 (1.26.0): the remote Chromium matches the member's portal theme
 
-G25_DARK = ("#1a1a2e", "dark")
-G25_LIGHT = ("#f0e6d2", "light")
-G25_NEUTRAL_STRIP = (211, 227, 253)       # the tab strip of Chromium 156 without any theme (measured under Xvfb, no desktop)
-G25_TOLERANCE = 24                        # per channel: BrowserThemeColor is a seed, Chromium derives the frame from it; measured on 156:
-#                                         dark seeds (#1a1a2e, #2e3440, #002b36) come out exactly, #f0e6d2 comes out 11 off at most, saturated
-#                                         or very light seeds (#ff0000, #fdf6e3) come out far off, so this gate uses two low-chroma colours
+# Two real portal themes: the default dark one and Nord Light (the value of --bg-secondary, which .rb-toolbar uses).
+G25_DARK = ("#16213e", "dark")
+G25_LIGHT = ("#e5e9f0", "light")
+G25_NEUTRAL_STRIP = (211, 227, 253)       # the tab strip of Chromium 156 without any theme, measured under Xvfb with no window manager: only a
+#                                           reference for the detail line, the verdict does not rest on it (an inactive frame is another shade)
+G25_TOLERANCE = 24                        # per channel: BrowserThemeColor is a seed and Chromium derives the frame from it. Measured on 156 for all
+#                                           28 portal themes: 24 dark ones come out exactly, nord 18 off, the four light ones 0 to 22 off (the
+#                                           frame of a light seed is pulled darker/warmer); #ff0000 or #fdf6e3 (no portal theme) come out far off
 G25_PCS_PAGE = "data:text/html,<title>t</title><script>document.title='PCS='+matchMedia('(prefers-color-scheme:dark)').matches</script>"
 
 
@@ -3190,7 +3192,13 @@ def g25(rig, ctx):
     dark = g25_session(rig, *G25_DARK, "dark")
     light = g25_session(rig, *G25_LIGHT, "light")
     plain = g25_session(rig, None, None, "neutral")
+    # positive control for the blocked check: with the block lists lifted, the same file: URL LOADS and the window is titled with the file name
+    with policy_without(rig, "URLBlocklist", "URLAllowlist"):
+        control = g25_session(rig, *G25_DARK, "control")
     fails = []
+    if control["blocked_title"] != "hostname":
+        return "FAIL", (f"manual: the control session (block lists lifted) shows the title {control['blocked_title']!r} for file:///etc/hostname, not 'hostname', so "
+                        f"the blocked check cannot tell loaded from blocked; pictures g25-*-blocked.png in {rig.out}")
     if not dark["file_before_stop"] or dark["file_after_stop"] or light["file_after_stop"]:
         fails.append(f"theme file before stop {dark['file_before_stop']}, left after stop {dark['file_after_stop']}/{light['file_after_stop']}")
     if os.path.isdir(L.THEME_DIR) and os.listdir(L.THEME_DIR):
@@ -3199,18 +3207,21 @@ def g25(rig, ctx):
         fails.append(f"dark: tab strip {dark['strip']}, asked {g25_hex(G25_DARK[0])} (+-{G25_TOLERANCE})")
     if not g25_near(light["strip"], g25_hex(G25_LIGHT[0])):
         fails.append(f"light: tab strip {light['strip']}, asked {g25_hex(G25_LIGHT[0])} (+-{G25_TOLERANCE})")
-    if not g25_near(plain["strip"], G25_NEUTRAL_STRIP):
-        fails.append(f"neutral: tab strip {plain['strip']}, expected the unthemed {G25_NEUTRAL_STRIP} (+-{G25_TOLERANCE})")
+    dist = lambda a, b: max(abs(x - y) for x, y in zip(a, b))
+    if dist(plain["strip"], dark["strip"]) <= 60 or dist(plain["strip"], g25_hex(G25_DARK[0])) <= G25_TOLERANCE:
+        fails.append(f"neutral: tab strip {plain['strip']} is not clearly different from the dark theme's {dark['strip']}")
+    if dist(light["strip"], g25_hex(G25_LIGHT[0])) >= dist(plain["strip"], g25_hex(G25_LIGHT[0])):
+        fails.append(f"light: tab strip {light['strip']} is not closer to the asked colour than the neutral {plain['strip']} is")
     for name, r_, want in (("dark", dark, "PCS=true"), ("light", light, "PCS=false"), ("neutral", plain, "PCS=false")):
         if want not in r_["pcs_title"]:
             fails.append(f"{name}: prefers-color-scheme page title {r_['pcs_title']!r}, wanted {want!r}")
     for name, r_ in (("dark", dark), ("light", light), ("neutral", plain)):
-        if r_["blocked_title"] == "hostname" or not r_["blocked_title"]:
-            fails.append(f"{name}: file:///etc/hostname was not blocked (window title {r_['blocked_title']!r})")
+        if r_["blocked_title"] == control["blocked_title"] or not r_["blocked_title"]:
+            fails.append(f"{name}: file:///etc/hostname was not blocked (window title {r_['blocked_title']!r}, the same as the control that loads it)")
     if dark["blocked_title"] != plain["blocked_title"] or light["blocked_title"] != plain["blocked_title"]:
         fails.append(f"the blocked page looks different with a theme: {dark['blocked_title']!r} / {light['blocked_title']!r} / {plain['blocked_title']!r}")
     detail = (f"tab strip dark {dark['strip']} (asked {G25_DARK[0]}), light {light['strip']} (asked {G25_LIGHT[0]}), neutral {plain['strip']}; "
-              f"prefers-color-scheme titles {dark['pcs_title']!r} / {light['pcs_title']!r} / {plain['pcs_title']!r}; blocked-page title {plain['blocked_title']!r} in all three; "
+              f"prefers-color-scheme titles {dark['pcs_title']!r} / {light['pcs_title']!r} / {plain['pcs_title']!r}; blocked-page title {plain['blocked_title']!r} in all three (the control without block lists: {control['blocked_title']!r}); "
               + "; ".join(notes) + f"; pictures g25-*-home/pcs/blocked.png in {rig.out}")
     if fails:
         return "FAIL", "; ".join(fails) + " | " + detail

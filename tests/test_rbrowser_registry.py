@@ -1727,7 +1727,7 @@ async def t_theme(r):
         sp = r.launcher.specs[plain.unit]
         check("theme: a create without a theme starts a spec without one", (sp.theme_color, sp.theme_mode) == (None, None))
         await r.reg.end(plain, "user")
-        s2 = await r.make(user=2, token="b", theme=("#1A1A2E", "Dark"))
+        s2 = await r.make(user=2, token="b", theme=("#1A1A2E", "dark"))
         sp = r.launcher.specs[s2.unit]
         check("theme: a valid pair reaches the launcher's spec validated (lower case)", (sp.theme_color, sp.theme_mode) == ("#1a1a2e", "dark") and s2.state == "running")
         await r.reg.end(s2, "user")
@@ -1746,8 +1746,11 @@ async def t_theme(r):
                   sx.state == "running" and (sp.theme_color, sp.theme_mode) == want, str((sp.theme_color, sp.theme_mode)))
             await r.reg.end(sx, "user")
             n += 1
-        check("theme: the Session keeps no theme (only the unit's spec and the registry's private record do)",
-              not any("theme" in f.name or "color" in f.name for f in dataclasses.fields(rbrowser.Session)) and "1a1a2e" not in repr(s2))
+        check("theme: the Session keeps exactly the two validated values and nothing else of the theme",
+              [f.name for f in dataclasses.fields(rbrowser.Session) if "theme" in f.name or "color" in f.name] == ["theme_color", "theme_mode"])
+        check("theme: the Session of a themed create holds the validated pair, a neutral one holds None",
+              (s2.theme_color, s2.theme_mode) == ("#1a1a2e", "dark") and (plain.theme_color, plain.theme_mode) == (None, None)
+              and (s3.theme_color, s3.theme_mode) == ("#f0e6d2", "light"))
         check("theme: the preflight key does not depend on the theme or on sessions that have one", r.reg.preflight_key(CFG) == key0)
         spec_probe = r.reg.spec("0" * 12, 1280, 720, CFG)
         args = RL.build_unit_args(spec_probe, rbrowser.PROBE_PREFIX, "probe.py", 19, ingress_pin=r.reg.pin)
@@ -1772,7 +1775,7 @@ async def t_theme(r):
     class _NoPolicy:
         pass
     r.reg._P_mod = _NoPolicy()
-    check("theme: the registry validates with the real function whatever policy module was injected", r.reg._theme(("#ABCDEF", "dark")) == ("#abcdef", "dark")
+    check("theme: the registry validates with the real function whatever policy module was injected", r.reg._theme(("#ABCDEF", "dark")) == ("#abcdef", "dark") and r.reg._theme(("#ABCDEF", "Dark")) == ("#abcdef", None)
           and r.reg._theme("x") == (None, None))
 
 
