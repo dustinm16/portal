@@ -1307,6 +1307,10 @@ def ingress_attached(cgroup: str, pin: str, *, bpf=rbrowser_bpf, root: str = CGR
     except Exception:
         return False
 
+class _StartTimeout(LaunchError):
+    """The unit did not come up within the start budget: slowness, not a refused theme bind, so the start is not tried again."""
+
+
 class SystemdLauncher:
     """Starts one transient unit per session with systemd-run. `unit_prefix` is portal-rb- (sessions),
     portal-rbprobe- (preflight) or portal-rbtest- (live test); stop() and show() refuse any other name."""
@@ -1367,8 +1371,8 @@ class SystemdLauncher:
             # exist is harmless and is confirmed by show()).
             try:
                 pid, cgroup = await self._spawn(sysrun, args, unit)
-            except LaunchError:
-                if not themed:
+            except LaunchError as e:
+                if not themed or isinstance(e, _StartTimeout):
                     raise
                 # The theme is cosmetic, so a unit that did not come up WITH the theme bind (systemd refusing the file bind, a mount
                 # point it cannot make) is taken back and started once more without it, never a failed start for the member.
@@ -1377,6 +1381,8 @@ class SystemdLauncher:
                     raise asyncio.CancelledError()
                 if left is not None:
                     raise left
+                # stop() removed the per-ident files of the first try (the unit's /tmp directory), so the second one needs its own again
+                self.make_tmp(spec.ident)
                 self.remove_theme(spec.ident)
                 themed = False
                 args = build_unit_args(spec, self.unit_prefix, self.script, self.nice, ingress_pin=self.ingress_pin)
@@ -1559,7 +1565,7 @@ class SystemdLauncher:
             if state == "active" and pid > 0 and cg:
                 return pid, cg
             await self._sleep(START_WAIT_STEP_S)
-        raise LaunchError("the unit did not start in time")
+        raise _StartTimeout("the unit did not start in time")
 
     async def stop(self, unit: str) -> None:
         """Stop the unit and CONFIRM it: `systemctl stop`, then ActiveState read back through show(). When the unit is still

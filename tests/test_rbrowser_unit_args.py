@@ -1758,7 +1758,7 @@ check("live test: every gate of the round 1 table is present",
                                                               "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24", "G25"})
 check("live test: G25 (1.26.0) is a round 1 gate, written for the theme file and the pictures, and a HARD gate (a FAIL blocks the release); its unit run uses build_unit_args(theme_file=)",
       "G25" in re.findall(r'@gate\("(G\d\d\w*)"', _live_src) and "G25" in _live_src.split("HARD_GATES = (")[1].split(")")[0] and "theme_file=path" in _live_src.split('@gate("G25"')[1]
-      and "add_bind" not in _live_src.split('@gate("G25"')[1]
+      and "add_bind" not in _live_src.split('@gate("G25"')[1] and 'BindReadOnlyPaths=-{path}:{L.THEME_DEST}' in _live_src.split('@gate("G25"')[1]
       and "make_theme" in _live_src and "theme_color=" in _live_src and "prefers-color-scheme" in _live_src and "file:///etc/hostname" in _live_src)
 check("live test: it removes everything in finally and handles SIGTERM", "finally:\n        if rig is not None:\n            cleanup(rig)" in _live_src and "signal.SIGTERM" in _live_src)
 # ---- the live test's guards and bounds (pure parts imported under another name: its guards only run as __main__)
@@ -2391,11 +2391,13 @@ async def theme_launcher_tests():
             super().__init__(**kw)
             self.mode = mode            # "rc": systemd-run answers non-zero; "failed": the unit goes `failed` while starting
             self.sysruns = []
+            self.tmp_seen = []
 
         async def run(self, argv, timeout=10.0):
             if os.path.basename(argv[0]) == "systemd-run":
                 themed_call = any("portal-theme" in a for a in argv)
                 self.sysruns.append(themed_call)
+                self.tmp_seen.append(os.path.isdir(f"{TMPD}/0123456789ab"))     # the bind source of /tmp must exist at every systemd-run
                 if themed_call:
                     if self.mode == "rc":
                         self.calls.append((list(argv), timeout))
@@ -2415,7 +2417,15 @@ async def theme_launcher_tests():
               rf.unit.endswith("0123456789ab.service") and hf.sysruns == [True, False] and len(calls) == 2
               and calls[1][1:] == BA(spec(theme_color="#1a1a2e", theme_mode="dark")) and "RB_THEME_MODE=dark" in calls[1]
               and not any("portal-theme" in a for a in calls[1]) and not os.path.exists(tpath), str((hf.sysruns, len(calls))))
+        check(f"theme launcher: {label}: the unit's /tmp directory (the bind source) exists at BOTH systemd-run calls, the retry makes it again",
+              hf.tmp_seen == [True, True], str(hf.tmp_seen))
         await lnf.stop(rf.unit)
+    # a unit that is only slow (never reaches active within the budget) is not a theme problem: no second try
+    hf = Host(script=[("activating", 0)])
+    lnf = mk(hf)
+    check("theme launcher: a start that times out (slow host) is not retried without the theme",
+          await _raises_async(LaunchError, lnf.start(TS)) and len([c for c, _ in hf.calls if os.path.basename(c[0]) == "systemd-run"]) == 1
+          and not os.path.exists(tpath))
     # without a theme bind there is no second try: a plain failure stays one (and takes the unit back)
     hf = Host(); hf.sysrun_rc = 1
     lnf = mk(hf)

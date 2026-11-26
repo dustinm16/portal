@@ -3160,6 +3160,9 @@ def g25(rig, ctx):
     path = rig.launcher.make_theme(ident, *G25_DARK)
     unit_res = None
     try:
+        built = L.build_unit_args(spec, rig.TP, "session.py", 5, ingress_pin=rig.pin, theme_file=path)
+        if f"BindReadOnlyPaths=-{path}:{L.THEME_DEST}" not in built:
+            return "FAIL", "the production argument list does not carry the optional ('-') theme file bind"
         # the production argument list itself (build_unit_args with theme_file), not a bind added by hand
         rc, err, unit = rig.run_unit(["/usr/bin/python3", "-I", "-S", "-c", G25_UNIT_SNIPPET], spec=spec, script="session.py", theme_file=path)
         text = rig.journal(unit)
