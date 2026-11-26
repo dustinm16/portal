@@ -2068,6 +2068,8 @@ check("1.25.0: the Static files item names the script versions the pages load",
       and "`rbrowser.js` v1" in _s250 and "/static/js/rbrowser.js?v=1" in _page250 and "`rbrowser.css` v1" in _s250 and "rbrowser.css?v=1" in _page250
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
+check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",
+      all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() and f'@shot("{n}")' in (ROOT / "tools" / "make_screenshots.py").read_text(encoding="utf-8") for n in ("rbrowser", "admin-rbrowser")))
 check("1.25.0: the README states the two pictures, the Security list names the limits, and the third-party table names the packages",
       "docs/screenshots/rbrowser.png" in text and "docs/screenshots/admin-rbrowser.png" in text
       and "**Web Browser on the server (optional, off by default, 1.25.0)**" in text and "`RestrictNamespaces` cannot be set" in text

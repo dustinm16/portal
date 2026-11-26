@@ -106,6 +106,11 @@ is transparent, so the picture is taken with a transparent background and laid o
 script. The token is never printed or written anywhere. Every one is checked for the host name, user name and home
 directory of this machine and for the temporary directory of the staged instance before it is written.
 
+Pictures of 1.25.0 (rbrowser, admin-rbrowser) need no extra setup. The staged instance runs with PORTAL_RBROWSER_FAKE=1 (its
+scratch directory is inside the stage), so the Web Browser is switched on through the real admin route on the stage's fake launcher, a stand-in
+RFB server that sends one tiny demo frame: the picture area of the page is an empty frame, so the page is taken with its About panel open, and
+the admin card shows the stage's own "can run" and "check has not run" states. The feature is switched off again after each picture.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
