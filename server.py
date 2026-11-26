@@ -21712,7 +21712,7 @@ def _isolated_content_type(values) -> tuple:
 _WHATWG_CHARSET_GROUPS = (
     ("utf-8", "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8"),
     ("utf-16-le", "csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"),
-    ("utf-16-be", "utf-16be"),
+    ("utf-16-be", "unicodefffe utf-16be"),
     ("sb", "866 cp866 csibm866 ibm866 "
            "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 latin2 "
            "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 latin3 "

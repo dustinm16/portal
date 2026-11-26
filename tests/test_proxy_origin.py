@@ -443,6 +443,8 @@ async def amain():
         "cs_u16le": ([b"text/html"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
         "cs_u16be": ([b"text/html"], b"\xfe\xff" + cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
         "cs_u32le": ([b"text/html"], b"\xff\xfe\x00\x00" + cs_doc.encode("utf-32-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
+        # unicodefffe is a label of UTF-16BE (no byte order mark: the bytes are valid UTF-8 too, with NULs, so only the label tells)
+        "cs_unicodefffe": ([b"text/html; charset=unicodefffe"], cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
         "cs_u16_declared": ([b"text/html; charset=windows-1252"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
         "cs_u8bom": ([b"text/html"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
         "cs_u8bom_declared": ([b"text/html; charset=windows-1252"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
@@ -780,6 +782,8 @@ async def amain():
             ("a double-escaped script comment is left to the fallback", b'<script><!-- <script> </script> <meta charset=windows-1251> </script> --></script><meta charset="utf-8">', None),
             ("an end tag only closes its own element", b'<style></script><meta charset=windows-1251></style><meta charset="utf-8">', "utf-8")):
         check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
+    check("charset label reading: unicodefffe is UTF-16BE, as utf-16be is",
+          server._charset_reading("unicodefffe") == server._charset_reading("utf-16be") == ("utf-16-be", "utf-8", "utf-8", True), str(server._charset_reading("unicodefffe")))
     check("meta label reading: x-user-defined in a meta tag is windows-1252 (read as latin-1, sent as windows-1252); in a header it is kept",
           server._charset_reading("x-user-defined", True) == ("latin-1", "latin-1", "windows-1252", True)
           and server._charset_reading("x-user-defined") == ("latin-1", "latin-1", "x-user-defined", True)
