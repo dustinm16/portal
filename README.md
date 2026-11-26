@@ -1002,7 +1002,9 @@ No table, no column, no migration and no index is added; the first start after t
 
 **Rollback**
 
-Going back to 1.24.2 works on the same database: the ten rows are ignored. **Switch the feature off first** (the card, **Switched on** unticked): that ends the sessions, stops the units, unmounts the two areas under `/run`, removes the firewall chain, the slice and the BPF pin. If the old version is already running, the units end by themselves at their time limit and a reboot clears the mounts, the chain and the pin. The packages stay installed; remove them yourself if you want.
+Going back to 1.24.2 works on the same database: the ten rows are ignored. **Switch the feature off first** (the card, **Switched on** unticked): that ends the sessions, stops the units, unmounts the two areas under `/run`, removes the firewall chain, the slice and the BPF pin (also after a start that failed half way). If the old version is already running, the units end by themselves at their time limit and a reboot clears the mounts, the chain and the pin. The packages stay installed; remove them yourself if you want.
+
+**One more thing is not safe to leave.** The audit entries of the feature (`rbrowser_start`, `rbrowser_end`, `rbrowser_admin_end`) name the member, the time and the length of each session, and `rbrowser_settings_update` carries the settings "was" and "now" values, including `rbrowser_extra_deny`. Only 1.25.0 hides them from a moderator (and the settings entry from a plain administrator); 1.24.2 does not know them and shows them in Admin > Audit log to a moderator and above. Before going back, delete them with this one statement, run against `portal.db`: `DELETE FROM audit_log WHERE action IN ('rbrowser_start','rbrowser_end','rbrowser_admin_end','rbrowser_settings_update');` (an administrator keeps no record of these actions afterwards), or accept that moderators will read them. A rollback by update snapshot restores the code only, so it does not remove them either.
 
 **Not tested**
 

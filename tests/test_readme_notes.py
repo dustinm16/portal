@@ -2038,6 +2038,13 @@ _adm250 = (ROOT / "static" / "admin.html").read_text(encoding="utf-8")
 check("1.25.0: the seven security events of the code are the ones the notes name, and the admin page lists them",
       len(_ev250) == 7 and all(f"`{e}`" in _s250 and f"'{e}'" in _adm250 for e in _ev250) and "`rbrowser_settings_update`" in _s250
       and all(a in _srv250 for a in ('"rbrowser_start"', '"rbrowser_end"', '"rbrowser_admin_end"', '"rbrowser_settings_update"')), str(_ev250))
+_aud250 = re.search(r'RBROWSER_AUDIT_ACTIONS = \(([^)]*)\)', _srv250)
+_aud250 = (re.findall(r'"(\w+)"', _aud250.group(1)) if _aud250 else []) + ["rbrowser_settings_update"]
+_del250 = "DELETE FROM audit_log WHERE action IN (" + ",".join(f"'{a}'" for a in _aud250) + ");"
+_roll250 = _s250.split("\n**Rollback**\n", 1)[-1].split("\n**Not tested**", 1)[0]
+check("1.25.0: the Rollback paragraphs give the DELETE statement for every audit action the feature adds (moderators read them on 1.24.2), "
+      "and say a snapshot rollback does not remove them",
+      len(_aud250) == 4 and _del250 in _roll250 and "moderators will read them" in _roll250 and "restores the code only" in _roll250, _del250)
 import rbrowser as _rb250
 import rbrowser_launch as _rl250
 import rbrowser_policy as _rp250

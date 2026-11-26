@@ -1715,7 +1715,9 @@ class Registry:
         if pf is not None and not pf.done():
             pf.cancel()
             await asyncio.wait([pf], timeout=SHUTDOWN_STOP_S)      # the probe unit's stop (its finally) must be under way before the host is unprepared
-        if launcher is None:
+        # No launcher does not mean nothing was prepared: the launchers are made only after a successful prepare, but a prepare that
+        # failed half way (pin loaded, then the tmpfs or the state directory failed) has left the pin, the static tree and the mounts.
+        if launcher is None and self.prep is None:
             return
         tasks = [asyncio.ensure_future(self.end(s, "portal_stop")) for s in list(self._sessions.values())]
         if tasks:
@@ -1735,7 +1737,7 @@ class Registry:
             return
         async with self._host_lock:
             kw = dict(self.unprepare_kw)
-            kw.setdefault("bpf_pin", self.pin or "")
+            kw.setdefault("bpf_pin", self.pin or (self.prep or {}).get("ingress_pin") or "")
             try:
                 await self.L.unprepare_host(units_left=left, **kw)
             except Exception:

@@ -172,6 +172,7 @@ class FakeL:
         self.max_active = 0
         self.delay = 0.0
         self.on_unprepare = None
+        self.fail_pin = ""       # the pin a failed prepare_host has already loaded (it fails after the filter, like a tmpfs that cannot be mounted)
 
     def __getattr__(self, name):
         return getattr(RL, name)
@@ -187,7 +188,7 @@ class FakeL:
         await asyncio.sleep(self.delay)
         self.active -= 1
         if not self.ok:
-            return {"ok": False, "reasons": ["ingress filter: not loadable"], "ingress_pin": "", "slice_ok": False, "upload_rule": False}
+            return {"ok": False, "reasons": ["ingress filter: not loadable"], "ingress_pin": self.fail_pin, "slice_ok": False, "upload_rule": False}
         return {"ok": True, "reasons": [], "ingress_pin": self.pin, "slice_ok": self.slice_ok, "upload_rule": True, "upload_reason": ""}
 
     async def unprepare_host(self, **kw):
@@ -807,6 +808,35 @@ async def t_failed_prepare(r):
     check("create refuses to start", got is not None and got.status == 503 and r.launcher.start_calls == 0)
     check("no preflight scheduled", reg._pf_task is None)
     r.L.ok = True
+
+
+async def t_failed_prepare_cleanup(r):
+    """A prepare that fails after the filter was pinned: no launcher exists (production makes it only after a good prepare), yet
+    shutdown must still unprepare the host with that pin (pin, static tree and tmpfs areas would stay until reboot)."""
+    pin = "/sys/fs/bpf/portal-rb-ingress-feedfacefeedface"
+    r.L.ok, r.L.fail_pin = False, pin
+    reg = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
+    await reg.startup(CFG)
+    check("setup: prepare failed with a pin, no launcher, nothing ready", not reg.ready and reg._launcher is None and reg.prep is not None and reg.pin == "")
+    await reg.shutdown()
+    check("shutdown after a failed prepare unprepares once, with the pin the prepare had loaded",
+          len(r.L.unprepare_calls) == 1 and r.L.unprepare_calls[0]["bpf_pin"] == pin and r.L.unprepare_calls[0]["units_left"] == 0, str(r.L.unprepare_calls))
+    check("and the host is marked unprepared", reg.prep is None and not reg.ready)
+    await reg.shutdown()
+    check("a second shutdown does not unprepare again", len(r.L.unprepare_calls) == 1)
+    # a failure before any pin exists still undoes the mounts and the firewall, but names no pin
+    r.L.unprepare_calls.clear()
+    r.L.fail_pin = ""
+    reg2 = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
+    await reg2.startup(CFG)
+    await reg2.shutdown()
+    check("a prepare that failed before any pin: unprepare runs with bpf_pin ''", len(r.L.unprepare_calls) == 1 and r.L.unprepare_calls[0]["bpf_pin"] == "", str(r.L.unprepare_calls))
+    r.L.ok, r.L.fail_pin = True, ""
+    # a registry that never prepared anything (feature off) calls nothing
+    r.L.unprepare_calls.clear()
+    reg3 = Registry(launcher_kw=fake_launcher_kw(), launch_mod=r.L, bpf=r.bpf, clock=r.clock, sleep=nosleep, host_facts=lambda: FACTS, ncpu=4, mem_total=15 * 1024 ** 3)
+    await reg3.shutdown()
+    check("shutdown of a registry that prepared nothing does not unprepare", r.L.unprepare_calls == [])
 
 
 async def t_prepare_serialised(r):
@@ -1677,7 +1707,7 @@ async def t_live_round2_guard(r):
 CASES = [t_concurrent_same_member, t_five_members_two_seats, t_failing_launcher, t_failed_start_unit_left, t_elsewhere_and_takeover, t_end_while_starting,
          t_end_idempotent, t_revocation, t_activity_here_throttle, t_idle_detach_lifetime, t_one_show_per_tick, t_exit_status, t_marker_events, t_ingress_filter,
          t_traffic, t_tmp_quota_and_sweep, t_sweep_tmp_live_set, t_sweeper_allow_list, t_unit_left_running, t_listener, t_startup_nothing,
-         t_startup_prepare, t_failed_prepare, t_prepare_serialised, t_slice_penalty, t_shutdown_left, t_preflight, t_no_start_before_preflight, t_misc, t_stage_fake_startup,
+         t_startup_prepare, t_failed_prepare, t_failed_prepare_cleanup, t_prepare_serialised, t_slice_penalty, t_shutdown_left, t_preflight, t_no_start_before_preflight, t_misc, t_stage_fake_startup,
          t_end_while_parked_start, t_end_while_parked_sockets, t_end_while_parked_listeners, t_takeover_while_listener_check_parked, t_tick_isolation,
          t_tick_listener_scan_raises, t_tick_concurrent_end, t_start_failed_cancelled_during_stop, t_tick_does_not_wait_for_a_stop,
          t_unverifiable_listener_check, t_filter_attached_raises, t_shutdown_with_probe, t_preflight_invalidation, t_preflight_drift, t_failed_unit_reset, t_preflight_gate_in_lock, t_exit_code_of_status_3, t_probe_sweep_fullmatch, t_probe_sweep_real_launchers, t_tmp_walk_by_descriptor, t_live_round2_guard]
