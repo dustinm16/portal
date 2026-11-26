@@ -212,24 +212,31 @@ def run_setup_wizard() -> None:
     print("=" * 50)
     _setup_fail2ban()
 
-    # --- Step 10: Admin User ---
+    # --- Step 10: Web Browser on the server (optional) ---
     print()
     print("=" * 50)
-    print("STEP 10: Admin User")
+    print("STEP 10: Web Browser on the Server (optional)")
+    print("=" * 50)
+    _setup_rbrowser()
+
+    # --- Step 11: Admin User ---
+    print()
+    print("=" * 50)
+    print("STEP 11: Admin User")
     print("=" * 50)
     _setup_admin_user(venv_python)
 
-    # --- Step 11: Systemd Service ---
+    # --- Step 12: Systemd Service ---
     print()
     print("=" * 50)
-    print("STEP 11: Systemd Service")
+    print("STEP 12: Systemd Service")
     print("=" * 50)
     _setup_systemd(venv_python)
 
-    # --- Step 12: Verify Configuration ---
+    # --- Step 13: Verify Configuration ---
     print()
     print("=" * 50)
-    print("STEP 12: Verification")
+    print("STEP 13: Verification")
     print("=" * 50)
     _verify_setup(config)
 
@@ -1171,6 +1178,69 @@ def _setup_fail2ban() -> None:
     )
     if not install_fail2ban(raw.split()):
         print("  fail2ban setup did not complete; Portal setup continues.")
+
+
+# --- Web Browser on the server (optional, 1.25.0) ---------------------------------------------------------------
+# Binary -> Debian/Ubuntu package. The names are the ones rbrowser_launch.availability() looks for (tests/test_setup_rbrowser.py
+# keeps this table and that function in step). setup.py does not import rbrowser_launch: it runs before the virtualenv exists.
+RBROWSER_BINARIES = (
+    (("chromium", "chromium-browser"), "chromium"),
+    (("Xvfb",), "xvfb"),
+    (("x11vnc",), "x11vnc"),
+    (("xauth",), "xauth"),
+    (("xrandr",), "x11-xserver-utils"),
+    (("xsel",), "xsel"),
+)
+RBROWSER_OPTIONAL_BINARIES = (("iptables", "ip6tables"), "iptables")
+RBROWSER_PRIVACY = ("The Web Browser runs on the server, not on your device. "
+                    "Websites see the server's address, not yours.")
+
+
+def _rbrowser_missing_packages() -> list[str]:
+    """Packages (apt names, in table order, no duplicates) for the binaries that are not on PATH."""
+    packages: list[str] = []
+    for names, package in RBROWSER_BINARIES:
+        if not any(shutil.which(n) for n in names) and package not in packages:
+            packages.append(package)
+    return packages
+
+
+def _rbrowser_install_command(packages: list[str]) -> list[str]:
+    return ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", *packages]
+
+
+def _setup_rbrowser() -> None:
+    """Optional: the packages of the server-side Web Browser. Offers and explains only: nothing is installed without a yes
+    (default No), and the feature stays off. It is switched on in Admin > Settings, after the portal's own sandbox check."""
+    print("  The Web Browser lets members use a browser that runs on this server and is shown in a page of the portal.")
+    print("  " + RBROWSER_PRIVACY)
+    print("  It is OFF until a superadmin switches it on in Admin > Settings; this step never switches it on and")
+    print("  writes nothing to the configuration. It needs the portal to run as root under systemd (cgroup v2); the")
+    print("  sandbox check in Admin decides whether this server can run it. Skip this step if you do not want it.\n")
+
+    packages = _rbrowser_missing_packages()
+    if not any(shutil.which(n) for n in RBROWSER_OPTIONAL_BINARIES[0]):
+        print("  Optional: iptables (an upload limit for the browser; the browser works without it).")
+    if not packages:
+        print("  All the programs it needs are already installed. Nothing to do here.")
+        return
+    print("  Missing packages: " + " ".join(packages))
+    line = "apt-get install -y --no-install-recommends " + " ".join(packages)
+    if not shutil.which("apt-get"):
+        print("  No apt here: install these with your package manager, then run the sandbox check in Admin:")
+        print("    " + line)
+        return
+    if not _prompt_yes_no("Install them now with apt?", default_yes=False):
+        print("  Skipped. Later, as root:  " + line)
+        return
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    print("  Installing (apt)...")
+    result = subprocess.run(sudo + _rbrowser_install_command(packages), capture_output=True, text=True, timeout=900)
+    if result.returncode != 0:
+        print(f"  ERROR: apt-get failed: {result.stderr.strip()[-500:]}")
+        print("  Portal setup continues; the Web Browser stays off.")
+        return
+    print("  Installed. The Web Browser is still off: switch it on in Admin > Settings after the sandbox check.")
 
 
 def _setup_venv_and_deps() -> str:
