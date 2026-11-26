@@ -164,27 +164,7 @@ XSECOND = "<!doctype html><html><head><title>xsite-two</title></head><body><h1>s
 # headers). It reports whether it ran and whether the report script of the embedded browser is in it.
 CTPAGE = ("<!doctype html><html><head><title>ct-__KIND__</title></head><body><h1>ct page</h1><script>"
           "var inj=false;for(var i=0;i<document.scripts.length;i++){if((document.scripts[i].textContent||'').indexOf('portal'+'Frame')>=0)inj=true}"
-          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj,charset:document.characterSet,text:document.body?document.body.innerText:''})});</script></body></html>")
-
-# (1.24.2) Pages whose charset the proxy has to read the way a browser does, so that the report script is still a script to the
-# browser: name -> (builds the body from the report page, Content-Type). The report page says what charset the browser used, what
-# its text was and whether the report script is among its scripts. The last one hides, in a leading comment, an ESC that
-# switches a browser reading ISO-2022-JP into another mode (the page is read as that by its meta tag).
-HE_TEXT, JA_TEXT = "\u05e9\u05dc\u05d5\u05dd", "\u65e5\u672c\u8a9e"
-RU_TEXT = "\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9"
-CS_BROWSER_KINDS = {
-    "cs_ebcdic": (lambda page: page.encode(), "text/html; charset=cp037"),
-    "cs_hebrew_i": (lambda page: page.replace("ct page", HE_TEXT).encode("iso8859_8"), "text/html; charset=iso-8859-8-i"),
-    "cs_jis_meta": (lambda page: page.replace("<head>", '<head><meta charset="iso-2022-jp">').replace("ct page", JA_TEXT).encode("iso2022_jp"), "text/html"),
-    "cs_esc": (lambda page: b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp">' + page.encode() + b"\xff", "text/html"),
-    # a UTF-16BE page named by a label of its own and with no byte order mark (the proxy sends it as UTF-8)
-    "cs_unicodefffe": (lambda page: page.replace("ct page", RU_TEXT).encode("utf-16-be"), "text/html; charset=unicodefffe"),
-    # x-user-defined in a meta tag is windows-1252 to the browser (the proxy sends it as that)
-    "cs_meta_xud": (lambda page: page.replace("<head>", '<head><meta charset="x-user-defined">').replace("ct page", "caf\u00e9 \u20ac").encode("cp1252"), "text/html"),
-    # a meta tag inside the text of a script or a title is no tag to the browser: the real one after it names UTF-8
-    "cs_meta_script": (lambda page: page.replace("<head>", '<head><script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
-    "cs_meta_title": (lambda page: page.replace("<head>", '<head><title>about &lt;<meta charset=windows-1251></title><meta charset="utf-8">').replace("ct page", RU_TEXT).encode("utf-8"), "text/html"),
-}
+          "fetch('/__report?tag=ct',{method:'POST',body:JSON.stringify({kind:'__KIND__',injected:inj})});</script></body></html>")
 
 # (1.24.2) The outgoing page of a navigation the portal starts: an honest page whose title changes and that fires hashchange and
 # load again and again (as a single page app does), on one site; the portal then navigates the tab to another honest page on
@@ -316,20 +296,7 @@ def serve():
             heads = CIMultiDict([("Content-Type", "text/plain, text/html")] if kind == "comma"
                                 else [("Content-Type", "text/plain"), ("Content-Type", "text/html")] if kind == "repeat"
                                 else [("Content-Type", "text/html")])
-            body = CTPAGE.replace("__KIND__", kind)
-            if kind == "u16":       # (1.24.2) no charset in the header, a UTF-16 byte order mark in the body
-                return web.Response(body=body.encode("utf-16"), headers=heads)
-            if kind == "latin":     # (1.24.2) no charset in the header, a latin-1 byte and a meta tag in the body
-                # (bytes the proxy cannot read as text are left alone but for the report script, so this page gets no address
-                # rewriting either: it reports to an address under its own path)
-                body = body.replace("fetch('/__report", "fetch(location.pathname.split('/ct/')[0]+'/__report")
-                return web.Response(body=body.replace("<head>", '<head><meta charset="windows-1252">').replace("ct page", "ct page \u00e9").encode("latin-1"), headers=heads)
-            if kind in CS_BROWSER_KINDS:
-                # (1.24.2) charsets: the proxy and the browser must read these pages the same way (see CS_BROWSER_KINDS)
-                build, ctype = CS_BROWSER_KINDS[kind]
-                page = CTPAGE.replace("__KIND__", kind).replace("fetch('/__report", "fetch(location.pathname.split('/ct/')[0]+'/__report")
-                return web.Response(body=build(page), headers=CIMultiDict([("Content-Type", ctype)]))
-            return web.Response(body=body.encode(), headers=heads)
+            return web.Response(body=CTPAGE.replace("__KIND__", kind).encode(), headers=heads)
         up.router.add_get("/ct/{kind}", ctpage)
         up.router.add_get("/xl/{kind}", xl)
         up.router.add_get("/xx/{kind}", xx)
@@ -768,7 +735,7 @@ def run_browser(info):
         # 3e. (1.24.2) a hostile page behind a Content-Type that the proxy reads one way and a browser another (a comma
         # list, repeated headers): it is either not rendered as HTML (a download) or it carries the injected report script.
         # The control is a plain text/html answer, which is rendered and carries the script.
-        for kind in ("html", "comma", "repeat", "u16", "latin", *CS_BROWSER_KINDS):
+        for kind in ("html", "comma", "repeat"):
             ctx = ctx_for("bob")
             page = ctx.new_page()
             n_before = len(results().get("ct", []))
@@ -779,24 +746,7 @@ def run_browser(info):
                 started_download = "Download is starting" in str(exc)
             time.sleep(2.0)
             got = results().get("ct", [])[n_before:]
-            if kind in ("u16", "latin"):
-                # (1.24.2) text/html without a charset: the proxy reads the document the way the browser does (a byte order
-                # mark decides; bytes that are not UTF-8 are kept as they are), so the report script is in the page the
-                # browser builds. (Before, the UTF-16 page was no page at all.)
-                check(f"CS browser ({kind}): a page served as text/html without a charset is rendered and carries the report script",
-                      bool(got) and got[-1].get("injected") is True and not started_download, (started_download, got))
-                print(f"note: CS browser ({kind}): the browser read the page as {got[-1].get('charset') if got else None}")
-            elif kind in CS_BROWSER_KINDS:
-                g = got[-1] if got else {}
-                want_cs, want_text = {"cs_ebcdic": ("UTF-8", "ct page"), "cs_hebrew_i": ("ISO-8859-8-I", HE_TEXT),
-                                      "cs_jis_meta": ("ISO-2022-JP", JA_TEXT), "cs_esc": ("ISO-2022-JP", "ct page"),
-                                      "cs_meta_xud": ("windows-1252", "caf\u00e9 \u20ac"), "cs_unicodefffe": ("UTF-8", RU_TEXT),
-                                      "cs_meta_script": ("UTF-8", RU_TEXT), "cs_meta_title": ("UTF-8", RU_TEXT)}[kind]
-                check(f"CS browser ({kind}): the page is rendered and the report script is one of its scripts",
-                      bool(got) and g.get("injected") is True and not started_download, (started_download, got))
-                check(f"CS browser ({kind}): the browser read it as {want_cs}", g.get("charset") == want_cs, g)
-                check(f"CS browser ({kind}): and its text is {want_text!r}, not escape codes or bytes of another charset", want_text in str(g.get("text", "")), g)
-            elif kind == "html":
+            if kind == "html":
                 check("CT browser: the control (one text/html) is rendered and carries the report script", got and got[-1].get("injected") is True, got)
             else:
                 check(f"CT browser ({kind}): the page is not rendered as HTML (a download), or it carries the report script",

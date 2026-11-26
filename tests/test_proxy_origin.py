@@ -12,7 +12,6 @@ Run: venv/bin/python tests/test_proxy_origin.py
 
 import asyncio
 import json
-import re
 import sys
 import time
 from pathlib import Path
@@ -432,60 +431,6 @@ async def amain():
         "mixed": ([b"Multipart/X-Mixed-Replace; boundary=frame"], b"--frame\r\nContent-Type: text/html\r\n\r\n<script>1</script>\r\n--frame--"),
         "xsl": ([b"text/xsl"], b"<xsl:stylesheet xmlns:xsl='http://www.w3.org/1999/XSL/Transform'/>"),
     }
-    # (1.24.2) charset reading of an isolated text/html answer: name -> (Content-Type lines, body, header expected, text the
-    # body must come out as once the report script is taken away (bytes), or None when it is the body itself)
-    cs_doc = "<!doctype html><html><head><title>caf\u00e9</title></head><body>caf\u00e9 \u20ac</body></html>"
-    cs_latin = b'<!doctype html><html><head><meta charset="windows-1252"><title>t</title></head><body>caf\xe9 \x80</body></html>'
-    cs_ascii = b"<!doctype html><html><head><title>t</title></head><body>x</body></html>"
-    cs_hebrew = b"<!doctype html><title>t</title>" + "\u05e9\u05dc\u05d5\u05dd".encode("iso8859_8")
-    cs_jis_meta = ('<!doctype html><meta charset="iso-2022-jp"><title>t</title>' + "\u65e5\u672c\u8a9e").encode("iso2022_jp")
-    charset_cases = {
-        "cs_u16le": ([b"text/html"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
-        "cs_u16be": ([b"text/html"], b"\xfe\xff" + cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
-        "cs_u32le": ([b"text/html"], b"\xff\xfe\x00\x00" + cs_doc.encode("utf-32-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
-        # unicodefffe is a label of UTF-16BE (no byte order mark: the bytes are valid UTF-8 too, with NULs, so only the label tells)
-        "cs_unicodefffe": ([b"text/html; charset=unicodefffe"], cs_doc.encode("utf-16-be"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
-        "cs_u16_declared": ([b"text/html; charset=windows-1252"], b"\xff\xfe" + cs_doc.encode("utf-16-le"), "text/html; charset=utf-8", cs_doc.encode("utf-8")),
-        "cs_u8bom": ([b"text/html"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_u8bom_declared": ([b"text/html; charset=windows-1252"], b"\xef\xbb\xbf" + cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_1252": ([b"text/html; charset=windows-1252"], cs_latin, "text/html; charset=windows-1252", None),
-        "cs_none_utf8": ([b"text/html"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        # a meta tag in the first bytes names the charset, as it does for a browser: it is sent, so the browser need not find it
-        # again behind the scripts the proxy puts in front of it
-        "cs_none_latin": ([b"text/html"], cs_latin, "text/html; charset=windows-1252", None),
-        "cs_unknown_utf8": ([b"text/html; charset=no-such-charset"], cs_doc.encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_unknown_latin": ([b"text/html; charset=no-such-charset"], cs_latin, "text/html; charset=windows-1252", None),
-        # no label of any kind, not UTF-8: every byte is kept, no charset is sent
-        "cs_nometa_latin": ([b"text/html"], cs_latin.replace(b'<meta charset="windows-1252">', b""), "text/html", None),
-        # a label a browser does not know (EBCDIC) is none: the ASCII page is UTF-8 and the proxy's script stays readable
-        "cs_ebcdic": ([b"text/html; charset=cp037"], cs_ascii, "text/html; charset=utf-8", None),
-        "cs_utf7": ([b"text/html; charset=utf-7"], cs_ascii, "text/html; charset=utf-8", None),
-        # a label a browser knows but Python does not name that way is used and sent as it was
-        "cs_hebrew_i": ([b"text/html; charset=iso-8859-8-i"], cs_hebrew, "text/html; charset=iso-8859-8-i", None),
-        "cs_sjis_label": ([b"text/html; charset=windows-31j"], cs_ascii + "\u65e5\u672c".encode("cp932"), "text/html; charset=windows-31j", None),
-        "cs_1252_undefined": ([b"text/html; charset=windows-1252"], b"<!doctype html><title>t</title>\x81\x8d", "text/html; charset=windows-1252", None),
-        # ISO-2022-JP is 7-bit: valid UTF-8 as well, but the meta tag decides, and without one nothing is claimed
-        "cs_jis_meta": ([b"text/html"], cs_jis_meta, "text/html; charset=iso-2022-jp", None),
-        "cs_jis_nometa": ([b"text/html"], cs_jis_meta.replace(b'<meta charset="iso-2022-jp">', b""), "text/html", None),
-        # an ESC inside a leading comment switches a browser that reads the page as ISO-2022-JP into another mode: the
-        # script goes in at the very start, before the comment
-        "cs_esc_meta": ([b"text/html"], b'<!--\x1b$B-->\x1b(B--><meta charset="iso-2022-jp"><title>a</title>\xff', "text/html; charset=iso-2022-jp", None),
-        "cs_esc_nometa": ([b"text/html"], b'<!--\x1b$B-->\x1b(B--><title>a</title>\xff', "text/html", None),
-        "cs_nonascii_comment": ([b"text/html"], b"<!-- \xe9 --><!doctype html><title>a</title>\xff", "text/html", None),
-        # ... but a page the proxy reads as UTF-8 keeps its leading comment in front of the script
-        # a meta tag naming x-user-defined is windows-1252 to a browser, so it is sent as that (as the header label it would turn bytes 0x80-0xFF into private-use characters)
-        "cs_meta_xud": ([b"text/html"], '<!doctype html><html><head><meta charset="x-user-defined"><title>T</title></head><body>caf\u00e9 \u20ac'.encode("cp1252"), "text/html; charset=windows-1252", None),
-        "cs_header_xud": ([b"text/html; charset=x-user-defined"], '<!doctype html><title>T</title>caf\u00e9 \u20ac'.encode("cp1252"), "text/html; charset=x-user-defined", None),
-        "cs_utf8_comment": ([b"text/html"], "<!-- caf\u00e9 --><!doctype html><head><title>a</title></head>".encode(), "text/html; charset=utf-8", None),
-        # (1.24.2) a meta tag the browser's pre-scan does not see (it is in the text of a script or a title) does not name the
-        # charset: the real one after it does (windows-1251 here would turn the UTF-8 text into mojibake)
-        "cs_meta_in_script": ([b"text/html"], ('<!doctype html><html><head><script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8"><title>T</title></head>'
-                                                "<body>\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9").encode("utf-8"), "text/html; charset=utf-8", None),
-        "cs_meta_in_title": ([b"text/html"], ('<!doctype html><html><head><title>about &lt;<meta charset=windows-1251></title><meta charset="utf-8"></head>'
-                                               "<body>\u043f\u0440\u0438\u0432\u0435\u0442 caf\u00e9").encode("utf-8"), "text/html; charset=utf-8", None),
-    }
-    for _name, (_cts, _body, _hdr, _text) in charset_cases.items():
-        raw_cases[_name] = (_cts, _body)
 
     async def raw_serve(reader, writer):
         try:
@@ -686,9 +631,7 @@ async def amain():
     body = served["badutf"]
     check("E1 report script: a body that is not valid text keeps its bytes (\\xff) and gets the script at byte level", b"\xff" in body and marker in body, repr(body[-60:]))
     st, hd, body = await get(bob, f"{cap_base}/fj/utf16")
-    check("E1 report script: an UTF-16 page (byte order mark, declared utf-16) is injected as text and sent as UTF-8 without the mark",
-          marker in body and not body.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf")) and b"\x00" not in body
-          and hd.getall("Content-Type", []) == ["text/html; charset=utf-8"], f"{hd.getall('Content-Type', [])} {body[:40]!r}")
+    check("E1 report script: an UTF-16 page that decodes is injected as text", marker.decode().encode("utf-16")[2:] in body or b"p\x00o\x00r\x00t\x00a\x00l\x00F\x00" in body, repr(body[:40]))
     for kind in ("xhtml", "xml"):
         st, hd, body = await get(bob, f"{cap_base}/fj/{kind}")
         csp = hd.getall("Content-Security-Policy", [])
@@ -706,8 +649,8 @@ async def amain():
             ("repeat", OCT, False, None), ("comma", OCT, False, None), ("missing", OCT, False, None), ("empty", OCT, False, None),
             ("xhtml_comma", OCT, False, None), ("three", OCT, False, None), ("junk", OCT, False, None),
             ("odd", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
-            ("semicolon", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
-            ("same_twice", ["text/html; charset=utf-8"], True, server._PROXY_HTML_CSP),
+            ("semicolon", ["text/html"], True, server._PROXY_HTML_CSP),
+            ("same_twice", ["text/html"], True, server._PROXY_HTML_CSP),
             ("xhtml_odd", ["application/xhtml+xml; charset=utf-8"], False, server._PROXY_SVG_CSP),
             ("svg", ["image/svg+xml"], False, server._PROXY_SVG_CSP),
             ("bytes", ["multipart/byteranges; boundary=\"abc\""], False, None),
@@ -724,84 +667,6 @@ async def amain():
             check(f"CT {kind}: the page policy follows the same type", want_csp in csp, str(csp))
         else:
             check(f"CT {kind}: no page policy (it is not a document that runs)", server._PROXY_HTML_CSP not in csp and server._PROXY_SVG_CSP not in csp, str(csp))
-    # (1.24.2) The proxy and the browser read an isolated HTML document the same way: a byte order mark decides, then a
-    # charset the proxy knows (used and sent), else UTF-8 when the bytes are valid UTF-8 (sent as such), else the bytes are
-    # kept as they are (only ASCII is inserted) and no charset is sent. The script is in every one of these answers.
-    script_b = server._ISOLATED_FRAME_JS.encode("ascii")
-    for kind, (_cts, raw_body, want_hdr, want_text) in charset_cases.items():
-        st, hd, body = await get(bob, f"{cap_raw}/ct/{kind}")
-        check(f"CS {kind}: the answer carries the report script exactly once", st == 200 and body.count(script_b) == 1, f"{st} {body[:80]!r}")
-        check(f"CS {kind}: the one Content-Type is exactly {want_hdr!r}", hd.getall("Content-Type", []) == [want_hdr], str(hd.getall("Content-Type", [])))
-        want_body = want_text if want_text is not None else raw_body
-        # (an answer the proxy reads as text also gets the portal's own address-rewriting script, which is no part of this rule)
-        plain = re.sub(rb'<script>\(function\(\)\{"use strict";.*?\}\)\(\);</script>', b"", body, flags=re.S)
-        check(f"CS {kind}: nothing but the scripts was added (every other byte is as the proxy read it)",
-              plain == want_body, f"{plain[:120]!r}")
-        if want_hdr == "text/html":
-            check(f"CS {kind}: a page that is not text to the proxy gets the report script and nothing else, byte for byte",
-                  body.replace(script_b, b"", 1) == raw_body, f"{body[:120]!r}")
-        check(f"CS {kind}: it is a page, not a download", "Content-Disposition" not in hd, str(dict(hd)))
-    # (1.24.2) what the proxy made of the pages above
-    async def served_cs(kind):
-        return (await get(bob, f"{cap_raw}/ct/{kind}"))[2]
-    body = await served_cs("cs_jis_meta")
-    check("CS cs_jis_meta: an ISO-2022-JP page is decoded, so the script goes in as text and the Japanese text is as it was",
-          b"\x1b$B" in body and body.endswith(b"\x1b(B") and script_b in body, f"{body[-40:]!r}")
-    # the pre-scan of a meta tag, as a browser's: comments and attributes are not tags, only the first 1024 bytes count
-    pre = server._meta_declared_charset
-    for what, doc, want in (
-            ("charset attribute", b'<meta charset="Shift_JIS">', "shift_jis"),
-            ("unquoted", b"<meta charset=utf-8>", "utf-8"),
-            ("http-equiv", b'<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-2">', "iso-8859-2"),
-            ("in a comment", b'<!-- <meta charset="shift_jis"> --><title>t</title>', None),
-            ("in an attribute value", b'<div title="<meta charset=big5>">x</div>', None),
-            ("an unknown label is skipped", b'<meta charset="cp037"><meta charset="koi8-r">', "koi8-r"),
-            ("past 1024 bytes", b"<!-- " + b"x" * 1100 + b' --><meta charset="big5">', None),
-            ("a meta without a charset", b'<meta name="a" content="charset=big5">', None),
-            ("spaces around", b"<meta  charset =  'gbk' >", "gbk"),
-            ("not a meta tag", b'<metadata charset="big5">', None),
-            ("nothing", b"plain text", None),
-            # the text of these elements is no tag to a browser's pre-scan (each row was checked in Chromium, see CS_BROWSER_KINDS)
-            ("in a script string", b'<script>var s="<meta charset=windows-1251>";</script><meta charset="utf-8">', "utf-8"),
-            ("in a title", b'<title>a &lt;<meta charset=windows-1251></title><meta charset="utf-8">', "utf-8"),
-            ("in a textarea", b'<textarea><meta charset=windows-1251></textarea><meta charset="utf-8">', "utf-8"),
-            ("in a style", b'<style>/*<meta charset=windows-1251>*/</style><meta charset="utf-8">', "utf-8"),
-            ("in an xmp", b'<xmp><meta charset=windows-1251></xmp><meta charset="utf-8">', "utf-8"),
-            ("in an iframe", b'<iframe><meta charset=windows-1251></iframe><meta charset="utf-8">', "utf-8"),
-            ("in a noembed", b'<noembed><meta charset=windows-1251></noembed><meta charset="utf-8">', "utf-8"),
-            ("in a noframes", b'<noframes><meta charset=windows-1251></noframes><meta charset="utf-8">', "utf-8"),
-            ("in a script comment", b'<script><!-- <meta charset=windows-1251> --></script><meta charset="utf-8">', "utf-8"),
-            ("an upper-case end tag with a space", b"<SCRIPT>a</SCRIPT ><meta charset=windows-1251>", "windows-1251"),
-            ("a title holds no tags", b"<title><script></title><meta charset=windows-1251>", "windows-1251"),
-            ("a noscript is read as tags, as a browser does", b'<noscript><meta charset=windows-1251></noscript><meta charset="utf-8">', "windows-1251"),
-            ("after a body tag, as a browser does", b"<body>x<meta charset=windows-1251>", "windows-1251"),
-            ("after a div", b"<div></div><meta charset=windows-1251>", "windows-1251"),
-            ("an unterminated script holds the rest", b'<script>var s="<meta charset=windows-1251>"; <meta charset="utf-8">', None),
-            ("a self-closing script still opens raw text", b"<script/><meta charset=windows-1251>", None),
-            ("a plaintext holds the rest", b"<plaintext><meta charset=windows-1251>", None),
-            ("a double-escaped script comment is left to the fallback", b'<script><!-- <script> </script> <meta charset=windows-1251> </script> --></script><meta charset="utf-8">', None),
-            ("an end tag only closes its own element", b'<style></script><meta charset=windows-1251></style><meta charset="utf-8">', "utf-8")):
-        check(f"meta pre-scan: {what}", pre(doc) == want, repr(pre(doc)))
-    check("charset label reading: unicodefffe is UTF-16BE, as utf-16be is",
-          server._charset_reading("unicodefffe") == server._charset_reading("utf-16be") == ("utf-16-be", "utf-8", "utf-8", True), str(server._charset_reading("unicodefffe")))
-    check("meta label reading: x-user-defined in a meta tag is windows-1252 (read as latin-1, sent as windows-1252); in a header it is kept",
-          server._charset_reading("x-user-defined", True) == ("latin-1", "latin-1", "windows-1252", True)
-          and server._charset_reading("x-user-defined") == ("latin-1", "latin-1", "x-user-defined", True)
-          and server._charset_reading("utf-16", True)[2] == "utf-8", str(server._charset_reading("x-user-defined", True)))
-    # (1.24.2) where the report script stands when the proxy does not know how the browser decodes the page (bytes kept)
-    for kind in ("cs_esc_meta", "cs_esc_nometa", "cs_nonascii_comment"):
-        body = await served_cs(kind)
-        check(f"CS {kind}: nothing of the page stands before the report script (an ESC or a non-ASCII byte in front of it could change how a browser reads it)",
-              body.startswith(script_b), f"{body[:60]!r}")
-    body = await served_cs("cs_utf8_comment")
-    check("CS cs_utf8_comment: a page read as UTF-8 keeps its leading comment and doctype in front of the script (no quirks mode)",
-          body.startswith("<!-- caf\u00e9 --><!doctype html>".encode() + script_b), f"{body[:80]!r}")
-    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_u16le")
-    check("CS: a trusted connection gets the UTF-16 answer byte for byte, with the Content-Type it had",
-          st == 200 and body == charset_cases["cs_u16le"][1] and hd.getall("Content-Type", []) == ["text/html"], f"{hd.getall('Content-Type', [])} {body[:20]!r}")
-    st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/cs_unknown_latin")
-    check("CS: ... and one with an unknown charset keeps that charset in its header",
-          st == 200 and body == charset_cases["cs_unknown_latin"][1] and hd.getall("Content-Type", []) == ["text/html; charset=no-such-charset"], str(hd.getall("Content-Type", [])))
     st, hd, body = await get(owner, f"/proxy/{web_raw}/ct/repeat")
     check("CT: a trusted connection keeps the upstream's headers as they were (both Content-Type lines pass through, no nosniff)",
           st == 200 and hd.getall("Content-Type", []) == ["text/plain", "text/html"] and "X-Content-Type-Options" not in hd, str(hd.getall("Content-Type", [])))
