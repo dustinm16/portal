@@ -3039,18 +3039,20 @@ def g21(rig, ctx):
     try:
         nv = s.open_page()
         time.sleep(3)
-        # The page reports its own focus in the title until the first key arrives (then the title is the typed text): the keys are typed
-        # only after the field proved to be the active element, so a key sent before the click had its effect cannot be taken for a lost one.
-        nv.nav(page_url("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px oninput=\"window.typed=1;document.title='k:'+this.value\"></textarea>"
-                        "<script>setInterval(function(){if(!window.typed)document.title='kb hf='+document.hasFocus()+' ae='+(document.activeElement.tagName=='TEXTAREA')},150)</script>", "kb"))
+        # The page records the click on the field (mousedown) and its own focus in the title until the first key arrives (then the title is
+        # the typed text): the keys are typed only after the click was seen by the page, so a key sent before the click had its effect
+        # cannot be taken for a lost one. The textarea has autofocus, so "active element" alone proves nothing; document.hasFocus() is
+        # shown and waited for, but if the built-in window manager never makes it true the test goes on (and says so in its output).
+        nv.nav(page_url("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px onmousedown=\"window.clicked=1\" oninput=\"window.typed=1;document.title='k:'+this.value\"></textarea>"
+                        "<script>setInterval(function(){if(!window.typed)document.title='kb hf='+document.hasFocus()+' ae='+(document.activeElement.tagName=='TEXTAREA')+' clicked='+(window.clicked==1)},150)</script>", "kb"))
         s.wait_title("kb")
         time.sleep(1)
         nv.click(200, 200)
-        # Only the field being the active element is required: document.hasFocus() depends on the window manager marking the window active
-        # (never measured under the built-in one), so it is reported ("hf=") and not gated on.
-        focused, ft = s.wait_title("ae=true", 10)
-        if not focused:
-            return "FAIL", f"the test could not type: the field never became the active element ({ft[:40]!r}); not a typing result"
+        clicked, ft = s.wait_title("clicked=true", 10)
+        if not clicked:
+            return "FAIL", f"the test could not type: the page never saw the click on the field ({ft[:50]!r}); not a typing result"
+        hf, ft = s.wait_title("hf=true", 5)
+        hf_note = "document.hasFocus() true before typing" if hf else "document.hasFocus() never became true under the window manager (typed after the click was seen anyway)"
         time.sleep(0.3)
         # (name, wanted text, action): the physical keys of a French, a German, a German-with-AltGr and a US layout
         cases = [("e-acute", "\u00e9", lambda: nv.key("\u00e9", "Digit2", "\u00e9")), ("sharp s", "\u00df", lambda: nv.key("\u00df", "Minus", "\u00df")),
@@ -3072,7 +3074,7 @@ def g21(rig, ctx):
     finally:
         s.stop()
     bad = [n for n, ok in res.items() if not ok]
-    note = f"dead key sequence produced {dead[-12:]!r} (Playwright cannot compose a dead key; list it as a limit if it is not the accented letter)"
+    note = f"dead key sequence produced {dead[-12:]!r} (Playwright cannot compose a dead key; list it as a limit if it is not the accented letter); {hf_note}"
     if bad:
         return "FAIL", f"not arriving: {bad}; {note}"
     return "PASS", f"e-acute, sharp s, euro and AltGr @ arrived; {note}"
