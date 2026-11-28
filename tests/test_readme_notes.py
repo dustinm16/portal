@@ -2072,7 +2072,7 @@ check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as 
 _idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.25.0: the Static files item names the script versions the pages load",
       "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
-      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1 and to 3 in 1.26.0, rbrowser.css to 2 in 1.25.1
+      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3|4)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1 and to 3 in 1.26.0, rbrowser.css to 2 in 1.25.1
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
 check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",
@@ -2103,8 +2103,8 @@ check("1.26.0: the notes say what was measured and that a real unit run of G25 i
       and "G25" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
 check("1.26.0: the notes say the remote toolbar row is not the same pixel colour as the page's toolbar",
       "**not** the same pixel colour" in _s126 and "within about 22" in _s126)
-check("1.26.0: the Static files item names rbrowser.js v3 and rbrowser.html loads it at that version, rbrowser.css stays at v2",
-      "`rbrowser.js` v3" in _s126 and "/static/js/rbrowser.js?v=3" in _page250 and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
+check("1.26.0: the Static files item names rbrowser.js v3 (later 4 in 1.26.1) and rbrowser.html loads it at one of them, rbrowser.css stays at v2",
+      "`rbrowser.js` v3" in _s126 and re.search(r"/static/js/rbrowser\.js\?v=(3|4)\b", _page250) is not None and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
 check("1.26.0: the README's Theme paragraph is in the Web Browser section and the old sentence that themes do not change the picture is gone",
       "**Theme.** The remote Chromium takes the member's portal theme when a session starts" in text and "themes do not change the picture" not in text
       and text.index("**Theme.** The remote Chromium") < text.index("**What it does not do.** No downloads"))
@@ -2119,14 +2119,18 @@ _m1261 = re.search(r"### Upgrade notes for 1\.26\.1\n(.*?)(?=\n### )", text, re.
 _s1261 = _m1261.group(1) if _m1261 else ""
 _sess1261 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
 check("1.26.1: README has an 'Upgrade notes for 1.26.1' section above the 1.26.0 one", _m1261 is not None and text.index("### Upgrade notes for 1.26.1") < text.index("### Upgrade notes for 1.26.0"))
-check("1.26.1: the notes say nothing is migrated, no static file, running sessions keep the old map, and rollback needs nothing",
-      "nothing is migrated" in _s1261 and "no static file" in _s1261 and "keeps its old keyboard map" in _s1261 and "Going back to 1.26.0 needs nothing" in _s1261)
+check("1.26.1: the notes say nothing is migrated, rbrowser.js v4 is the one static file (and the page loads it at v4, rbrowser.css stays v2), running sessions keep the old map, and rollback needs nothing",
+      "nothing is migrated" in _s1261 and "`rbrowser.js` v4" in _s1261 and "unchanged at v2" in _s1261 and "keeps its old keyboard map" in _s1261 and "Going back to 1.26.0 needs nothing" in _s1261
+      and "/static/js/rbrowser.js?v=4" in _page250 and "rbrowser.css?v=2" in _page250)
+check("1.26.1: the notes say both typing paths give one keysym per character through noVNC's keysymdef, name the generator and the 19th character",
+      "keysymdef.js" in _s1261 and "tools/keymap_table.py" in _s1261 and "KEYMAP_KEYSYMS" in _s1261 and "19th different non-US character" in _s1261 and "Two typing paths" in _s1261
+      and (ROOT / "tools" / "keymap_table.py").is_file())
 check("1.26.1: the notes say x11vnc's arguments and the clipboard flags did not change, and the code agrees",
       "x11vnc's arguments did not change" in _s1261 and "-nosetclipboard" in _s1261 and "-add_keysyms" not in _sess1261.split("def x11vnc_argv")[1].split("def valid_theme_mode")[0])
 check("1.26.1: the notes give the 18 free keys, the 16 kept free and say the step is not fatal, with the constant and the log line in the code",
       "18 such keys" in _s1261 and "16 keys stay free" in _s1261 and "KEYMAP_RESERVE = 16" in _sess1261 and "the keyboard map was not prepared" in _s1261 and "the keyboard map was not prepared" in _sess1261)
 check("1.26.1: the notes say it was measured on a rig, not in a real unit, and that the two live gates were changed and not run",
-      "Measured on a rig, not in a real unit" in _s1261 and "**Not run:**" in _s1261 and "`G17`" in _s1261 and "`G21`" in _s1261 and "not \"cannot happen\"" in _s1261)
+      "A rig, not a real unit" in _s1261 and "**Not run:**" in _s1261 and "`G17`" in _s1261 and "`G21`" in _s1261 and "not \"cannot happen\"" in _s1261 and "real page" in _s1261 and "raw RFB client" in _s1261)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

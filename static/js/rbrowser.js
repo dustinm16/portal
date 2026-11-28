@@ -1,4 +1,5 @@
 import RFB from '/static/vendor/novnc/core/rfb.js?v=1.4.0';
+import keysyms from '/static/vendor/novnc/core/input/keysymdef.js';
 
 /* Web Browser on the server: the page at /rbrowser (static/rbrowser.html).
 
@@ -90,12 +91,15 @@ function clampSize(w, h) {
     return { width: w, height: h };
 }
 
-// The keysym that types one code point: Latin-1 as itself, anything above as 0x01000000 + code point.
-// Control characters give 0 (nothing to type); newline and tab are handled by the caller.
+// The keysym that types one code point: the one noVNC's own keyboard sends for the same character (its keysymdef lookup: Latin-1 as
+// itself, the legacy keysym where X11 has one such as Cyrillic, Polish letters, the euro sign and typographic punctuation, and
+// 0x01000000 + code point for the rest). The module is the one the noVNC keyboard code imports (same URL, so the same instance), so
+// the typed-text paths and a member typing on the picture give x11vnc one keysym per character, which the server's prepared keyboard map
+// (rbrowser_unit/session.py KEYMAP_KEYSYMS) holds. Control characters give 0 (nothing to type); newline and tab are handled by the caller.
 function keysymFor(cp) {
     if (cp >= 0x20 && cp <= 0x7e) return cp;
     if (cp >= 0xa0 && cp <= 0xff) return cp;
-    if (cp > 0xff && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff)) return 0x01000000 + cp;
+    if (cp > 0xff && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff)) return keysyms.lookup(cp);
     return 0;
 }
 

@@ -12,6 +12,7 @@ Run: venv/bin/python tests/test_rbrowser_page.py
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -51,7 +52,7 @@ check("no inline style attribute", not re.search(r"<[^>]+\sstyle\s*=", HTML, re.
 check("the theme script is in the head, before the body, as vnc.html has it",
       HTML.index("/static/js/theme.js?v=3") < HTML.index("<body"))
 check("the module script is rbrowser.js with a version",
-      '<script type="module" src="/static/js/rbrowser.js?v=3"></script>' in HTML)
+      '<script type="module" src="/static/js/rbrowser.js?v=4"></script>' in HTML)
 check("portal.css keeps its version and the page's own rules come from rbrowser.css",
       "/static/css/portal.css?v=56" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
 check("portal.js is loaded as a classic script before the module", HTML.index("/static/js/portal.js?v=52") < HTML.index("rbrowser.js"))
@@ -107,11 +108,16 @@ check("the About panel says the remote browser takes the portal theme at session
 check("the script reads the toolbar colour and the mode only at create, and sends one theme object with a colour and a mode",
       "readTheme(doc, win)" in JS and JS.count("body.theme = theme") == 1 and "data-theme-mode" in JS and "--bg-secondary" in (STATIC / "css" / "rbrowser.css").read_text(encoding="utf-8"))
 check("rbrowser.js is loaded at version 3 (the theme change) and rbrowser.css is unchanged at 2",
-      "/static/js/rbrowser.js?v=3" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
+      "/static/js/rbrowser.js?v=4" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
 
 # ---- the script's source ----
 check("the module's first line is the noVNC import as vnc.html writes it",
       JS.startswith("import RFB from '/static/vendor/novnc/core/rfb.js?v=1.4.0';\n"))
+
+_utiljs = (STATIC / "vendor" / "novnc" / "core" / "input" / "util.js").read_text(encoding="utf-8")
+check("the second line imports noVNC's keysymdef module at the URL noVNC's own keyboard code resolves to (no query, so one instance), and rbrowser.js uses its lookup",
+      JS.split("\n")[1] == "import keysyms from '/static/vendor/novnc/core/input/keysymdef.js';" and 'import keysyms from "./keysymdef.js";' in _utiljs
+      and "keysyms.lookup(cp)" in JS and "0x01000000 + cp" not in JS and "keysyms.lookup(codepoint)" in _utiljs)
 first_fn = JS.index("function ")
 for const in ("MIN_W = 560", "QUALITY_LEVELS = [", "DEFAULT_QUALITY = 'balanced'", "TYPE_CHUNK = 40", "TYPE_INTERVAL_MS = 30", "TYPE_MAX_CHARS = 5000"):
     check(f"constant at the top, before any function: {const}", 0 <= JS.find("const " + const) < first_fn)
@@ -217,9 +223,17 @@ node = shutil.which("node")
 if not node:
     check("node is installed", False, "node not found")
 else:
+    # The supervisor's keyboard table (rbrowser_unit/session.py, standard library only) is handed to the harness, which EXECUTES the page's
+    # keysymFor for every code point of it: the page and the server's prepared keyboard map must name the same keysym for every character.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("rb_session_for_table", ROOT / "rbrowser_unit" / "session.py")
+    _sess = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_sess)
+    _table = sorted({(cp, _sess.keymap_keysym(cp)) for u in _sess.keymap_codepoint_units() for cp in u})
+    check("the supervisor's table has a few hundred entries or fewer and is not empty", 100 <= len(_table) <= 400, len(_table))
     out = subprocess.run([node, str(ROOT / "tests" / "rbrowser_page_harness.js"), str(STATIC / "js" / "rbrowser.js"), str(STATIC / "rbrowser.html"),
                           str(STATIC / "js" / "rbrowser-admin.js"), str(STATIC / "js" / "dashboard.js")],
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120, env={**os.environ, "RB_KEYMAP_TABLE": json.dumps(_table)})
     rows = [json.loads(l[7:]) for l in out.stdout.splitlines() if l.startswith("RESULT ")]
     check("the harness ran", len(rows) >= 200, out.stderr[-300:] + out.stdout[-300:])
     check("the harness did not crash", not any(r["name"] == "harness crashed" for r in rows))

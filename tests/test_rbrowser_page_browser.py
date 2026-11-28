@@ -275,6 +275,10 @@ def run_browser(info):
         L = "desktop (both ways)"
         if wait_connected(page, L):
             picture(page, L)
+            mods = page.evaluate("performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/novnc/core/input/keysymdef.js'))")
+            check(f"{L}: noVNC's keysymdef module is loaded once, at the URL its own keyboard code imports (the page shares that module; no query string, so no second copy)",
+                  len(mods) == 1 and mods[0].endswith("/static/vendor/novnc/core/input/keysymdef.js"), mods)
+            check(f"{L}: the page's module graph loaded without a console error or a content-security-policy violation", watch.errors == [] and watch.csp() == [], (watch.errors, watch.csp()))
             check(f"{L}: one viewer is attached at the server", wait_for(lambda: counts()["attached"] == 1, 5))
             # toolbar
             vis = {i: page.locator("#" + i).is_visible() for i in ("rb-dashboard", "rb-keyboard", "rb-text-toggle", "rb-quality-wrap", "rb-fit", "rb-about", "rb-end")}

@@ -1176,20 +1176,44 @@ def km_rows(n, free=(), xf=(), nav=(), base=0x61):
 
 KU = S.keymap_units()
 KPAIRS = [u for u in KU if len(u) == 2]
-check("keymap: the page's keysyms (Latin-1 as itself, above it 0x01000000 + code point) are what the units hold",
-      S.keymap_keysym(0xE9) == 0xE9 and S.keymap_keysym(0x20AC) == 0x010020AC and S.keymap_keysym(0x416) == 0x01000416
-      and (0xE9, 0xC9) in KU and (0x01000436, 0x01000416) in KU and (0x010020AC,) in {u for u in KU if len(u) == 1} | {u[:1] for u in KU})
-check("keymap: units hold Latin-1 letters, sharp s, euro, Russian with yo, Ukrainian, Polish",
-      all(any(k in u for u in KU) for k in (0xE9, 0xDF, 0xFF, 0x010020AC, 0x01000451, 0x01000456, 0x01000491, 0x01000105, 0x0100017C, 0xB0, 0xBF)))
+KS = S.keymap_keysym
+
+
+def novnc_lookup_table():
+    """noVNC's keysymdef.js read as text: the table of code point -> keysym, and lookup() as it is written there."""
+    js = (ROOT / "static" / "vendor" / "novnc" / "core" / "input" / "keysymdef.js").read_text(encoding="utf-8")
+    table = {int(a, 16): int(b, 16) for a, b in re.findall(r"^\s*(0x[0-9a-fA-F]+):\s*(0x[0-9a-fA-F]+),", js, re.M)}
+    body = js[js.index("lookup(u) {"):]
+    shape_ok = ("(u >= 0x20) && (u <= 0xff)" in body and "return u;" in body and "codepoints[u]" in body and "0x01000000 | u" in body)
+    return table, shape_ok
+
+
+NOVNC, NOVNC_SHAPE = novnc_lookup_table()
+
+
+def novnc_keysym(cp):
+    return cp if 0x20 <= cp <= 0xFF else NOVNC.get(cp, 0x01000000 | cp)
+
+
+check("keymap: the keysymdef.js of the vendored noVNC has the shape this test reads (a table, Latin-1 as itself, 0x01000000 | u at the end)", len(NOVNC) > 500 and NOVNC_SHAPE)
+CPS = [cp for u in S.keymap_codepoint_units() for cp in u]
+check("keymap: every keysym of the table is exactly what noVNC's keysymdef.js lookup gives for its code point (an updated noVNC cannot drift unseen)",
+      all(KS(cp) == novnc_keysym(cp) for cp in CPS) and all(S.KEYMAP_KEYSYMS[cp] == novnc_keysym(cp) for cp in S.KEYMAP_KEYSYMS)
+      and sorted(S.KEYMAP_KEYSYMS) == sorted({cp for cp in CPS if cp > 0xFF}), [hex(cp) for cp in CPS if KS(cp) != novnc_keysym(cp)][:5])
+check("keymap: fixed pairs, legacy keysyms where X11 has one: Cyrillic a 0x06c1, Polish a-ogonek 0x01b1, euro 0x20ac, en dash 0x0aaa, e-acute 0xe9; none is the Unicode form",
+      KS(0x430) == 0x6C1 and KS(0x105) == 0x1B1 and KS(0x20AC) == 0x20AC and KS(0x2013) == 0xAAA and KS(0xE9) == 0xE9
+      and not any(KS(cp) == 0x01000000 + cp for cp in (0x430, 0x105, 0x20AC, 0x2013)))
+check("keymap: units hold Latin-1 letters, sharp s, euro, Russian with yo, Ukrainian, Polish (as noVNC sends them)",
+      all(any(KS(cp) in u for u in KU) for cp in (0xE9, 0xDF, 0xFF, 0x20AC, 0x451, 0x456, 0x491, 0x105, 0x17C, 0xB0, 0xBF)))
 check("keymap: every unit has one or two different keysyms, none is ASCII, none twice",
       all(len(u) in (1, 2) and len(set(u)) == len(u) and all(k > 0x9F for k in u) for u in KU)
       and len({k for u in KU for k in u}) == sum(len(u) for u in KU))
 check("keymap: a letter pair is lower case first (the key types it plain and with Shift gives the capital)",
-      all(u[0] != u[1] for u in KPAIRS) and (0xE0, 0xC0) in KPAIRS and (0xFF, 0x01000178) in KPAIRS and (0x01000430, 0x01000410) in KPAIRS)
-check("keymap: the micro sign is not paired with a Greek capital", not any(0xB5 in u and len(u) == 2 and 0x0100039C in u for u in KU))
+      all(u[0] != u[1] for u in KPAIRS) and (0xE0, 0xC0) in KPAIRS and (KS(0xFF), KS(0x178)) in KPAIRS and (KS(0x430), KS(0x410)) in KPAIRS)
+check("keymap: the micro sign is not paired with a Greek capital", not any(0xB5 in u and len(u) == 2 for u in KU))
 check("keymap: the units fit the keys of this host's map (about 90 keys) and Russian is complete",
       len(KPAIRS) + (len(KU) - len(KPAIRS) + 1) // 2 <= 91
-      and all((0x01000000 + c, 0x01000000 + c - 0x20) in KU for c in range(0x430, 0x450)))
+      and all((KS(c), KS(c - 0x20)) in KU for c in range(0x430, 0x450)))
 
 PLAN_ROWS = km_rows(60, free=(0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19), xf=tuple(range(20, 40)), nav=(40,))
 PLAN = S.plan_keymap(PLAN_ROWS, 8)

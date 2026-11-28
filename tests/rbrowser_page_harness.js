@@ -16,13 +16,18 @@ const html = fs.readFileSync(process.argv[3], 'utf8');
 const results = [];
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) }); }
 
-// The module's one import is replaced by a binding from the sandbox; nothing else needs changing.
-const importLine = /^import RFB from '\/static\/vendor\/novnc\/core\/rfb\.js\?v=1\.4\.0';\n/;
-if (!importLine.test(source)) { console.log('RESULT ' + JSON.stringify({ name: 'the module starts with the noVNC import line', ok: false, detail: source.slice(0, 120) })); process.exit(0); }
+// The module's two imports are replaced by bindings from the sandbox: RFB (a fake, below) and noVNC's keysymdef module, which is
+// the vendored file itself (never a copy of its table): `export default {` is turned into an assignment and run in the sandbox.
+const importLine = /^import RFB from '\/static\/vendor\/novnc\/core\/rfb\.js\?v=1\.4\.0';\nimport keysyms from '\/static\/vendor\/novnc\/core\/input\/keysymdef\.js';\n/;
+if (!importLine.test(source)) { console.log('RESULT ' + JSON.stringify({ name: 'the module starts with the noVNC imports', ok: false, detail: source.slice(0, 200) })); process.exit(0); }
 const code = source.replace(importLine, '');
+const keysymdefPath = require('path').join(require('path').dirname(process.argv[2]), '..', 'vendor', 'novnc', 'core', 'input', 'keysymdef.js');
+const keysymdefSrc = fs.readFileSync(keysymdefPath, 'utf8');
+if (!/^export default \{/m.test(keysymdefSrc)) { console.log('RESULT ' + JSON.stringify({ name: 'noVNC keysymdef.js ends in an export default object', ok: false, detail: '' })); process.exit(0); }
 
 const sandbox = { console: { log() {}, error() {}, warn() {} }, Array, Object, Math, Date, JSON, Number, String, Promise, isFinite, Error };
 vm.createContext(sandbox);
+vm.runInContext(keysymdefSrc.replace(/^export default \{/m, 'var keysyms = {'), sandbox, { filename: 'keysymdef.js' });
 vm.runInContext(code, sandbox, { filename: 'rbrowser.js' });
 const P = sandbox.PortalRbrowser;
 
@@ -228,8 +233,28 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     const k = P.keysymsForText;
     check('keysym: ASCII is its own code', hex(k('Az 9~').keys) === '41,7a,20,39,7e', hex(k('Az 9~').keys));
     check('keysym: Latin-1 (e-acute, sharp s, nbsp, y-diaeresis) is its own code', hex(k('éß ÿ').keys) === 'e9,df,a0,ff');
-    check('keysym: above Latin-1 is 0x01000000 + the code point (euro, curly quote, Cyrillic)', hex(k('\u20ac\u201c\u0434').keys) === '10020ac,100201c,1000434', hex(k('\u20ac\u201c\u0434').keys));
-    check('keysym: an astral character (emoji) is one key, not two surrogates', hex(k('\u{1F600}').keys) === '101f600', hex(k('\u{1F600}').keys));
+    // The same mapping as noVNC's keyboard (core/input/util.js getKeysym -> keysymdef lookup), read from the vendored file itself.
+    const nv = (cp) => sandbox.keysyms.lookup(cp);
+    check('keysym: the euro sign, curly quote, en dash and Cyrillic de are noVNC\'s legacy keysyms, not 0x01000000 + code point',
+      hex(k('\u20ac\u201c\u2013\u0434').keys) === '20ac,ad2,aaa,6c4', hex(k('\u20ac\u201c\u2013\u0434').keys));
+    check('keysym: a Polish letter (a-ogonek) and a Cyrillic capital (Zhe) are legacy keysyms', hex(k('\u0105\u0416').keys) === '1b1,6f6', hex(k('\u0105\u0416').keys));
+    check('keysym: a CJK character with no legacy keysym is 0x01000000 + the code point', hex(k('\u65e5').keys) === '10065e5', hex(k('\u65e5').keys));
+    check('keysym: an astral character (emoji) is one key, not two surrogates, in the Unicode form', hex(k('\u{1F600}').keys) === '101f600', hex(k('\u{1F600}').keys));
+    {
+      const table = JSON.parse(process.env.RB_KEYMAP_TABLE || '[]');
+      const wrong = table.filter(([cp, ks]) => P.keysymFor(cp) !== ks).map(([cp, ks]) => cp.toString(16) + ':' + P.keysymFor(cp).toString(16) + '!=' + ks.toString(16));
+      check('keysym: the page gives the keysym of the supervisor\'s keyboard table for every code point of that table (the table comes from rbrowser_unit/session.py)',
+        table.length >= 100 && wrong.length === 0, table.length + ' entries; ' + wrong.slice(0, 6).join(' '));
+    }
+    {
+      let bad = [];
+      for (let cp = 0x20; cp <= 0x2fff; cp++) {
+        if ((cp >= 0x7f && cp <= 0x9f) || (cp >= 0xd800 && cp <= 0xdfff)) continue;
+        if (P.keysymFor(cp) !== nv(cp)) bad.push(cp.toString(16));
+      }
+      for (const cp of [0x3042, 0x65e5, 0xac00, 0x1f600, 0x10ffff]) if (P.keysymFor(cp) !== nv(cp)) bad.push(cp.toString(16));
+      check('keysym: for every printable code point up to U+2FFF (and a few above) the page gives the keysym noVNC\'s own keyboard gives', bad.length === 0, bad.slice(0, 8).join(','));
+    }
     check('keysym: newline is Return, CRLF and CR are one Return each', hex(k('a\nb\r\nc\rd').keys) === '61,ff0d,62,ff0d,63,ff0d,64', hex(k('a\nb\r\nc\rd').keys));
     check('keysym: tab is Tab', hex(k('\t').keys) === 'ff09');
     const sk = k('a\u0001\u007f\u0085b');
@@ -722,7 +747,7 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     const rfb = w.rfbs[0];
     let r = await w.ctl.typeText('Hi é€\u{1F600}\n\t');
     check('typeText sends each key as a press and release with the mapped keysym, no scan code',
-      hex(sent(rfb)) === '48,69,20,e9,10020ac,101f600,ff0d,ff09' && rfb.keys.every(k => k[1] === null && k[2] === undefined) && r.ok && r.sent === 8, hex(sent(rfb)));
+      hex(sent(rfb)) === '48,69,20,e9,20ac,101f600,ff0d,ff09' && rfb.keys.every(k => k[1] === null && k[2] === undefined) && r.ok && r.sent === 8, hex(sent(rfb)));
     rfb.keys.length = 0;
     const long = 'x'.repeat(100);
     const done = w.ctl.typeText(long);
@@ -784,7 +809,7 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     check('Ctrl+V in the page\'s own text box is left alone', !e.stopped && w.novncKeys === 103);
     e = w.paste(w.canvas, 'päste €');
     await w.advance(100);
-    check('the paste event is cancelled and the text is typed as key events', e.defaultPrevented && hex(sent(rfb)) === '70,e4,73,74,65,20,10020ac', hex(sent(rfb)));
+    check('the paste event is cancelled and the text is typed as key events', e.defaultPrevented && hex(sent(rfb)) === '70,e4,73,74,65,20,20ac', hex(sent(rfb)));
     const rel = rfb.keys.filter(k => k[2] === false).map(k => k[0]);
     const firstTyped = rfb.keys.findIndex(k => k[2] === undefined);
     check('Control, Shift, Super and Meta are released before the text (the key combination already reached the remote)',
@@ -857,7 +882,7 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     check('insertText types the character exactly once (beforeinput and input do not both fire it)', hex(sent(rfb)) === '68' && e.defaultPrevented, hex(sent(rfb)));
     rfb.keys.length = 0;
     bi('insertText', '€');
-    check('a character above Latin-1 is typed once', hex(sent(rfb)) === '10020ac');
+    check('a character above Latin-1 is typed once', hex(sent(rfb)) === '20ac');
     rfb.keys.length = 0;
     bi('deleteContentBackward', null);
     check('deleteContentBackward is one BackSpace', hex(sent(rfb)) === 'ff08');
@@ -939,7 +964,7 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     const sendP = w.els['rb-send-text'].click();
     await w.advance(100);
     await sendP;
-    check('Send text types the text and empties the box', hex(sent(rfb)) === '53,65,6e,64,20,6d,65,20,10020ac' && box.value === '' && /Sent 9 characters/.test(text(w, 'rb-text-msg')), hex(sent(rfb)) + ' ' + text(w, 'rb-text-msg'));
+    check('Send text types the text and empties the box', hex(sent(rfb)) === '53,65,6e,64,20,6d,65,20,20ac' && box.value === '' && /Sent 9 characters/.test(text(w, 'rb-text-msg')), hex(sent(rfb)) + ' ' + text(w, 'rb-text-msg'));
     check('nothing was handed to the noVNC clipboard', rfb.pasted.length === 0);
     // copy from the browser
     w.route(CLIP, json(200, { text: '<img src=x onerror=alert(1)>', truncated: false }));
