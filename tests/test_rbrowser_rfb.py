@@ -370,6 +370,72 @@ check("rbrowser.py imports nothing from server.py and no third-party module at i
               for l in src.splitlines()))
 check("rbrowser_rfb.py does no I/O", not any(w in (ROOT / "rbrowser_rfb.py").read_text() for w in ("import os", "import socket", "import asyncio", "open(")))
 
+# ---- 1.26.3: the hold while a text is typed (ClientFilter(hold=...))
+def keyup():
+    return struct.pack(">BBxxI", 4, 0, 0x61)
+
+
+def hold_filter(state):
+    f = ClientFilter(False, hold=lambda: state[0])
+    hs = V38 + b"\x01" + b"\x01"
+    out, types = f.feed(hs)
+    assert out == hs
+    return f
+
+
+st = [False]
+f = hold_filter(st)
+out, types = f.feed(key() + keyup() + ptr())
+check("hold off: a key-down, a key-up and a pointer event all pass, byte for byte", out == key() + keyup() + ptr() and types == [4, 4, 5] and f.dropped == 0)
+st[0] = True
+out, types = f.feed(key())
+check("hold on: a key-down is dropped whole (nothing forwarded), still counted as a message type", out == b"" and types == [4] and f.dropped == 1)
+out, types = f.feed(keyup())
+check("hold on: a key-up passes", out == keyup() and types == [4])
+out, types = f.feed(key() + ptr() + key() + fbur() + keyup() + setenc([0, 7]))
+check("hold on: only the key-downs of a mixed run are removed, every other message (pointer, update request, SetEncodings rewritten, key-up) is forwarded unchanged and in order",
+      out == ptr() + fbur() + keyup() + setenc([0, 7]) and types == [4, 5, 4, 3, 4, 2] and f.dropped == 3, f"{out!r}")
+# framing: every split of a mixed stream
+stream = key() + ptr() + keyup() + key() + fbur() + ptr() + key()
+want = ptr() + keyup() + fbur() + ptr()
+ok_all = True
+for cut_at in range(1, len(stream)):
+    f = hold_filter([True])
+    o1, t1 = f.feed(stream[:cut_at])
+    o2, t2 = f.feed(stream[cut_at:])
+    if o1 + o2 != want or t1 + t2 != [4, 5, 4, 4, 3, 5, 4]:
+        ok_all = False
+        break
+check("hold on: byte-exact framing, the stream cut at every offset gives the same output (a dropped message never shifts the next one)", ok_all, str(cut_at))
+f = hold_filter([True])
+bs = b"".join(f.feed(stream[i:i + 1])[0] for i in range(len(stream)))
+check("hold on: fed one byte at a time the output is the same", bs == want)
+st = [False]
+f = hold_filter(st)
+f.feed(key()[:5])
+st[0] = True
+o, _ = f.feed(key()[5:])
+check("the mark is looked at when the message is whole: a key-down that began before the mark and ends after it is dropped, one that began after and ends before it passes",
+      o == b"" and f.dropped == 1)
+st[0] = False
+o, _ = f.feed(key()[:5])
+st[0] = True
+o2, _ = f.feed(key()[5:])
+check("... the same, the other way round (dropped, because the mark is set when it is whole)", o + o2 == b"")
+f = ClientFilter(False)
+f.feed(V38 + b"\x01" + b"\x01")
+check("no hold function: a key-down always passes", f.feed(key())[0] == key() and f.dropped == 0)
+f = hold_filter([True])
+try:
+    f.feed(b"\x96" + b"\x00" * 7)
+    bad_ok = False
+except Violation:
+    bad_ok = True
+check("hold on: an unknown message type is still a violation (the hold does not widen the filter)", bad_ok)
+f = ClientFilter(True, hold=lambda: True)
+f.feed(V38 + b"\x01" + b"\x01")
+check("hold on: ClientCutText with the clipboard allowed still passes whole", f.feed(cut(b"hello"))[0] == cut(b"hello"))
+
 if failures:
     print(f"\ntest_rbrowser_rfb: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

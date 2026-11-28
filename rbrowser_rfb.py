@@ -69,8 +69,16 @@ def rewrite_encodings(encodings):
 
 
 class ClientFilter:
-    def __init__(self, clipboard: bool = False):
+    """The member's byte stream, checked message by message. `hold`, when given, is a function that says whether the session is being typed
+    into by the supervisor's `type` request (Session.typing): while it says yes, every KeyEvent with its down flag set is dropped, whole (8
+    bytes, nothing else shifts), and key-ups, pointer events and every other message pass. What this guarantees: no key-down of the member that
+    reaches this filter while a request runs gets to x11vnc. What it does not: a key-down that passed before the mark was set, nor one that was
+    sent by another route (there is none), and x11vnc may still release a key it already holds."""
+
+    def __init__(self, clipboard: bool = False, hold=None):
         self.clipboard = bool(clipboard)
+        self.hold = hold
+        self.dropped = 0                # key-downs held back (a count, never content)
         self._buf = bytearray()
         self._state = _ST_VERSION
         self._v33 = False
@@ -118,7 +126,10 @@ class ClientFilter:
                     need = _FIXED[t]
                     if avail < need:
                         break
-                    out += buf[pos:pos + need]
+                    if t == 4 and buf[pos + 1] and self.hold is not None and self.hold():
+                        self.dropped += 1                       # a key-down while a text is typed: held back, the whole message
+                    else:
+                        out += buf[pos:pos + need]
                     pos += need
                     types.append(t)
                 elif t == 2:

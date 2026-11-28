@@ -847,6 +847,8 @@ async def main():
         check(f"guard: {name} has none of the recording words", not [w for w in banned if w in txt], str([w for w in banned if w in txt]))
     ws_src = inspect.getsource(server.handle_rbrowser_ws)
     check("guard: handle_rbrowser_ws has none of the recording words", not [w for w in banned if w in ws_src])
+    check("guard: the member's bytes pass a ClientFilter that holds key-downs while the session's typing mark is set (per session, not per socket)",
+          "rbrowser_rfb.ClientFilter(hold=lambda: session.typing > 0)" in ws_src and ws_src.count("ClientFilter(") == 1)
     check("guard: the handler makes no log call at all (a message payload cannot be formatted into one)",
           all("type(e).__name__" in ln for ln in ws_src.splitlines() if "logger." in ln) and "print(" not in ws_src)
     check("guard: the handler never touches msg.data except to filter, size or parse a control frame",
@@ -863,7 +865,7 @@ async def main():
           str(re.findall(r"logger\.\w+\(f?[\"'][^\n]*(?:\.data|clip|text|keysym|pointer|url)\b", rb_logs)[:3]))
     check("guard: the log-line guard sees log lines (a block with no logger call would pass it vacuously)", len(re.findall(r"logger\.\w+\(", rb_block)) > 10,
           str(len(re.findall(r"logger\.\w+\(", rb_block))))
-    check("guard: ClientFilter is built with no argument (clipboard off)", "ClientFilter()" in ws_src)
+    check("guard: ClientFilter is built with the clipboard off (no clipboard argument; its only argument is the typing hold)", "ClientFilter(hold=lambda: session.typing > 0)" in ws_src and "clipboard" not in ws_src.split("ClientFilter(")[1].split(")")[0])
     check("guard: the server-to-member direction is not parsed (no ClientFilter or RFB parsing in to_client)",
           "def to_client" in ws_src and "flt." not in ws_src.split("async def to_unit")[0])
 

@@ -59,7 +59,8 @@ const SPECIAL_KEYS = {
 };
 // Control, Shift, Super and Meta (left and right): released before pasted text is typed, because the
 // member's Ctrl or Cmd key already reached the remote side as a key-down.
-const MODIFIER_KEYSYMS = [0xffe3, 0xffe4, 0xffe1, 0xffe2, 0xffeb, 0xffec, 0xffe7, 0xffe8];
+// Control, Shift, Alt, Super, Meta, Hyper (both sides) and AltGr (ISO_Level3_Shift, Mode_switch): released before a pasted text is typed
+const MODIFIER_KEYSYMS = [0xffe3, 0xffe4, 0xffe1, 0xffe2, 0xffe9, 0xffea, 0xffeb, 0xffec, 0xffe7, 0xffe8, 0xffed, 0xffee, 0xfe03, 0xff7e];
 
 const END_REASONS = {
     closed: 'You ended this session.',
@@ -909,7 +910,8 @@ function create(env) {
         }
     }
 
-    const WARN_TEXT = 'A key was held down or Caps Lock was on while the text was typed, so it may be wrong. Check it before you use it.';
+    const HELD_ADVICE = 'Characters may be missing or wrong, and a held key may have triggered a shortcut in the remote browser. Check the remote page before you send the text again.';
+    const WARN_TEXT = 'A key was held down or Caps Lock changed while the text was typed. ' + HELD_ADVICE;
 
     async function runRouteBatch(batch) {
         const text = batch.map((j) => j.text).join('');
@@ -953,7 +955,8 @@ function create(env) {
                 left -= part;
                 if (!j.said) {
                     say(unknown ? 'The text may have been typed, in part or in full. Check before sending it again.'
-                        : d.why === 'capslock' ? 'Caps Lock is on and could not be switched off. Switch it off and send the text again.'
+                        : d.why === 'capslock' ? 'Caps Lock is on and could not be switched off, so nothing was typed. Switch it off and send the text again.'
+                        : d.why === 'modifier' ? 'Only ' + part + ' of ' + n + ' characters were typed: a key was held down. ' + HELD_ADVICE
                         : part ? 'Only ' + part + ' of ' + n + ' characters were typed.' : 'The text could not be typed.');
                     j.said = true;
                 }

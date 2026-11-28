@@ -15,6 +15,7 @@ Run: venv/bin/python -B tests/test_rbrowser_stream.py
 import asyncio
 import inspect
 import json
+import struct
 import logging
 import os
 import shutil
@@ -27,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import rbrowser  # noqa: E402
+import rbrowser_rfb  # noqa: E402
 from rbrowser import FakeLauncher, Registry, Session, StreamRefused  # noqa: E402
 
 failures = []
@@ -440,6 +442,79 @@ async def t_type(r):
         n_before = len(r.ctl_requests)
         check("type: more than 5000 characters and a non-string are refused before anything is sent",
               (await r.reg.type_text(s, "a" * 5001))["why"] == "refused" and (await r.reg.type_text(s, 5))["why"] == "refused" and len(r.ctl_requests) == n_before)
+        # the typing mark (1.26.3): set from before the request is written until its answer is back, on every way out
+        seen = []
+        r.ctl_reply = lambda q: (seen.append(s.typing), {"ok": True, "typed": 1, "skipped": 0, "complete": True})[1]
+        check("typing mark: 0 before a request", s.typing == 0)
+        await r.reg.type_text(s, "a")
+        check("typing mark: 1 while the unit has the request, 0 after the answer", seen == [1] and s.typing == 0, f"{seen} {s.typing}")
+        r.ctl_reply = lambda q: {"ok": False}
+        await r.reg.type_text(s, "a")
+        check("typing mark: 0 after an answer that is a failure", s.typing == 0)
+        r.ctl_raw = b'{"ok": true, "typed": 3, "comp'
+        await r.reg.type_text(s, "a")
+        r.ctl_raw = None
+        check("typing mark: 0 after a cut reply", s.typing == 0)
+        r.ctl_delay = 1.0
+        saved_t = rbrowser.TYPE_REPLY_S
+        rbrowser.TYPE_REPLY_S = 0.3
+        await r.reg.type_text(s, "a")
+        rbrowser.TYPE_REPLY_S = saved_t
+        check("typing mark: 0 after a timeout", s.typing == 0)
+        r.ctl_delay = 0.6
+        r.ctl_reply = lambda q: {"ok": True, "typed": 1, "skipped": 0, "complete": True}
+        task = asyncio.ensure_future(r.reg.type_text(s, "a"))
+        await asyncio.sleep(0.25)
+        during = s.typing
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        check("typing mark: 1 while the request is out, 0 after the caller is cancelled", during == 1 and s.typing == 0, f"{during} {s.typing}")
+        r.ctl_delay = 0
+        orig_ctl = r.reg._ctl
+
+        async def raising(*a, **kw):
+            raise RuntimeError("x")
+        r.reg._ctl = raising
+        try:
+            await r.reg.type_text(s, "a")
+        except RuntimeError:
+            pass
+        r.reg._ctl = orig_ctl
+        check("typing mark: 0 after an exception in the control call", s.typing == 0)
+        r.ctl_delay = 0.5
+        t1 = asyncio.ensure_future(r.reg.type_text(s, "a"))
+        await asyncio.sleep(0.15)
+        busy = await r.reg.type_text(s, "b")
+        check("typing mark: a request refused as busy neither sets nor clears the mark of the one that runs", busy["why"] == "busy" and s.typing == 1)
+        f_a = rbrowser_rfb.ClientFilter(hold=lambda: s.typing > 0)
+        f_b = rbrowser_rfb.ClientFilter(hold=lambda: s.typing > 0)
+        hs = b"RFB 003.008\n" + b"\x01" + b"\x01"
+        f_a.feed(hs)
+        f_b.feed(hs)
+        kd = struct.pack(">BBxxI", 4, 1, 0x61)
+        check("typing mark: the mark is the session's, two windows' filters both hold while it runs", f_a.feed(kd)[0] == b"" and f_b.feed(kd)[0] == b"")
+        await t1
+        check("typing mark: and both pass key-downs again when it is over", f_a.feed(kd)[0] == kd and f_b.feed(kd)[0] == kd and s.typing == 0)
+        r.ctl_delay = 0
+        s.clipboard = "off"
+        await r.reg.type_text(s, "a")
+        check("typing mark: a request refused before it is written never marks", s.typing == 0)
+        s.clipboard = "both"
+        # what the unit's own reply (type_reply) carries reaches the registry
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("rb_sess_stream", str(ROOT / "rbrowser_unit" / "session.py"))
+        _sess = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_sess)
+        r.ctl_reply = lambda q: json.loads(_sess.type_reply({"ok": True, "typed": 4, "skipped": 0, "complete": True, "warn": "modifier", "map_changes": 3}))
+        res = await r.reg.type_text(s, "abcd")
+        check("the unit's own type_reply (warn, map_changes) is understood by the registry: ok, warn modifier, 3 map changes", res["ok"] is True and res["warn"] == "modifier" and res["map_changes"] == 3, str(res))
+        r.ctl_reply = lambda q: json.loads(_sess.type_reply({"ok": False, "typed": 2, "skipped": 0, "complete": False, "why": "modifier", "map_changes": 0}))
+        res = await r.reg.type_text(s, "abcd")
+        check("... and a stop for a held key: not ok, why modifier, typed 2, no fallback", res["ok"] is False and res["why"] == "modifier" and res["typed"] == 2 and res["fallback"] is False, str(res))
+        n_before = len(r.ctl_requests)
         s.clipboard = "off"
         res = await r.reg.type_text(s, "abc")
         check("type: a unit whose clipboard setting is off is refused and nothing is sent", res["why"] == "refused" and res["fallback"] is False and len(r.ctl_requests) == n_before)

@@ -208,6 +208,26 @@ async def main():
     await asyncio.sleep(0.4)
     check("and the next one follows when it is whole", [t for t, _ in fake.records[n2:]] == [4, 5])
 
+    # 1.26.3: while a text is typed in the session the member's key-downs are not passed on (key-ups, pointer events and the rest are); per session, so a new window is covered
+    key_up = struct.pack(">BBxxI", 4, 0, 0x61)
+    n3 = len(fake.records)
+    sess_b.typing += 1
+    await ws.send_bytes(key)
+    await ws.send_bytes(ptr)
+    await ws.send_bytes(key_up)
+    await asyncio.sleep(0.4)
+    got3 = [(t, m) for t, m in fake.records[n3:]]
+    check("while typing is marked (the session's mark, on the window that took over from the first one) the key-down does not reach the unit; the pointer event and the key-up do, whole and in order", [t for t, _ in got3] == [5, 4] and got3[1][1] == key_up, str(got3))
+    await ws.send_bytes(key[:3])
+    await asyncio.sleep(0.2)
+    await ws.send_bytes(key[3:] + ptr)
+    await asyncio.sleep(0.4)
+    check("a key-down split across two frames is dropped whole and the pointer event after it is intact", [t for t, _ in fake.records[n3:]] == [5, 4, 5] and fake.records[-1][1] == ptr, str(fake.records[n3:]))
+    sess_b.typing -= 1
+    await ws.send_bytes(key)
+    await asyncio.sleep(0.4)
+    check("when the request is over the key-down passes again", [t for t, _ in fake.records[n3:]] == [5, 4, 5, 4] and fake.records[-1][1] == key, str(fake.records[n3:]))
+
     # a protocol violation: an unknown message type, counted per member
     await ws.send_bytes(b"\x96" + b"\x00" * 7)
     _, code = await drain_for(ws, 2)

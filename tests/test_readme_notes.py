@@ -2072,7 +2072,7 @@ check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as 
 _idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.25.0: the Static files item names the script versions the pages load",
       "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
-      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3|4|5)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1, to 3 in 1.26.0, to 4 in 1.26.1 and to 5 in 1.26.3, rbrowser.css to 2 in 1.25.1
+      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3|4|5|6)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1, to 3 in 1.26.0, to 4 in 1.26.1 and to 5 in 1.26.3, rbrowser.css to 2 in 1.25.1
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
 check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",
@@ -2103,8 +2103,8 @@ check("1.26.0: the notes say what was measured and that a real unit run of G25 i
       and "G25" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
 check("1.26.0: the notes say the remote toolbar row is not the same pixel colour as the page's toolbar",
       "**not** the same pixel colour" in _s126 and "within about 22" in _s126)
-check("1.26.0: the Static files item names rbrowser.js v3 (later 4 in 1.26.1, 5 in 1.26.3) and rbrowser.html loads it at one of them, rbrowser.css stays at v2",
-      "`rbrowser.js` v3" in _s126 and re.search(r"/static/js/rbrowser\.js\?v=(3|4|5)\b", _page250) is not None and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
+check("1.26.0: the Static files item names rbrowser.js v3 (later 4 in 1.26.1, 6 in 1.26.3) and rbrowser.html loads it at one of them, rbrowser.css stays at v2",
+      "`rbrowser.js` v3" in _s126 and re.search(r"/static/js/rbrowser\.js\?v=(3|4|5|6)\b", _page250) is not None and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
 check("1.26.0: the README's Theme paragraph is in the Web Browser section and the old sentence that themes do not change the picture is gone",
       "**Theme.** The remote Chromium takes the member's portal theme when a session starts" in text and "themes do not change the picture" not in text
       and text.index("**Theme.** The remote Chromium") < text.index("**What it does not do.** No downloads"))
@@ -2121,7 +2121,7 @@ _sess1261 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
 check("1.26.1: README has an 'Upgrade notes for 1.26.1' section above the 1.26.0 one", _m1261 is not None and text.index("### Upgrade notes for 1.26.1") < text.index("### Upgrade notes for 1.26.0"))
 check("1.26.1: the notes say nothing is migrated, rbrowser.js v4 is the one static file (and the page loads it at v4, rbrowser.css stays v2), running sessions keep the old map, and rollback needs nothing",
       "nothing is migrated" in _s1261 and "`rbrowser.js` v4" in _s1261 and "unchanged at v2" in _s1261 and "keeps its old keyboard map" in _s1261 and "Going back to 1.26.0 needs nothing" in _s1261
-      and "/static/js/rbrowser.js?v=5" in _page250 and "rbrowser.css?v=2" in _page250)
+      and "/static/js/rbrowser.js?v=6" in _page250 and "rbrowser.css?v=2" in _page250)
 check("1.26.1: the notes say both typing paths give one keysym per character through noVNC's keysymdef, name the generator and the 19th character",
       "keysymdef.js" in _s1261 and "tools/keymap_table.py" in _s1261 and "KEYMAP_KEYSYMS" in _s1261 and "19th different non-US character" in _s1261 and "Two typing paths" in _s1261
       and (ROOT / "tools" / "keymap_table.py").is_file())
@@ -2160,8 +2160,8 @@ _m1263 = re.search(r"### Upgrade notes for 1\.26\.3\n(.*?)(?=\n### )", text, re.
 _s1263 = _m1263.group(1) if _m1263 else ""
 _sess1263 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
 check("1.26.3: README has an 'Upgrade notes for 1.26.3' section above the 1.26.2 one", _m1263 is not None and text.index("### Upgrade notes for 1.26.3") < text.index("### Upgrade notes for 1.26.2"))
-check("1.26.3: the notes say nothing is migrated, name the route and rbrowser.js v5, that a portal restart ends every session so the old-unit fallback is only a guard",
-      "Nothing has to be changed and nothing is migrated" in _s1263 and "`POST /api/rbrowser/session/type`" in _s1263 and "`rbrowser.js` v5" in _s1263 and "ends every running session (`portal_stop`)" in _s1263
+check("1.26.3: the notes say nothing is migrated, name the route and rbrowser.js v6, that a portal restart ends every session so the old-unit fallback is only a guard",
+      "Nothing has to be changed and nothing is migrated" in _s1263 and "`POST /api/rbrowser/session/type`" in _s1263 and "`rbrowser.js` v6" in _s1263 and "ends every running session (`portal_stop`)" in _s1263
       and "Going back to 1.26.2 needs nothing" in _s1263)
 check("1.26.3: the notes say what was tried first and why it failed (wrong characters, not only drops), with the numbers measured",
       "giving keys back" in _s1263 and "285 wrong characters and 1473 dropped" in _s1263 and "995 of 1200" in _s1263 and "A wrong character is worse than a dropped one" in _s1263 and "MappingNotify" in _s1263)
@@ -2172,18 +2172,20 @@ check("1.26.3: the notes give the rule (own keys for characters on the map, scra
       and "TYPE_BUDGET_S = 55.0 " in _sess1263 and "CTL_TYPE_MAX = 70000 " in _sess1263 and "KEYMAP_RESERVE = 15 " in _sess1263)
 check("1.26.3: the notes say the first version typed wrong characters in a pattern the first measurement did not cover, with the reviewer's numbers, and the corrected method error",
       "What the first version got wrong" in _s1263 and "119 and 148 wrong characters in 2000" in _s1263 and "collapses white space" in _s1263 and "a rare wrong character under load is not excluded" in _s1263)
-check("1.26.3: the notes give the final measurement: 0 wrong and 0 dropped, 0 map changes for ASCII, passwords and the table, the burst pattern, held Control and the window manager",
+check("1.26.3: the notes give the final measurement: 0 wrong and 0 dropped, 0 map changes for ASCII, passwords and the table, the burst pattern, and the relay-hold cases (110 trials, no shortcut, reload, blur, selection, modified key-down or window change) with the positive control",
       "0 wrong, 0 dropped, 0 extra characters" in _s1263 and "**0 map changes**" in _s1263 and "200 random 24-character passwords" in _s1263 and "3520" in _s1263 and "the burst-reuse pattern" in _s1263
-      and "The second review's cases" in _s1263 and "40 of 40 exact" in _s1263 and "Control 8 of 10 exact" in _s1263 and "Alt 7 of 10 exact" in _s1263 and "2492 X errors" in _s1263
-      and "9 of 10 exact" in _s1263 and "Caps Lock was on again afterwards in all 10" in _s1263)
-check("1.26.3: the notes say what the second review found and the true size of the modifier race (7 of 8), the grab and the key-ups, Caps Lock, Shift not given back, and no longer call the residual rare or the check the last thing before the press",
-      "**7 of 8**" in _s1263 and "XGrabServer" in _s1263 and "for **every** Control, Alt, Super and AltGr key" in _s1263 and "put back on at the end" in _s1263 and "not given back" in _s1263
-      and "the check is the last thing before the press" not in _s1263 and "rarely (not seen in 6 runs)" not in _s1263 and "stops the run with the reason `modifier` (a partial result) when the key is down again" not in _s1263
-      and "The residual wrong character under load" in _s1263 and "1 wrong character in 60000" in _s1263 and "the error is not fixed" in _s1263)
+      and "The shortcut cases, final code, with the hold" in _s1263 and "In all 110 trials: 0 shortcut presses, 0 page reloads, 0 blur events" in _s1263 and "The positive control, the same relay without the hold" in _s1263
+      and "20 of 20 exact at rest, 10 of 10 under 8 busy loops" in _s1263 and "2492 X errors" in _s1263 and "Caps Lock on before a 500-character mixed request: 10 of 10 exact" in _s1263)
+check("1.26.3: the notes say what the reviews found (7 of 8, Caps Lock, Shift, the grab does not keep x11vnc out) and describe the relay hold, its guarantee and what it does not cover; the false claims about the grab and the last check are gone",
+      "**7 of 8**" in _s1263 and "XTestGrabControl" in _s1263 and "does **not** keep x11vnc out" in _s1263 and "the portal's relay holds the member's key-downs while a text is typed" in _s1263 and "`Session.typing`" in _s1263
+      and "It does not cover a key-down that was already past the relay" in _s1263 and "not given back" in _s1263 and "a resize is applied after the text" in _s1263 and "a clipboard read in that time can fail" in _s1263
+      and "the check is the last thing before the press" not in _s1263 and "rarely (not seen in 6 runs)" not in _s1263 and "no other client's request can come between" not in _s1263 and "cannot turn the text into shortcuts" not in _s1263
+      and "The page never sends key events on a 429: it asks again" in _s1263 and "then the text is sent as key events" not in _s1263
+      and "The residual wrong character under load, and it is not flagged" in _s1263 and "4 wrong characters in 25000 (in 4 of 5 runs)" in _s1263 and "the burst pattern 1 in 24000" in _s1263 and "**The reply does not flag it**" in _s1263)
 check("1.26.3: the notes say the rare loss was not seen, that this is not 'never', and what the mitigation is",
       "The rare loss" in _s1263 and "not \"never\"" in _s1263 and "below about 1 in 5000" in _s1263 and "pause after a map change" in _s1263)
 check("1.26.3: the notes say what stays limited: 7 instead of 16 different characters on the picture, no hold of the picture's keyboard, a modifier between check and press, Caps Lock, a long request",
-      "**7 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "Control 2 of 10 and Alt 3 of 10" in _s1263 and "Caps Lock" in _s1263
+      "**7 different characters outside the table per session instead of 16**" in _s1263 and "keys pressed on the picture are not passed on (key releases are)" in _s1263 and "Control 2 of 10, Alt 3 of 10" in _s1263 and "Caps Lock" in _s1263
       and "55 seconds is more than some proxies wait for" in _s1263)
 check("1.26.3: the notes say a real unit run is the release gate, that this was the rig, and name G27 as written and not run",
       "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263 and "xmodmap -pke" in _s1263

@@ -1815,6 +1815,94 @@ check("type_text: an exception in the middle ends as failed, and the scratch key
       r7["ok"] is False and r7["why"] == "failed" and h7.typer.bound == {100: S.SCRATCH_SYM, 101: S.SCRATCH_SYM} or r7["why"] == "failed", str(r7) + str(h7.typer.bound))
 
 
+# ---- 1.26.3 third pass: the last Caps Lock read, what was actually pressed, the strikes boundary
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key = 66
+orig_p2 = f._pointer
+calls2 = [0]
+
+
+def caps_on_after_the_last_check(d, win, root, child, a, b, c, e, mask):
+    calls2[0] += 1
+    if calls2[0] == 5:                       # 1 read at the start, 3 before the characters, this one after the last press
+        f.caps = True
+    return orig_p2(d, win, root, child, a, b, c, e, mask)
+
+
+f.XQueryPointer = caps_on_after_the_last_check
+res = ty.type([0x61, 0x62, 0x63])
+check("caps lock (item 2): one read after the last press, so a toggle that no check before a character saw is flagged (warn capslock)", res == (3, "") and ty.warn == "capslock" and calls2[0] == 5, f"{res} {ty.warn} {calls2[0]}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key = 66
+res = ty.type([0x61, 0x62, 0x63])
+check("caps lock (item 2): no warn when it was off all the time", res == (3, "") and ty.warn == "")
+
+# the typer's exceptions (item 3)
+for label, fail_on, want_typed in (("the key-down of a first-level character", 2, 0), ("the key-up of a first-level character", 3, 1), ("the Shift down of a second-level character", 1, 0), ("the key-up of a second-level character", 4, 1)):
+    f = TyFake()
+    ty = S.ScratchTyper(f, f, 1, [100, 101], 4, clock=f.clock, sleep=f.sleep, index=IX, shift=50, held=[], shifts=[50, 62])
+    n_calls = [0]
+    orig = f._fake
+
+    def boom(d, kc, down, delay, orig=orig, n_calls=n_calls, fail_on=fail_on):
+        n_calls[0] += 1
+        if n_calls[0] == fail_on:
+            raise RuntimeError("injected")
+        return orig(d, kc, down, delay)
+    f.XTestFakeKeyEvent = boom
+    h11 = object.__new__(S.ModeHolder)
+    h11.x11, h11.xtst, h11.dpy, h11.recent, h11.errors, h11.typer = f, f, 1, __import__("collections").deque(maxlen=64), 0, ty
+    first_level = label.startswith("the key") and "first" in label
+    out11 = h11.type_text("a" if "first-level" in label else "A")
+    downs = [e[1] for e in f.log if e[0] == "down"]
+    ups = [e[1] for e in f.log if e[0] == "up"]
+    # fail_on counts the XTest calls of the character: first level: 1 key down, 2 key up (after the up-calls of the shifts: none are held here, shifts are up-calls too)
+    check(f"typer exception ({label}): the reply says failed, its typed count is the number of characters whose key-down was sent, and every key pressed is up again",
+          out11["ok"] is False and out11["why"] == "failed" and out11["typed"] == len([k for k in downs if k not in (50, 62)]) and ty.pressed == set()
+          and all(downs.count(k) <= ups.count(k) for k in set(downs)), f"{out11} downs {downs} ups {ups}")
+# the earlier request's count does not leak into the next one
+f, ty = mk_typer(2, index=IX, shift=50)
+h12 = object.__new__(S.ModeHolder)
+h12.x11, h12.xtst, h12.dpy, h12.recent, h12.errors, h12.typer = f, f, 1, __import__("collections").deque(maxlen=64), 0, ty
+o12a = h12.type_text("abc")
+o12b = h12.type_text("de")
+check("typed is per request: the second request reports its own count", o12a["typed"] == 3 and o12b["typed"] == 2, f"{o12a['typed']} {o12b['typed']}")
+
+# TYPE_MOD_STRIKES: the value and the behaviour at its boundary, without setting the constant
+check("modifier strikes: the value is 2 (a key found down once or twice is released and the run goes on, the third sighting stops it)", S.TYPE_MOD_STRIKES == 2)
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62])
+f.down = {37}
+orig_unrep = f._fake
+
+
+def repress_after_release(d, kc, down, delay):          # the member's key comes back after every release (auto-repeat)
+    r_ = orig_unrep(d, kc, down, delay)
+    if not down and kc == 37:
+        f.down.add(37)
+    return r_
+
+
+f.XTestFakeKeyEvent = repress_after_release
+res = ty.type([0x61] * 10)
+check("modifier strikes: a key that comes back after every release is released twice, the third sighting stops the run, with 2 characters typed", res == (2, "modifier") and ty.strikes == 3, f"{res} {ty.strikes}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62])
+once = [False]
+orig_unrep2 = f._fake
+
+
+def comes_back_once(d, kc, down, delay):
+    r_ = orig_unrep2(d, kc, down, delay)
+    if not down and kc == 37 and not once[0]:
+        once[0] = True
+        f.down.add(37)
+    return r_
+
+
+f.down = {37}
+f.XTestFakeKeyEvent = comes_back_once
+res = ty.type([0x61] * 10)
+check("modifier strikes: a key seen twice (down, released, down again, released) does not stop the run, it finishes with warn modifier", res == (10, "") and ty.strikes == 2 and ty.warn == "modifier", f"{res} {ty.strikes}")
+
 # the request line
 big = json.dumps({"op": "type", "text": "\U0001F600" * 5000}).encode()
 check("type request: 5000 emoji as escaped JSON fit in CTL_TYPE_MAX and parse; 5001 characters, a number and a missing text are refused",

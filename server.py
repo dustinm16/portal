@@ -20191,7 +20191,7 @@ async def handle_rbrowser_ws(ws, path: str, token: TokenPayload, request: web.Re
                           else (4013, (session.end_reason or "crash").encode()))
             return
 
-        flt = rbrowser_rfb.ClientFilter()          # the clipboard is off in both directions, always (D4): ClientCutText is a violation
+        flt = rbrowser_rfb.ClientFilter(hold=lambda: session.typing > 0)   # the clipboard is off in both directions, always (D4): ClientCutText is a violation; key-downs wait while a text is typed
         bucket = _RbrowserBucket(rbrowser_launch.STREAM_KBPS * 125.0, rbrowser_launch.STREAM_KBPS * 125.0)
 
         async def to_client():

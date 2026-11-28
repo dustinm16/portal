@@ -869,6 +869,24 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     await connect(w, { type_text: true });
     await Promise.all([w.ctl.typeText(A), w.ctl.typeText(B), w.ctl.typeText('e'.repeat(2500))]);
     check('two queued texts that together are above 5000 characters are two requests, in order', JSON.stringify(typeCalls(w).map(c => c.body.text.length)) === '[3000,3000,2500]', JSON.stringify(typeCalls(w).map(c => c.body.text.length)));
+    w = world();
+    w.route(TYPE, json(200, { typed: 3, skipped: 0, complete: false, fallback: false, why: 'modifier', warn: '' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abcdef');
+    check('a run stopped because a key was held (why modifier): the member is told how many characters were typed, that a held key may have fired a shortcut, and to check the remote page; no key is sent',
+      !r.ok && r.sent === 3 && /Only 3 of 6 characters were typed: a key was held down/.test(text(w, 'rb-text-msg')) && /Check the remote page/.test(text(w, 'rb-text-msg')) && w.rfbs[0].keys.length === 0, text(w, 'rb-text-msg'));
+    w = world();
+    w.route(TYPE, json(200, { typed: 3, skipped: 0, complete: true, fallback: false, why: '', warn: 'capslock' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('a finished run with warn capslock: the same advice (a character may be wrong)', r.ok && r.warn === 'capslock' && /Characters may be missing or wrong/.test(text(w, 'rb-text-msg')));
+    w = world();
+    w.route(TYPE, json(200, { typed: 3, skipped: 0, complete: true, fallback: false, why: '', warn: '' }));
+    await connect(w, { type_text: true });
+    const relK = w.rfbs[0];
+    await w.ctl.typeText('abc', { releaseModifiers: true });
+    const relsent = relK.keys.filter(k => k[2] === false).map(k => k[0]);
+    check('releaseModifiers (paste) releases Alt and AltGr as well as Control, Shift, Super, Meta before the text is sent to the server', [0xffe9, 0xffea, 0xfe03, 0xffe3, 0xffe1, 0xffeb].every(k => relsent.includes(k)), JSON.stringify(relsent));
     // E: 429 is asked again, never answered with key events (a text before it may still be typing)
     w = world();
     w.route(TYPE, [json(429, { error: 'busy', busy: true }), json(200, { typed: 2, skipped: 0, complete: true, fallback: false, why: '' })] );
@@ -932,12 +950,12 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     w.route(TYPE, json(200, { typed: 3, skipped: 0, complete: true, fallback: false, why: '', warn: 'modifier' }));
     await connect(w, { type_text: true });
     r = await w.ctl.typeText('abc');
-    check('a reply that says a key was held (warn) is ok but the member is told to check the text', r.ok && r.warn === 'modifier' && /may be wrong\. Check it/.test(text(w, 'rb-text-msg')));
+    check('a reply that says a key was held (warn) is ok but the member is told to check the text', r.ok && r.warn === 'modifier' && /may have triggered a shortcut in the remote browser\. Check the remote page before you send the text again/.test(text(w, 'rb-text-msg')));
     w = world();
     w.route(TYPE, json(200, { typed: 0, skipped: 0, complete: false, fallback: false, why: 'capslock', warn: '' }));
     await connect(w, { type_text: true });
     r = await w.ctl.typeText('abc');
-    check('Caps Lock that could not be switched off: nothing typed, no key sent, the member is told to switch it off', !r.ok && r.reason === 'capslock' && w.rfbs[0].keys.length === 0 && /Caps Lock is on/.test(text(w, 'rb-text-msg')));
+    check('Caps Lock that could not be switched off: nothing typed, no key sent, the member is told to switch it off', !r.ok && r.reason === 'capslock' && w.rfbs[0].keys.length === 0 && /Caps Lock is on and could not be switched off, so nothing was typed/.test(text(w, 'rb-text-msg')));
   });
 
   // ---- paste ----

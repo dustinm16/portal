@@ -806,12 +806,12 @@ class ModeHolder:
         typer = self.typer
         if typer is None or not self.dpy:
             return dict(res, why="unavailable")
+        typer.begin()                                        # also when something raises before the first press: the counts are this request's
         try:
             keys, skipped = type_keysyms(text)
             res["skipped"] = skipped
             self.x11.XSync(self.dpy, 0)
             typed, why = typer.type(keys, budget_s, pump, stopping, error_in=self._own_error)
-            res["typed"] = typed
             res["complete"] = res["ok"] = not why
             if why:
                 res["why"] = why
@@ -827,6 +827,7 @@ class ModeHolder:
                 typer.finish()
             except Exception:
                 log("caps lock not restored")
+            res["typed"] = typer.typed                       # what was actually pressed, also after an exception
             res["map_changes"] = typer.map_changes
             if typer.warn and "why" not in res:
                 res["warn"] = typer.warn
@@ -1340,14 +1341,17 @@ class ScratchTyper:
     binding; the least recently used key is rebound, and not sooner than TYPE_SETTLE_S after its last press. Idle scratch keys hold
     SCRATCH_SYM and are never empty: x11vnc takes only empty ones.
 
-    What a member does on the picture meanwhile cannot turn the text into shortcuts or inverted text: every press is sent in one buffer that
-    begins with a key-up for every Control, Alt, Super, AltGr key (`held`) and, for a character on the first level, every Shift key (`shifts`),
-    so a key-down that arrived a moment before is undone before the character; the key state is read before every character (`held` found down is
-    counted and reported as `warn` "modifier", and a run in which it is found more than TYPE_MOD_STRIKES times stops); Caps Lock is read from the
-    pointer state before every character, switched off with a tap on its key when it is on (reported as `warn` "capslock" when that happens in the
-    middle of a run; at the start of a run it is not a warning, the text is right) and put back at the end; when it cannot be switched off the run
-    stops before the first character with why "capslock". The member's Shift is released by a character on the first level and not given back.
-    The key-ups and the press are sent inside XGrabServer, so no other client's request can come between them."""
+    What a member does on the picture meanwhile. The first line of defence is the portal's relay, which does not pass the member's key-downs on to
+    x11vnc while a `type` request runs (rbrowser_rfb.ClientFilter, Session.typing). This object is the second line, for a key-down that was already past
+    the relay when the request began, and for state the member left behind: before every press the key state is read (a held Control, Alt, Super or
+    AltGr key found down is counted and reported as `warn` "modifier", and a run in which it is found more than TYPE_MOD_STRIKES times stops with
+    why "modifier"); the press is sent as a key-up for every such key and, for a character on the first level, every Shift key, then the key down and
+    up, inside XGrabServer. XGrabServer does NOT keep x11vnc out: x11vnc injects its events with XTestGrabControl, which lets them take effect inside
+    another client's grab (measured: 5 of 5), so the grab only orders this object's own requests, and a key-down of the member that gets through
+    the relay can still land between the key-ups and the press. Caps Lock is read from the pointer state before every character and once after the
+    last, switched off with a tap on its key when it is on (reported as `warn` "capslock" when that happens after the first character or is seen after
+    the last; at the start of a request it is not a warning, the text is right) and put back at the end; when it cannot be switched off the run stops
+    before the first character with why "capslock". The member's Shift is released by a character on the first level and not given back."""
 
     def __init__(self, x11, xtst, dpy, scratch, width, clock=time.monotonic, sleep=time.sleep, index=None, shift=0, held=(), shifts=(), lock=0, root=0):
         self.x11, self.xtst, self.dpy, self.width = x11, xtst, dpy, width
@@ -1361,11 +1365,15 @@ class ScratchTyper:
         self.strikes = 0                                # sightings of a held modifier in the current request
         self.warn = ""                                  # "modifier" or "capslock": something was in the way during the current request
         self.caps_fixed = False                         # Caps Lock was on and was switched off by this request
+        self.typed = 0                                  # characters whose key-down was sent in the current request (what was actually pressed)
+        self.pressed = set()                            # keycodes this object has sent a key-down for and not yet a key-up
         self.ranges = []                                # request serials [first, end) of the typer's own requests since the last error check
 
     def begin(self):
         """Start of a request: the counters of the last one are gone."""
         self.strikes, self.warn, self.caps_fixed = 0, "", False
+        self.typed = 0
+        self.pressed = set()
         self.map_changes = 0
         self.ranges = []
 
@@ -1449,10 +1457,11 @@ class ScratchTyper:
         return ""
 
     def _send(self, kc, level):
-        """One key, with Shift held around it for level 1, as one atomic piece: inside XGrabServer (no other client's request, x11vnc's key-down of a
-        member for one, between its parts) a key-up for EVERY Control, Alt, Super and AltGr key and, for a character on the first level, every
-        Shift key (whether the key state shows it down or not: a key-down that is queued is not in the state yet, and the key-ups come after it in
-        the queue), then the key down and up. Measured on the rig: the key-ups chosen from a state read inside the grab were worse. (ok, why)."""
+        """One key, with Shift held around it for level 1: after a key-up for EVERY Control, Alt, Super and AltGr key and, for a character on the
+        first level, every Shift key (whether the key state shows it down or not: a key-down that is queued is not in the state yet, and the key-ups
+        come after it in the queue), the key goes down and up, all inside XGrabServer (which orders this object's requests; it does not keep x11vnc out,
+        see the class). Every key this object pressed is released in the `finally`, whatever happens, and `typed` counts a character when its
+        key-down was sent. Measured on the rig: key-ups chosen from a state read inside the grab were worse. (ok, why)."""
         why = self._guard()
         if why:
             return False, why
@@ -1464,14 +1473,26 @@ class ScratchTyper:
                 x(self.dpy, k, 0, 0)
             ok = True
             if level:
+                self.pressed.add(self.shift)
                 ok = bool(x(self.dpy, self.shift, 1, 0))
-            ok = bool(x(self.dpy, kc, 1, 0)) and ok
+            self.pressed.add(kc)
+            down = bool(x(self.dpy, kc, 1, 0))
+            if down:
+                self.typed += 1
+            ok = down and ok
             ok = bool(x(self.dpy, kc, 0, 0)) and ok
+            self.pressed.discard(kc)
             if level:
                 ok = bool(x(self.dpy, self.shift, 0, 0)) and ok
+                self.pressed.discard(self.shift)
         finally:
-            self.x11.XUngrabServer(self.dpy)
-            self.x11.XFlush(self.dpy)                       # the grab must not outlast the press (a wait for a binding comes next)
+            try:
+                for k in list(self.pressed):                 # an exception between a key-down and its key-up leaves nothing pressed
+                    x(self.dpy, k, 0, 0)
+            finally:
+                self.pressed.clear()
+                self.x11.XUngrabServer(self.dpy)
+                self.x11.XFlush(self.dpy)                   # the grab must not outlast the press (a wait for a binding comes next)
         self._mark(first)
         return ok, "" if ok else "failed"
 
@@ -1484,13 +1505,12 @@ class ScratchTyper:
             return 0, why0
         deadline = self.clock() + budget_s
         next_pump = self.clock()
-        typed = 0
         for sym in keysyms:
             now = self.clock()
             if now >= deadline:
-                return typed, "budget"
+                return self.typed, "budget"
             if stopping():
-                return typed, "stopping"
+                return self.typed, "stopping"
             if now >= next_pump:
                 pump()
                 next_pump = self.clock() + TYPE_PUMP_S
@@ -1500,7 +1520,7 @@ class ScratchTyper:
             if own is not None:
                 ok, why = self._send(*own)
                 if not ok:
-                    return typed, why
+                    return self.typed, why
             else:
                 kc = next((k for k in self.order if self.bound[k] == sym), None)
                 if kc is None:
@@ -1511,23 +1531,24 @@ class ScratchTyper:
                             self.sleep(wait)
                     self._bind(kc, sym)
                     if self._own_error(error_in):
-                        return typed, "failed"
+                        return self.typed, "failed"
                     self.sleep(TYPE_MAP_WAIT_S)
                 self.order.remove(kc)
                 self.order.append(kc)
                 ok, why = self._send(kc, 0)                 # after the wait for the binding, and nothing between its check and its press
                 self.last[kc] = self.clock()
                 if not ok:
-                    return typed, why
-            typed += 1
+                    return self.typed, why
             if self.ranges and len(self.ranges) >= 64:
                 self.x11.XSync(self.dpy, 0)
                 if self._own_error(error_in):
-                    return typed, "failed"
+                    return self.typed, "failed"
         self.x11.XSync(self.dpy, 0)
+        if self.lock and self._caps_on():                   # one read after the last press: a toggle before the last character is flagged
+            self.warn = self.warn or "capslock"
         if self._own_error(error_in):
-            return typed, "failed"
-        return typed, ""
+            return self.typed, "failed"
+        return self.typed, ""
 
     def release(self):
         """Every scratch key back to SCRATCH_SYM (after the last press has been read), so no character stays where x11vnc could find it."""

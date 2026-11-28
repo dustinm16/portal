@@ -96,6 +96,7 @@ class Session:
     ingress_pin: str = ""         # the BPF pin the unit names; passed to filter_attached and to prune_stale(keep=)
     clipboard: str = "off"        # the unit's RB_CLIPBOARD value: both | to_browser | off (fixed when the unit started)
     net_warning: bool = False     # traffic at 80 % of a volume cap (section 6.4)
+    typing: int = 0               # type requests in progress for this session (1.26.3): the relay holds the member's key-downs while it is above 0
     end_reason: str | None = None  # one of END_REASONS once state is "ended"
     marker: str | None = None     # one of MARKERS (a security finding) or None; set together with end_reason
     marker_detail: str = ""       # traffic_limit: upload_rate | upload_volume | download_rate | download_volume
@@ -1402,10 +1403,15 @@ class Registry:
         if ext.type_lock.locked():
             return dict(bad, why="busy")
         async with ext.type_lock:
+            # The relay holds the member's key-downs from before the request is written until its answer (or its failure, timeout or
+            # cancel) has come back: what a member presses on the picture meanwhile is not passed on (key-ups are). Per session, not per socket.
+            session.typing += 1
             try:
                 obj = await self._ctl(session, {"op": "type", "text": text}, TYPE_REPLY_S, 4096)
             except StreamRefused:
                 return dict(bad, why="unreachable", fallback=True)
+            finally:
+                session.typing -= 1
         if obj is None:
             return dict(bad, why="reply")
         typed, skipped, complete = obj.get("typed"), obj.get("skipped"), obj.get("complete")

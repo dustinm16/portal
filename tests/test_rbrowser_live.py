@@ -1182,6 +1182,7 @@ class Bridge:
         self.rig, self.sock_path, self.clipboard, self.kbps = rig, sock_path, clipboard, kbps
         self.stats = {"to_client": 0, "to_unit": 0, "types": collections.Counter(), "violations": []}
         self.stall = False
+        self.typing = False           # the registry's typing mark, set by a gate around a `type` request: the filter then holds key-downs
         self.needle = None            # bytes to look for in what the unit sends (a boolean is kept, never the bytes)
         self.stats["saw"] = False
         self._tail = b""
@@ -1211,7 +1212,7 @@ class Bridge:
         ws = web.WebSocketResponse(max_msg_size=1 << 20, protocols=("binary",))
         await ws.prepare(request)
         reader, writer = await asyncio.open_unix_connection(self.sock_path)
-        flt = rbrowser_rfb.ClientFilter(self.clipboard)
+        flt = rbrowser_rfb.ClientFilter(self.clipboard, hold=lambda: self.typing)
         bucket = {"t": time.monotonic(), "tokens": (self.kbps or 0) * 125.0}
 
         async def up():
@@ -3238,6 +3239,28 @@ def g27(rig, ctx):
             n, h, head = g27_read(s, 3500, 30)
             (notes if h == g27_fnv(long_ascii) and r.get("typed") == 3500 else failed).append(
                 f"{label} pressed for 0.6 s in the middle of a 3500-character request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(long_ascii) else 'DIFFERENT'}, reply why {r.get('why')}, warn {r.get('warn')}")
+        # 2d. the member's Control key auto-repeating on the picture during a long request: the portal's relay holds the key-downs while the text is
+        # typed (the test bridge's `typing` flag stands in for the registry's mark), so the field is exact, the page is not reloaded and the focus stays in the field
+        # (the supervisor's grab does not keep x11vnc out: without the hold this segment is expected to FAIL on a real unit)
+        fresh_field("t2g")
+        nv.page.evaluate("""() => { window.__ctrl = setInterval(() => rfb.sendKey(0xFFE3, null, true), 30);
+                                    window.__ctrlStop = setTimeout(() => { clearInterval(window.__ctrl); rfb.sendKey(0xFFE3, null, false); }, 20000); }""")
+        time.sleep(0.2)
+        dense = "".join(rnd.choice("awtnlrfdWQNTpsoh") if rnd.random() < 0.5 else rnd.choice(ascii_chars) for _ in range(3500))
+        s.bridge.typing = True          # what Registry.type_text does around the control request
+        try:
+            r = s.ctl({"op": "type", "text": dense}, timeout=60)
+        finally:
+            s.bridge.typing = False
+        time.sleep(1.0)
+        nv.page.evaluate("() => { clearInterval(window.__ctrl); clearTimeout(window.__ctrlStop); rfb.sendKey(0xFFE3, null, false); }")
+        n, h, head = g27_read(s, 3500, 30)
+        reloaded = s.title() == "t2g" or not s.title().startswith("v:")
+        nv.type_text("Z")
+        n2, h2, head2 = g27_read(s, 3501, 10)
+        (notes if h == g27_fnv(dense) and r.get("typed") == 3500 and not reloaded and n2 == 3501 else failed).append(
+            f"Control auto-repeating every 30 ms through the real stream during a 3500-character request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(dense) else 'DIFFERENT'}, "
+            f"page {'RELOADED' if reloaded else 'not reloaded'}, one more character afterwards {'landed in the field' if n2 == 3501 else 'did NOT land in the field (focus left)'}, reply why {r.get('why')}, warn {r.get('warn')}")
         # 3. the same 60 typed on the picture through real noVNC: x11vnc has only the keys the reserve and the scratch keys leave, so only some arrive; NONE may be wrong
         fresh_field("t3")
         nv.type_text(chars)
