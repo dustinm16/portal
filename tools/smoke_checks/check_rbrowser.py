@@ -326,6 +326,7 @@ async def run(ctx):
             # resize and clipboard
             st, j = await jsend(sa, "POST", api + "/session/resize", {"width": 1000, "height": 700})
             ctx.ok("rbrowser: resize is accepted", st == 200 and (j or {}).get("ok") is True, f"{st} {j}")
+            await asyncio.sleep(1.2)   # one resize a second per member, judged before the body is read
             st, j = await jsend(sa, "POST", api + "/session/resize", {"width": "x", "height": 1})
             ctx.ok("rbrowser: a resize with a bad size is 400", st == 400, f"{st}")
             st, j = await jsend(sa, "POST", api + "/session/clipboard", {})
