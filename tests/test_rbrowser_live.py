@@ -24,6 +24,8 @@ egress table of 6.1 (printed as G00) and the 20 resizes (G23). Round 2 is filled
 `BindReadOnlyPaths=-<theme file>:/etc/chromium/policies/managed/portal-theme.json` inside the read-only /etc/chromium bind,
 and it needs a host whose rbrowser state is not prepared, see the refusal below): the remote Chromium follows the member's portal theme (tab strip colour, prefers-color-scheme, the security
 policy still applies, the per-session theme file is root-owned, read-only in the unit and gone after the stop).
+1.26.2 adds G26 (written, not run): the probe's sandbox check passes with at least one renderer in its own namespaces, and fails when the
+probe's Chromium is started with the switch that turns its sandbox off (the negative control).
 
 Output: one line per gate, `Gnn PASS|FAIL|FALLBACK detail`. A gate that needs a person to look at a picture
 prints FAIL with "manual:" and the path of the picture: nothing is called PASS that was not measured.
@@ -3261,9 +3263,43 @@ def g25(rig, ctx):
     return "PASS", detail
 
 
+# ---- G26 (1.26.2): the sandbox check requires every renderer to run in Chromium's own namespaces, and it can fail
+SANDBOX_CONTROL_SNIPPET = r'''
+import concurrent.futures, importlib.util, json, os
+def load(n):
+    s = importlib.util.spec_from_file_location(n, "/mnt/" + n + ".py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+S = load("session"); P = load("probe")
+os.makedirs(S.HOME_DIR, exist_ok=True)
+os.makedirs(S.TMP_DIR, exist_ok=True)
+orig = P._headless_flags
+P._headless_flags = lambda S_, tag: orig(S_, tag) + ["--no-" + "sandbox"]       # the switch for THIS run of the probe's check only
+print(json.dumps(P.check_sandbox_state(S, os.environ["RB_CHROMIUM"], None)))
+'''
+
+
+@gate("G26", "sandbox check: every renderer in its own namespaces; the negative control fails")
+def g26(rig, ctx):
+    """Round 1, written and NOT run here. (1) The probe as it is (ctx["probe"], run once for the gates that need it): sandbox_state must be ok and
+    its detail must say that renderers run in their own namespaces. (2) The same check function in a unit of the probe's kind, but with
+    the switch that turns Chromium's sandbox off added to the probe's headless flags: it must FAIL and name the switch. A control that
+    passes would mean the check cannot fail. The switch is added to the probe's flags inside the unit's own snippet (a wrapper script would
+    have to be an executable file the unit can see; the static tree and the unit's /tmp are not known to allow that)."""
+    chk = rig.probe_check(ctx["probe"], "sandbox_state")
+    m = re.search(r"every one of (\d+) renderers runs in its own user and pid namespace", chk["detail"])
+    if not chk["ok"] or not m or int(m.group(1)) < 1:
+        return "FAIL", f"the normal probe: sandbox_state ok {chk['ok']}, detail: {chk['detail']}"
+    ok, res, err = rig.snippet(SANDBOX_CONTROL_SNIPPET, timeout=90)
+    if not ok or not isinstance(res, dict) or res.get("name") != "sandbox_state":
+        return "FAIL", f"the control run did not answer: {err[:150]}"
+    flag = "--no-" + "sandbox"
+    if res.get("ok") is not False or flag not in res.get("detail", ""):
+        return "FAIL", f"the negative control did not fail as it must (ok {res.get('ok')}): {res.get('detail')}; normal run: {chk['detail']}"
+    return "PASS", f"normal: {chk['detail']} | control with {flag} for the probe only: FAILED as required: {res['detail'][:200]}"
+
+
 # ================================================================ the run
 
-PROBE_GATES = ("G00", "G02", "G02b", "G02c", "G06", "G18")
+PROBE_GATES = ("G00", "G02", "G02b", "G02c", "G06", "G18", "G26")
 
 
 def only_gates(argv=None):

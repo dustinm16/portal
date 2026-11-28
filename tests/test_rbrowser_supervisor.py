@@ -795,7 +795,7 @@ for node in ast.walk(ptree):
 check("probe.py imports only the standard library", pimports <= set(sys.stdlib_module_names), str(pimports - set(sys.stdlib_module_names)))
 check("probe.py runs only under the __main__ guard", 'if __name__ == "__main__":' in PSRC)
 check("probe.py names no third-party host and no URL but the two fixed test pages",
-      not re.search(r"https?://", PSRC) and set(re.findall(r"(?:file|chrome)://[\w/.]+", PSRC)) == {"file:///etc/hostname", "chrome://sandbox"})
+      not re.search(r"https?://", PSRC) and set(re.findall(r"(?:file|chrome)://[\w/.]+", PSRC)) == {"file:///etc/hostname"})
 check("probe.py has no shell and no --no-sandbox", "shell=True" not in PSRC and "os.system" not in PSRC and "--no-sandbox" not in PSRC)
 check("probe's time limits fit the 40 s budget", PR.TOTAL_S < 40 and PR.CONNECT_S == 2.0 and PR.CHROMIUM_RUN_S + 3 < PR.TOTAL_S + 5)
 
@@ -1048,11 +1048,58 @@ check("mount root: a private /tmp and /var/tmp are told from the host's (root of
       and "systemd-private-" not in PR._mount_root("1 2 259:1 / / rw - ext4 /dev/x rw\n", "/tmp") and PR._mount_root(_MI, "/run/work/home") == "/"
       and PR._fstype(_MI, "/run/work/home") == "tmpfs")
 check("userns: link parsed", PR.parse_userns("user:[4026531837]") == 4026531837 and PR.parse_userns("x") is None and PR.parse_userns(None) is None)
-check("sandbox children: counted visible, readable, different",
-      PR.sandbox_children([(1, "user:[10]"), (2, "user:[11]"), (3, None), (4, "user:[10]")], 10) == (4, 3, 1) and PR.sandbox_children([], 10) == (0, 0, 0))
-check("sandbox page: both layers yes, in markup", PR.sandbox_page_ok("<tr><td>Namespace sandbox</td><td>Yes</td></tr><tr><td>Seccomp-BPF sandbox</td><td>Yes</td></tr>") is True
-      and PR.sandbox_page_ok("<td>Namespace sandbox</td><td>No</td><td>Seccomp-BPF sandbox</td><td>Yes</td>") is False)
-check("sandbox page: a page without the words is not ok", PR.sandbox_page_ok("<html></html>") is False and PR.sandbox_page_ok("") is False)
+check("userns: pid namespace link parsed", PR.parse_pidns("pid:[4026531836]") == 4026531836 and PR.parse_pidns("user:[1]") is None and PR.parse_pidns(None) is None)
+# ---- 1.26.2: check 8 judges every renderer (pure parts); the processes below are the measured picture of a production session unit
+check("sandbox: the process type is read from one string (argv rewritten) and from an argument list, utility with its sub-type",
+      PR.classify_cmdline(b"/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --lang=en-US --field-trial-handle=1,i,2\0") == ("renderer", None)
+      and PR.classify_cmdline(b"/usr/lib/chromium/chromium\0--type=zygote\0--no-zygote-sandbox\0") == ("zygote", None)
+      and PR.classify_cmdline("/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US") == ("utility", "network.mojom.NetworkService")
+      and PR.classify_cmdline(b"/usr/lib/chromium/chromium --type=gpu-process --disable-gpu") == ("gpu-process", None)
+      and PR.classify_cmdline(b"/usr/lib/chromium/chromium --headless=new data:text/html,x") == ("browser", None) and PR.classify_cmdline(b"") == ("browser", None)
+      and PR.classify_cmdline(b"chromium --xtype=renderer") == ("browser", None))
+check("sandbox: the four sandbox-disabling flags are found whole, in a one-string and an argument-list command line, and nothing else matches",
+      PR.forbidden_flags("chromium --headless=new --" + "no-sandbox x") == ["no-sandbox"] and PR.forbidden_flags(b"chromium\0--disable-setuid-sandbox\0--disable-seccomp-filter-sandbox\0--disable-namespace-sandbox\0")
+      == ["disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox"] and PR.forbidden_flags("chromium --no-zygote-sandbox --type=zygote") == []
+      and PR.forbidden_flags("chromium --not-no-sandbox --no-sandboxes") == [] and PR.forbidden_flags("") == [])
+check("sandbox: Seccomp and NoNewPrivs are read from /proc status text", PR.status_number("Name:\tx\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n", "Seccomp") == 2
+      and PR.status_number("NoNewPrivs:\t1\nSeccomp:\t2\n", "NoNewPrivs") == 1 and PR.status_number("Seccomp_filters:\t1\n", "Seccomp") is None and PR.status_number("", "Seccomp") is None)
+def _pp(pid, ptype, user, pidns, sub=None, seccomp=2, nnp=1, flags=()):
+    return {"pid": pid, "type": ptype, "sub": sub, "user": user, "pidns": pidns, "seccomp": seccomp, "nnp": nnp, "flags": list(flags)}
+_B = _pp(10, "browser", 100, 200)
+_PROD = [_pp(11, "renderer", 101, 201), _pp(12, "renderer", 101, 202), _pp(13, "renderer", 101, 203),
+         _pp(14, "zygote", 101, 204), _pp(15, "zygote", 101, 204), _pp(16, "zygote", 100, 200),
+         _pp(17, "gpu-process", 100, 200), _pp(18, "utility", 100, 200, "network.mojom.NetworkService"), _pp(19, "utility", 101, 205, "storage.mojom.StorageService")]
+_ok, _det = PR.sandbox_verdict(_B, _PROD)
+check("sandbox verdict: the measured production picture passes, and the detail has the counts per type", _ok is True and "3 renderers" in _det and "3 zygote" in _det and "1 gpu-process" in _det
+      and "2 utility (NetworkService 1, StorageService 1)" in _det and "http" not in _det)
+check("sandbox verdict: one renderer in its own namespaces is enough when it is the only one", PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201)])[0] is True)
+_ok, _det = PR.sandbox_verdict(_B, _PROD[:2] + [_pp(13, "renderer", 100, 203)] + _PROD[3:])
+check("sandbox verdict: ONE renderer in the browser's user namespace fails the check, the detail says how many", _ok is False and "1 of 3 renderers" in _det and "browser's user namespace" in _det)
+check("sandbox verdict: a renderer in the browser's pid namespace fails", PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201), _pp(12, "renderer", 101, 200)])[0] is False)
+_ok, _det = PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201), _pp(12, "renderer", None, 202)])
+check("sandbox verdict: a renderer whose namespace link is unreadable is unproven and fails, and the detail says so", _ok is False and "unreadable" in _det and "unproven" in _det)
+check("sandbox verdict: an unreadable pid namespace fails", PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, None)])[0] is False)
+_ok, _det = PR.sandbox_verdict(_B, [_pp(14, "zygote", 101, 204), _pp(17, "gpu-process", 100, 200), _pp(18, "utility", 101, 205, "storage.mojom.StorageService")])
+check("sandbox verdict: no renderer observed fails (namespaces of other processes prove nothing about page content)", _ok is False and "no renderer process was observed" in _det and PR.sandbox_verdict(_B, [])[0] is False)
+check("sandbox verdict: a renderer without Seccomp 2 or without NoNewPrivs 1 fails", PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201, seccomp=0)])[0] is False
+      and PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201, seccomp=None)])[0] is False and PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201, nnp=0)])[0] is False)
+check("sandbox verdict: a sandbox-disabling flag on a renderer fails even when everything else looks right",
+      all(PR.sandbox_verdict(_B, [_pp(11, "renderer", 101, 201, flags=[f])])[0] is False for f in PR.FORBIDDEN_FLAG_NAMES))
+check("sandbox verdict: a sandbox-disabling flag on the browser or on a helper process fails",
+      all(PR.sandbox_verdict(_pp(10, "browser", 100, 200, flags=[f]), _PROD)[0] is False for f in PR.FORBIDDEN_FLAG_NAMES)
+      and PR.sandbox_verdict(_B, _PROD + [_pp(20, "gpu-process", 100, 200, flags=["no-sandbox"])])[0] is False)
+check("sandbox verdict: an unreadable or missing browser fails", PR.sandbox_verdict(None, _PROD)[0] is False and PR.sandbox_verdict(_pp(10, "browser", None, 200), _PROD)[0] is False
+      and PR.sandbox_verdict(_pp(10, "browser", 100, None), _PROD)[0] is False)
+check("sandbox verdict: the detail is short enough for result() and names no URL", all(len(PR.sandbox_verdict(_B, ps)[1]) < 300 for ps in (_PROD, [], [_pp(i, "renderer", 100, 200, flags=["no-sandbox"]) for i in range(30)])))
+check("sandbox merge: a later sighting wins, but one that lost the readable user namespace does not replace one that had it",
+      PR.merge_sample(_pp(1, "zygote", 101, 1), _pp(1, "renderer", 101, 1))["type"] == "renderer" and PR.merge_sample(_pp(1, "renderer", 101, 1), _pp(1, "renderer", None, 1))["user"] == 101
+      and PR.merge_sample(None, _pp(1, "renderer", None, 1))["user"] is None and PR.merge_sample(_pp(1, "renderer", None, 1), _pp(1, "renderer", None, 1))["user"] is None)
+_me = PR.sample_process(os.getpid())
+check("sandbox: sample_process reads this very process from /proc (type browser, namespaces, status numbers), and a pid that is gone is None",
+      _me is not None and _me["type"] == "browser" and _me["user"] is not None and _me["pidns"] is not None and _me["seccomp"] in (0, 1, 2) and _me["nnp"] in (0, 1) and _me["flags"] == []
+      and PR.sample_process(2 ** 22 + 12345) is None)
+check("probe: check 8 loads a data: page (a renderer certainly exists) and no chrome: page, and says nothing of chrome://sandbox",
+      "data_url(" in PSRC.split("def check_sandbox_state")[1].split("# ====")[0] and "sandbox_page_ok" not in PSRC and "sandbox_children" not in PSRC and '"unclear"' not in PSRC and "unclear" not in PSRC)
 du = PR.data_url("rbp0123456789ab")
 check("data page: the marker is not in the URL text, but the script assembles it",
       "rbp0123456789ab" not in du and "rbp012" in du and urllib.parse.unquote(du).count("rbp012") == 1 and ".join(" in urllib.parse.unquote(du)

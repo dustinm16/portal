@@ -36,6 +36,7 @@ TOTAL_S = 36.0
 CHROMIUM_RUN_S = 10.0      # one headless run takes 0.6 to 4 s here, also with the probe's other checks running
 CHROMIUM_ATTEMPTS = 2      # about one headless launch in 200 never ends (see _dump_dom): a run that hit the limit is repeated once
 SANDBOX_POLL_S = 12.0
+SANDBOX_SETTLE_S = 1.5     # a renderer is judged when no further renderer has appeared for this long
 WALK_ROOTS = ("/run", "/var/run", "/tmp", "/var/lib")
 WALK_DEPTH = 4
 # /tmp is the unit's own PrivateTmp directory, and the probe's own Xvfb (check_display_proof, running at the same time)
@@ -113,20 +114,147 @@ def parse_userns(link):
     return int(m.group(1)) if m else None
 
 
-def sandbox_children(entries, main_ns):
-    """entries: [(pid, user namespace link or None)] of the children of the headless browser. Returns
-    (visible, readable, different): how many children there are, how many have a readable user namespace link
-    and how many of those differ from the main process's."""
-    readable = [parse_userns(link) for _pid, link in entries]
-    readable = [n for n in readable if n is not None]
-    return len(entries), len(readable), sum(1 for n in readable if n != main_ns)
+def parse_pidns(link):
+    m = re.fullmatch(r"pid:\[(\d+)\]", link or "")
+    return int(m.group(1)) if m else None
 
 
-def sandbox_page_ok(dom):
-    """chrome://sandbox, dumped as DOM text: 'Namespace sandbox Yes' and 'Seccomp-BPF sandbox Yes' (the rows of the
-    page as remembered, NOT verified on this build: the lead checks the page text in round 1)."""
-    t = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", dom or "")).lower()
-    return bool(re.search(r"namespace sandbox\s*yes", t)) and bool(re.search(r"seccomp-bpf sandbox\s*yes", t))
+# Chromium rewrites its argv, so the whole command line of a child can sit in ONE string: the type is read with a regex
+# from the joined text, never from an argument list. Flags that switch off a layer of Chromium's own sandbox (spelled
+# without the dashes here, so that this file never holds the literal flag).
+FORBIDDEN_FLAG_NAMES = ("no-sandbox", "disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox")
+_TYPE_RE = re.compile(r"(?:^|\s)--type=([A-Za-z0-9_-]+)")
+_SUBTYPE_RE = re.compile(r"(?:^|\s)--utility-sub-type=([A-Za-z0-9_.-]+)")
+
+
+def classify_cmdline(raw):
+    """The raw bytes (or text) of /proc/<pid>/cmdline -> (type, utility sub-type or None). The browser process has no
+    --type= and is 'browser'. NULs are turned into spaces first: both the one-string form and the argument list work."""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+    text = text.replace("\0", " ")
+    m = _TYPE_RE.search(text)
+    sub = _SUBTYPE_RE.search(text)
+    return (m.group(1) if m else "browser"), (sub.group(1) if sub else None)
+
+
+def forbidden_flags(raw):
+    """Names (without dashes) of the sandbox-disabling flags a command line holds, in the order of FORBIDDEN_FLAG_NAMES."""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+    text = text.replace("\0", " ")
+    return [n for n in FORBIDDEN_FLAG_NAMES if re.search(r"(?:^|\s)--" + re.escape(n) + r"(?=$|[\s=])", text)]
+
+
+def status_number(text, field):
+    """'Seccomp:\t2' in the text of /proc/<pid>/status -> 2, or None."""
+    m = re.search(r"^" + re.escape(field) + r":\s*(\d+)\s*$", text or "", re.M)
+    return int(m.group(1)) if m else None
+
+
+def sample_process(pid):
+    """What the probe sees of one process: {pid, type, sub, user, pidns, seccomp, nnp, flags} or None when it is gone. The
+    command line is read LAST: a process that exits in between has an empty one and is skipped, not judged. A value
+    that cannot be read is None (under ProtectProc the probe may not see a process's namespaces)."""
+    def link(name):
+        try:
+            return os.readlink(f"/proc/{pid}/ns/{name}")
+        except OSError:
+            return None
+    user, pidns = link("user"), link("pid")
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="replace") as f:
+            status = f.read()
+    except OSError:
+        status = ""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read()
+    except OSError:
+        return None
+    if not cmd.strip(b"\0"):
+        return None
+    ptype, sub = classify_cmdline(cmd)
+    return {"pid": pid, "type": ptype, "sub": sub, "user": parse_userns(user), "pidns": parse_pidns(pidns),
+            "seccomp": status_number(status, "Seccomp"), "nnp": status_number(status, "NoNewPrivs"), "flags": forbidden_flags(cmd)}
+
+
+def merge_sample(old, new):
+    """One process seen twice: the later sighting, unless it lost the user namespace that the earlier one could read
+    (the process died between two reads). A namespace that was never readable stays unreadable."""
+    if old is None or new is None:
+        return new or old
+    if new["user"] is None and old["user"] is not None:
+        return old
+    return new
+
+
+def renderer_problems(r, main_user, main_pid_ns):
+    """Why one renderer does not prove Chromium's own sandbox (a list of short texts; empty = it does)."""
+    out = []
+    if r["user"] is None:
+        out.append("user namespace unreadable (under ProtectProc the probe may not see it: unproven)")
+    elif main_user is not None and r["user"] == main_user:
+        out.append("in the browser's user namespace")
+    if r["pidns"] is None:
+        out.append("pid namespace unreadable")
+    elif main_pid_ns is not None and r["pidns"] == main_pid_ns:
+        out.append("in the browser's pid namespace")
+    if r["seccomp"] != 2:
+        out.append(f"Seccomp {r['seccomp']}")
+    if r["nnp"] != 1:
+        out.append(f"NoNewPrivs {r['nnp']}")
+    if r["flags"]:
+        out.append("flag " + ", ".join("--" + n for n in r["flags"]))
+    return out
+
+
+def _short_sub(sub):
+    return (sub or "?").rsplit(".", 1)[-1]
+
+
+def sandbox_verdict(browser, procs):
+    """The decision of check 8, pure. `browser` and `procs` are sample_process() results: the headless browser and every
+    process below it that was seen. -> (ok, detail). PASS only when at least one renderer was seen, EVERY renderer has a
+    readable user namespace and a pid namespace that both differ from the browser's, Seccomp 2 and NoNewPrivs 1 and none of the
+    sandbox-disabling flags, and the browser (and every other process seen) has none of them either. The unit's own
+    system call filter gives EVERY process Seccomp 2 and NoNewPrivs 1, so those two are necessary, not the proof: the
+    namespace difference is the proof of Chromium's own namespace sandbox. The detail names counts and verdicts only."""
+    procs = list(procs)
+    if browser is None:
+        return False, "the browser process could not be read (it ended or is not visible): no sandbox state proven"
+    renderers = [p for p in procs if p["type"] == "renderer"]
+    counts = {}
+    for p in procs:
+        key = p["type"] if p["type"] != "utility" else "utility"
+        counts[key] = counts.get(key, 0) + 1
+    subs = {}
+    for p in procs:
+        if p["type"] == "utility":
+            subs[_short_sub(p["sub"])] = subs.get(_short_sub(p["sub"]), 0) + 1
+    others = [f"{n} {t}" for t, n in sorted(counts.items()) if t != "renderer"]
+    if subs:
+        others = [o + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(subs.items())) + ")" if o.endswith(" utility") else "") for o in others]
+    seen = f"seen: {len(renderers)} renderer, " + (", ".join(others) if others else "no other process")
+    problems = []
+    if browser["flags"]:
+        problems.append("the browser's command line holds " + ", ".join("--" + n for n in browser["flags"]))
+    helpers_flagged = [p for p in procs if p["type"] != "renderer" and p["flags"]]
+    if helpers_flagged:
+        problems.append(f"{len(helpers_flagged)} helper processes hold " + ", ".join("--" + n for n in sorted({n for p in helpers_flagged for n in p["flags"]})))
+    if browser["user"] is None or browser["pidns"] is None:
+        problems.append("the browser's own namespaces are unreadable")
+    if not renderers:
+        problems.append("no renderer process was observed")
+    groups = {}
+    for r in renderers:                       # renderers with the same findings are one line: the detail is short
+        why = tuple(renderer_problems(r, browser["user"], browser["pidns"]))
+        if why:
+            groups[why] = groups.get(why, 0) + 1
+    for why, n in groups.items():
+        problems.append(f"{n} of {len(renderers)} renderers: " + ", ".join(why))
+    if problems:
+        return False, f"FAILED. {seen}. " + "; ".join(problems)
+    return True, (f"every one of {len(renderers)} renderers runs in its own user and pid namespace with Seccomp 2 and NoNewPrivs 1, "
+                  f"no sandbox-disabling flag on the browser or a renderer. {seen}")
 
 
 def data_url(marker):
@@ -648,39 +776,37 @@ def _descendants(root):
 
 
 def check_sandbox_state(S, chromium, pool):
-    """Design 8.2 check 8: while headless Chromium runs, a child process has a user namespace of its own. Under
-    ProtectProc=invisible the sandboxed children may not be visible at all; the detail says which case it was, and
-    chrome://sandbox is the second signal."""
-    p = subprocess.Popen([chromium, *_headless_flags(S, "s"), "about:blank"], env=S.child_env(), stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    page = pool.submit(_dump_dom, S, chromium, "s2", "chrome://sandbox")
-    visible = readable = different = 0
+    """Design 8.2 check 8: Chromium's own sandbox is on for every renderer. A headless Chromium loads a data: page (it
+    certainly creates a renderer); the check polls /proc up to SANDBOX_POLL_S for the renderers, until no new one has
+    appeared for SANDBOX_SETTLE_S, and passes only when sandbox_verdict does. Chromium's own sandbox page is not used: headless
+    Chromium 156 prints nothing for any chrome: page (net::ERR_ABORTED), measured."""
+    p = subprocess.Popen([chromium, *_headless_flags(S, "s"), data_url("rbp" + secrets.token_hex(6))], env=S.child_env(),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    browser, seen = None, {}
     try:
-        main_ns = parse_userns(os.readlink(f"/proc/{p.pid}/ns/user")) if os.path.exists(f"/proc/{p.pid}/ns/user") else None
         end = time.monotonic() + SANDBOX_POLL_S
-        while time.monotonic() < end and different == 0:
-            time.sleep(0.5)
-            entries = []
+        last_new = None
+        while time.monotonic() < end:
+            time.sleep(0.25)
+            now = time.monotonic()
+            b = sample_process(p.pid)         # the wrapper script execs the browser: the pid stays, its command line changes
+            if b is not None:
+                browser = b
+            before = sum(1 for s in seen.values() if s["type"] == "renderer")
             for pid in _descendants(p.pid):
-                try:
-                    entries.append((pid, os.readlink(f"/proc/{pid}/ns/user")))
-                except OSError:
-                    entries.append((pid, None))
-            if main_ns is None:
+                s = sample_process(pid)
+                if s is not None:
+                    seen[pid] = merge_sample(seen.get(pid), s)
+            n = sum(1 for s in seen.values() if s["type"] == "renderer")
+            if n and (n != before or last_new is None):
+                last_new = now
+            if n and now - last_new >= SANDBOX_SETTLE_S:
                 break
-            visible, readable, different = sandbox_children(entries, main_ns)
-        rc, dom = page.result()
     finally:
         _kill_group(p)
         p.wait()
-    page_ok = sandbox_page_ok(dom) if rc == 0 else False
-    if different:
-        return result("sandbox_state", True, f"{different} of {visible} child processes have a user namespace of their own; chrome://sandbox says {'yes' if page_ok else 'unclear'}")
-    if page_ok:
-        return result("sandbox_state", True, f"chrome://sandbox reports both layers; child processes seen: {visible}, readable: {readable}")
-    if visible == 0:
-        return result("sandbox_state", False, "no child process of the browser was visible (ProtectProc=invisible may hide them) and chrome://sandbox was not conclusive")
-    return result("sandbox_state", False, f"{visible} child processes visible, {readable} readable, none with a user namespace of its own")
+    ok, detail = sandbox_verdict(browser, list(seen.values()))
+    return result("sandbox_state", ok, detail)
 
 
 # ================================================================ main

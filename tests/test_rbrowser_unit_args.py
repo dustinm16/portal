@@ -1755,7 +1755,7 @@ check("live test: the guard function comes before the first import that is not a
       _live_src.index("refuse_unless_asked()") < _live_src.index("import asyncio") and "def refuse_unless_asked" in _live_src)
 check("live test: every gate of the round 1 table is present",
       set(re.findall(r'@gate\("(G\d\d\w*)"', _live_src)) == {"G00", "G01", "G01b", "G02", "G02b", "G02c", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G09b", "G10", "G11",
-                                                              "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24", "G25"})
+                                                              "G13", "G13b", "G14", "G15", "G16", "G17", "G18", "G19", "G20", "G21", "G22", "G23", "G24", "G25", "G26"})
 check("live test: G25 (1.26.0) is a round 1 gate, written for the theme file and the pictures, and a HARD gate (a FAIL blocks the release); its unit run uses build_unit_args(theme_file=)",
       "G25" in re.findall(r'@gate\("(G\d\d\w*)"', _live_src) and "G25" in _live_src.split("HARD_GATES = (")[1].split(")")[0] and "theme_file=path" in _live_src.split('@gate("G25"')[1]
       and "add_bind" not in _live_src.split('@gate("G25"')[1] and 'BindReadOnlyPaths=-{path}:{L.THEME_DEST}' in _live_src.split('@gate("G25"')[1]
