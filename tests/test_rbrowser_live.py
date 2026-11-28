@@ -1063,6 +1063,7 @@ class Session:
         rc, out = self.x(["/usr/bin/xprop", "-id", w["id"], "_NET_WM_NAME"])
         m = re.search(r'= "(.*)"', out, re.S)
         t = m.group(1) if m else w["title"]
+        t = re.sub("[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", t)      # Chromium wraps a title with right-to-left text in direction marks
         return t[:-len(" - Chromium")] if t.endswith(" - Chromium") else t
 
     def wait_title(self, needle, seconds=12):
@@ -1276,6 +1277,7 @@ PAGE_HTML = """<!doctype html><meta charset=utf-8><title>rb live</title>
 <body style="margin:0;background:#222"><div id="screen" style="width:100vw;height:100vh"></div>
 <script type="module">
 import RFB from '/novnc/core/rfb.js';
+import keysyms from '/novnc/core/input/keysymdef.js';   // the product page's lookup (rbrowser.js keysymFor): the keysym a real keyboard through noVNC sends
 const wsurl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
 window.__clip = []; window.__events = [];
 const rfb = new RFB(document.getElementById('screen'), wsurl, {credentials: {password: ''}});
@@ -1286,7 +1288,7 @@ rfb.addEventListener('clipboard', e => window.__clip.push(e.detail.text));
 window.rfb = rfb;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const keysym = ch => { const cp = ch.codePointAt(0); if (ch === '\\n') return 0xFF0D; if (ch === '\\t') return 0xFF09;
-  return (cp >= 0x20 && cp <= 0x7E) || (cp >= 0xA0 && cp <= 0xFF) ? cp : 0x01000000 + cp; };
+  return (cp >= 0x20 && cp <= 0x7E) || (cp >= 0xA0 && cp <= 0xFF) ? cp : keysyms.lookup(cp); };
 window.typeText = async (text, chunk, interval) => { let n = 0;
   for (const ch of text) { rfb.sendKey(keysym(ch), null); if (++n % chunk === 0) await sleep(interval); } return n; };
 window.chord = (mods, key) => { for (const m of mods) rfb.sendKey(m, null, true); rfb.sendKey(key, null); for (const m of mods.slice().reverse()) rfb.sendKey(m, null, false); };
@@ -3154,7 +3156,7 @@ def g27(rig, ctx):
         if r.get("ok") is True and r.get("typed") == 60 and r.get("complete") is True and h == g27_fnv(chars) and n == len(chars.encode("utf-16-le")) // 2:
             notes.append(f"type request: {len(chars)} characters outside the table, all arrived and exact (hash), {took:.1f} s")
         else:
-            failed.append(f"type request: reply {r}, field length {n} of {len(chars.encode('utf-16-le')) // 2}, hash {'equal' if h == g27_fnv(chars) else 'DIFFERENT'}, head {head[:30]!r}")
+            failed.append(f"type request: reply {r}, field length {n} of {len(chars.encode('utf-16-le')) // 2}, hash {'equal' if h == g27_fnv(chars) else 'DIFFERENT'}, head {head[:30]!r}, raw title {s.x(['/usr/bin/xprop', '-id', s.main_window()['id'], '_NET_WM_NAME'])[1][:300]!r}")
         # 2. a second text of other characters on the same session (the scratch keys are reused after the first)
         again = chars[::-1]
         fresh_field("t2")
@@ -3276,7 +3278,7 @@ def g27(rig, ctx):
         fresh_field("t4")
         nv.type_text(table_text)
         n, h, head = g27_read(s, len(table_text.encode("utf-16-le")) // 2, 40)
-        (notes if h == g27_fnv(table_text) else failed).append(f"table characters through real noVNC: {len(table_text)} typed, field length {n}, hash {'equal' if h == g27_fnv(table_text) else 'DIFFERENT'}")
+        (notes if h == g27_fnv(table_text) else failed).append(f"table characters through real noVNC: {len(table_text)} typed, field length {n}, hash {'equal' if h == g27_fnv(table_text) else 'DIFFERENT'}, head {head!r}, table {table_text[:90]!r}")
         nv.close()
     finally:
         s.stop()
@@ -4125,3 +4127,4 @@ def main_round2():
 
 if __name__ == "__main__":
     sys.exit(main_round2() if sys.argv[sys.argv.index("--round") + 1:][:1] == ["2"] else main())
+
