@@ -2150,7 +2150,7 @@ check("1.26.2: the notes say chrome://sandbox prints nothing headless and is dro
       "`chrome://sandbox` is not used" in _s1262 and "net::ERR_ABORTED" in _s1262 and "chrome://sandbox" not in _probe1262 and "unclear" not in _probe1262)
 check("1.26.2: the notes say one sandbox check runs after the upgrade and name the preflight key (the probe's source)", "One sandbox check after the upgrade" in _s1262 and "covers the probe's source" in _s1262)
 check("1.26.2: the Not tested item says it was measured outside a unit, that G26 is written and not run, and that the namespace read under ProtectProc is unconfirmed",
-      "**Not tested.**" in _s1262 and "`G26`" in _s1262 and "has not been run" in _s1262 and "`ProtectProc`" in _s1262 and "outside a unit" in _s1262 and "it still fails, on the filter count" in _s1262 and "hard gate" in _s1262)
+      "**Not tested.**" in _s1262 and "`G26`" in _s1262 and "26 filters against the browser's 25" in _s1262 and "`ProtectProc`" in _s1262 and "outside a unit" in _s1262 and "it still fails, on the filter count" in _s1262 and "hard gate" in _s1262)
 check("1.26.2: the live test has G26 as a probe gate with the control that adds the flag for the probe only",
       '@gate("G26"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8") and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("PROBE_GATES = (")[1].split(")")[0]
       and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("HARD_GATES = (")[1].split(")")[0])
