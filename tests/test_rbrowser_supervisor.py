@@ -1152,6 +1152,112 @@ check("theme: config reads RB_THEME_MODE; absent or invalid is None and never an
 check("theme: the mode read from the environment is what reaches chromium_argv in main()", 'chromium_argv(cfg["chromium"], w, h, cfg["home"], cfg.get("theme_mode"))' in SRC)
 check("theme: the colour never reaches the supervisor (no RB_THEME_COLOR anywhere in it)", "RB_THEME_COLOR" not in SRC and "BrowserThemeColor" not in SRC)
 
+# ---- 1.26.1: the keyboard map is prepared before x11vnc and Chromium start (x11vnc adds a keysym on a key without symbols
+# and gives it back only when it exits: 18 keys on this host's Xvfb, so the 19th different character was dropped)
+XF = 0x1008FF11          # XF86AudioLowerVolume
+XF_BACK = 0x1008FF26     # XF86Back
+KM_W = 4
+
+
+def km_rows(n, free=(), xf=(), nav=(), base=0x61):
+    """n keys from keycode 8: ordinary letters, except the given positions (free, only XF86 symbols, a browser key)."""
+    rows = []
+    for i in range(n):
+        if i in free:
+            rows.append((0,) * KM_W)
+        elif i in xf:
+            rows.append((XF, 0, XF, 0))
+        elif i in nav:
+            rows.append((XF_BACK, 0, XF_BACK, 0))
+        else:
+            rows.append((base + i, 0x41 + i, base + i, 0x41 + i))
+    return rows
+
+
+KU = S.keymap_units()
+KPAIRS = [u for u in KU if len(u) == 2]
+check("keymap: the page's keysyms (Latin-1 as itself, above it 0x01000000 + code point) are what the units hold",
+      S.keymap_keysym(0xE9) == 0xE9 and S.keymap_keysym(0x20AC) == 0x010020AC and S.keymap_keysym(0x416) == 0x01000416
+      and (0xE9, 0xC9) in KU and (0x01000436, 0x01000416) in KU and (0x010020AC,) in {u for u in KU if len(u) == 1} | {u[:1] for u in KU})
+check("keymap: units hold Latin-1 letters, sharp s, euro, Russian with yo, Ukrainian, Polish",
+      all(any(k in u for u in KU) for k in (0xE9, 0xDF, 0xFF, 0x010020AC, 0x01000451, 0x01000456, 0x01000491, 0x01000105, 0x0100017C, 0xB0, 0xBF)))
+check("keymap: every unit has one or two different keysyms, none is ASCII, none twice",
+      all(len(u) in (1, 2) and len(set(u)) == len(u) and all(k > 0x9F for k in u) for u in KU)
+      and len({k for u in KU for k in u}) == sum(len(u) for u in KU))
+check("keymap: a letter pair is lower case first (the key types it plain and with Shift gives the capital)",
+      all(u[0] < u[1] or u[0] > u[1] for u in KPAIRS) and (0xE0, 0xC0) in KPAIRS and (0xFF, 0x01000178) in KPAIRS and (0x01000430, 0x01000410) in KPAIRS)
+check("keymap: the micro sign is not paired with a Greek capital", not any(0xB5 in u and len(u) == 2 and 0x0100039C in u for u in KU))
+check("keymap: the units fit the keys of this host's map (about 90 keys) and Russian is complete",
+      len(KPAIRS) + (len(KU) - len(KPAIRS) + 1) // 2 <= 91
+      and all((0x01000000 + c, 0x01000000 + c - 0x20) in KU for c in range(0x430, 0x450)))
+
+PLAN_ROWS = km_rows(60, free=(0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19), xf=tuple(range(20, 40)), nav=(40,))
+PLAN = S.plan_keymap(PLAN_ROWS, 8)
+KFREE = [8 + i for i, r in enumerate(PLAN_ROWS) if not any(r)]
+KSPARE = [8 + i for i in range(20, 40)]
+check("keymap plan: only keys with no symbols or with nothing but XF86 symbols are written, never the first key, never a browser key",
+      PLAN and all(kc in KFREE[1:] + KSPARE for kc in PLAN) and 8 not in PLAN and 48 not in PLAN and 8 + 40 not in PLAN)
+left = [kc for kc in KFREE[1:] + KSPARE if kc not in PLAN or not any(PLAN[kc])]
+check("keymap plan: the reserve stays free (keys without symbols for x11vnc), emptying unused media keys if the free ones are too few",
+      len(left) == S.KEYMAP_RESERVE + len([kc for kc in KSPARE if kc in left and kc not in KFREE]) - len([kc for kc in KSPARE if kc in left and kc not in KFREE])
+      and len([kc for kc in left if kc in KFREE or (kc in PLAN and not any(PLAN[kc]))]) >= S.KEYMAP_RESERVE, f"{len(left)} left, {len(PLAN)} written")
+check("keymap plan: a key holds a pair as lower, capital, lower, capital (one key types both with and without Shift), as wide as the map",
+      all(len(row) == KM_W and row[0] == row[2] and row[1] == row[3] for row in PLAN.values()))
+_flat = [k for row in PLAN.values() for k in row[:2] if k]
+check("keymap plan: no keysym is written twice", len(_flat) == len(set(_flat)))
+rows2 = km_rows(60, free=tuple(range(1, 40)))
+rows2[10] = (0xE9, 0xC9, 0xE9, 0xC9)
+plan2 = S.plan_keymap(rows2, 8)
+check("keymap plan: a unit whose keysym the map holds already is skipped", all(0xE9 not in r and 0xC9 not in r for r in plan2.values()) and plan2)
+check("keymap plan: with a reserve as large as the keys no keysym is written (only emptied media keys); no rows is nothing",
+      not any(any(r) for r in S.plan_keymap(PLAN_ROWS, 8, reserve=500).values()) and S.plan_keymap([], 8) == {})
+check("keymap plan: a map with no free key and no media key is left alone", S.plan_keymap(km_rows(40), 8) == {})
+check("keymap plan: the same map gives the same plan (no clock, no randomness)", S.plan_keymap(PLAN_ROWS, 8) == PLAN)
+
+
+class KmFunc:
+    def __init__(self, fn):
+        self.fn, self.argtypes, self.restype = fn, None, None
+
+    def __call__(self, *a):
+        return self.fn(*a)
+
+
+class KmLib:
+    """Just enough libX11 for ModeHolder.prefill_keymap: a map in memory, the writes recorded."""
+
+    def __init__(self, rows, lo=8, fail=False):
+        self.rows, self.lo, self.written, self.fail, self.errors_after = rows, lo, [], fail, 0
+        w = len(rows[0])
+        self.XDisplayKeycodes = KmFunc(self._codes)
+        self.XGetKeyboardMapping = KmFunc(lambda d, first, n, wref: (setattr(wref._obj, "value", w), (ctypes.c_ulong * (w * n))(*[k for r in self.rows[:n] for k in r]))[1])
+        self.XChangeKeyboardMapping = KmFunc(lambda d, kc, w_, arr, n: self.written.append((kc, tuple(arr[:w_]))))
+        self.XFree = KmFunc(lambda p: 0)
+        self.XSync = KmFunc(lambda d, f: 0)
+        self.XNextRequest = KmFunc(lambda d: 5)
+
+    def _codes(self, d, lo, hi):
+        lo._obj.value, hi._obj.value = self.lo, self.lo + len(self.rows) - 1
+
+
+import ctypes
+h = object.__new__(S.ModeHolder)
+h.x11, h.dpy, h.recent, h.errors = KmLib(PLAN_ROWS), 1, __import__("collections").deque(maxlen=64), 0
+n = h.prefill_keymap()
+check("keymap: prefill_keymap reads the map, writes one key per planned key and returns how many", n == len(PLAN) and dict(h.x11.written) == PLAN, f"{n} {len(h.x11.written)}")
+h = object.__new__(S.ModeHolder)
+h.x11, h.dpy, h.recent, h.errors = KmLib(PLAN_ROWS), 1, __import__("collections").deque([(6, 8)], maxlen=64), 1
+check("keymap: an X error during the writes means 0 (the session goes on without)", h.prefill_keymap() == 0)
+h = object.__new__(S.ModeHolder)
+h.x11, h.dpy, h.recent, h.errors = KmLib(km_rows(40)), 1, __import__("collections").deque(maxlen=64), 0
+check("keymap: nothing to write means no write at all", h.prefill_keymap() == 0 and h.x11.written == [])
+_run = SRC[SRC.index("def run(cfg):"):]
+check("keymap: run() prepares the map after the size and before x11vnc starts, and a failure there is not fatal",
+      _run.index("holder.prefill_keymap()") > _run.index("xr.set_size") and _run.index("holder.prefill_keymap()") < _run.index("spawn(x11vnc_argv(")
+      and _run[_run.index("try:\n            holder.prefill_keymap()"):].split("# 4.")[0].count("except Exception") == 1)
+check("keymap: x11vnc's argument list did not change for it (the supervisor tests above pin the clipboard flags): no -add_keysyms/-remap/-xkb/-clear_keys flag",
+      not any(f in S.x11vnc_argv("x", 1, "a", "s") for f in ("-add_keysyms", "-noadd_keysyms", "-remap", "-xkb", "-noxkb", "-clear_keys", "-clear_all", "-skip_keycodes", "-modtweak", "-nomodtweak")))
+
 if failures:
     print(f"\n{len(failures)} check(s) failed:")
     for f in failures:

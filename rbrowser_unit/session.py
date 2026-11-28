@@ -314,6 +314,101 @@ RR_HSYNC_POSITIVE = 0x1
 RR_VSYNC_NEGATIVE = 0x8
 
 
+# ---- the keyboard map (1.26.1)
+#
+# The page types text as key events whose keysym is the character itself (Latin-1 as it is, everything above as
+# 0x01000000 + code point). A keysym that is not in the X server's keyboard map is added by x11vnc on a key without
+# symbols, and x11vnc takes those back only when it exits: this host's Xvfb has 18 such keys, so the 19th different
+# character a session ever typed (Cyrillic needs 66) was dropped, silently, for the rest of the session [rig
+# measurement, 1.26.1]. The map is therefore prepared before x11vnc and Chromium start: letters with both cases and the
+# usual signs go onto keys, two keysyms on one key (lower case, then Shift), and keys that carry only media and
+# launcher symbols (XF86...; the unit has no audio and no desktop) are used for it as well. Browser navigation keys are kept.
+KEYMAP_RESERVE = 16            # keys that stay empty for x11vnc's own on-the-fly additions
+XF86_FIRST = 0x1008FF00
+XF86_LAST = 0x1008FFFF
+KEYMAP_KEEP = frozenset({0x1008FF18, 0x1008FF1B, 0x1008FF26, 0x1008FF27, 0x1008FF28, 0x1008FF29, 0x1008FF30, 0x1008FF38, 0x1008FF73})
+#                        HomePage, Search, Back, Forward, Stop, Refresh, Favorites, OpenURL, Reload
+
+
+def keymap_keysym(cp):
+    """The keysym the page sends for a code point (static/js/rbrowser.js keysymFor)."""
+    return cp if cp <= 0xFF else 0x01000000 + cp
+
+
+def keymap_units():
+    """The characters worth a key of their own, most useful first: a tuple (lower, upper) for a letter with both cases, a
+    tuple (sign,) for anything else: Latin-1, the euro sign and typographic punctuation, Cyrillic, Polish."""
+    units, seen = [], set()
+
+    def add_letters(cps):
+        for cp in cps:
+            ch = chr(cp)
+            lo, up = ch.lower(), ch.upper()
+            if len(lo) == len(up) == 1 and lo != up and up.lower() == lo:
+                for c in (lo, up):
+                    seen.add(ord(c))
+                if ord(lo) not in seen_pairs:
+                    seen_pairs.add(ord(lo))
+                    units.append((keymap_keysym(ord(lo)), keymap_keysym(ord(up))))
+            elif cp not in seen:
+                seen.add(cp)
+                units.append((keymap_keysym(cp),))
+
+    seen_pairs = set()
+    add_letters([c for c in range(0xE0, 0x100) if c != 0xF7])             # Latin-1 letters with their capitals
+    add_letters([0xDF, 0xA1, 0xA3, 0xA7, 0xA9, 0xAB, 0xB0, 0xB1, 0xB5, 0xBB, 0xBF, 0xD7, 0xF7])
+    add_letters([0x20AC, 0x201C, 0x201D, 0x2018, 0x2019, 0x201E, 0x2026, 0x2013, 0x2014])   # euro, quotes, ellipsis, dashes
+    add_letters(list(range(0x430, 0x450)) + [0x451, 0x456, 0x457, 0x454, 0x491, 0x45E])    # Cyrillic (Russian, Ukrainian, Belarusian)
+    add_letters([0x105, 0x107, 0x119, 0x142, 0x144, 0x15B, 0x17A, 0x17C])                  # Polish
+    return units
+
+
+def plan_keymap(rows, min_keycode, reserve=KEYMAP_RESERVE, units=None):
+    """The keyboard changes to make. `rows` is the server's map, one tuple of keysyms per key from `min_keycode` on (0 =
+    NoSymbol). Returns {keycode: row} for the keys to write. Keys that carry nothing but media and launcher symbols come first, then free keys;
+    `reserve` free keys are left over (a few unused media keys are emptied when there are fewer); units whose keysym is in the map already are skipped. The first key
+    (min_keycode) is never used. Pure: no X."""
+    units = keymap_units() if units is None else units
+    if not rows:
+        return {}
+    width = len(rows[0])
+    present = {k for row in rows for k in row if k}
+    free, spare = [], []
+    for i, row in enumerate(rows):
+        kc = min_keycode + i
+        if kc == min_keycode:
+            continue
+        syms = [k for k in row if k]
+        if not syms:
+            free.append(kc)
+        elif all(XF86_FIRST <= k <= XF86_LAST and k not in KEYMAP_KEEP for k in syms):
+            spare.append(kc)
+    keys = spare + free           # the keys that stay unused are free ones: x11vnc can only add keysyms on those
+    usable = max(0, len(keys) - max(0, reserve))
+    want = []
+    singles = []
+    for u in units:
+        if any(k in present for k in u):
+            continue
+        if len(u) == 2:
+            want.append(u)
+        else:
+            singles.append(u[0])
+            if len(singles) == 2:
+                want.append((singles[0], singles[1]))
+                singles = []
+    if singles:
+        want.append((singles[0], singles[0]))
+    out = {}
+    for kc, (lo, up) in zip(keys[:usable], want):
+        out[kc] = tuple((lo, up)[j % 2] for j in range(width))
+    # the keys x11vnc can use must be free ones: when too few are, empty some of the media keys that are not used
+    unused_spare = [kc for kc in spare if kc not in out]
+    for kc in unused_spare[:max(0, reserve - len(free))]:
+        out[kc] = (0,) * width
+    return out
+
+
 class _XMode(ctypes.Structure):
     """XRRModeInfo of <X11/extensions/Xrandr.h>."""
     _fields_ = [("id", ctypes.c_ulong), ("width", ctypes.c_uint), ("height", ctypes.c_uint), ("dotClock", ctypes.c_ulong),
@@ -470,6 +565,42 @@ class ModeHolder:
         self.xr.XRRAddOutputMode(self.dpy, self.output, mode_id)
         self.x11.XSync(self.dpy, 0)
         return not self.errors_since(first)
+
+    def prefill_keymap(self):
+        """Prepare the keyboard map (see plan_keymap). Returns the number of keys written; 0 when there was nothing to do or the
+        server refused (the session then works as before, with x11vnc adding keysyms on the fly)."""
+        x11, dpy = self.x11, self.dpy
+        vp, ci = ctypes.c_void_p, ctypes.c_int
+        x11.XDisplayKeycodes.argtypes = [vp, ctypes.POINTER(ci), ctypes.POINTER(ci)]
+        x11.XGetKeyboardMapping.restype = ctypes.POINTER(ctypes.c_ulong)
+        x11.XGetKeyboardMapping.argtypes = [vp, ctypes.c_ubyte, ci, ctypes.POINTER(ci)]
+        x11.XChangeKeyboardMapping.argtypes = [vp, ci, ci, ctypes.POINTER(ctypes.c_ulong), ci]
+        x11.XFree.argtypes = [vp]
+        lo, hi, width = ci(), ci(), ci()
+        x11.XDisplayKeycodes(dpy, ctypes.byref(lo), ctypes.byref(hi))
+        count = hi.value - lo.value + 1
+        if count <= 0:
+            return 0
+        table = x11.XGetKeyboardMapping(dpy, lo.value, count, ctypes.byref(width))
+        if not table or width.value <= 0:
+            return 0
+        try:
+            w = width.value
+            rows = [tuple(int(table[i * w + j]) for j in range(w)) for i in range(count)]
+        finally:
+            x11.XFree(table)
+        plan = plan_keymap(rows, lo.value)
+        if not plan:
+            return 0
+        x11.XSync(dpy, 0)
+        first = x11.XNextRequest(dpy)
+        for kc, row in sorted(plan.items()):
+            arr = (ctypes.c_ulong * w)(*row)
+            x11.XChangeKeyboardMapping(dpy, kc, w, arr, 1)
+        x11.XSync(dpy, 0)
+        if self.errors_since(first):
+            return 0
+        return len(plan)
 
     def close(self):
         if self.dpy:
@@ -1234,6 +1365,11 @@ def run(cfg):
         xr = Xrandr(bins["xrandr"], env, output, current, holder)
         if not xr.set_size(w, h, time.monotonic() + 5.0):
             raise SupervisorError("the screen size could not be set")
+        # 3b. the keyboard map, before x11vnc and Chromium look at it (1.26.1). Never fatal: without it x11vnc adds keysyms itself.
+        try:
+            holder.prefill_keymap()
+        except Exception:
+            log("the keyboard map was not prepared")
         # 4. x11vnc
         vnc = spawn(x11vnc_argv(bins["x11vnc"], display, xauth, f"{rt}/vnc.sock"), env)
         children.append(("x11vnc", vnc))
