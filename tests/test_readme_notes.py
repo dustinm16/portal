@@ -2187,8 +2187,9 @@ check("1.26.3: the notes say the rare loss was not seen, that this is not 'never
 check("1.26.3: the notes say what stays limited: 7 instead of 16 different characters on the picture, no hold of the picture's keyboard, a modifier between check and press, Caps Lock, a long request",
       "**7 different characters outside the table per session instead of 16**" in _s1263 and "keys pressed on the picture are not passed on (key releases are)" in _s1263 and "Control 2 of 10, Alt 3 of 10" in _s1263 and "Caps Lock" in _s1263
       and "55 seconds is more than some proxies wait for" in _s1263)
-check("1.26.3: the notes say a real unit run is the release gate, that this was the rig, and name G27 as written and not run",
-      "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263 and "xmodmap -pke" in _s1263
+check("1.26.3: the notes say what the real unit run of G27 showed, the one failure in the full round included, and that the gate reports the residual",
+      "**The real unit run.**" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "it failed once inside the full round" in _s1263
+      and "reports up to 2 in 2000 as the accepted limit" in _s1263 and "xmodmap -pke" in _s1263
       and '@gate("G27"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
 check("1.26.3: the route is in the README's route list, in docs/API.md and in /api-docs, with the 413 and maintenance answers",
       "`POST /api/rbrowser/session/type`" in text.split("- **Routes:**")[1].split("\n")[0] and "#### POST /api/rbrowser/session/type" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
