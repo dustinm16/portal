@@ -2114,6 +2114,20 @@ check("1.26.0: the API reference documents the optional theme field in both plac
 check("1.26.0: About and Guides say the remote browser follows the portal theme and a change applies to the next session",
       "next session" in (ROOT / "static" / "about.html").read_text(encoding="utf-8") and "next session" in (ROOT / "static" / "guides.html").read_text(encoding="utf-8"))
 
+# ---- 1.26.1: the keyboard map of the remote browser ----
+_m1261 = re.search(r"### Upgrade notes for 1\.26\.1\n(.*?)(?=\n### )", text, re.S)
+_s1261 = _m1261.group(1) if _m1261 else ""
+_sess1261 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
+check("1.26.1: README has an 'Upgrade notes for 1.26.1' section above the 1.26.0 one", _m1261 is not None and text.index("### Upgrade notes for 1.26.1") < text.index("### Upgrade notes for 1.26.0"))
+check("1.26.1: the notes say nothing is migrated, no static file, running sessions keep the old map, and rollback needs nothing",
+      "nothing is migrated" in _s1261 and "no static file" in _s1261 and "keeps its old keyboard map" in _s1261 and "Going back to 1.26.0 needs nothing" in _s1261)
+check("1.26.1: the notes say x11vnc's arguments and the clipboard flags did not change, and the code agrees",
+      "x11vnc's arguments did not change" in _s1261 and "-nosetclipboard" in _s1261 and "-add_keysyms" not in _sess1261.split("def x11vnc_argv")[1].split("def valid_theme_mode")[0])
+check("1.26.1: the notes give the 18 free keys, the 16 kept free and say the step is not fatal, with the constant and the log line in the code",
+      "18 such keys" in _s1261 and "16 keys stay free" in _s1261 and "KEYMAP_RESERVE = 16" in _sess1261 and "the keyboard map was not prepared" in _s1261 and "the keyboard map was not prepared" in _sess1261)
+check("1.26.1: the notes say it was measured on a rig, not in a real unit, and that the two live gates were changed and not run",
+      "Measured on a rig, not in a real unit" in _s1261 and "**Not run:**" in _s1261 and "`G17`" in _s1261 and "`G21`" in _s1261 and "not \"cannot happen\"" in _s1261)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
