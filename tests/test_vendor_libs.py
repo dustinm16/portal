@@ -108,8 +108,17 @@ refs = []
 for page in sorted(STATIC.glob("*.html")) + sorted((STATIC / "js").glob("*.js")):
     for m in VREF.finditer(page.read_text(encoding="utf-8")):
         refs.append((page.name, m.group(1), m.group(2), m.group(4)))
+# A library's INTERNAL module that a page imports beside the library's entry file must be asked for at exactly the URL the
+# library's own relative import resolves to (no query), or the browser would load the module twice. It is allowed only for
+# the pairs named here, and only when the same page loads the library's entry file with the library version.
+INTERNAL = {("rbrowser.js", "novnc", "core/input/keysymdef.js"): "core/rfb.js"}
 for page, lib, path, ver in refs:
     if lib == "codemirror":
+        continue
+    if (page, lib, path) in INTERNAL:
+        check(f"{page} -> vendor/{lib}/{path}: an internal module without a query, beside the versioned entry file",
+              ver is None and (VENDOR / lib / path).is_file() and (page, lib, INTERNAL[(page, lib, path)], LIBS[lib][0]) in refs,
+              f"{lib} {path} v={ver}")
         continue
     check(f"{page} -> vendor/{lib}/{path}: the file exists and its ?v= is the library version",
           lib in LIBS and (VENDOR / lib / path).is_file() and ver == LIBS[lib][0],
