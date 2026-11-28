@@ -126,7 +126,7 @@ WARMUP_S = 3.0
 BARS = {"text_fps": 10, "news_fps": 6, "video_fps": 5, "x11vnc_cores": 0.5, "throttled_pct": 20, "latency_ms": 150}
 TYPE_CHUNK, TYPE_INTERVAL_MS = 40, 30
 G17_TEXT = "\u00e9 \u00df \u20ac \u201cq\u201d \u041f\u0440\u0438\u0432\u0435\u0442 \U0001f600"
-HARD_GATES = ("G01", "G01b", "G02", "G02b", "G02c", "G09b", "G10", "G18", "G25")    # ids are the design's G1, G2, G2b, ... with two digits
+HARD_GATES = ("G01", "G01b", "G02", "G02b", "G02c", "G09b", "G10", "G18", "G25", "G26")    # ids are the design's G1, G2, G2b, ... with two digits
 CLIENT_ARGS = ["--no-sandbox"]    # only this test's local browser, as root, on loopback; never the unit's browser
 
 
@@ -3275,8 +3275,8 @@ def g26_probe_without_sandbox(rig):
         return None
     (src / "probe.py").write_text(text.replace(needle, needle.replace("*flags]", '*flags, "--no-" + "sandbox"]')))
     shutil.copy(ROOT / "rbrowser_unit" / "session.py", src / "session.py")
-    rig.L.write_static_tree(rig.paths, rig.policy, src)
-    try:
+    try:                                    # the restore runs on every path, also when writing the patched tree fails half way
+        rig.L.write_static_tree(rig.paths, rig.policy, src)
         return rig.run_probe()
     finally:
         rig.L.write_static_tree(rig.paths, rig.policy, ROOT / "rbrowser_unit")
@@ -3285,11 +3285,11 @@ def g26_probe_without_sandbox(rig):
 @gate("G26", "sandbox check: every renderer in its own namespaces; the negative control fails")
 def g26(rig, ctx):
     """Round 1, written and NOT run here. (1) The probe as it is (ctx["probe"], run once for the gates that need it): sandbox_state must be ok and
-    its detail must say that renderers run in their own namespaces. (2) The probe again, from a copy whose Chromium gets the switch that turns
-    its sandbox off, for this run only (as G20 and G13 patch the static tree): sandbox_state must FAIL and name the switch, and the other
+    its detail must say that every renderer runs in its own user and pid namespace with a seccomp filter count above the browser's. (2) The probe again, from a copy whose Chromium gets the switch that turns
+    its sandbox off, for this run only (as G20 and G13 patch the static tree): sandbox_state must FAIL, name the switch and say that the renderers are in the browser's user and pid namespace, and the other
     seven checks must still be ok (only check 8 reacted). A control that passes would mean the check cannot fail."""
     chk = rig.probe_check(ctx["probe"], "sandbox_state")
-    m = re.search(r"every one of (\d+) renderers runs in its own user and pid namespace", chk["detail"])
+    m = re.search(r"every one of (\d+) renderers runs in its own user and pid namespace, with a seccomp filter count above the browser's", chk["detail"])
     if not chk["ok"] or not m or int(m.group(1)) < 1:
         return "FAIL", f"the normal probe: sandbox_state ok {chk['ok']}, detail: {chk['detail']}"
     bad = g26_probe_without_sandbox(rig)
@@ -3298,7 +3298,8 @@ def g26(rig, ctx):
     ctl = rig.probe_check(bad, "sandbox_state")
     flag = "--no-" + "sandbox"
     others = [c["name"] for c in bad.get("checks", []) if c["name"] != "sandbox_state" and not c["ok"]]
-    if ctl["ok"] is not False or flag not in ctl["detail"] or others:
+    needed = (flag, "in the browser's user namespace", "in the browser's pid namespace")     # the flag AND what it does to the renderers
+    if ctl["ok"] is not False or any(t not in ctl["detail"] for t in needed) or others:
         return "FAIL", f"the negative control: sandbox_state ok {ctl['ok']}, other failed checks {others}: {ctl['detail']}; normal run: {chk['detail']}"
     return "PASS", f"normal: {chk['detail']} | control with {flag} for the probe only: sandbox_state FAILED as required, the other checks passed: {ctl['detail'][:200]}"
 

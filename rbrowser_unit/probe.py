@@ -122,7 +122,10 @@ def parse_pidns(link):
 # Chromium rewrites its argv, so the whole command line of a child can sit in ONE string: the type is read with a regex
 # from the joined text, never from an argument list. Flags that switch off a layer of Chromium's own sandbox (spelled
 # without the dashes here, so that this file never holds the literal flag).
-FORBIDDEN_FLAG_NAMES = ("no-sandbox", "disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox")
+FORBIDDEN_FLAG_NAMES = ("no-sandbox", "disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox", "disable-gpu-sandbox")
+# Chromium takes a switch with one dash as well as with two on POSIX, and --disable-features=<names> can switch off a sandbox
+# feature: any such value that holds "sandbox" (any case) is as forbidden as the flags above.
+DISABLE_FEATURES_SANDBOX = "disable-features=...Sandbox..."
 _TYPE_RE = re.compile(r"(?:^|\s)--type=([A-Za-z0-9_-]+)")
 _SUBTYPE_RE = re.compile(r"(?:^|\s)--utility-sub-type=([A-Za-z0-9_.-]+)")
 
@@ -138,10 +141,14 @@ def classify_cmdline(raw):
 
 
 def forbidden_flags(raw):
-    """Names (without dashes) of the sandbox-disabling flags a command line holds, in the order of FORBIDDEN_FLAG_NAMES."""
+    """Names (without dashes) of the sandbox-disabling flags a command line holds, in the order of FORBIDDEN_FLAG_NAMES, written with one
+    dash or two, then DISABLE_FEATURES_SANDBOX when a --disable-features value names a feature with 'sandbox' in it."""
     text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
     text = text.replace("\0", " ")
-    return [n for n in FORBIDDEN_FLAG_NAMES if re.search(r"(?:^|\s)--" + re.escape(n) + r"(?=$|[\s=])", text)]
+    out = [n for n in FORBIDDEN_FLAG_NAMES if re.search(r"(?:^|\s)--?" + re.escape(n) + r"(?=$|[\s=])", text)]
+    if any("sandbox" in m.group(1).lower() for m in re.finditer(r"(?:^|\s)--?disable-features=(\S*)", text)):
+        out.append(DISABLE_FEATURES_SANDBOX)
+    return out
 
 
 def status_number(text, field):
@@ -151,7 +158,7 @@ def status_number(text, field):
 
 
 def sample_process(pid):
-    """What the probe sees of one process: {pid, type, sub, user, pidns, seccomp, nnp, flags} or None when it is gone. The
+    """What the probe sees of one process: {pid, type, sub, user, pidns, seccomp, filters, nnp, flags} or None when it is gone. The
     command line is read LAST: a process that exits in between has an empty one and is skipped, not judged. A value
     that cannot be read is None (under ProtectProc the probe may not see a process's namespaces)."""
     def link(name):
@@ -174,7 +181,7 @@ def sample_process(pid):
         return None
     ptype, sub = classify_cmdline(cmd)
     return {"pid": pid, "type": ptype, "sub": sub, "user": parse_userns(user), "pidns": parse_pidns(pidns),
-            "seccomp": status_number(status, "Seccomp"), "nnp": status_number(status, "NoNewPrivs"), "flags": forbidden_flags(cmd)}
+            "seccomp": status_number(status, "Seccomp"), "filters": status_number(status, "Seccomp_filters"), "nnp": status_number(status, "NoNewPrivs"), "flags": forbidden_flags(cmd)}
 
 
 def merge_sample(old, new):
@@ -187,7 +194,7 @@ def merge_sample(old, new):
     return new
 
 
-def renderer_problems(r, main_user, main_pid_ns):
+def renderer_problems(r, main_user, main_pid_ns, main_filters):
     """Why one renderer does not prove Chromium's own sandbox (a list of short texts; empty = it does)."""
     out = []
     if r["user"] is None:
@@ -200,6 +207,10 @@ def renderer_problems(r, main_user, main_pid_ns):
         out.append("in the browser's pid namespace")
     if r["seccomp"] != 2:
         out.append(f"Seccomp {r['seccomp']}")
+    # Chromium's own seccomp layer: inside the unit EVERY process has Seccomp 2 from the unit's filter, but a sandboxed renderer holds one
+    # filter more than the browser (/proc/<pid>/status, Seccomp_filters, kernel 5.9 or newer). Relative counts only.
+    if r.get("filters") is None or main_filters is None or r["filters"] <= main_filters:
+        out.append("seccomp filter count unreadable or not above the browser's: unproven")
     if r["nnp"] != 1:
         out.append(f"NoNewPrivs {r['nnp']}")
     if r["flags"]:
@@ -214,10 +225,10 @@ def _short_sub(sub):
 def sandbox_verdict(browser, procs):
     """The decision of check 8, pure. `browser` and `procs` are sample_process() results: the headless browser and every
     process below it that was seen. -> (ok, detail). PASS only when at least one renderer was seen, EVERY renderer has a
-    readable user namespace and a pid namespace that both differ from the browser's, Seccomp 2 and NoNewPrivs 1 and none of the
-    sandbox-disabling flags, and the browser (and every other process seen) has none of them either. The unit's own
-    system call filter gives EVERY process Seccomp 2 and NoNewPrivs 1, so those two are necessary, not the proof: the
-    namespace difference is the proof of Chromium's own namespace sandbox. The detail names counts and verdicts only."""
+    readable user namespace and a pid namespace that both differ from the browser's, a seccomp filter count above the browser's,
+    Seccomp 2 and NoNewPrivs 1 and none of the sandbox-disabling flags, and the browser (and every other process seen) has none of them
+    either. The unit's own system call filter gives EVERY process Seccomp 2 and NoNewPrivs 1, so those two are necessary, not the proof:
+    the namespace difference proves Chromium's namespace sandbox, the filter count above the browser's proves its seccomp layer. The detail names counts and verdicts only."""
     procs = list(procs)
     if browser is None:
         return False, "the browser process could not be read (it ended or is not visible): no sandbox state proven"
@@ -246,15 +257,16 @@ def sandbox_verdict(browser, procs):
         problems.append("no renderer process was observed")
     groups = {}
     for r in renderers:                       # renderers with the same findings are one line: the detail is short
-        why = tuple(renderer_problems(r, browser["user"], browser["pidns"]))
+        why = tuple(renderer_problems(r, browser["user"], browser["pidns"], browser.get("filters")))
         if why:
             groups[why] = groups.get(why, 0) + 1
     for why, n in groups.items():
         problems.append(f"{n} of {len(renderers)} renderers: " + ", ".join(why))
     if problems:
         return False, "; ".join(problems) + f". {seen}"      # reasons first: result() cuts at 300 characters, a cut drops counts, not reasons
-    return True, (f"every one of {len(renderers)} renderers runs in its own user and pid namespace with Seccomp 2 and NoNewPrivs 1, "
-                  f"no sandbox-disabling flag on the browser or a renderer. {seen}")
+    lo, hi = min(r["filters"] for r in renderers), max(r["filters"] for r in renderers)
+    return True, (f"every one of {len(renderers)} renderers runs in its own user and pid namespace, with a seccomp filter count above the browser's "
+                  f"({lo if lo == hi else f'{lo}-{hi}'} against {browser['filters']}), Seccomp 2 and NoNewPrivs 1, no sandbox-disabling flag. {seen}")
 
 
 def data_url(marker):
@@ -775,6 +787,32 @@ def _descendants(root):
     return seen
 
 
+def watch_renderers(root_pid, sample, descendants, clock, sleep, poll_s, settle_s, step=0.25):
+    """The poll of check 8, with its clock and its readers injected (tested offline). Every `step` seconds the browser and every process
+    below it are sampled, until the time limit, or until a renderer has been seen and no further renderer has appeared for `settle_s`.
+    -> (the last sample of the browser, {pid: merged sample}). A renderer that starts after the settle window is not seen."""
+    browser, seen = None, {}
+    end = clock() + poll_s
+    last_new = None
+    while clock() < end:
+        sleep(step)
+        now = clock()
+        b = sample(root_pid)                  # the wrapper script execs the browser: the pid stays, its command line changes
+        if b is not None:
+            browser = b
+        before = sum(1 for x in seen.values() if x["type"] == "renderer")
+        for pid in descendants(root_pid):
+            x = sample(pid)
+            if x is not None:
+                seen[pid] = merge_sample(seen.get(pid), x)
+        n = sum(1 for x in seen.values() if x["type"] == "renderer")
+        if n and (n != before or last_new is None):
+            last_new = now
+        if n and now - last_new >= settle_s:
+            break
+    return browser, seen
+
+
 def check_sandbox_state(S, chromium, pool):
     """Design 8.2 check 8: Chromium's own sandbox is on for every renderer. A headless Chromium loads a data: page (it
     certainly creates a renderer); the check polls /proc up to SANDBOX_POLL_S for the renderers, until no new one has
@@ -782,26 +820,8 @@ def check_sandbox_state(S, chromium, pool):
     Chromium 156 prints nothing for any chrome: page (net::ERR_ABORTED), measured."""
     p = subprocess.Popen([chromium, *_headless_flags(S, "s"), data_url("rbp" + secrets.token_hex(6))], env=S.child_env(),
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    browser, seen = None, {}
     try:
-        end = time.monotonic() + SANDBOX_POLL_S
-        last_new = None
-        while time.monotonic() < end:
-            time.sleep(0.25)
-            now = time.monotonic()
-            b = sample_process(p.pid)         # the wrapper script execs the browser: the pid stays, its command line changes
-            if b is not None:
-                browser = b
-            before = sum(1 for s in seen.values() if s["type"] == "renderer")
-            for pid in _descendants(p.pid):
-                s = sample_process(pid)
-                if s is not None:
-                    seen[pid] = merge_sample(seen.get(pid), s)
-            n = sum(1 for s in seen.values() if s["type"] == "renderer")
-            if n and (n != before or last_new is None):
-                last_new = now
-            if n and now - last_new >= SANDBOX_SETTLE_S:
-                break
+        browser, seen = watch_renderers(p.pid, sample_process, _descendants, time.monotonic, time.sleep, SANDBOX_POLL_S, SANDBOX_SETTLE_S)
     finally:
         _kill_group(p)
         p.wait()

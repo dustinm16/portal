@@ -2137,20 +2137,23 @@ _m1262 = re.search(r"### Upgrade notes for 1\.26\.2\n(.*?)(?=\n### )", text, re.
 _s1262 = _m1262.group(1) if _m1262 else ""
 _probe1262 = (ROOT / "rbrowser_unit" / "probe.py").read_text(encoding="utf-8")
 check("1.26.2: README has an 'Upgrade notes for 1.26.2' section above the 1.26.1 one", _m1262 is not None and text.index("### Upgrade notes for 1.26.2") < text.index("### Upgrade notes for 1.26.1"))
-check("1.26.2: the notes say nothing is migrated, every renderer is required to run in its own namespaces, the four flags are named and an unreadable renderer fails",
-      "nothing is migrated" in _s1262 and "**every renderer**" in _s1262 and "`--no-sandbox`" in _s1262 and "`--disable-setuid-sandbox`" in _s1262 and "`--disable-seccomp-filter-sandbox`" in _s1262
-      and "`--disable-namespace-sandbox`" in _s1262 and "unproven and fails" in _s1262 and "`NoNewPrivs: 1`" in _s1262 and "Going back to 1.26.1 needs nothing" in _s1262)
-check("1.26.2: the code holds exactly the four flags the notes name, and the unit's own filter is said not to prove Chromium's layer",
-      set(re.findall(r"--(no-sandbox|disable-setuid-sandbox|disable-seccomp-filter-sandbox|disable-namespace-sandbox)", _s1262)) == {"no-sandbox", "disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox"}
-      and re.search(r'FORBIDDEN_FLAG_NAMES = \("no-sandbox", "disable-setuid-sandbox", "disable-seccomp-filter-sandbox", "disable-namespace-sandbox"\)', _probe1262) is not None
-      and "necessary but prove nothing about Chromium's own layer" in _s1262)
+check("1.26.2: the notes say nothing is migrated, every renderer is required to run in its own namespaces with a filter count above the browser's, and an unreadable renderer fails",
+      "nothing is migrated" in _s1262 and "**every renderer**" in _s1262 and "`Seccomp_filters`" in _s1262 and "above the browser's" in _s1262 and "unproven and fails" in _s1262
+      and "`NoNewPrivs: 1`" in _s1262 and "Going back to 1.26.1 needs nothing" in _s1262)
+check("1.26.2: the code holds exactly the switches the notes name (each as written in the notes), and the unit's own filter is said not to prove Chromium's layer",
+      set(re.findall(r"`--(no-sandbox|disable-[a-z-]*sandbox)`", _s1262)) == set("--" + n for n in ()) | {n for n in re.findall(r"FORBIDDEN_FLAG_NAMES = \(([^)]*)\)", _probe1262)[0].replace('"', "").replace(" ", "").split(",")}
+      and "`--disable-features`" in _s1262 and "DISABLE_FEATURES_SANDBOX" in _probe1262 and "necessary but prove nothing about Chromium's own layer" in _s1262)
+check("1.26.2: the notes say what is proven (namespace sandbox by the namespace difference, seccomp layer by the filter count) and what is not (GPU process, network service, late renderers, a session's headful one), and that an old kernel fails closed",
+      "What is proven, and by what" in _s1262 and "**namespace sandbox**" in _s1262 and "**seccomp layer**" in _s1262 and "What is not proven" in _s1262 and "GPU process and the network service" in _s1262
+      and "more than a second and a half after" in _s1262 and "headful" in _s1262 and "fails the check closed" in _s1262 and "5.9 or newer" in _s1262 and text.count("5.9 or newer") >= 2)
 check("1.26.2: the notes say chrome://sandbox prints nothing headless and is dropped, and the probe no longer loads it",
       "`chrome://sandbox` is not used" in _s1262 and "net::ERR_ABORTED" in _s1262 and "chrome://sandbox" not in _probe1262 and "unclear" not in _probe1262)
 check("1.26.2: the notes say one sandbox check runs after the upgrade and name the preflight key (the probe's source)", "One sandbox check after the upgrade" in _s1262 and "covers the probe's source" in _s1262)
 check("1.26.2: the Not tested item says it was measured outside a unit, that G26 is written and not run, and that the namespace read under ProtectProc is unconfirmed",
-      "**Not tested.**" in _s1262 and "`G26`" in _s1262 and "has not been run" in _s1262 and "`ProtectProc`" in _s1262 and "outside a unit" in _s1262)
+      "**Not tested.**" in _s1262 and "`G26`" in _s1262 and "has not been run" in _s1262 and "`ProtectProc`" in _s1262 and "outside a unit" in _s1262 and "it still fails, on the filter count" in _s1262 and "hard gate" in _s1262)
 check("1.26.2: the live test has G26 as a probe gate with the control that adds the flag for the probe only",
-      '@gate("G26"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8") and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("PROBE_GATES = (")[1].split(")")[0])
+      '@gate("G26"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8") and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("PROBE_GATES = (")[1].split(")")[0]
+      and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("HARD_GATES = (")[1].split(")")[0])
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
