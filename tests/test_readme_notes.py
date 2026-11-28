@@ -2027,7 +2027,7 @@ check("1.25.0: the ten settings of the code are the ten of the notes and the fea
 # every route of the code is named in the notes; the notes name no other
 _routes250 = sorted({m_.group(2) for m_ in re.finditer(r'app\.router\.add_(get|post|put|delete)\("([^"]*rbrowser[^"]*)"', _srv250)})
 check("1.25.0: every rbrowser route of the code (and the socket) is in the notes",
-      len(_routes250) == 8 and all(r.replace("{sid_prefix}", "{sid_prefix}") in _s250 for r in _routes250) and "/ws/rbrowser/{sid}" in _s250
+      len(_routes250) == 9 and all(r.replace("{sid_prefix}", "{sid_prefix}") in _s250 for r in _routes250) and "/ws/rbrowser/{sid}" in _s250
       and ('"/ws/rbrowser/' in _srv250 or "/ws/rbrowser/" in _srv250), str(_routes250))
 _codes250 = sorted({int(c) for c in re.findall(r"(?:_rbrowser_close\((?:old|ws), |close_with = \()(\d{4})", _srv250)})
 check("1.25.0: every close code the socket handler writes is in the notes",
@@ -2072,7 +2072,7 @@ check("1.25.0: the notes name the wizard's new step 10 and it is in setup.py as 
 _idx250 = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 check("1.25.0: the Static files item names the script versions the pages load",
       "`dashboard.js` v62" in _s250 and f'dashboard.js?v={MOVED_ON_1_25_0["dashboard.js"]}"' in _idx250
-      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3|4)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1 and to 3 in 1.26.0, rbrowser.css to 2 in 1.25.1
+      and "`rbrowser.js` v1" in _s250 and re.search(r"/static/js/rbrowser\.js\?v=(1|2|3|4|5)\b", _page250) is not None and "`rbrowser.css` v1" in _s250 and re.search(r"rbrowser\.css\?v=(1|2)\b", _page250) is not None   # rbrowser.js moved to 2 in 1.25.1, to 3 in 1.26.0, to 4 in 1.26.1 and to 5 in 1.26.3, rbrowser.css to 2 in 1.25.1
       and "`rbrowser-admin.js` v1" in _s250 and "/static/js/rbrowser-admin.js?v=1" in _adm250
       and "pathname !== '/rbrowser'" in (ROOT / "static" / "sw.js").read_text(encoding="utf-8"))
 check("1.25.0: the README shows the two pictures, the files exist and the screenshot tool takes them",
@@ -2103,8 +2103,8 @@ check("1.26.0: the notes say what was measured and that a real unit run of G25 i
       and "G25" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
 check("1.26.0: the notes say the remote toolbar row is not the same pixel colour as the page's toolbar",
       "**not** the same pixel colour" in _s126 and "within about 22" in _s126)
-check("1.26.0: the Static files item names rbrowser.js v3 (later 4 in 1.26.1) and rbrowser.html loads it at one of them, rbrowser.css stays at v2",
-      "`rbrowser.js` v3" in _s126 and re.search(r"/static/js/rbrowser\.js\?v=(3|4)\b", _page250) is not None and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
+check("1.26.0: the Static files item names rbrowser.js v3 (later 4 in 1.26.1, 5 in 1.26.3) and rbrowser.html loads it at one of them, rbrowser.css stays at v2",
+      "`rbrowser.js` v3" in _s126 and re.search(r"/static/js/rbrowser\.js\?v=(3|4|5)\b", _page250) is not None and "rbrowser.css?v=2" in _page250 and "unchanged at v2" in _s126)
 check("1.26.0: the README's Theme paragraph is in the Web Browser section and the old sentence that themes do not change the picture is gone",
       "**Theme.** The remote Chromium takes the member's portal theme when a session starts" in text and "themes do not change the picture" not in text
       and text.index("**Theme.** The remote Chromium") < text.index("**What it does not do.** No downloads"))
@@ -2154,6 +2154,33 @@ check("1.26.2: the Not tested item says it was measured outside a unit, that G26
 check("1.26.2: the live test has G26 as a probe gate with the control that adds the flag for the probe only",
       '@gate("G26"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8") and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("PROBE_GATES = (")[1].split(")")[0]
       and "G26" in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8").split("HARD_GATES = (")[1].split(")")[0])
+
+# ---- 1.26.3: the supervisor types text through XTEST ----
+_m1263 = re.search(r"### Upgrade notes for 1\.26\.3\n(.*?)(?=\n### )", text, re.S)
+_s1263 = _m1263.group(1) if _m1263 else ""
+_sess1263 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
+check("1.26.3: README has an 'Upgrade notes for 1.26.3' section above the 1.26.2 one", _m1263 is not None and text.index("### Upgrade notes for 1.26.3") < text.index("### Upgrade notes for 1.26.2"))
+check("1.26.3: the notes say nothing is migrated, name the route and rbrowser.js v5, and that a running session keeps the old supervisor and its page types as before",
+      "Nothing has to be changed and nothing is migrated" in _s1263 and "`POST /api/rbrowser/session/type`" in _s1263 and "`rbrowser.js` v5" in _s1263 and "keeps the old supervisor" in _s1263
+      and "Going back to 1.26.2 needs nothing" in _s1263)
+check("1.26.3: the notes say what was tried first and why it failed (wrong characters, not only drops), with the numbers measured",
+      "giving keys back" in _s1263 and "285 wrong characters and 1473 dropped" in _s1263 and "995 of 1200" in _s1263 and "A wrong character is worse than a dropped one" in _s1263 and "MappingNotify" in _s1263)
+check("1.26.3: the notes give the constants the code has (8 scratch keys, 10 ms, 80 ms settle, 5000 characters, 55 s, 70000 bytes) and the code has them",
+      all(x in _s1263 for x in ("8 scratch keys", "waits 10 ms", "80 ms after the last press", "At most 5000 characters", "55 seconds", "70000 bytes"))
+      and "SCRATCH_COUNT = 8 " in _sess1263 and "TYPE_MAP_WAIT_S = 0.010 " in _sess1263 and "TYPE_SETTLE_S = 0.080 " in _sess1263 and "TYPE_MAX_CHARS = 5000 " in _sess1263
+      and "TYPE_BUDGET_S = 55.0 " in _sess1263 and "CTL_TYPE_MAX = 70000 " in _sess1263)
+check("1.26.3: the notes give the measurement of the new path (15400 characters, 0 wrong, 0 dropped, ms per character) and how it was tuned",
+      "15400 characters" in _s1263 and "**0 wrong, 0 dropped**" in _s1263 and "3851 of 5000" in _s1263 and "14 wrong in 5000" in _s1263 and "10.1 to 10.7 ms" in _s1263)
+check("1.26.3: the notes say the rare loss was not seen, that this is not 'never', and what the mitigation is",
+      "The rare loss" in _s1263 and "none was seen in 15400 characters" in _s1263 and "not \"never\"" in _s1263 and "10 ms pause after a map change" in _s1263)
+check("1.26.3: the notes say what stays limited: 8 instead of 16 different characters on the picture, no hold of the picture's keyboard, a long request",
+      "**8 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "55 seconds is more than some proxies wait for" in _s1263)
+check("1.26.3: the notes say a real unit run is the release gate, that this was the rig, and name G27 as written and not run",
+      "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263
+      and '@gate("G27"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
+check("1.26.3: the route is in the README's route list, in docs/API.md and in /api-docs",
+      "`POST /api/rbrowser/session/type`" in text.split("- **Routes:**")[1].split("\n")[0] and "#### POST /api/rbrowser/session/type" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+      and "/api/rbrowser/session/type" in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
