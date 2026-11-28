@@ -11,7 +11,7 @@ Standard library only. Targets (addresses, ports, the hidden-path list, the expe
 
 The eight checks run concurrently, every connect has a 2 s limit, and the whole run ends before 40 s: a check
 that has not finished at 36 s is reported as failed. No request to a third party is made. Nothing here prints
-a URL of a page (the only URLs are the two fixed test pages).
+a URL of a page (the only URLs are the fixed test pages: a data: page and file:///etc/hostname).
 
 Exit status: 0 when every check passed, 1 otherwise.
 """
@@ -252,7 +252,7 @@ def sandbox_verdict(browser, procs):
     for why, n in groups.items():
         problems.append(f"{n} of {len(renderers)} renderers: " + ", ".join(why))
     if problems:
-        return False, f"FAILED. {seen}. " + "; ".join(problems)
+        return False, "; ".join(problems) + f". {seen}"      # reasons first: result() cuts at 300 characters, a cut drops counts, not reasons
     return True, (f"every one of {len(renderers)} renderers runs in its own user and pid namespace with Seccomp 2 and NoNewPrivs 1, "
                   f"no sandbox-disabling flag on the browser or a renderer. {seen}")
 

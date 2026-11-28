@@ -3264,37 +3264,43 @@ def g25(rig, ctx):
 
 
 # ---- G26 (1.26.2): the sandbox check requires every renderer to run in Chromium's own namespaces, and it can fail
-SANDBOX_CONTROL_SNIPPET = r'''
-import concurrent.futures, importlib.util, json, os
-def load(n):
-    s = importlib.util.spec_from_file_location(n, "/mnt/" + n + ".py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
-S = load("session"); P = load("probe")
-os.makedirs(S.HOME_DIR, exist_ok=True)
-os.makedirs(S.TMP_DIR, exist_ok=True)
-orig = P._headless_flags
-P._headless_flags = lambda S_, tag: orig(S_, tag) + ["--no-" + "sandbox"]       # the switch for THIS run of the probe's check only
-print(json.dumps(P.check_sandbox_state(S, os.environ["RB_CHROMIUM"], None)))
-'''
+def g26_probe_without_sandbox(rig):
+    """The probe as the real feature runs it (rig.run_probe: the launcher, the probe's unit, the static tree) from a copy of probe.py whose
+    headless flags get the switch that turns Chromium's sandbox off. The copy lives in rig.tmp; the static tree is restored afterwards."""
+    src = rig.tmp / "patched-sandbox"
+    src.mkdir(exist_ok=True)
+    text = (ROOT / "rbrowser_unit" / "probe.py").read_text()
+    needle = '    return ["--headless=new", f"--user-data-dir={S.WORK_DIR}/probe-{tag}", "--enable-logging=stderr", "--log-level=0", *flags]'
+    if text.count(needle) != 1:
+        return None
+    (src / "probe.py").write_text(text.replace(needle, needle.replace("*flags]", '*flags, "--no-" + "sandbox"]')))
+    shutil.copy(ROOT / "rbrowser_unit" / "session.py", src / "session.py")
+    rig.L.write_static_tree(rig.paths, rig.policy, src)
+    try:
+        return rig.run_probe()
+    finally:
+        rig.L.write_static_tree(rig.paths, rig.policy, ROOT / "rbrowser_unit")
 
 
 @gate("G26", "sandbox check: every renderer in its own namespaces; the negative control fails")
 def g26(rig, ctx):
     """Round 1, written and NOT run here. (1) The probe as it is (ctx["probe"], run once for the gates that need it): sandbox_state must be ok and
-    its detail must say that renderers run in their own namespaces. (2) The same check function in a unit of the probe's kind, but with
-    the switch that turns Chromium's sandbox off added to the probe's headless flags: it must FAIL and name the switch. A control that
-    passes would mean the check cannot fail. The switch is added to the probe's flags inside the unit's own snippet (a wrapper script would
-    have to be an executable file the unit can see; the static tree and the unit's /tmp are not known to allow that)."""
+    its detail must say that renderers run in their own namespaces. (2) The probe again, from a copy whose Chromium gets the switch that turns
+    its sandbox off, for this run only (as G20 and G13 patch the static tree): sandbox_state must FAIL and name the switch, and the other
+    seven checks must still be ok (only check 8 reacted). A control that passes would mean the check cannot fail."""
     chk = rig.probe_check(ctx["probe"], "sandbox_state")
     m = re.search(r"every one of (\d+) renderers runs in its own user and pid namespace", chk["detail"])
     if not chk["ok"] or not m or int(m.group(1)) < 1:
         return "FAIL", f"the normal probe: sandbox_state ok {chk['ok']}, detail: {chk['detail']}"
-    ok, res, err = rig.snippet(SANDBOX_CONTROL_SNIPPET, timeout=90)
-    if not ok or not isinstance(res, dict) or res.get("name") != "sandbox_state":
-        return "FAIL", f"the control run did not answer: {err[:150]}"
+    bad = g26_probe_without_sandbox(rig)
+    if bad is None:
+        return "FAIL", "the control could not be built: the headless flag list of probe.py is not where the gate expects it"
+    ctl = rig.probe_check(bad, "sandbox_state")
     flag = "--no-" + "sandbox"
-    if res.get("ok") is not False or flag not in res.get("detail", ""):
-        return "FAIL", f"the negative control did not fail as it must (ok {res.get('ok')}): {res.get('detail')}; normal run: {chk['detail']}"
-    return "PASS", f"normal: {chk['detail']} | control with {flag} for the probe only: FAILED as required: {res['detail'][:200]}"
+    others = [c["name"] for c in bad.get("checks", []) if c["name"] != "sandbox_state" and not c["ok"]]
+    if ctl["ok"] is not False or flag not in ctl["detail"] or others:
+        return "FAIL", f"the negative control: sandbox_state ok {ctl['ok']}, other failed checks {others}: {ctl['detail']}; normal run: {chk['detail']}"
+    return "PASS", f"normal: {chk['detail']} | control with {flag} for the probe only: sandbox_state FAILED as required, the other checks passed: {ctl['detail'][:200]}"
 
 
 # ================================================================ the run
