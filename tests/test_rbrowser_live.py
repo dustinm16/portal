@@ -3040,15 +3040,17 @@ def g21(rig, ctx):
         nv = s.open_page()
         time.sleep(3)
         # The page reports its own focus in the title until the first key arrives (then the title is the typed text): the keys are typed
-        # only after the field proved to hold the focus, so a key sent before the click had its effect cannot be taken for a lost one.
+        # only after the field proved to be the active element, so a key sent before the click had its effect cannot be taken for a lost one.
         nv.nav(page_url("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px oninput=\"window.typed=1;document.title='k:'+this.value\"></textarea>"
                         "<script>setInterval(function(){if(!window.typed)document.title='kb hf='+document.hasFocus()+' ae='+(document.activeElement.tagName=='TEXTAREA')},150)</script>", "kb"))
         s.wait_title("kb")
         time.sleep(1)
         nv.click(200, 200)
-        focused, ft = s.wait_title("hf=true ae=true", 10)
+        # Only the field being the active element is required: document.hasFocus() depends on the window manager marking the window active
+        # (never measured under the built-in one), so it is reported ("hf=") and not gated on.
+        focused, ft = s.wait_title("ae=true", 10)
         if not focused:
-            return "FAIL", f"the test could not type: the field never reported the focus ({ft[:40]!r}); not a typing result"
+            return "FAIL", f"the test could not type: the field never became the active element ({ft[:40]!r}); not a typing result"
         time.sleep(0.3)
         # (name, wanted text, action): the physical keys of a French, a German, a German-with-AltGr and a US layout
         cases = [("e-acute", "\u00e9", lambda: nv.key("\u00e9", "Digit2", "\u00e9")), ("sharp s", "\u00df", lambda: nv.key("\u00df", "Minus", "\u00df")),

@@ -599,6 +599,7 @@ class ModeHolder:
             x11.XChangeKeyboardMapping(dpy, kc, w, arr, 1)
         x11.XSync(dpy, 0)
         if self.errors_since(first):
+            log("the keyboard map was not prepared")
             return 0
         return len(plan)
 

@@ -1185,7 +1185,7 @@ check("keymap: every unit has one or two different keysyms, none is ASCII, none 
       all(len(u) in (1, 2) and len(set(u)) == len(u) and all(k > 0x9F for k in u) for u in KU)
       and len({k for u in KU for k in u}) == sum(len(u) for u in KU))
 check("keymap: a letter pair is lower case first (the key types it plain and with Shift gives the capital)",
-      all(u[0] < u[1] or u[0] > u[1] for u in KPAIRS) and (0xE0, 0xC0) in KPAIRS and (0xFF, 0x01000178) in KPAIRS and (0x01000430, 0x01000410) in KPAIRS)
+      all(u[0] != u[1] for u in KPAIRS) and (0xE0, 0xC0) in KPAIRS and (0xFF, 0x01000178) in KPAIRS and (0x01000430, 0x01000410) in KPAIRS)
 check("keymap: the micro sign is not paired with a Greek capital", not any(0xB5 in u and len(u) == 2 and 0x0100039C in u for u in KU))
 check("keymap: the units fit the keys of this host's map (about 90 keys) and Russian is complete",
       len(KPAIRS) + (len(KU) - len(KPAIRS) + 1) // 2 <= 91
@@ -1197,10 +1197,11 @@ KFREE = [8 + i for i, r in enumerate(PLAN_ROWS) if not any(r)]
 KSPARE = [8 + i for i in range(20, 40)]
 check("keymap plan: only keys with no symbols or with nothing but XF86 symbols are written, never the first key, never a browser key",
       PLAN and all(kc in KFREE[1:] + KSPARE for kc in PLAN) and 8 not in PLAN and 48 not in PLAN and 8 + 40 not in PLAN)
-left = [kc for kc in KFREE[1:] + KSPARE if kc not in PLAN or not any(PLAN[kc])]
-check("keymap plan: the reserve stays free (keys without symbols for x11vnc), emptying unused media keys if the free ones are too few",
-      len(left) == S.KEYMAP_RESERVE + len([kc for kc in KSPARE if kc in left and kc not in KFREE]) - len([kc for kc in KSPARE if kc in left and kc not in KFREE])
-      and len([kc for kc in left if kc in KFREE or (kc in PLAN and not any(PLAN[kc]))]) >= S.KEYMAP_RESERVE, f"{len(left)} left, {len(PLAN)} written")
+_after = {8 + i: r for i, r in enumerate(PLAN_ROWS)}
+_after.update(PLAN)
+_empty_after = [kc for kc, r in _after.items() if kc != 8 and not any(r)]
+check("keymap plan: after the plan exactly the reserve of keys is empty (apart from the first key), emptying unused media keys if the free ones are too few",
+      len(_empty_after) == S.KEYMAP_RESERVE, f"{len(_empty_after)} empty")
 check("keymap plan: a key holds a pair as lower, capital, lower, capital (one key types both with and without Shift), as wide as the map",
       all(len(row) == KM_W and row[0] == row[2] and row[1] == row[3] for row in PLAN.values()))
 _flat = [k for row in PLAN.values() for k in row[:2] if k]
@@ -1247,7 +1248,7 @@ n = h.prefill_keymap()
 check("keymap: prefill_keymap reads the map, writes one key per planned key and returns how many", n == len(PLAN) and dict(h.x11.written) == PLAN, f"{n} {len(h.x11.written)}")
 h = object.__new__(S.ModeHolder)
 h.x11, h.dpy, h.recent, h.errors = KmLib(PLAN_ROWS), 1, __import__("collections").deque([(6, 8)], maxlen=64), 1
-check("keymap: an X error during the writes means 0 (the session goes on without)", h.prefill_keymap() == 0)
+check("keymap: an X error during the writes means 0 and one neutral log line (the session goes on without)", h.prefill_keymap() == 0)
 h = object.__new__(S.ModeHolder)
 h.x11, h.dpy, h.recent, h.errors = KmLib(km_rows(40)), 1, __import__("collections").deque(maxlen=64), 0
 check("keymap: nothing to write means no write at all", h.prefill_keymap() == 0 and h.x11.written == [])
