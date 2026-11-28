@@ -1461,6 +1461,16 @@ class TyFake:
         self.XTestFakeKeyEvent = self._fake
         self.XNextRequest = lambda d: self.serial
         self.XQueryKeymap = self._query
+        self.XQueryPointer = self._pointer
+        self.XGrabServer = lambda d: self.log.append(("grab", self.t))
+        self.XUngrabServer = lambda d: self.log.append(("ungrab", self.t))
+        self.XFlush = lambda d: self.log.append(("flush", self.t))
+        self.caps, self.caps_key, self.caps_stuck, self.at_press, self.on_query = False, None, False, [], None
+
+    def _pointer(self, d, win, root, child, a, b, c, e, mask):
+        self.log.append(("pointer", self.t))
+        mask._obj.value = 2 if self.caps else 0
+        return 1
 
     def _bind(self, d, kc, w, arr, n):
         self.serial += 1
@@ -1469,6 +1479,7 @@ class TyFake:
 
     def _query(self, d, buf):
         self.queries += 1
+        self.log.append(("query", self.t))
         data = bytearray(32)
         for kc in self.down:
             data[kc // 8] |= 1 << (kc % 8)
@@ -1480,6 +1491,10 @@ class TyFake:
         if self.fail_after is not None and self.fakes > self.fail_after:
             return 0
         self.log.append(("down" if down else "up", kc, self.t))
+        if down and kc == self.caps_key and not self.caps_stuck:
+            self.caps = not self.caps
+        if down and kc != self.caps_key:
+            self.at_press.append((kc, frozenset(self.down)))        # what the server holds down at the moment a key goes down
         if not down and kc in self.down and kc not in self.repress:
             self.down.discard(kc)
         return 1
@@ -1502,7 +1517,7 @@ binds = [e for e in f.log if e[0] == "bind"]
 check("typer: three different keysyms bind three keys, a repeated one is typed on its key without a new binding",
       res == (4, "") and len(binds) == 3 and [e[1] for e in f.log if e[0] == "down"] == [100, 101, 102, 100], str(f.log))
 check("typer: a key is bound with the keysym in every column and synced, then TYPE_MAP_WAIT_S passes before it goes down and up",
-      all(e[2] == (e[2][0],) * 4 for e in binds) and f.log[0][0] == "bind" and f.log[1][0] == "sync" and f.log[2][0] == "down" and f.log[2][-1] - f.log[0][-1] >= S.TYPE_MAP_WAIT_S - 1e-9)
+      all(e[2] == (e[2][0],) * 4 for e in binds) and f.log[0][0] == "bind" and f.log[1][0] == "sync" and [e for e in f.log if e[0] == "down"][0][-1] - f.log[0][-1] >= S.TYPE_MAP_WAIT_S - 1e-9)
 f, ty = mk_typer(2)
 ty.type([0x61, 0x62, 0x63, 0x64])
 check("typer: no key is ever written empty, and the keys written are only scratch keys",
@@ -1567,14 +1582,14 @@ h2 = object.__new__(S.ModeHolder)
 h2.x11, h2.dpy, h2.recent, h2.errors, h2.xtst, h2.scratch, h2.typer = KmLib(SC_ROWS), 1, __import__("collections").deque(maxlen=64), 0, None, [], None
 check("scratch: without libXtst there are no scratch keys and the old plan is written as before", h2.prefill_keymap() == len(SC_PLAN) and h2.scratch == [] and h2.typer is None)
 check("type_text: without scratch keys it types nothing and says unavailable (the portal then falls back to key events)",
-      h2.type_text("abc") == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "unavailable"})
+      h2.type_text("abc") == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "map_changes": 0, "why": "unavailable"})
 h3 = object.__new__(S.ModeHolder)
 f3 = TyFake()
 h3.x11, h3.xtst, h3.dpy, h3.recent, h3.errors = f3, f3, 1, __import__("collections").deque(maxlen=64), 0
 h3.typer = S.ScratchTyper(f3, f3, 1, [100, 101], 4, clock=f3.clock, sleep=f3.sleep)
 r3 = h3.type_text("ab\x00一")
 check("type_text: typed, skipped and complete are counted, the keys are back at the placeholder, and the answer holds no text",
-      r3 == {"ok": True, "typed": 3, "skipped": 1, "complete": True} and {e[1]: e[2] for e in f3.log if e[0] == "bind"}[100] == (S.SCRATCH_SYM,) * 4 and "ab" not in json.dumps(r3))
+      r3 == {"ok": True, "typed": 3, "skipped": 1, "complete": True, "map_changes": f3.binds} and f3.binds >= 3 and {e[1]: e[2] for e in f3.log if e[0] == "bind"}[100] == (S.SCRATCH_SYM,) * 4 and "ab" not in json.dumps(r3))
 f4 = TyFake(fail_after=2)
 h3.x11 = h3.xtst = f4
 h3.typer = S.ScratchTyper(f4, f4, 1, [100, 101], 4, clock=f4.clock, sleep=f4.sleep)
@@ -1595,9 +1610,10 @@ check("candidates: a Unicode keysym above Latin-1 may sit on the map as the lega
 mm = S.parse_modifier_map(2, [50, 62, 66, 0, 37, 105, 64, 108, 0, 0, 77, 0, 133, 0, 92, 0])
 check("modifier map: 8 lists of keycodes, unused slots (0) left out", mm == [[50, 62], [66], [37, 105], [64, 108], [], [77], [133], [92]] and S.parse_modifier_map(0, []) == [[] for _ in range(8)])
 check("modifier keys: Shift from the map, held keys from Control, Mod1, Mod4 and Mod5 only (not Lock, not NumLock)",
-      S.modifier_keycodes(mm, IX_ROWS, 8) == (50, [37, 64, 92, 105, 108, 133]))
+      S.modifier_keycodes(mm, IX_ROWS, 8) == (50, [37, 64, 92, 105, 108, 133], [50, 62], 66))
 check("modifier keys: without a modifier map they are found by their keysyms in the rows",
-      S.modifier_keycodes([], [(0, 0), (0xFFE1, 0), (0xFFE3, 0), (0xFFE9, 0), (0x61, 0)], 8) == (9, [10, 11]) and S.modifier_keycodes(None, [(0, 0)], 8) == (0, []))
+      S.modifier_keycodes([], [(0, 0), (0xFFE1, 0), (0xFFE3, 0), (0xFFE9, 0), (0x61, 0), (0xFFE5, 0), (0xFE03, 0)], 8) == (9, [10, 11, 14], [9], 13)
+      and S.modifier_keycodes(None, [(0, 0)], 8) == (0, [], [], 0))
 check("keys down: bit keycode % 8 of byte keycode // 8 of the 32 bytes", S.keys_down(bytes([0, 0, 0b100, 0, 0, 1 << 5] + [0] * 26), [17, 18, 45, 46]) == [18, 45])
 
 f, ty = mk_typer(2, index=IX, shift=50)
@@ -1633,36 +1649,121 @@ ty.type([0x01004E00 + i for i in range(40)])
 bs = [e for e in f.log if e[0] == "bind"]
 check("age rule: a stream of all different characters on 8 keys costs about TYPE_MAP_WAIT_S per character (under 12 ms), not the settle time per character", f.t <= 40 * 0.012, f"{f.t}")
 
-f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
-f.down = {37}
-res = ty.type([0x61, 0x62, 0x01004E00])
-check("held modifiers: one found down before a character is released through XTEST and checked again, then the run goes on",
-      res == (3, "") and ty.strikes == 1 and [e for e in f.log if e[0] == "up" and e[1] == 37], str(res))
-f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
-f.down, f.repress = {37}, {37}
-res = ty.type([0x61, 0x62, 0x01004E00])
-check("held modifiers: a key that comes back after every release stops the run after TYPE_MOD_STRIKES releases, with why modifier and no character typed with it down",
-      res == (0, "modifier") and [e for e in f.log if e[0] == "up" and e[1] == 37] and ty.strikes == S.TYPE_MOD_STRIKES + 1 and not [e for e in f.log if e[0] == "down"], f"{res} {ty.strikes}")
-f, ty = mk_typer(2, index=IX, shift=50, held=[37])
-orig_sleep = ty.sleep
+def seq_before_down(f, kc, nth=0):
+    """The events right before the nth key-down of `kc`, back to the last event that is not a key-up (a sync, a query, a binding, another key-down)."""
+    idx = [i for i, e in enumerate(f.log) if e[0] == "down" and e[1] == kc][nth]
+    out = []
+    j = idx - 1
+    while j >= 0 and f.log[j][0] == "up":
+        out.append(f.log[j][1])
+        j -= 1
+    return sorted(out), f.log[j][0] if j >= 0 else None
 
 
-def sleep_and_press(sec):                                  # the key goes down while the new binding is waited for
-    orig_sleep(sec)
-    f.down.add(37)
-
-
-ty.sleep = sleep_and_press
-f.repress = {37}
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
+res = ty.type([0x61])
+ups0, before0 = seq_before_down(f, 9)
+check("held keys (A, C): a character on the first level is pressed after a key-up for EVERY held key and every Shift key, whether the state read showed them down or not (a key-down that is still queued is not in the state, the key-ups come after it in the queue); nothing but key-ups between the grab and the key-down",
+      res == (1, "") and ups0 == [37, 50, 62, 64] and before0 == "grab", f"{ups0} {before0}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
+res = ty.type([0x41])
+ups1, before1 = seq_before_down(f, 50)
+evs = [(e[0], e[1]) for e in f.log if e[0] in ("down", "up")]
+i0 = evs.index(("down", 50))
+check("held keys (A): a character on the second level has the held Control, Alt, Super keys released first and the typer's own Shift pressed after them, the member's other Shift is left alone",
+      res == (1, "") and ups1 == [37, 64] and before1 == "grab" and evs[i0:i0 + 4] == [("down", 50), ("down", 9), ("up", 9), ("up", 50)] and 62 not in [e[1] for e in evs if e[0] == "up"], f"{ups1} {before1} {evs}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
+f.down = {37, 64, 50, 62}
+res = ty.type([0x61, 0x01004E00])
+check("held keys (A, C): keys the member holds are not down at the moment a character goes down (own key and scratch key)", res == (2, "") and len(f.at_press) == 2 and all(h_ == frozenset() for _k, h_ in f.at_press), str(f.at_press))
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
+res = ty.type([0x61, 0x41, 0x01004E00])
+ev_all = [e[0] for e in f.log]
+gi = [i for i, e in enumerate(ev_all) if e == "grab"]
+check("held keys (A): every press is inside XGrabServer and XUngrabServer with nothing but the key-ups, the key-down and the key-up of the character between them (the state read is outside), and the grab is flushed at once",
+      len(gi) == 3 and all(ev_all[i + 1:].index("ungrab") > 0 and set(ev_all[i + 1:i + 1 + ev_all[i + 1:].index("ungrab")]) <= {"up", "down"} for i in gi)
+      and ev_all.count("grab") == ev_all.count("ungrab") and all(ev_all[i + 1] == "flush" for i, e in enumerate(ev_all) if e == "ungrab"), str(ev_all[:40]))
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
 res = ty.type([0x01004E00])
-check("held modifiers: the check is the last thing before a scratch character's press, after the wait for the new binding (a key that goes down during the wait stops the run before the press)",
-      res == (0, "modifier") and not [e for e in f.log if e[0] == "down" and e[1] == 100], str(res))
-f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
+upsS, beforeS = seq_before_down(f, 100)
+check("held keys (A): a scratch character's press is the same, after the wait for its binding", res == (1, "") and upsS == [37, 50, 62, 64] and beforeS == "grab", f"{upsS} {beforeS}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64], shifts=[50, 62])
+f.down = {37}
 res = ty.type([0x61, 0x62, 0x61])
-check("held modifiers: with none down nothing is released, the key state is read before every character", res == (3, "") and f.queries == 3 and not [e for e in f.log if e[1] in (37, 64)])
+check("held keys: a key found down is counted and the finished run says warn modifier; the text was typed", res == (3, "") and ty.strikes == 1 and ty.warn == "modifier" and [e for e in f.log if e[0] == "up" and e[1] == 37], f"{res} {ty.strikes} {ty.warn}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62])
+f.down, f.repress = {37}, {37}
+S.TYPE_MOD_STRIKES, saved_strikes = 2, S.TYPE_MOD_STRIKES
+res = ty.type([0x61] * 10)
+first_run = res
+f.down, f.repress = set(), set()
+res2 = ty.type([0x61] * 10)
+S.TYPE_MOD_STRIKES = saved_strikes
+check("held keys: a key found down more than TYPE_MOD_STRIKES times stops the run with why modifier; the next request starts with the count at zero and its own warn",
+      first_run == (2, "modifier") and res2 == (10, "") and ty.strikes == 0 and ty.warn == "", f"{first_run} {res2} {ty.strikes}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62])
+f.down = {37}
+r8 = ty.type([0x61])
+ty2warn = ty.warn
+h8 = object.__new__(S.ModeHolder)
+h8.x11, h8.xtst, h8.dpy, h8.recent, h8.errors, h8.typer = f, f, 1, __import__("collections").deque(maxlen=64), 0, ty
+f.down = {37}
+out8 = h8.type_text("ab")
+f.down = set()
+out9 = h8.type_text("ab")
+check("held keys: the reply of type_text carries warn when a key was found down in a run that went through, and not in the next one; warn never holds text",
+      out8.get("warn") == "modifier" and out8["ok"] is True and "warn" not in out9 and "ab" not in json.dumps(out8), f"{out8} {out9}")
 f, ty = mk_typer(2, index=IX, shift=50)
 f.down = {37}
-check("held modifiers: with no modifier keys known the key state is not read", ty.type([0x61]) == (1, "") and f.queries == 0)
+check("held keys: with no held keys known the key state is not read", ty.type([0x61]) == (1, "") and f.queries == 0)
+
+# Caps Lock (B)
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key, f.caps = 66, True
+res = ty.type([0x61, 0x62, 0x01004E00])
+caps_taps = [e for e in f.log if e[0] == "down" and e[1] == 66]
+check("caps lock (B): on at the start of a request it is switched off with a tap on its key before the first character, and the run says nothing about it", res == (3, "") and len(caps_taps) == 1 and ty.warn == "" and ty.caps_fixed, f"{res} {len(caps_taps)}")
+first_down = [i for i, e in enumerate(f.log) if e[0] == "down" and e[1] != 66][0]
+check("caps lock (B): the tap comes before the first character", [i for i, e in enumerate(f.log) if e[0] == "down" and e[1] == 66][0] < first_down)
+check("caps lock (B): finish puts the member's Caps Lock back on, once", (ty.finish(), f.caps, len([e for e in f.log if e[0] == "down" and e[1] == 66]))[1:] == (True, 2) and not ty.caps_fixed)
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key, f.caps, f.caps_stuck = 66, True, True
+res = ty.type([0x61, 0x62])
+check("caps lock (B): when it cannot be switched off nothing is typed and the reason is capslock (typed 0, no key down)", res == (0, "capslock") and not [e for e in f.log if e[0] == "down" and e[1] != 66], str(res))
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key = 66
+orig_p = f._pointer
+cnt = [0]
+
+
+def caps_toggled_in_the_middle(d, win, root, child, a, b, c, e, mask):
+    cnt[0] += 1
+    if cnt[0] == 4:
+        f.caps = True
+    return orig_p(d, win, root, child, a, b, c, e, mask)
+
+
+f.XQueryPointer = caps_toggled_in_the_middle
+res = ty.type([0x61, 0x62, 0x63, 0x64, 0x65, 0x66])
+check("caps lock (B): switched on in the middle of a request it is switched off before the next character, the run says warn capslock, and finish puts it back on",
+      res == (6, "") and ty.warn == "capslock" and f.caps is False and (ty.finish(), f.caps)[1] is True, f"{res} {ty.warn}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=0)
+f.caps_key, f.caps = 66, True
+check("caps lock (B): with no Caps Lock key known the pointer state is not read", ty.type([0x61]) == (1, "") and not [e for e in f.log if e[0] == "pointer"])
+f, ty = mk_typer(2, index=IX, shift=50, held=[37], shifts=[50, 62], lock=66, root=1)
+f.caps_key = 66
+res = ty.type([0x61, 0x62])
+check("caps lock (B): off at the start means no tap, no restore", res == (2, "") and not [e for e in f.log if e[0] == "down" and e[1] == 66] and (ty.finish(), not [e for e in f.log if e[0] == "down" and e[1] == 66])[1])
+
+# map_changes (F)
+f, ty = mk_typer(2, index=IX, shift=50)
+h10 = object.__new__(S.ModeHolder)
+h10.x11, h10.xtst, h10.dpy, h10.recent, h10.errors, h10.typer = f, f, 1, __import__("collections").deque(maxlen=64), 0, ty
+o1 = h10.type_text("ab1")
+o2 = h10.type_text("一丁")
+o3 = h10.type_text("ab")
+check("reply (F): map_changes is the number of keyboard map changes the request made: 0 for characters on the map, one per binding and per put back, counted per request",
+      o1["map_changes"] == 0 and o2["map_changes"] == 4 and o3["map_changes"] == 0 and json.loads(S.type_reply(o2))["map_changes"] == 4, f"{o1['map_changes']} {o2['map_changes']} {o3['map_changes']}")
 
 f, ty = mk_typer(2, index=IX, shift=50)
 foreign = [f.serial + 10_000]
@@ -1726,10 +1827,10 @@ typed_calls = []
 out, st = ask(json.dumps({"op": "type", "text": "héllo 一"}).encode() + b"\n",
               typefn=lambda t: (typed_calls.append(t), {"ok": True, "typed": 7, "skipped": 0, "complete": True})[1])
 check("handle_ctl: type calls the typing function with the text and answers its counts, the text is not in the answer",
-      json.loads(out) == {"ok": True, "typed": 7, "skipped": 0, "complete": True} and typed_calls == ["héllo 一"] and b"llo" not in out and st["xrandr"].sizes == [])
+      json.loads(out) == {"ok": True, "typed": 7, "skipped": 0, "complete": True, "map_changes": 0} and typed_calls == ["héllo 一"] and b"llo" not in out and st["xrandr"].sizes == [])
 out, st = ask(json.dumps({"op": "type", "text": "abc"}).encode() + b"\n", clipboard="off", typefn=lambda t: typed_calls.append("BAD"))
 check("handle_ctl: type with the clipboard setting off is refused (nothing typed), to_browser and both are served",
-      json.loads(out) == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "refused"} and "BAD" not in typed_calls
+      json.loads(out) == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "map_changes": 0, "why": "refused"} and "BAD" not in typed_calls
       and json.loads(ask(b'{"op":"type","text":"a"}\n', clipboard="to_browser", typefn=lambda t: {"ok": True, "typed": 1, "skipped": 0, "complete": True})[0])["typed"] == 1)
 out, st = ask(b'{"op":"type","text":"abc"}\n')
 check("handle_ctl: type without a typing function says unavailable", json.loads(out)["why"] == "unavailable" and json.loads(out)["typed"] == 0)

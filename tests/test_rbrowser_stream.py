@@ -403,12 +403,21 @@ async def t_type(r):
         r.ctl_reply = lambda q: {"ok": True, "typed": len(q["text"]), "skipped": 0, "complete": True}
         res = await r.reg.type_text(s, text)
         check("type: the text is typed, counted and complete; fallback is False",
-              res == {"ok": True, "typed": len(text), "skipped": 0, "complete": True, "fallback": False, "why": ""}, str(res)[:120])
+              res == {"ok": True, "typed": len(text), "skipped": 0, "complete": True, "fallback": False, "why": "", "warn": "", "map_changes": 0}, str(res)[:120])
         check("type: the request is exactly {op: type, text}", json.loads(r.ctl_requests[-1]) == {"op": "type", "text": text})
         r.ctl_reply = lambda q: {"ok": False, "typed": 3, "skipped": 0, "complete": False, "why": "budget"}
         res = await r.reg.type_text(s, "abcdef")
         check("type: a partial run keeps its count, is not ok and never asks for a fallback (the text would be typed twice)",
               res["ok"] is False and res["typed"] == 3 and res["complete"] is False and res["fallback"] is False and res["why"] == "budget", str(res))
+        r.ctl_reply = lambda q: {"ok": True, "typed": 3, "skipped": 0, "complete": True, "warn": "modifier", "map_changes": 4}
+        res = await r.reg.type_text(s, "abc")
+        check("type: warn (a key in the way of a run that went through) and the count of map changes are passed on, and the run is still ok", res["ok"] is True and res["warn"] == "modifier" and res["map_changes"] == 4, str(res))
+        r.ctl_reply = lambda q: {"ok": True, "typed": 3, "skipped": 0, "complete": True, "warn": 5, "map_changes": "x"}
+        res = await r.reg.type_text(s, "abc")
+        check("type: a warn that is not a short string and a count that is not a number are dropped, not trusted", res["ok"] is True and res["warn"] == "" and res["map_changes"] == 0, str(res))
+        r.ctl_reply = lambda q: {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "capslock", "map_changes": 0}
+        res = await r.reg.type_text(s, "abc")
+        check("type: capslock (nothing typed, a known outcome) is not a fallback and not ok", res["ok"] is False and res["why"] == "capslock" and res["fallback"] is False and res["typed"] == 0, str(res))
         r.ctl_reply = lambda q: {"ok": False}
         res = await r.reg.type_text(s, "abc")
         check("type: an older unit (plain {ok: false}) is unsupported and may be answered with key events", res["ok"] is False and res["typed"] == 0 and res["fallback"] is True and res["why"] == "unsupported", str(res))

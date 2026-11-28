@@ -29,6 +29,9 @@ const DEFAULT_QUALITY = 'balanced';
 const TYPE_CHUNK = 40;             // characters per chunk of typeText; start value, gate G17
 const TYPE_INTERVAL_MS = 30;       // pause between chunks; start value, gate G17
 const TYPE_MAX_CHARS = 5000;       // typeText refuses more than this in one call
+const ROUTE_BUSY_RETRY_MS = 1000;  // the type route answered 429 busy: asked again after this long
+const ROUTE_RATE_RETRY_MS = 2000;  // ... or 429 rate limit
+const ROUTE_RETRY_MAX_MS = 20000;  // and given up after this much waiting in all
 // ---- Constants of the page itself ------------------------------------------------------------------------
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000];
 const RECONNECT_CODES = [1006, 1001];
@@ -906,34 +909,55 @@ function create(env) {
         }
     }
 
+    const WARN_TEXT = 'A key was held down or Caps Lock was on while the text was typed, so it may be wrong. Check it before you use it.';
+
     async function runRouteBatch(batch) {
         const text = batch.map((j) => j.text).join('');
         if (batch[0].release && rfb) for (const k of MODIFIER_KEYSYMS) rfb.sendKey(k, null, false);
-        const r = await api('POST', '/api/rbrowser/session/type', { text: text });
-        const d = r.data || {};
+        let r, d, waited = 0;
+        for (;;) {
+            r = await api('POST', '/api/rbrowser/session/type', { text: text });
+            d = r.data || {};
+            if (r.status !== 429) break;
+            // 429: another text of the session is still being typed (busy) or too many requests (rate). Nothing of this text was typed, and a
+            // text before it may still be at work (after a lost answer, for one), so the text is never sent as keys: the route is asked again for a while.
+            const ms = d.busy === true ? ROUTE_BUSY_RETRY_MS : ROUTE_RATE_RETRY_MS;
+            if (waited + ms > ROUTE_RETRY_MAX_MS || state !== 'connected') {
+                for (const j of batch) {
+                    if (!j.said) { say(d.busy === true ? 'Another text is still being typed. Send this one again when it is done.' : 'Too much text was sent in a short time. Send it again in a moment.'); j.said = true; }
+                    j.resolve({ ok: false, reason: d.busy === true ? 'busy' : 'rate', sent: 0, skipped: j.skipped });
+                }
+                return;
+            }
+            await new Promise((resolve) => setTimer(resolve, ms));
+            waited += ms;
+        }
         const typed = typeof d.typed === 'number' ? d.typed : 0;
-        if (typed === 0 && (r.status === 429 || r.status === 403 || r.status === 404 || d.fallback === true)) {
-            if (r.status !== 429) serverTyping = false;     // the server or the unit cannot type text: key events for the rest of the session
+        if (typed === 0 && (r.status === 403 || r.status === 404 || d.fallback === true)) {
+            serverTyping = false;                       // the server or the unit cannot type text: key events for the rest of the session
             for (const j of batch) j.resolve(await enqueueKeys(j.fkeys, { releaseModifiers: j.release, skipped: j.skipped }));
             return;
         }
+        const maintenance = r.status === 503 && d.maintenance === true;
+        const unknown = typed === 0 && (r.status === 0 || r.status >= 500) && !maintenance;     // every 5xx but maintenance: the unit may have typed
         let left = typed;
+        let said = false;
         for (const j of batch) {
             const n = j.fkeys.length;
             if (r.ok && (d.complete === true || left >= n)) {
                 left -= n;
-                j.resolve({ ok: true, sent: n, skipped: j.skipped });
+                if (d.warn && !said) { say(WARN_TEXT); said = true; }
+                j.resolve({ ok: true, sent: n, skipped: j.skipped, warn: d.warn || '' });
             } else {
                 const part = Math.max(0, Math.min(n, left));
                 left -= part;
                 if (!j.said) {
-                    // an answer that did not come (status 0) or an unknown outcome (502): the unit may have typed, in part or in full
-                    const unknown = !typed && (r.status === 0 || r.status === 502);
                     say(unknown ? 'The text may have been typed, in part or in full. Check before sending it again.'
+                        : d.why === 'capslock' ? 'Caps Lock is on and could not be switched off. Switch it off and send the text again.'
                         : part ? 'Only ' + part + ' of ' + n + ' characters were typed.' : 'The text could not be typed.');
                     j.said = true;
                 }
-                j.resolve({ ok: false, reason: 'failed', sent: part, skipped: j.skipped });
+                j.resolve({ ok: false, reason: d.why === 'capslock' ? 'capslock' : 'failed', sent: part, skipped: j.skipped });
             }
         }
     }
@@ -1116,7 +1140,7 @@ function create(env) {
         if (!box || !box.value) return;
         const r = await typeText(box.value);
         if (r.ok) {
-            say('Sent ' + r.sent + ' characters.' + (r.skipped ? ' ' + r.skipped + ' could not be typed.' : ''));
+            if (!r.warn) say('Sent ' + r.sent + ' characters.' + (r.skipped ? ' ' + r.skipped + ' could not be typed.' : ''));
             box.value = '';
         } else if (r.reason === 'cancelled') {
             say('The connection closed before all the text was typed.');

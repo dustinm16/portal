@@ -21563,7 +21563,7 @@ def _ref_page(status: int, ref: Optional[str], headers: dict) -> web.Response:
 async def _ref_answer(request: web.Request, status: int, error: str, *, kind: str, limiter: str,
                       subject: Optional[str], user_id: Optional[int] = None, loader=None,
                       headers: Optional[dict] = None, plain: bool = False,
-                      reason: Optional[str] = None) -> web.Response:
+                      reason: Optional[str] = None, extra: Optional[dict] = None) -> web.Response:
     """The 403 or 429 answer with a reference ID. Never raises: when no ID can be stored the
     answer is the old one without it."""
     _refs.db = db
@@ -21579,6 +21579,8 @@ async def _ref_answer(request: web.Request, status: int, error: str, *, kind: st
     if _wants_page(request):
         return _ref_page(status, ref, out_headers)
     body = {"error": error}
+    if extra:
+        body.update(extra)
     if ref:
         body["ref"] = blockref.display(ref)
     return web.json_response(body, status=status, headers=out_headers)
@@ -21586,13 +21588,13 @@ async def _ref_answer(request: web.Request, status: int, error: str, *, kind: st
 
 async def _limited(request: web.Request, limiter: str, error: str, *, subject: Optional[str] = None,
                    user_id: Optional[int] = None, headers: Optional[dict] = None,
-                   plain: bool = False) -> web.Response:
+                   plain: bool = False, extra: Optional[dict] = None) -> web.Response:
     """The 429 of a rate limiter. `limiter` names it for the administrator's lookup. The ID is kept per
     address, an IPv6 address as its /64 network, so addresses rotated inside one /64 share one ID."""
     return await _ref_answer(
         request, 429, error, kind="limit", limiter=limiter,
         subject=_proxy_bucket_key(subject if subject is not None else get_client_ip(request)),
-        user_id=user_id, headers=headers, plain=plain, reason=f"limit reached: {limiter}")
+        user_id=user_id, headers=headers, plain=plain, reason=f"limit reached: {limiter}", extra=extra)
 
 
 async def _blocked_answer(request: web.Request, client_ip: str) -> web.Response:
@@ -34774,6 +34776,8 @@ async def http_rbrowser_resize(request: web.Request) -> web.Response:
     s, user, err = await _rbrowser_own_session(request)
     if err:
         return err
+    if not _rbrowser_resize_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_resize", "Too many resizes", user_id=user["id"], headers={"Retry-After": "1"})
     too_big = _rbrowser_body_refusal(request, 1024)
     if too_big:
         return too_big
@@ -34785,8 +34789,6 @@ async def http_rbrowser_resize(request: web.Request) -> web.Response:
     height = data.get("height") if isinstance(data, dict) else None
     if any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 20000 for v in (width, height)):
         return web.json_response({"error": "width and height must be whole numbers"}, status=400)
-    if not _rbrowser_resize_rate.allow(str(user["id"])):
-        return await _limited(request, "rbrowser_resize", "Too many resizes", user_id=user["id"], headers={"Retry-After": "1"})
     ok = await rbrowser.resize(s, width, height)
     return web.json_response({"ok": bool(ok)}, headers=_RBROWSER_NO_STORE)
 
@@ -34825,7 +34827,7 @@ async def http_rbrowser_type(request: web.Request) -> web.Response:
     if _rbrowser_cfg["rbrowser_clipboard"] == "off":
         return web.json_response({"error": "Typing text is switched off"}, status=403, headers=_RBROWSER_NO_STORE)
     if not _rbrowser_type_rate.allow(str(user["id"])):
-        return await _limited(request, "rbrowser_type", "Too much text sent", user_id=user["id"], headers={"Retry-After": "2"})
+        return await _limited(request, "rbrowser_type", "Too much text sent", user_id=user["id"], headers={"Retry-After": "2"}, extra={"busy": False})
     too_big = _rbrowser_body_refusal(request, 65536)         # 5000 characters of JSON are at most about 60 KB
     if too_big:
         return too_big
@@ -34838,9 +34840,10 @@ async def http_rbrowser_type(request: web.Request) -> web.Response:
         return web.json_response({"error": "text must be 1 to 5000 characters"}, status=400, headers=_RBROWSER_NO_STORE)
     r = await rbrowser.type_text(s, text)
     if r.get("why") == "busy" and not r["typed"]:
-        return await _limited(request, "rbrowser_type_busy", "Another text is being typed", user_id=user["id"], headers={"Retry-After": "1"})
-    body = {"typed": r["typed"], "skipped": r["skipped"], "complete": bool(r["complete"]), "fallback": bool(r["fallback"]), "why": r.get("why", "")}
-    if r["ok"] or r["typed"] > 0:
+        return await _limited(request, "rbrowser_type_busy", "Another text is being typed", user_id=user["id"], headers={"Retry-After": "1"}, extra={"busy": True})
+    body = {"typed": r["typed"], "skipped": r["skipped"], "complete": bool(r["complete"]), "fallback": bool(r["fallback"]), "why": r.get("why", ""),
+            "warn": r.get("warn", "")}
+    if r["ok"] or r["typed"] > 0 or r.get("why") == "capslock":       # Caps Lock that could not be switched off: nothing typed, a known outcome, not an error
         return web.json_response(body, headers=_RBROWSER_NO_STORE)
     if r.get("why") == "refused":
         return web.json_response(dict(body, error="Typing text is switched off"), status=403, headers=_RBROWSER_NO_STORE)

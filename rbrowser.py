@@ -1386,12 +1386,12 @@ class Registry:
 
     async def type_text(self, session: Session, text: str) -> dict:
         """Types `text` in the unit through its own X connection (ctl.sock `type`). Returns {"ok", "typed", "skipped", "complete",
-        "fallback", "why"}: typed is how many characters the unit typed; fallback is True only when nothing was typed and nothing
+        "fallback", "why", "warn", "map_changes"}: typed is how many characters the unit typed; fallback is True only when nothing was typed and nothing
         can have been (an older unit that does not know the request, no typing keys, the unit not reachable), so the page may send the
         same text as key events; with typed above 0 or an unknown outcome it never is (the text would be typed twice). why: refused, busy,
         unsupported, unavailable, unreachable, reply, or the unit's own (budget, stopping, failed). The text is page-controlled:
         untrusted, never logged, never stored here."""
-        bad = {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False}
+        bad = {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "warn": "", "map_changes": 0}
         if not isinstance(text, str) or len(text) > TYPE_MAX_CHARS:
             return dict(bad, why="refused")
         if session.state != "running" or session.clipboard == "off":
@@ -1415,8 +1415,11 @@ class Registry:
             return dict(bad, why="unsupported", fallback=obj.get("ok") is False and "typed" not in obj)
         why = obj.get("why")
         why = why if isinstance(why, str) and len(why) <= 20 else ""
+        warn = obj.get("warn")
+        warn = warn if isinstance(warn, str) and len(warn) <= 20 else ""
+        mc = obj.get("map_changes")
         out = {"ok": obj.get("ok") is True and complete, "typed": typed, "skipped": skipped, "complete": complete, "fallback": False,
-               "why": why}
+               "why": why, "warn": warn, "map_changes": mc if isinstance(mc, int) and not isinstance(mc, bool) and 0 <= mc <= 100000 else 0}
         if not out["ok"] and typed == 0 and why in ("unavailable", "refused"):
             out["fallback"] = why == "unavailable"
         return out

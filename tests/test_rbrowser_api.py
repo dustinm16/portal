@@ -487,7 +487,7 @@ async def main():
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": txt}) as r:
             j = await r.json()
             check("type: {typed, skipped, complete, fallback, why} and the text reached the registry once, unchanged",
-                  r.status == 200 and j == {"typed": len(txt), "skipped": 0, "complete": True, "fallback": False, "why": ""} and [t for _s, t in TYPED] == [txt]
+                  r.status == 200 and j == {"typed": len(txt), "skipped": 0, "complete": True, "fallback": False, "why": "", "warn": ""} and [t for _s, t in TYPED] == [txt]
                   and r.headers.get("Cache-Control") == "no-store", str(j))
         for bad in ({}, {"text": ""}, {"text": 5}, {"text": ["a"]}, {"text": "a" * 5001}, [1]):
             async with carol.post(f"{base}/api/rbrowser/session/type", json=bad) as r:
@@ -531,6 +531,19 @@ async def main():
         rbrowser.type_text = refused
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
             check("type: the unit's refusal is 403", r.status == 403)
+        async def warned(session, text):
+            return {"ok": True, "typed": len(text), "skipped": 0, "complete": True, "fallback": False, "why": "", "warn": "modifier", "map_changes": 3}
+        rbrowser.type_text = warned
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            j = await r.json()
+            check("type: a run that went through with a key in the way says warn modifier, and says nothing of the map changes", r.status == 200 and j["warn"] == "modifier" and "map_changes" not in j, str(j))
+
+        async def capsed(session, text):
+            return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "why": "capslock", "warn": "", "map_changes": 0}
+        rbrowser.type_text = capsed
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            j = await r.json()
+            check("type: Caps Lock that could not be switched off is a known outcome: 200, typed 0, why capslock, no fallback", r.status == 200 and j["why"] == "capslock" and j["typed"] == 0 and j["fallback"] is False, f"{r.status} {j}")
         rbrowser.type_text = fake_type
         server._rbrowser_type_rate = server._viewers_mod.RateWindow(2, 60.0)
         codes = []
@@ -538,6 +551,9 @@ async def main():
             async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
                 codes.append(r.status)
         check("type: the rate limit answers 429 through _limited, after the allowed calls", codes == [200, 200, 429], str(codes))
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            jr = await r.json()
+            check("type: the rate limit's 429 says busy false, so the page can tell it from the one-at-a-time 429", r.status == 429 and jr.get("busy") is False, str(jr))
         server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
         before_413 = len(TYPED)
         # M2: the size is judged before the body is read; the limiter before the read as well
@@ -549,10 +565,14 @@ async def main():
             check("type: a body above 64 KiB is 413 and the registry is not asked", r.status == 413 and len(TYPED) == before_413, str(r.status))
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "\U0001F600" * 5000}) as r:
             check("type: 5000 emoji (about 60 KB of JSON) are still accepted", r.status == 200 and len(TYPED) == before_413 + 1, str(r.status))
+        await asyncio.sleep(1.05)
         async with carol.post(f"{base}/api/rbrowser/session/resize", data=chunks(), headers={"Content-Type": "application/json"}) as r:
             check("resize: a body without a Content-Length is 413", r.status == 413, str(r.status))
+        await asyncio.sleep(1.05)
         async with carol.post(f"{base}/api/rbrowser/session/resize", data=json.dumps({"width": 900, "height": 600, "pad": "x" * 2000}), headers={"Content-Type": "application/json"}) as r:
             check("resize: a body above 1 KiB is 413", r.status == 413, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/resize", data=json.dumps({"width": 900, "height": 600, "pad": "x" * 2000}), headers={"Content-Type": "application/json"}) as r:
+            check("resize: the rate limit is judged before the body is looked at (an oversized body right after another call is 429, not 413)", r.status == 429, str(r.status))
         server._rbrowser_type_rate = server._viewers_mod.RateWindow(1, 60.0)
         n_before = len(TYPED)
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "a"}) as r:
@@ -582,7 +602,9 @@ async def main():
             return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "why": "busy"}
         rbrowser.type_text = busy
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
-            check("type: another text still being typed in the session is 429 (the page falls back as for a rate limit), not 502", r.status == 429 and r.headers.get("Retry-After") == "1", str(r.status))
+            jb = await r.json()
+            check("type: another text still being typed in the session is 429 with busy true in the body (the page asks again, never sends keys), not 502",
+                  r.status == 429 and r.headers.get("Retry-After") == "1" and jb.get("busy") is True and "ref" in jb, f"{r.status} {jb}")
         rbrowser.type_text = fake_type
         server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}, headers={"Sec-Fetch-Site": "cross-site"}) as r:

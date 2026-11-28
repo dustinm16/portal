@@ -3163,27 +3163,31 @@ def g27(rig, ctx):
         # 2b. characters that are on the map: typed with their own keys, so the map is the same before and after; passwords as separate requests
         import random as _rnd
         rnd = _rnd.Random(27)
+        outside = [chr(cp) for cp in range(0x3B1, 0x3C9)] + [chr(cp) for cp in range(0x4E00, 0x4E40)]
         rc0, map0 = s.x(["/usr/bin/xmodmap", "-pke"])
         ascii_chars = [chr(c) for c in range(0x21, 0x7F)]
         table_all = "".join(chr(cp) for u in rig.sess_mod.keymap_codepoint_units() for cp in u)
         pws = ["".join(rnd.choice(ascii_chars) for _ in range(24)) for _ in range(200)]
         fresh_field("t2a")
-        bad_req = [pw for pw in pws if s.ctl({"op": "type", "text": pw}, timeout=10).get("typed") != 24]
+        pw_replies = [s.ctl({"op": "type", "text": pw}, timeout=10) for pw in pws]
+        bad_req = [pw for pw, rp in zip(pws, pw_replies) if rp.get("typed") != 24]
+        pw_maps = sum(rp.get("map_changes", -1) for rp in pw_replies)
         n, h, head = g27_read(s, 200 * 24, 40)
         rc1, map1 = s.x(["/usr/bin/xmodmap", "-pke"])
         if rc0 != 0:
             failed.append("passwords: xmodmap could not be run, so 'the map did not change' is not measured")
-        elif h == g27_fnv("".join(pws)) and not bad_req and map0 == map1:
-            notes.append("200 passwords of 24 ASCII characters as separate requests arrived exactly; the keyboard map is the same before and after")
+        elif h == g27_fnv("".join(pws)) and not bad_req and map0 == map1 and pw_maps == 0:
+            notes.append("200 passwords of 24 ASCII characters as separate requests arrived exactly; the replies counted 0 keyboard map changes and the map is the same before and after")
         else:
-            failed.append(f"passwords: field length {n} of 4800, hash {'equal' if h == g27_fnv(''.join(pws)) else 'DIFFERENT'}, refused requests {len(bad_req)}, map {'unchanged' if map0 == map1 else 'CHANGED'}")
+            failed.append(f"passwords: field length {n} of 4800, hash {'equal' if h == g27_fnv(''.join(pws)) else 'DIFFERENT'}, refused requests {len(bad_req)}, "
+                          f"map changes counted by the replies {pw_maps} (must be 0), map {'unchanged' if map0 == map1 else 'CHANGED'} (it is put back after a change, so only the count can show one)")
         fresh_field("t2b")
         r = s.ctl({"op": "type", "text": table_all * 20}, timeout=60)
         n, h, head = g27_read(s, len((table_all * 20).encode("utf-16-le")) // 2, 40)
         rc2, map2 = s.x(["/usr/bin/xmodmap", "-pke"])
-        (notes if h == g27_fnv(table_all * 20) and r.get("typed") == len(table_all) * 20 and map2 == map1 else failed).append(
-            f"the {len(table_all)} table characters x 20 through the type request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(table_all * 20) else 'DIFFERENT'}, map {'unchanged' if map2 == map1 else 'CHANGED'}")
-        outside = [chr(cp) for cp in range(0x3B1, 0x3C9)] + [chr(cp) for cp in range(0x4E00, 0x4E40)]
+        (notes if h == g27_fnv(table_all * 20) and r.get("typed") == len(table_all) * 20 and map2 == map1 and r.get("map_changes") == 0 else failed).append(
+            f"the {len(table_all)} table characters x 20 through the type request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(table_all * 20) else 'DIFFERENT'}, "
+            f"map changes counted by the reply {r.get('map_changes')} (must be 0), map {'unchanged' if map2 == map1 else 'CHANGED'}")
         burst, bound = [], rnd.sample(outside, 8)
         while len(burst) < 2000:
             burst += [rnd.choice(bound) for _ in range(rnd.randint(8, 40))]
@@ -3196,6 +3200,44 @@ def g27(rig, ctx):
         n, h, head = g27_read(s, len(burst_text.encode("utf-16-le")) // 2, 40)
         (notes if h == g27_fnv(burst_text) and r.get("typed") == 2000 else failed).append(
             f"burst reuse (bursts over 8 bound characters, then a new one, 2000 characters): typed {r.get('typed')}, hash {'equal' if h == g27_fnv(burst_text) else 'DIFFERENT'}")
+        # 2c. what a member does on the picture meanwhile: Caps Lock on, Shift held, a Control key coming down in the middle of a request
+        def tap(keysym):
+            nv.page.evaluate("(k) => rfb.sendKey(k, null)", keysym)
+
+        def hold(keysym, down):
+            nv.page.evaluate("([k, d]) => rfb.sendKey(k, null, d)", [keysym, down])
+        mixed = "".join(rnd.choice(ascii_chars + list(table_all) + outside[:20]) for _ in range(500))
+        fresh_field("t2d")
+        tap(0xFFE5)
+        time.sleep(0.5)
+        rc3, xq0 = s.x(["/usr/bin/xset", "q"])
+        r = s.ctl({"op": "type", "text": mixed}, timeout=30)
+        n, h, head = g27_read(s, len(mixed.encode("utf-16-le")) // 2, 30)
+        rc4, xq1 = s.x(["/usr/bin/xset", "q"])
+        was_on = "Caps Lock:   on" in xq0
+        still_on = "Caps Lock:   on" in xq1
+        if was_on:
+            tap(0xFFE5)
+        (notes if h == g27_fnv(mixed) and r.get("typed") == 500 and was_on and still_on else failed).append(
+            f"Caps Lock on before a 500-character mixed request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(mixed) else 'DIFFERENT'}, reply {{why {r.get('why')}, warn {r.get('warn')}}}, "
+            f"Caps Lock was on before {was_on} and is on afterwards {still_on} (the member's state is put back; xset q rc {rc3}/{rc4})")
+        fresh_field("t2e")
+        hold(0xFFE1, True)
+        time.sleep(0.3)
+        r = s.ctl({"op": "type", "text": mixed}, timeout=30)
+        hold(0xFFE1, False)
+        n, h, head = g27_read(s, len(mixed.encode("utf-16-le")) // 2, 30)
+        (notes if h == g27_fnv(mixed) and r.get("typed") == 500 else failed).append(
+            f"Shift held by the member during a 500-character request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(mixed) else 'DIFFERENT'}, reply warn {r.get('warn')}")
+        long_ascii = "".join(rnd.choice(ascii_chars) for _ in range(3500))
+        for label, keysym in (("Control", 0xFFE3), ("Alt", 0xFFE9), ("Super", 0xFFEB)):
+            fresh_field("t2f")
+            nv.page.evaluate("([k, ms]) => { setTimeout(() => rfb.sendKey(k, null, true), ms); setTimeout(() => rfb.sendKey(k, null, false), ms + 600); }", [keysym, 150])
+            r = s.ctl({"op": "type", "text": long_ascii}, timeout=60)
+            time.sleep(1.0)
+            n, h, head = g27_read(s, 3500, 30)
+            (notes if h == g27_fnv(long_ascii) and r.get("typed") == 3500 else failed).append(
+                f"{label} pressed for 0.6 s in the middle of a 3500-character request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(long_ascii) else 'DIFFERENT'}, reply why {r.get('why')}, warn {r.get('warn')}")
         # 3. the same 60 typed on the picture through real noVNC: x11vnc has only the keys the reserve and the scratch keys leave, so only some arrive; NONE may be wrong
         fresh_field("t3")
         nv.type_text(chars)

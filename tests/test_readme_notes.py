@@ -2174,11 +2174,16 @@ check("1.26.3: the notes say the first version typed wrong characters in a patte
       "What the first version got wrong" in _s1263 and "119 and 148 wrong characters in 2000" in _s1263 and "collapses white space" in _s1263 and "a rare wrong character under load is not excluded" in _s1263)
 check("1.26.3: the notes give the final measurement: 0 wrong and 0 dropped, 0 map changes for ASCII, passwords and the table, the burst pattern, held Control and the window manager",
       "0 wrong, 0 dropped, 0 extra characters" in _s1263 and "**0 map changes**" in _s1263 and "200 random 24-character passwords" in _s1263 and "3520" in _s1263 and "the burst-reuse pattern" in _s1263
-      and "Held Control" in _s1263 and "2492 X errors" in _s1263)
+      and "The second review's cases" in _s1263 and "40 of 40 exact" in _s1263 and "Control 8 of 10 exact" in _s1263 and "Alt 7 of 10 exact" in _s1263 and "2492 X errors" in _s1263
+      and "9 of 10 exact" in _s1263 and "Caps Lock was on again afterwards in all 10" in _s1263)
+check("1.26.3: the notes say what the second review found and the true size of the modifier race (7 of 8), the grab and the key-ups, Caps Lock, Shift not given back, and no longer call the residual rare or the check the last thing before the press",
+      "**7 of 8**" in _s1263 and "XGrabServer" in _s1263 and "for **every** Control, Alt, Super and AltGr key" in _s1263 and "put back on at the end" in _s1263 and "not given back" in _s1263
+      and "the check is the last thing before the press" not in _s1263 and "rarely (not seen in 6 runs)" not in _s1263 and "stops the run with the reason `modifier` (a partial result) when the key is down again" not in _s1263
+      and "The residual wrong character under load" in _s1263 and "1 wrong character in 60000" in _s1263 and "the error is not fixed" in _s1263)
 check("1.26.3: the notes say the rare loss was not seen, that this is not 'never', and what the mitigation is",
       "The rare loss" in _s1263 and "not \"never\"" in _s1263 and "below about 1 in 5000" in _s1263 and "pause after a map change" in _s1263)
 check("1.26.3: the notes say what stays limited: 7 instead of 16 different characters on the picture, no hold of the picture's keyboard, a modifier between check and press, Caps Lock, a long request",
-      "**7 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "between the check and the press" in _s1263 and "Caps Lock" in _s1263
+      "**7 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "Control 2 of 10 and Alt 3 of 10" in _s1263 and "Caps Lock" in _s1263
       and "55 seconds is more than some proxies wait for" in _s1263)
 check("1.26.3: the notes say a real unit run is the release gate, that this was the rig, and name G27 as written and not run",
       "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263 and "xmodmap -pke" in _s1263
