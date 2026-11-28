@@ -467,7 +467,6 @@ EXEMPT = {
     "http_rbrowser_get_session": "reads the member's own existing session; nothing is started",
     "http_rbrowser_delete_session": "a member ends their own session; maintenance must not keep one open",
     "http_rbrowser_resize": "acts on the member's own running session; the attach (websocket_handler) carries the check",
-    "http_rbrowser_clipboard": "reads the clipboard of the member's own running session; the attach carries the check",
 }
 # The routes that carry the check, by handler name.
 CHECKED = {
@@ -476,6 +475,7 @@ CHECKED = {
     "http_media_page": "/media", "http_spice_page": "/spice", "http_proxmox_page": "/proxmox",
     "http_github_page": "/github", "http_connect_user_connection": "/api/connections/{id}/connect",
     "http_rbrowser_page": "/rbrowser", "http_rbrowser_create_session": "/api/rbrowser/session",
+    "http_rbrowser_clipboard": "/api/rbrowser/session/clipboard", "http_rbrowser_type": "/api/rbrowser/session/type",
 }
 LOOKUPS = re.compile(r"get_accessible_connection\(|get_service_by_id\(|get_service_for_path\(|get_user_connection\(|"
                      r"_get_sftp_connection\(|get_user_connection_by_uuid\(")
@@ -538,8 +538,9 @@ def routes_check(app):
             continue
         if "use_global=True" in src and n != "_maintenance_block":
             glob.append(n)
-    check("routes: only /proxy, /browser, /search and the Web Browser page and start ask for the global flag",
-          sorted(glob) == ["_proxy_connection_authed", "http_browser_page", "http_rbrowser_create_session", "http_rbrowser_page",
+    check("routes: only /proxy, /browser, /search and the Web Browser page, start, clipboard and type ask for the global flag",
+          sorted(glob) == ["_proxy_connection_authed", "http_browser_page", "http_rbrowser_clipboard", "http_rbrowser_create_session", "http_rbrowser_page",
+                           "http_rbrowser_type",
                            "http_searxng_proxy"], str(sorted(glob)))
 
 

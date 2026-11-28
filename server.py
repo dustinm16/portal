@@ -34760,11 +34760,23 @@ async def _rbrowser_own_session(request: web.Request):
     return s, user, None
 
 
+def _rbrowser_body_refusal(request: web.Request, limit: int):
+    """The 413 answer when the request does not say how long its body is (chunked) or says more than `limit` bytes; None otherwise.
+    Called before the body is read."""
+    n = request.content_length
+    if n is None or n > limit:
+        return web.json_response({"error": "Request too large"}, status=413, headers=_RBROWSER_NO_STORE)
+    return None
+
+
 async def http_rbrowser_resize(request: web.Request) -> web.Response:
     """POST /api/rbrowser/session/resize {width, height} (CSS pixels) - one a second."""
     s, user, err = await _rbrowser_own_session(request)
     if err:
         return err
+    too_big = _rbrowser_body_refusal(request, 1024)
+    if too_big:
+        return too_big
     try:
         data = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -34786,6 +34798,9 @@ async def http_rbrowser_clipboard(request: web.Request) -> web.Response:
     s, user, err = await _rbrowser_own_session(request)
     if err:
         return err
+    blocked = await _maintenance_block(request, await authenticate_request(request), None, "the Web Browser", use_global=True, force_json=True)
+    if blocked:
+        return blocked
     if _rbrowser_cfg["rbrowser_clipboard"] != "both":
         return web.json_response({"error": "Copying from the browser is switched off"}, status=403, headers=_RBROWSER_NO_STORE)
     if not _rbrowser_clip_rate.allow(str(user["id"])):
@@ -34804,8 +34819,16 @@ async def http_rbrowser_type(request: web.Request) -> web.Response:
     s, user, err = await _rbrowser_own_session(request)
     if err:
         return err
+    blocked = await _maintenance_block(request, await authenticate_request(request), None, "the Web Browser", use_global=True, force_json=True)
+    if blocked:
+        return blocked
     if _rbrowser_cfg["rbrowser_clipboard"] == "off":
         return web.json_response({"error": "Typing text is switched off"}, status=403, headers=_RBROWSER_NO_STORE)
+    if not _rbrowser_type_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_type", "Too much text sent", user_id=user["id"], headers={"Retry-After": "2"})
+    too_big = _rbrowser_body_refusal(request, 65536)         # 5000 characters of JSON are at most about 60 KB
+    if too_big:
+        return too_big
     try:
         data = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -34813,9 +34836,9 @@ async def http_rbrowser_type(request: web.Request) -> web.Response:
     text = data.get("text") if isinstance(data, dict) else None
     if not isinstance(text, str) or not text or len(text) > 5000:
         return web.json_response({"error": "text must be 1 to 5000 characters"}, status=400, headers=_RBROWSER_NO_STORE)
-    if not _rbrowser_type_rate.allow(str(user["id"])):
-        return await _limited(request, "rbrowser_type", "Too much text sent", user_id=user["id"], headers={"Retry-After": "2"})
     r = await rbrowser.type_text(s, text)
+    if r.get("why") == "busy" and not r["typed"]:
+        return await _limited(request, "rbrowser_type_busy", "Another text is being typed", user_id=user["id"], headers={"Retry-After": "1"})
     body = {"typed": r["typed"], "skipped": r["skipped"], "complete": bool(r["complete"]), "fallback": bool(r["fallback"]), "why": r.get("why", "")}
     if r["ok"] or r["typed"] > 0:
         return web.json_response(body, headers=_RBROWSER_NO_STORE)

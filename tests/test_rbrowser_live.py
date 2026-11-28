@@ -3160,6 +3160,42 @@ def g27(rig, ctx):
         r = s.ctl({"op": "type", "text": again}, timeout=30)
         n, h, head = g27_read(s, len(again.encode("utf-16-le")) // 2)
         (notes if h == g27_fnv(again) and r.get("typed") == 60 else failed).append(f"type request again on the same session: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(again) else 'DIFFERENT'}")
+        # 2b. characters that are on the map: typed with their own keys, so the map is the same before and after; passwords as separate requests
+        import random as _rnd
+        rnd = _rnd.Random(27)
+        rc0, map0 = s.x(["/usr/bin/xmodmap", "-pke"])
+        ascii_chars = [chr(c) for c in range(0x21, 0x7F)]
+        table_all = "".join(chr(cp) for u in rig.sess_mod.keymap_codepoint_units() for cp in u)
+        pws = ["".join(rnd.choice(ascii_chars) for _ in range(24)) for _ in range(200)]
+        fresh_field("t2a")
+        bad_req = [pw for pw in pws if s.ctl({"op": "type", "text": pw}, timeout=10).get("typed") != 24]
+        n, h, head = g27_read(s, 200 * 24, 40)
+        rc1, map1 = s.x(["/usr/bin/xmodmap", "-pke"])
+        if rc0 != 0:
+            failed.append("passwords: xmodmap could not be run, so 'the map did not change' is not measured")
+        elif h == g27_fnv("".join(pws)) and not bad_req and map0 == map1:
+            notes.append("200 passwords of 24 ASCII characters as separate requests arrived exactly; the keyboard map is the same before and after")
+        else:
+            failed.append(f"passwords: field length {n} of 4800, hash {'equal' if h == g27_fnv(''.join(pws)) else 'DIFFERENT'}, refused requests {len(bad_req)}, map {'unchanged' if map0 == map1 else 'CHANGED'}")
+        fresh_field("t2b")
+        r = s.ctl({"op": "type", "text": table_all * 20}, timeout=60)
+        n, h, head = g27_read(s, len((table_all * 20).encode("utf-16-le")) // 2, 40)
+        rc2, map2 = s.x(["/usr/bin/xmodmap", "-pke"])
+        (notes if h == g27_fnv(table_all * 20) and r.get("typed") == len(table_all) * 20 and map2 == map1 else failed).append(
+            f"the {len(table_all)} table characters x 20 through the type request: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(table_all * 20) else 'DIFFERENT'}, map {'unchanged' if map2 == map1 else 'CHANGED'}")
+        outside = [chr(cp) for cp in range(0x3B1, 0x3C9)] + [chr(cp) for cp in range(0x4E00, 0x4E40)]
+        burst, bound = [], rnd.sample(outside, 8)
+        while len(burst) < 2000:
+            burst += [rnd.choice(bound) for _ in range(rnd.randint(8, 40))]
+            new = rnd.choice(outside)
+            burst.append(new)
+            bound = bound[1:] + [new]
+        burst_text = "".join(burst[:2000])
+        fresh_field("t2c")
+        r = s.ctl({"op": "type", "text": burst_text}, timeout=60)
+        n, h, head = g27_read(s, len(burst_text.encode("utf-16-le")) // 2, 40)
+        (notes if h == g27_fnv(burst_text) and r.get("typed") == 2000 else failed).append(
+            f"burst reuse (bursts over 8 bound characters, then a new one, 2000 characters): typed {r.get('typed')}, hash {'equal' if h == g27_fnv(burst_text) else 'DIFFERENT'}")
         # 3. the same 60 typed on the picture through real noVNC: x11vnc has only the keys the reserve and the scratch keys leave, so only some arrive; NONE may be wrong
         fresh_field("t3")
         nv.type_text(chars)

@@ -1564,7 +1564,7 @@
                         <span class="endpoint-desc">Resize the window</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Body <code>{ "width", "height" }</code>. Answers <code>{ "ok": true|false }</code>; one call per second per member (<code>429</code>); <code>404</code>, <code>409 {"elsewhere"}</code> and <code>403</code> as above. Only the sign-in that made the session may resize it.</p>
+                        <p>Body <code>{ "width", "height" }</code>. Answers <code>{ "ok": true|false }</code>; one call per second per member (<code>429</code>); <code>413</code> for a body above 1 KiB or without <code>Content-Length</code>; <code>404</code>, <code>409 {"elsewhere"}</code> and <code>403</code> as above. Only the sign-in that made the session may resize it.</p>
                     </div>
                 </div>
 
@@ -1586,7 +1586,7 @@
                         <span class="endpoint-desc">Type text in the remote browser</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Body <code>{ "text" }</code> (1 to 5000 characters). The supervisor in the session's unit types the text itself, so any character types, not only those of the keyboard table. Answers <code>{ "typed", "skipped", "complete", "fallback", "why" }</code>; <code>fallback</code> is true only when nothing was typed and the page may send the text as key events (<code>501</code>). A partial run is <code>200</code> with <code>complete</code> false; an unknown outcome is <code>502</code>. <code>403</code> when <code>rbrowser_clipboard</code> is <code>off</code>; 300 calls a minute per member (<code>429</code>). Only the sign-in that made the session may use it. The text is never logged or audited.</p>
+                        <p>Body <code>{ "text" }</code> (1 to 5000 characters). The supervisor in the session's unit types the text itself: a character that is on the keyboard map (ASCII on the US layout and every character of the prepared table) is pressed with its own key and Shift, the map is not touched for it; any other character is bound to one of the supervisor's own keys first, so any character types. Answers <code>{ "typed", "skipped", "complete", "fallback", "why" }</code>; <code>fallback</code> is true only when nothing was typed and the page may send the text as key events (<code>501</code>). A partial run is <code>200</code> with <code>complete</code> false; an unknown outcome is <code>502</code>. <code>403</code> when <code>rbrowser_clipboard</code> is <code>off</code>; <code>413</code> for a body above 64 KiB or without <code>Content-Length</code>; <code>503</code> in maintenance mode; 300 calls a minute per member (<code>429</code>, also while another text of the session is still being typed). Only the sign-in that made the session may use it. The text is never logged or audited.</p>
                     </div>
                 </div>
 

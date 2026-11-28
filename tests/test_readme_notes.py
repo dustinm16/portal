@@ -2128,7 +2128,7 @@ check("1.26.1: the notes say both typing paths give one keysym per character thr
 check("1.26.1: the notes say x11vnc's arguments and the clipboard flags did not change, and the code agrees",
       "x11vnc's arguments did not change" in _s1261 and "-nosetclipboard" in _s1261 and "-add_keysyms" not in _sess1261.split("def x11vnc_argv")[1].split("def valid_theme_mode")[0])
 check("1.26.1: the notes give the 18 free keys, the 16 kept free and say the step is not fatal, with the constant and the log line in the code",
-      "18 such keys" in _s1261 and "16 keys stay free" in _s1261 and "KEYMAP_RESERVE = 16" in _sess1261 and "the keyboard map was not prepared" in _s1261 and "the keyboard map was not prepared" in _sess1261)
+      "18 such keys" in _s1261 and "16 keys stay free" in _s1261 and "KEYMAP_RESERVE = 15" in _sess1261 and "the keyboard map was not prepared" in _s1261 and "the keyboard map was not prepared" in _sess1261)
 check("1.26.1: the notes say it was measured on a rig, not in a real unit, and that the two live gates were changed and not run",
       "A rig, not a real unit" in _s1261 and "**Not run:**" in _s1261 and "`G17`" in _s1261 and "`G21`" in _s1261 and "not \"cannot happen\"" in _s1261 and "real page" in _s1261 and "raw RFB client" in _s1261)
 
@@ -2160,27 +2160,32 @@ _m1263 = re.search(r"### Upgrade notes for 1\.26\.3\n(.*?)(?=\n### )", text, re.
 _s1263 = _m1263.group(1) if _m1263 else ""
 _sess1263 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
 check("1.26.3: README has an 'Upgrade notes for 1.26.3' section above the 1.26.2 one", _m1263 is not None and text.index("### Upgrade notes for 1.26.3") < text.index("### Upgrade notes for 1.26.2"))
-check("1.26.3: the notes say nothing is migrated, name the route and rbrowser.js v5, and that a running session keeps the old supervisor and its page types as before",
-      "Nothing has to be changed and nothing is migrated" in _s1263 and "`POST /api/rbrowser/session/type`" in _s1263 and "`rbrowser.js` v5" in _s1263 and "keeps the old supervisor" in _s1263
+check("1.26.3: the notes say nothing is migrated, name the route and rbrowser.js v5, that a portal restart ends every session so the old-unit fallback is only a guard",
+      "Nothing has to be changed and nothing is migrated" in _s1263 and "`POST /api/rbrowser/session/type`" in _s1263 and "`rbrowser.js` v5" in _s1263 and "ends every running session (`portal_stop`)" in _s1263
       and "Going back to 1.26.2 needs nothing" in _s1263)
 check("1.26.3: the notes say what was tried first and why it failed (wrong characters, not only drops), with the numbers measured",
       "giving keys back" in _s1263 and "285 wrong characters and 1473 dropped" in _s1263 and "995 of 1200" in _s1263 and "A wrong character is worse than a dropped one" in _s1263 and "MappingNotify" in _s1263)
-check("1.26.3: the notes give the constants the code has (8 scratch keys, 10 ms, 80 ms settle, 5000 characters, 55 s, 70000 bytes) and the code has them",
-      all(x in _s1263 for x in ("8 scratch keys", "waits 10 ms", "80 ms after the last press", "At most 5000 characters", "55 seconds", "70000 bytes"))
+check("1.26.3: the notes give the rule (own keys for characters on the map, scratch keys for the others, age rule) and the constants the code has",
+      "is typed by pressing its own key" in _s1263 and "the map is not touched for it" in _s1263 and "**Only a character that is on no key**" in _s1263 and "never sooner than 80 ms after its last press" in _s1263
+      and all(x in _s1263 for x in ("8 scratch keys", "waits 10 ms", "At most 5000 characters", "55 seconds", "70000 bytes"))
       and "SCRATCH_COUNT = 8 " in _sess1263 and "TYPE_MAP_WAIT_S = 0.010 " in _sess1263 and "TYPE_SETTLE_S = 0.080 " in _sess1263 and "TYPE_MAX_CHARS = 5000 " in _sess1263
-      and "TYPE_BUDGET_S = 55.0 " in _sess1263 and "CTL_TYPE_MAX = 70000 " in _sess1263)
-check("1.26.3: the notes give the measurement of the new path (15400 characters, 0 wrong, 0 dropped, ms per character) and how it was tuned",
-      "15400 characters" in _s1263 and "**0 wrong, 0 dropped**" in _s1263 and "3851 of 5000" in _s1263 and "14 wrong in 5000" in _s1263 and "10.1 to 10.7 ms" in _s1263)
+      and "TYPE_BUDGET_S = 55.0 " in _sess1263 and "CTL_TYPE_MAX = 70000 " in _sess1263 and "KEYMAP_RESERVE = 15 " in _sess1263)
+check("1.26.3: the notes say the first version typed wrong characters in a pattern the first measurement did not cover, with the reviewer's numbers, and the corrected method error",
+      "What the first version got wrong" in _s1263 and "119 and 148 wrong characters in 2000" in _s1263 and "collapses white space" in _s1263 and "a rare wrong character under load is not excluded" in _s1263)
+check("1.26.3: the notes give the final measurement: 0 wrong and 0 dropped, 0 map changes for ASCII, passwords and the table, the burst pattern, held Control and the window manager",
+      "0 wrong, 0 dropped, 0 extra characters" in _s1263 and "**0 map changes**" in _s1263 and "200 random 24-character passwords" in _s1263 and "3520" in _s1263 and "the burst-reuse pattern" in _s1263
+      and "Held Control" in _s1263 and "2492 X errors" in _s1263)
 check("1.26.3: the notes say the rare loss was not seen, that this is not 'never', and what the mitigation is",
-      "The rare loss" in _s1263 and "none was seen in 15400 characters" in _s1263 and "not \"never\"" in _s1263 and "10 ms pause after a map change" in _s1263)
-check("1.26.3: the notes say what stays limited: 8 instead of 16 different characters on the picture, no hold of the picture's keyboard, a long request",
-      "**8 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "55 seconds is more than some proxies wait for" in _s1263)
+      "The rare loss" in _s1263 and "not \"never\"" in _s1263 and "below about 1 in 5000" in _s1263 and "pause after a map change" in _s1263)
+check("1.26.3: the notes say what stays limited: 7 instead of 16 different characters on the picture, no hold of the picture's keyboard, a modifier between check and press, Caps Lock, a long request",
+      "**7 different characters outside the table per session instead of 16**" in _s1263 and "does not hold the picture's keyboard" in _s1263 and "between the check and the press" in _s1263 and "Caps Lock" in _s1263
+      and "55 seconds is more than some proxies wait for" in _s1263)
 check("1.26.3: the notes say a real unit run is the release gate, that this was the rig, and name G27 as written and not run",
-      "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263
+      "A real unit run is the release gate" in _s1263 and "the rig, not a real unit" in _s1263 and "`G27`" in _s1263 and "written, not run" in _s1263 and "xmodmap -pke" in _s1263
       and '@gate("G27"' in (ROOT / "tests" / "test_rbrowser_live.py").read_text(encoding="utf-8"))
-check("1.26.3: the route is in the README's route list, in docs/API.md and in /api-docs",
+check("1.26.3: the route is in the README's route list, in docs/API.md and in /api-docs, with the 413 and maintenance answers",
       "`POST /api/rbrowser/session/type`" in text.split("- **Routes:**")[1].split("\n")[0] and "#### POST /api/rbrowser/session/type" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
-      and "/api/rbrowser/session/type" in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8"))
+      and "/api/rbrowser/session/type" in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8") and "`413`" in (ROOT / "docs" / "API.md").read_text(encoding="utf-8").split("#### POST /api/rbrowser/session/type")[1].split("####")[0])
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

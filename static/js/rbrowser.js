@@ -893,8 +893,10 @@ function create(env) {
                     first.resolve(await enqueueKeys(first.keys));
                     continue;
                 }
-                const batch = [];                       // the text jobs at the head join into one request
-                while (routeQueue.length && !routeQueue[0].keys && (!batch.length || (!routeQueue[0].release && !batch[0].release))) {
+                const batch = [];                       // the text jobs at the head join into one request, never above TYPE_MAX_CHARS characters
+                let total = 0;
+                while (routeQueue.length && !routeQueue[0].keys && (!batch.length || (!routeQueue[0].release && !batch[0].release && total + routeQueue[0].n <= TYPE_MAX_CHARS))) {
+                    total += routeQueue[0].n;
                     batch.push(routeQueue.shift());
                 }
                 await runRouteBatch(batch);
@@ -925,7 +927,10 @@ function create(env) {
                 const part = Math.max(0, Math.min(n, left));
                 left -= part;
                 if (!j.said) {
-                    say(part ? 'Only ' + part + ' of ' + n + ' characters were typed.' : 'The text could not be typed.');
+                    // an answer that did not come (status 0) or an unknown outcome (502): the unit may have typed, in part or in full
+                    const unknown = !typed && (r.status === 0 || r.status === 502);
+                    say(unknown ? 'The text may have been typed, in part or in full. Check before sending it again.'
+                        : part ? 'Only ' + part + ' of ' + n + ' characters were typed.' : 'The text could not be typed.');
                     j.said = true;
                 }
                 j.resolve({ ok: false, reason: 'failed', sent: part, skipped: j.skipped });
@@ -984,7 +989,7 @@ function create(env) {
         const m = keysymsForText(chars.join(''));
         if (!m.keys.length) return Promise.resolve({ ok: true, sent: 0, skipped: m.skipped });
         if (routeAllowed(opts) || (serverTyping && clipMode !== 'off' && (routing || routeQueue.length))) {
-            return enqueueRoute({ text: chars.join(''), fkeys: m.keys, skipped: m.skipped, release: !!(opts && opts.releaseModifiers) });
+            return enqueueRoute({ text: chars.join(''), n: chars.length, fkeys: m.keys, skipped: m.skipped, release: !!(opts && opts.releaseModifiers) });
         }
         return enqueueKeys(m.keys, { releaseModifiers: opts && opts.releaseModifiers, skipped: m.skipped });
     }

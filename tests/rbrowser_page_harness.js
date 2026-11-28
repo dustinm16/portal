@@ -820,7 +820,7 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     w.route(TYPE, json(502, { error: 'x', typed: 0, fallback: false, why: 'reply' }));
     await connect(w, { type_text: true });
     r = await w.ctl.typeText('abc');
-    check('an unknown outcome (502, fallback false) is a failure and no key is sent', !r.ok && w.rfbs[0].keys.length === 0 && /could not be typed/.test(text(w, 'rb-text-msg')));
+    check('an unknown outcome (502, fallback false) is a failure and no key is sent', !r.ok && w.rfbs[0].keys.length === 0 && /may have been typed/.test(text(w, 'rb-text-msg')));
     w = world();
     w.route(TYPE, json(200, { typed: 1, skipped: 0, complete: true, fallback: false, why: '' }));
     await connect(w, { type_text: true, clipboard: 'off' });
@@ -843,6 +843,44 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     await connect(w);
     await w.ctl.typeText('abc');
     check('a session that does not offer type_text types as key events, as before', typeCalls(w).length === 0 && hex(sent(w.rfbs[0])) === '61,62,63');
+    // S2: an answer that did not come or an unknown outcome is not "could not be typed"
+    w = world();
+    w.route(TYPE, json(502, { error: 'x', typed: 0, fallback: false, why: 'reply' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('a 502 says the text may have been typed, in part or in full, and to check before sending it again',
+      !r.ok && /may have been typed, in part or in full\. Check before sending it again\./.test(text(w, 'rb-text-msg')) && w.rfbs[0].keys.length === 0, text(w, 'rb-text-msg'));
+    w = world();
+    w.route(TYPE, 'throw');
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('a network error (status 0) says the same and sends no key', !r.ok && /may have been typed, in part or in full/.test(text(w, 'rb-text-msg')) && w.rfbs[0].keys.length === 0, text(w, 'rb-text-msg'));
+    w = world();
+    w.route(TYPE, json(503, { error: 'maintenance' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('a refusal that is not an unknown outcome (503) says it could not be typed and sends no key', !r.ok && /could not be typed/.test(text(w, 'rb-text-msg')) && w.rfbs[0].keys.length === 0);
+    // S3: queued text is never joined above 5000 characters, and goes in order
+    w = world();
+    w.route(TYPE, json(200, { typed: 3000, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true });
+    const A = 'a'.repeat(3000), B = 'b'.repeat(3000), C = 'c'.repeat(1500), D = 'd'.repeat(1500), E = '\u{1F600}'.repeat(2500);
+    const q = [w.ctl.typeText(A), w.ctl.typeText(B), w.ctl.typeText(C), w.ctl.typeText(D), w.ctl.typeText(E)];
+    await Promise.all(q);
+    const bodies = typeCalls(w).map(c => c.body.text);
+    check('joined text never goes above 5000 characters in one request and the order is kept (3000 | 3000+1500 | 1500+2500 emoji; B and D are not joined with C and E past 5000)',
+      bodies.every(t => Array.from(t).length <= 5000) && bodies.join('') === A + B + C + D + E && JSON.stringify(bodies.map(t => Array.from(t).length)) === '[3000,4500,4000]', JSON.stringify(bodies.map(t => Array.from(t).length)));
+    w = world();
+    w.route(TYPE, json(200, { typed: 3000, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true });
+    await Promise.all([w.ctl.typeText(A), w.ctl.typeText(B), w.ctl.typeText('e'.repeat(2500))]);
+    check('two queued texts that together are above 5000 characters are two requests, in order', JSON.stringify(typeCalls(w).map(c => c.body.text.length)) === '[3000,3000,2500]', JSON.stringify(typeCalls(w).map(c => c.body.text.length)));
+    // S6: a 429 (busy or rate) falls back to key events for that text, never twice
+    w = world();
+    w.route(TYPE, [json(429, { error: 'busy' }), json(200, { typed: 2, skipped: 0, complete: true, fallback: false, why: '' })]);
+    await connect(w, { type_text: true });
+    await w.ctl.typeText('ab');
+    check('after a 429 the text goes as keys exactly once and no second request is made for it', typeCalls(w).length === 1 && hex(sent(w.rfbs[0])) === '61,62');
   });
 
   // ---- paste ----

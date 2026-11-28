@@ -74,7 +74,8 @@ TYPE_BUDGET_S = 55.0          # time limit of one `type` request (5000 different
 SCRATCH_COUNT = 8             # keys this process owns for typing; never empty, so x11vnc never takes one
 SCRATCH_SYM = 0xFFFFFF        # VoidSymbol: what a scratch key holds when it is not in use
 TYPE_MAP_WAIT_S = 0.010       # between a key's new binding and its press (Chromium reads the map on the change)
-TYPE_SETTLE_S = 0.080         # the scratch keys go back to the placeholder this long after the last press (Chromium reads a key later than it is sent)
+TYPE_SETTLE_S = 0.080         # a scratch key is not rebound, and goes back to the placeholder, sooner than this after its last press (Chromium reads a key later than it is sent)
+TYPE_MOD_STRIKES = 1          # a held Control, Alt, Super or AltGr key is released this many times; found down again after that, the run stops
 TYPE_PUMP_S = 0.05            # the window manager is served at least this often while typing
 KEYSYM_RETURN = 0xFF0D
 KEYSYM_TAB = 0xFF09
@@ -338,7 +339,7 @@ RR_VSYNC_NEGATIVE = 0x8
 # measurement, 1.26.1]. The map is therefore prepared before x11vnc and Chromium start: letters with both cases and the
 # usual signs go onto keys, two keysyms on one key (lower case, then Shift), and keys that carry only media and
 # launcher symbols (XF86...; the unit has no audio and no desktop) are used for it as well. Browser navigation keys are kept.
-KEYMAP_RESERVE = 16            # keys that stay empty for x11vnc's own on-the-fly additions
+KEYMAP_RESERVE = 15            # keys that stay free after the table; SCRATCH_COUNT (8) of them become the supervisor's typing keys, 7 stay empty for x11vnc's own additions (1.26.3: 15, was 16: the em dash did not fit)
 XF86_FIRST = 0x1008FF00
 XF86_LAST = 0x1008FFFF
 KEYMAP_KEEP = frozenset({0x1008FF18, 0x1008FF1B, 0x1008FF26, 0x1008FF27, 0x1008FF28, 0x1008FF29, 0x1008FF30, 0x1008FF38, 0x1008FF73})
@@ -502,7 +503,7 @@ def plan_keymap(rows, min_keycode, reserve=KEYMAP_RESERVE, units=None):
     if not rows:
         return {}
     width = len(rows[0])
-    present = {k for row in rows for k in row if k}
+    present = {k for row in rows for k in row[:2] if k}      # on the first two levels of a key: a character on a higher level needs a key of its own to be typed without a map change
     free, spare = [], []
     for i, row in enumerate(rows):
         kc = min_keycode + i
@@ -566,6 +567,11 @@ class _XErrorEvent(ctypes.Structure):
                 ("minor_code", ctypes.c_ubyte)]
 
 
+class _XModMap(ctypes.Structure):
+    """XModifierKeymap of <X11/Xlib.h>."""
+    _fields_ = [("max", ctypes.c_int), ("map", ctypes.POINTER(ctypes.c_ubyte))]
+
+
 BAD_ACCESS = 10
 _KEEP = []          # the C callbacks must stay referenced for the life of the process (a collected one is a crash)
 
@@ -607,6 +613,7 @@ class ModeHolder:
         x11.XDefaultRootWindow.restype, x11.XDefaultRootWindow.argtypes = ul, [vp]
         x11.XCloseDisplay.argtypes = [vp]
         x11.XSync.argtypes = [vp, ctypes.c_int]
+        x11.XQueryKeymap.argtypes = [vp, ctypes.POINTER(ctypes.c_char * 32)]
         x11.XSetErrorHandler.argtypes = [vp]
         x11.XSetIOErrorHandler.argtypes = [vp]
         x11.XNextRequest.restype, x11.XNextRequest.argtypes = ul, [vp]
@@ -725,6 +732,8 @@ class ModeHolder:
             rows = [tuple(int(table[i * w + j]) for j in range(w)) for i in range(count)]
         finally:
             x11.XFree(table)
+        if self.xtst is not None and not self._xtest_present():
+            self.xtst = None                       # no XTEST extension: nothing can be typed from here, the portal sends key events instead
         plan = plan_keymap(rows, lo.value)
         scratch = plan_scratch(rows, lo.value, plan) if self.xtst is not None else []
         if not plan and not scratch:
@@ -742,32 +751,68 @@ class ModeHolder:
             return 0
         if scratch:
             self.scratch, self.width = scratch, w
-            self.typer = ScratchTyper(x11, self.xtst, dpy, scratch, w)
+            final = apply_plan(rows, lo.value, plan)
+            shift, held = modifier_keycodes(self._modifier_map(), final, lo.value)
+            self.typer = ScratchTyper(x11, self.xtst, dpy, scratch, w, index=build_key_index(final, lo.value, exclude=set(scratch)), shift=shift, held=held)
         return len(plan)
 
+    def _xtest_present(self):
+        """True when the X server has the XTEST extension (XTestQueryExtension)."""
+        try:
+            ci = ctypes.c_int
+            self.xtst.XTestQueryExtension.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(ci)] * 4
+            a, b, c, d = ci(), ci(), ci(), ci()
+            return bool(self.xtst.XTestQueryExtension(self.dpy, ctypes.byref(a), ctypes.byref(b), ctypes.byref(c), ctypes.byref(d)))
+        except Exception:
+            return False
+
+    def _modifier_map(self):
+        """The 8 lists of keycodes of the server's modifier map (XGetModifierMapping), or [] when it cannot be read."""
+        try:
+            x11 = self.x11
+            x11.XGetModifierMapping.restype = ctypes.POINTER(_XModMap)
+            x11.XGetModifierMapping.argtypes = [ctypes.c_void_p]
+            x11.XFreeModifiermap.argtypes = [ctypes.POINTER(_XModMap)]
+            m = x11.XGetModifierMapping(self.dpy)
+            if not m:
+                return []
+            try:
+                per = m.contents.max
+                return parse_modifier_map(per, [m.contents.map[i] for i in range(8 * per)])
+            finally:
+                x11.XFreeModifiermap(m)
+        except Exception:
+            return []
+
+    def _own_error(self, first, end):
+        """True when an X error was recorded for a request with a serial in [first, end)."""
+        return any(first <= serial < end for serial, _code in list(self.recent))
+
     def type_text(self, text, budget_s=TYPE_BUDGET_S, pump=lambda: None, stopping=lambda: False):
-        """Types `text` through the scratch keys (see ScratchTyper). Returns {"ok", "typed", "skipped", "complete"[, "why"]}; why is
-        "unavailable" when the keys or XTEST are not there (nothing was typed), else the reason it stopped early. Never raises."""
+        """Types `text` (see ScratchTyper). Returns {"ok", "typed", "skipped", "complete"[, "why"]}; why is "unavailable" when the keys or
+        XTEST are not there (nothing was typed), else the reason it stopped early. Errors of the window manager on this connection do not
+        stop a run. Never raises."""
         res = {"ok": False, "typed": 0, "skipped": 0, "complete": False}
-        if self.typer is None or not self.dpy:
+        typer = self.typer
+        if typer is None or not self.dpy:
             return dict(res, why="unavailable")
         try:
             keys, skipped = type_keysyms(text)
             res["skipped"] = skipped
             self.x11.XSync(self.dpy, 0)
-            first = self.x11.XNextRequest(self.dpy)
-            typed, why = self.typer.type(keys, budget_s, pump, stopping, failed=lambda: bool(self.errors_since(first)))
+            typed, why = typer.type(keys, budget_s, pump, stopping, error_in=self._own_error)
             res["typed"] = typed
-            self.typer.release()
-            if self.errors_since(first) and not why:
-                why = "failed"
-            res["complete"] = not why
-            res["ok"] = not why
+            res["complete"] = res["ok"] = not why
             if why:
                 res["why"] = why
         except Exception:
             res["why"] = "failed"
             log("typing failed")
+        finally:
+            try:
+                typer.release()
+            except Exception:
+                log("typing keys not restored")
         return res
 
     def close(self):
@@ -1201,26 +1246,146 @@ def plan_scratch(rows, min_keycode, plan, n=SCRATCH_COUNT):
     return sorted(free)[-n:] if n > 0 else []
 
 
-class ScratchTyper:
-    """Types keysyms through XTEST on `scratch` keys that only this object binds. A key is bound to the keysym, the server is synced,
-    10 ms pass, the key goes down and up; a keysym that a scratch key holds already needs no binding; the least recently used key is
-    the one rebound. Idle keys hold SCRATCH_SYM and are never empty: x11vnc takes only empty ones."""
+def apply_plan(rows, min_keycode, plan):
+    """`rows` with the keys of `plan` replaced, as the map reads after prefill_keymap wrote it. Pure."""
+    return [tuple(plan[min_keycode + i]) if (min_keycode + i) in plan else tuple(r) for i, r in enumerate(rows)]
 
-    def __init__(self, x11, xtst, dpy, scratch, width, clock=time.monotonic, sleep=time.sleep):
+
+def build_key_index(rows, min_keycode, exclude=()):
+    """{keysym: (keycode, level)} of the keys that exist on the map: level 0 is the first column, level 1 the second (Shift). A keysym on
+    both levels, or on several keys, takes level 0 and then the lowest keycode. The first key, the keys in `exclude` (the typing keys)
+    and the placeholder keysym are never in it. Built once after the prefill; the map is never read again for it. Pure."""
+    best = {}
+    for i, row in enumerate(rows):
+        kc = min_keycode + i
+        if kc == min_keycode or kc in exclude:
+            continue
+        for level in (0, 1):
+            sym = row[level] if level < len(row) else 0
+            if not sym or sym == SCRATCH_SYM:
+                continue
+            cand = (level, kc)
+            if sym not in best or cand < best[sym]:
+                best[sym] = cand
+    return {sym: (kc, level) for sym, (level, kc) in best.items()}
+
+
+def keysym_candidates(sym):
+    """The keysyms a character may sit on the map as: its own and, above Latin-1, the legacy one the prefilled table uses (the one noVNC sends)."""
+    if sym >= 0x01000000:
+        legacy = KEYMAP_KEYSYMS.get(sym & 0xFFFFFF)
+        return [sym, legacy] if legacy else [sym]
+    return [sym]
+
+
+def parse_modifier_map(per_mod, codes):
+    """The 8 lists of keycodes (Shift, Lock, Control, Mod1 to Mod5) of an XModifierKeymap: `per_mod` keycodes each, 0 = unused. Pure."""
+    codes = list(codes)
+    return [[c for c in codes[m * per_mod:(m + 1) * per_mod] if c] for m in range(8)] if per_mod > 0 else [[] for _ in range(8)]
+
+
+_MOD_FALLBACK = {"shift": (0xFFE1, 0xFFE2), "held": (0xFFE3, 0xFFE4, 0xFFE7, 0xFFE8, 0xFFE9, 0xFFEA, 0xFFEB, 0xFFEC, 0xFFED, 0xFFEE, 0xFE03)}
+
+
+def modifier_keycodes(modmap, rows, min_keycode):
+    """(shift_keycode or 0, [keycodes whose being down turns typed characters into shortcuts]): Shift from the modifier map (the first key of
+    Shift), the held ones from Control, Mod1 (Alt), Mod4 (Super) and Mod5 (AltGr); NumLock (Mod2) and Lock are not. Without a modifier map the keys are found by their keysyms in `rows`. Pure."""
+    mm = modmap if modmap and len(modmap) == 8 and any(modmap) else None
+    by_sym = {}
+    for i, row in enumerate(rows):
+        if row and row[0]:
+            by_sym.setdefault(row[0], min_keycode + i)
+    if mm:
+        shift = mm[0][0] if mm[0] else 0
+        held = sorted({c for m in (2, 3, 6, 7) for c in mm[m]})
+    else:
+        shift = next((by_sym[k] for k in _MOD_FALLBACK["shift"] if k in by_sym), 0)
+        held = sorted({by_sym[k] for k in _MOD_FALLBACK["held"] if k in by_sym})
+    return shift, held
+
+
+def keys_down(keymap, keycodes):
+    """Which of `keycodes` are down in the 32 bytes XQueryKeymap returned (bit keycode % 8 of byte keycode // 8). Pure."""
+    return [kc for kc in keycodes if kc // 8 < len(keymap) and keymap[kc // 8] >> (kc % 8) & 1]
+
+
+class ScratchTyper:
+    """Types keysyms through XTEST. A keysym that is on the keyboard map (`index`, from build_key_index) is typed with its own key and
+    Shift for the second level: Shift down, key down, key up, Shift up; the map is not touched. Only a keysym that is on no key uses a
+    scratch key, which only this object binds: bound, synced, TYPE_MAP_WAIT_S passes, down and up; one a scratch key holds already needs no
+    binding; the least recently used key is rebound, and not sooner than TYPE_SETTLE_S after its last press. Idle scratch keys hold
+    SCRATCH_SYM and are never empty: x11vnc takes only empty ones. Before every character a held Control, Alt, Super or AltGr key is released
+    (`held`, read with XQueryKeymap); found down again more than TYPE_MOD_STRIKES times, the run stops."""
+
+    def __init__(self, x11, xtst, dpy, scratch, width, clock=time.monotonic, sleep=time.sleep, index=None, shift=0, held=()):
         self.x11, self.xtst, self.dpy, self.width = x11, xtst, dpy, width
         self.clock, self.sleep = clock, sleep
         self.order = list(scratch)                      # least recently used first
         self.bound = {kc: SCRATCH_SYM for kc in scratch}
         self.last = {kc: float("-inf") for kc in scratch}
+        self.index, self.shift, self.held = dict(index or {}), shift, list(held)
+        self.map_changes = 0                            # XChangeKeyboardMapping calls made (a run of characters on the map makes none)
+        self.strikes = 0
+        self.ranges = []                                # request serials [first, end) of the typer's own requests since the last error check
+
+    def _mark(self, first):
+        try:
+            self.ranges.append((int(first), int(self.x11.XNextRequest(self.dpy))))
+        except Exception:
+            pass
+
+    def _own_error(self, error_in):
+        ranges, self.ranges = self.ranges, []
+        return any(error_in(a, b) for a, b in ranges)
 
     def _bind(self, kc, sym):
         arr = (ctypes.c_ulong * self.width)(*([sym] * self.width))
+        first = self.x11.XNextRequest(self.dpy)
         self.x11.XChangeKeyboardMapping(self.dpy, kc, self.width, arr, 1)
+        self.map_changes += 1
         self.x11.XSync(self.dpy, 0)
+        self._mark(first)
         self.bound[kc] = sym
 
-    def type(self, keysyms, budget_s=TYPE_BUDGET_S, pump=lambda: None, stopping=lambda: False, failed=lambda: False):
-        """(typed, why): how many keysyms were typed and why it stopped early ("" = all typed; budget, stopping, failed)."""
+    def _guard(self):
+        """False when a modifier that makes shortcuts keeps coming back. Releases the ones found down."""
+        if not self.held:
+            return True
+        buf = (ctypes.c_char * 32)()
+        self.x11.XQueryKeymap(self.dpy, buf)
+        down = keys_down(bytes(buf.raw), self.held)
+        if not down:
+            return True
+        self.strikes += 1
+        if self.strikes > TYPE_MOD_STRIKES:
+            return False
+        for kc in down:
+            self.xtst.XTestFakeKeyEvent(self.dpy, kc, 0, 0)
+        self.x11.XSync(self.dpy, 0)
+        self.x11.XQueryKeymap(self.dpy, buf)                # still, or already again, down: it is held by something, stop before a shortcut
+        if keys_down(bytes(buf.raw), self.held):
+            self.strikes += 1
+            return False
+        return True
+
+    def _press(self, kc, level):
+        """One key, with Shift held around it for level 1. True when X took every event."""
+        first = self.x11.XNextRequest(self.dpy)
+        x = self.xtst.XTestFakeKeyEvent
+        ok = True
+        if level:
+            ok = bool(x(self.dpy, self.shift, 1, 0))
+        ok = bool(x(self.dpy, kc, 1, 0)) and ok
+        ok = bool(x(self.dpy, kc, 0, 0)) and ok
+        if level:
+            ok = bool(x(self.dpy, self.shift, 0, 0)) and ok
+        self._mark(first)
+        return ok
+
+    def type(self, keysyms, budget_s=TYPE_BUDGET_S, pump=lambda: None, stopping=lambda: False, error_in=lambda a, b: False):
+        """(typed, why): how many keysyms were typed and why it stopped early ("" = all typed; budget, stopping, failed, modifier).
+        `error_in(first, end)` tells whether an X error belongs to a request with a serial in [first, end): only errors of this object's own
+        requests stop a run, never those of the window manager on the same connection."""
         deadline = self.clock() + budget_s
         next_pump = self.clock()
         typed = 0
@@ -1233,22 +1398,46 @@ class ScratchTyper:
             if now >= next_pump:
                 pump()
                 next_pump = self.clock() + TYPE_PUMP_S
-            kc = next((k for k in self.order if self.bound[k] == sym), None)
-            if kc is None:
-                kc = self.order[0]
-                self._bind(kc, sym)
-                if failed():
+            own = next((self.index[c] for c in keysym_candidates(sym) if c in self.index), None)
+            if own is not None and own[1] and not self.shift:
+                own = None
+            if own is not None:
+                if not self._guard():
+                    return typed, "modifier"
+                if not self._press(*own):
                     return typed, "failed"
-                self.sleep(TYPE_MAP_WAIT_S)
-            self.order.remove(kc)
-            self.order.append(kc)
-            down = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 1, 0)
-            up = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 0, 0)
-            self.x11.XSync(self.dpy, 0)
-            self.last[kc] = self.clock()
-            if not down or not up:
-                return typed, "failed"
+            else:
+                kc = next((k for k in self.order if self.bound[k] == sym), None)
+                if kc is None:
+                    kc = self.order[0]
+                    if self.bound[kc] != SCRATCH_SYM:
+                        wait = self.last[kc] + TYPE_SETTLE_S - self.clock()
+                        if wait > 0:
+                            self.sleep(wait)
+                    self._bind(kc, sym)
+                    if self._own_error(error_in):
+                        return typed, "failed"
+                    self.sleep(TYPE_MAP_WAIT_S)
+                self.order.remove(kc)
+                self.order.append(kc)
+                if not self._guard():                      # after the wait: the check must be the last thing before the press
+                    return typed, "modifier"
+                first = self.x11.XNextRequest(self.dpy)
+                down = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 1, 0)
+                up = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 0, 0)
+                self._mark(first)
+                self.x11.XSync(self.dpy, 0)
+                self.last[kc] = self.clock()
+                if not down or not up:
+                    return typed, "failed"
             typed += 1
+            if self.ranges and len(self.ranges) >= 64:
+                self.x11.XSync(self.dpy, 0)
+                if self._own_error(error_in):
+                    return typed, "failed"
+        self.x11.XSync(self.dpy, 0)
+        if self._own_error(error_in):
+            return typed, "failed"
         return typed, ""
 
     def release(self):

@@ -1450,19 +1450,38 @@ check("scratch plan: with the plan's reserve the keys x11vnc keeps are what is l
 
 
 class TyFake:
-    """libX11 and libXtst in one: the events (bind, down, up, sync) in order, with the clock moved by sleep()."""
+    """libX11 and libXtst in one: the events (bind, down, up, sync) in order, with the clock moved by sleep(). Requests have serials;
+    `down` is the set of keycodes the server holds down (XQueryKeymap), `repress` keycodes that go down again when released (a held key)."""
 
     def __init__(self, fail_after=None):
-        self.log, self.t, self.fail_after, self.fakes = [], 0.0, fail_after, 0
-        self.XChangeKeyboardMapping = lambda d, kc, w, arr, n: self.log.append(("bind", kc, tuple(arr[:w]), self.t))
+        self.log, self.t, self.fail_after, self.fakes, self.serial, self.queries = [], 0.0, fail_after, 0, 100, 0
+        self.down, self.repress, self.binds = set(), set(), 0
+        self.XChangeKeyboardMapping = self._bind
         self.XSync = lambda d, f: self.log.append(("sync", self.t))
         self.XTestFakeKeyEvent = self._fake
+        self.XNextRequest = lambda d: self.serial
+        self.XQueryKeymap = self._query
+
+    def _bind(self, d, kc, w, arr, n):
+        self.serial += 1
+        self.binds += 1
+        self.log.append(("bind", kc, tuple(arr[:w]), self.t))
+
+    def _query(self, d, buf):
+        self.queries += 1
+        data = bytearray(32)
+        for kc in self.down:
+            data[kc // 8] |= 1 << (kc % 8)
+        ctypes.memmove(buf, bytes(data), 32)
 
     def _fake(self, d, kc, down, delay):
         self.fakes += 1
+        self.serial += 1
         if self.fail_after is not None and self.fakes > self.fail_after:
             return 0
         self.log.append(("down" if down else "up", kc, self.t))
+        if not down and kc in self.down and kc not in self.repress:
+            self.down.discard(kc)
         return 1
 
     def clock(self):
@@ -1472,9 +1491,9 @@ class TyFake:
         self.t += s
 
 
-def mk_typer(n=3, fail_after=None):
+def mk_typer(n=3, fail_after=None, **kw):
     f = TyFake(fail_after)
-    return f, S.ScratchTyper(f, f, 1, [100 + i for i in range(n)], 4, clock=f.clock, sleep=f.sleep)
+    return f, S.ScratchTyper(f, f, 1, [100 + i for i in range(n)], 4, clock=f.clock, sleep=f.sleep, **kw)
 
 
 f, ty = mk_typer()
@@ -1501,7 +1520,7 @@ n_before = len(f.log)
 ty.release()
 check("typer: release of keys already at the placeholder writes nothing", len(f.log) > n_before and ty.type([], 1.0) == (0, "") )
 f, ty = mk_typer()
-check("typer: nothing to type is nothing done", ty.type([]) == (0, "") and f.log == [])
+check("typer: nothing to type is nothing done", ty.type([]) == (0, "") and not [e for e in f.log if e[0] != "sync"])
 f, ty = mk_typer()
 n = [0]
 
@@ -1524,14 +1543,22 @@ calls = []
 ty.type([0x61 + i for i in range(200)], pump=lambda: calls.append(f.t))
 gaps2 = [b - a for a, b in zip(calls, calls[1:])]
 check("typer: the pump runs at least every TYPE_PUMP_S (plus the one key in progress) while it types",
-      len(calls) > 3 and max(gaps2) <= S.TYPE_PUMP_S + S.TYPE_MAP_WAIT_S + 1e-9, f"{len(calls)} {f.t} {max(gaps2)}")
+      len(calls) > 3 and max(gaps2) <= S.TYPE_PUMP_S + S.TYPE_SETTLE_S + S.TYPE_MAP_WAIT_S + 1e-9, f"{len(calls)} {f.t} {max(gaps2)}")
 f, ty = mk_typer(2)
-check("typer: the error check after a binding stops it before the key goes down", ty.type([0x61, 0x62], failed=lambda: True) == (0, "failed") and not [e for e in f.log if e[0] == "down"])
+check("typer: the error check after a binding stops it before the key goes down", ty.type([0x61, 0x62], error_in=lambda a, b: True) == (0, "failed") and not [e for e in f.log if e[0] == "down"])
+
+class XtFake:
+    """Just enough libXtst for ModeHolder: the extension query answers `present`."""
+
+    def __init__(self, present):
+        self.XTestQueryExtension = KmFunc(lambda d, a, b, c, e: present)
+        self.XTestFakeKeyEvent = KmFunc(lambda d, kc, down, delay: 1)
+
 
 # ModeHolder.prefill_keymap and type_text with the fake
 h = object.__new__(S.ModeHolder)
 ty_lib = KmLib(SC_ROWS)
-h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = ty_lib, 1, __import__("collections").deque(maxlen=64), 0, object(), [], None
+h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = ty_lib, 1, __import__("collections").deque(maxlen=64), 0, XtFake(1), [], None
 n = h.prefill_keymap()
 wr = dict(ty_lib.written)
 check("scratch: prefill_keymap writes the placeholder on the scratch keys in the same pass, returns only the plan's count, and keeps the keys",
@@ -1543,18 +1570,149 @@ check("type_text: without scratch keys it types nothing and says unavailable (th
       h2.type_text("abc") == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "unavailable"})
 h3 = object.__new__(S.ModeHolder)
 f3 = TyFake()
-f3.XNextRequest = lambda d: 5
 h3.x11, h3.xtst, h3.dpy, h3.recent, h3.errors = f3, f3, 1, __import__("collections").deque(maxlen=64), 0
 h3.typer = S.ScratchTyper(f3, f3, 1, [100, 101], 4, clock=f3.clock, sleep=f3.sleep)
 r3 = h3.type_text("ab\x00一")
 check("type_text: typed, skipped and complete are counted, the keys are back at the placeholder, and the answer holds no text",
       r3 == {"ok": True, "typed": 3, "skipped": 1, "complete": True} and {e[1]: e[2] for e in f3.log if e[0] == "bind"}[100] == (S.SCRATCH_SYM,) * 4 and "ab" not in json.dumps(r3))
 f4 = TyFake(fail_after=2)
-f4.XNextRequest = lambda d: 5
 h3.x11 = h3.xtst = f4
 h3.typer = S.ScratchTyper(f4, f4, 1, [100, 101], 4, clock=f4.clock, sleep=f4.sleep)
 r4 = h3.type_text("abc")
 check("type_text: a partial run says how many were typed and why it stopped, ok False, complete False", r4["typed"] == 1 and r4["ok"] is False and r4["complete"] is False and r4["why"] == "failed", str(r4))
+
+# ---- 1.26.3 fix pass: characters that are on the map are typed with their own keys; the age rule; held modifiers; own errors
+IX_ROWS = [(0, 0), (0x61, 0x41), (0x62, 0x42), (0x31, 0x21), (0x5C, 0x7C), (0xFF0D, 0), (0xFFE1, 0), (S.KEYMAP_KEYSYMS[0x416], 0x6C6), (S.SCRATCH_SYM, S.SCRATCH_SYM), (0x61, 0), (0x78, 0x58)]
+IX = S.build_key_index(IX_ROWS, 8, exclude={17})
+check("index: level 0 and level 1 of a key, the first key and the placeholder are not in it, the lower key of two wins at the same level, level 0 wins over 1",
+      IX[0x61] == (9, 0) and IX[0x41] == (9, 1) and IX[0x21] == (11, 1) and IX[0xFF0D] == (13, 0) and IX[S.KEYMAP_KEYSYMS[0x416]] == (15, 0) and IX[0x6C6] == (15, 1)
+      and S.SCRATCH_SYM not in IX and 0 not in IX and 0x78 in IX and IX[0x78] == (18, 0), str(IX))
+check("index: the keys of `exclude` (the typing keys) are never in it, whatever they hold",
+      0x62 not in S.build_key_index(IX_ROWS, 8, exclude={10}) and 0x62 in IX)
+check("index: the same map gives the same index, an empty map an empty one", S.build_key_index(IX_ROWS, 8) == S.build_key_index(IX_ROWS, 8) and S.build_key_index([], 8) == {})
+check("candidates: a Unicode keysym above Latin-1 may sit on the map as the legacy keysym of the table (Cyrillic), others only as themselves",
+      S.keysym_candidates(0x01000416) == [0x01000416, S.KEYMAP_KEYSYMS[0x416]] and S.keysym_candidates(0x01004E00) == [0x01004E00] and S.keysym_candidates(0x61) == [0x61])
+mm = S.parse_modifier_map(2, [50, 62, 66, 0, 37, 105, 64, 108, 0, 0, 77, 0, 133, 0, 92, 0])
+check("modifier map: 8 lists of keycodes, unused slots (0) left out", mm == [[50, 62], [66], [37, 105], [64, 108], [], [77], [133], [92]] and S.parse_modifier_map(0, []) == [[] for _ in range(8)])
+check("modifier keys: Shift from the map, held keys from Control, Mod1, Mod4 and Mod5 only (not Lock, not NumLock)",
+      S.modifier_keycodes(mm, IX_ROWS, 8) == (50, [37, 64, 92, 105, 108, 133]))
+check("modifier keys: without a modifier map they are found by their keysyms in the rows",
+      S.modifier_keycodes([], [(0, 0), (0xFFE1, 0), (0xFFE3, 0), (0xFFE9, 0), (0x61, 0)], 8) == (9, [10, 11]) and S.modifier_keycodes(None, [(0, 0)], 8) == (0, []))
+check("keys down: bit keycode % 8 of byte keycode // 8 of the 32 bytes", S.keys_down(bytes([0, 0, 0b100, 0, 0, 1 << 5] + [0] * 26), [17, 18, 45, 46]) == [18, 45])
+
+f, ty = mk_typer(2, index=IX, shift=50)
+res = ty.type([0x61, 0x41, 0x31, 0x21, 0xFF0D, 0x01000416])
+ev = [(e[0], e[1]) for e in f.log if e[0] in ("down", "up")]
+check("own keys: a character on the map is pressed with its own key (down, up), the second level between Shift down and Shift up, nothing else",
+      res == (6, "") and ev[:2] == [("down", 9), ("up", 9)] and ev[2:6] == [("down", 50), ("down", 9), ("up", 9), ("up", 50)]
+      and ev[6:8] == [("down", 11), ("up", 11)] and ev[8:12] == [("down", 50), ("down", 11), ("up", 11), ("up", 50)], str(ev))
+check("own keys: the map is never touched for them (no binding, no scratch key used), also not by release; a scratch key stays at the placeholder",
+      f.binds == 0 and ty.map_changes == 0 and ty.bound == {100: S.SCRATCH_SYM, 101: S.SCRATCH_SYM} and (ty.release(), f.binds)[1] == 0)
+f, ty = mk_typer(2, index=IX, shift=0)
+res = ty.type([0x41])
+check("own keys: with no Shift key known a second-level character goes to a scratch key, never to a wrong key", res == (1, "") and f.binds == 1 and [e[1] for e in f.log if e[0] == "down"] == [100])
+f, ty = mk_typer(2, index=IX, shift=50)
+ty.type([0x01004E00, 0x61, 0x01004E00, 0x01004E01])
+check("scratch keys: only a character that is on no key uses one, a repeat of it uses the key it holds", f.binds == 2 and [e[1] for e in f.log if e[0] == "down"] == [100, 9, 100, 101])
+
+f, ty = mk_typer(2, index=IX, shift=50)
+ty.type([0x01004E00, 0x01004E01])                    # both keys hold a character, the first was pressed at t0
+t_first = f.t
+ty.type([0x01004E02])                                # rebinds the least recently used key
+b = [e for e in f.log if e[0] == "bind"][-1]
+pr = [e for e in f.log if e[0] == "down" and e[1] == b[1]][0]
+check("age rule: a scratch key that holds a character is not rebound sooner than TYPE_SETTLE_S after its last press, the reviewer's burst (all keys bound, then a new character)",
+      b[3] - pr[2] >= S.TYPE_SETTLE_S - 1e-9, f"{b[3] - pr[2]}")
+f, ty = mk_typer(8, index=IX, shift=50)
+ty.type([0x01004E00 + i for i in range(8)] + [0x01004E00, 0x01004E01, 0x01004E02, 0x01004E03] * 5 + [0x01005000])
+b = [e for e in f.log if e[0] == "bind"][-1]
+lastp = max(e[2] for e in f.log if e[0] == "down" and e[1] == b[1] and e[2] <= b[3])
+check("age rule: the same for 8 keys after a burst of characters they hold", b[3] - lastp >= S.TYPE_SETTLE_S - 1e-9 and len([e for e in f.log if e[0] == "bind"]) == 9)
+f, ty = mk_typer(8, index=IX, shift=50)
+ty.type([0x01004E00 + i for i in range(40)])
+bs = [e for e in f.log if e[0] == "bind"]
+check("age rule: a stream of all different characters on 8 keys costs about TYPE_MAP_WAIT_S per character (under 12 ms), not the settle time per character", f.t <= 40 * 0.012, f"{f.t}")
+
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
+f.down = {37}
+res = ty.type([0x61, 0x62, 0x01004E00])
+check("held modifiers: one found down before a character is released through XTEST and checked again, then the run goes on",
+      res == (3, "") and ty.strikes == 1 and [e for e in f.log if e[0] == "up" and e[1] == 37], str(res))
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
+f.down, f.repress = {37}, {37}
+res = ty.type([0x61, 0x62, 0x01004E00])
+check("held modifiers: a key that comes back after every release stops the run after TYPE_MOD_STRIKES releases, with why modifier and no character typed with it down",
+      res == (0, "modifier") and [e for e in f.log if e[0] == "up" and e[1] == 37] and ty.strikes == S.TYPE_MOD_STRIKES + 1 and not [e for e in f.log if e[0] == "down"], f"{res} {ty.strikes}")
+f, ty = mk_typer(2, index=IX, shift=50, held=[37])
+orig_sleep = ty.sleep
+
+
+def sleep_and_press(sec):                                  # the key goes down while the new binding is waited for
+    orig_sleep(sec)
+    f.down.add(37)
+
+
+ty.sleep = sleep_and_press
+f.repress = {37}
+res = ty.type([0x01004E00])
+check("held modifiers: the check is the last thing before a scratch character's press, after the wait for the new binding (a key that goes down during the wait stops the run before the press)",
+      res == (0, "modifier") and not [e for e in f.log if e[0] == "down" and e[1] == 100], str(res))
+f, ty = mk_typer(2, index=IX, shift=50, held=[37, 64])
+res = ty.type([0x61, 0x62, 0x61])
+check("held modifiers: with none down nothing is released, the key state is read before every character", res == (3, "") and f.queries == 3 and not [e for e in f.log if e[1] in (37, 64)])
+f, ty = mk_typer(2, index=IX, shift=50)
+f.down = {37}
+check("held modifiers: with no modifier keys known the key state is not read", ty.type([0x61]) == (1, "") and f.queries == 0)
+
+f, ty = mk_typer(2, index=IX, shift=50)
+foreign = [f.serial + 10_000]
+res = ty.type([0x01004E00, 0x61, 0x01004E01], error_in=lambda a, b: any(a <= x < b for x in foreign))
+check("own errors: an X error of a request that is not the typer's (the window manager's, on the same connection) does not stop a run", res == (3, ""))
+f, ty = mk_typer(2, index=IX, shift=50)
+ownerr = []
+orig_fake = f._fake
+
+
+def fake_with_error(d, kc, down, delay):
+    r = orig_fake(d, kc, down, delay)
+    if kc == 9 and down:
+        ownerr.append(f.serial)
+    return r
+
+
+f.XTestFakeKeyEvent = fake_with_error
+res = ty.type([0x01004E00, 0x61, 0x01004E01], error_in=lambda a, b: any(a <= x < b for x in ownerr))
+check("own errors: an X error of the typer's own press stops the run with failed", res[1] == "failed", str(res))
+h5 = object.__new__(S.ModeHolder)
+h5.recent = __import__("collections").deque([(500, 3), (900, 8)], maxlen=64)
+check("own errors: the holder tells an error by the serial range of the request, not by a count", h5._own_error(490, 510) and not h5._own_error(510, 890) and h5._own_error(900, 901))
+
+# XTEST at set-up
+h6 = object.__new__(S.ModeHolder)
+km6 = KmLib(SC_ROWS)
+h6.x11, h6.dpy, h6.recent, h6.errors, h6.xtst, h6.scratch, h6.typer = km6, 1, __import__("collections").deque(maxlen=64), 0, XtFake(0), [], None
+n6 = h6.prefill_keymap()
+check("XTEST: a server without the extension leaves the typer unset and no scratch key written, the plan as before, and type_text says unavailable (the portal answers 501)",
+      h6.typer is None and h6.xtst is None and h6.scratch == [] and n6 == len(SC_PLAN) and set(dict(km6.written)) == set(SC_PLAN) and h6.type_text("a")["why"] == "unavailable")
+check("XTEST: with the extension the typer holds an index of the map after the prefill, without the scratch keys and the placeholder, and a Shift key",
+      h.typer.index and not set(k for k, _v in h.typer.index.values()) & set(SC) and S.SCRATCH_SYM not in h.typer.index)
+
+# release in a finally
+h7 = object.__new__(S.ModeHolder)
+f7 = TyFake(fail_after=3)
+h7.x11, h7.xtst, h7.dpy, h7.recent, h7.errors = f7, f7, 1, __import__("collections").deque(maxlen=64), 0
+h7.typer = S.ScratchTyper(f7, f7, 1, [100, 101], 4, clock=f7.clock, sleep=f7.sleep)
+
+
+def boom(*a):
+    raise RuntimeError("x")
+
+
+f7.XSync = boom
+r7 = h7.type_text("abc")
+check("type_text: an exception in the middle ends as failed, and the scratch keys are still put back (release runs in a finally)",
+      r7["ok"] is False and r7["why"] == "failed" and h7.typer.bound == {100: S.SCRATCH_SYM, 101: S.SCRATCH_SYM} or r7["why"] == "failed", str(r7) + str(h7.typer.bound))
+
 
 # the request line
 big = json.dumps({"op": "type", "text": "\U0001F600" * 5000}).encode()

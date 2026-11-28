@@ -539,6 +539,52 @@ async def main():
                 codes.append(r.status)
         check("type: the rate limit answers 429 through _limited, after the allowed calls", codes == [200, 200, 429], str(codes))
         server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
+        before_413 = len(TYPED)
+        # M2: the size is judged before the body is read; the limiter before the read as well
+        async def chunks():
+            yield b'{"text": "abc"}'
+        async with carol.post(f"{base}/api/rbrowser/session/type", data=chunks(), headers={"Content-Type": "application/json"}) as r:
+            check("type: a body without a Content-Length (chunked) is 413 and the registry is not asked", r.status == 413 and len(TYPED) == before_413, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/type", data=json.dumps({"text": "a" * 70000}), headers={"Content-Type": "application/json"}) as r:
+            check("type: a body above 64 KiB is 413 and the registry is not asked", r.status == 413 and len(TYPED) == before_413, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "\U0001F600" * 5000}) as r:
+            check("type: 5000 emoji (about 60 KB of JSON) are still accepted", r.status == 200 and len(TYPED) == before_413 + 1, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/resize", data=chunks(), headers={"Content-Type": "application/json"}) as r:
+            check("resize: a body without a Content-Length is 413", r.status == 413, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/resize", data=json.dumps({"width": 900, "height": 600, "pad": "x" * 2000}), headers={"Content-Type": "application/json"}) as r:
+            check("resize: a body above 1 KiB is 413", r.status == 413, str(r.status))
+        server._rbrowser_type_rate = server._viewers_mod.RateWindow(1, 60.0)
+        n_before = len(TYPED)
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "a"}) as r:
+            pass
+        async with carol.post(f"{base}/api/rbrowser/session/type", data=json.dumps({"text": "a" * 70000}), headers={"Content-Type": "application/json"}) as r:
+            check("type: the rate limit is judged before the body is looked at (429 for an oversized body once the limit is used)", r.status == 429, str(r.status))
+        server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
+        # S4: maintenance
+        real_flag, real_exempt = server._maintenance_global_flag, server._maintenance_exempt
+
+        async def flag():
+            return {"until": None, "message": "back soon"}
+
+        async def not_exempt(token):
+            return False
+        server._maintenance_global_flag, server._maintenance_exempt = flag, not_exempt
+        n_before = len(TYPED)
+        try:
+            async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+                check("type: in global maintenance it is 503 and nothing is typed", r.status == 503 and len(TYPED) == n_before, str(r.status))
+            async with carol.post(f"{base}/api/rbrowser/session/clipboard", json={}) as r:
+                check("clipboard: in global maintenance it is 503 and the registry is not asked", r.status == 503 and len(calls) == 1, str(r.status))
+        finally:
+            server._maintenance_global_flag, server._maintenance_exempt = real_flag, real_exempt
+        # S6: a busy session answers 429 through the limiter, not 502
+        async def busy(session, text):
+            return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "why": "busy"}
+        rbrowser.type_text = busy
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            check("type: another text still being typed in the session is 429 (the page falls back as for a rate limit), not 502", r.status == 429 and r.headers.get("Retry-After") == "1", str(r.status))
+        rbrowser.type_text = fake_type
+        server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
         async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}, headers={"Sec-Fetch-Site": "cross-site"}) as r:
             check("type: refused from another site", r.status == 403)
     finally:
