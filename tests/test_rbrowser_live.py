@@ -2571,8 +2571,26 @@ def type_check(s, nv, text, expect_len=None):
     nv.click(200, 200)
     t0 = time.time()
     nv.type_text(text)
-    time.sleep(1.5)
-    return s.title(), time.time() - t0
+    secs = time.time() - t0
+    # Wait until the field has taken everything that was typed: the remote Chromium can be seconds behind its input queue on a busy
+    # host (1.26.1: a snapshot 1.5 s after the last key read 4940 of 5000 characters under load; every key had reached X and the
+    # field took all of them a moment later). Done when the length is the expected one, or when the title has not changed for 4 s
+    # (then whatever is missing really is missing and the caller says so), at most 40 s.
+    want = expect_len if expect_len is not None else len(text.encode("utf-16-le")) // 2
+    end, last, last_change = time.time() + 40, None, time.time()
+    while time.time() < end:
+        t = s.title()
+        if t.startswith(f"v:{want}:"):
+            time.sleep(0.5)
+            t = s.title()
+            if t.startswith(f"v:{want}:"):
+                return t, secs
+        if t != last:
+            last, last_change = t, time.time()
+        elif time.time() - last_change > 4:
+            break
+        time.sleep(0.3)
+    return s.title(), secs
 
 
 def control_session_exchange(rig):
@@ -3021,10 +3039,17 @@ def g21(rig, ctx):
     try:
         nv = s.open_page()
         time.sleep(3)
-        nv.nav(page_url("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px oninput=\"document.title='k:'+this.value\"></textarea>", "kb"))
+        # The page reports its own focus in the title until the first key arrives (then the title is the typed text): the keys are typed
+        # only after the field proved to hold the focus, so a key sent before the click had its effect cannot be taken for a lost one.
+        nv.nav(page_url("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px oninput=\"window.typed=1;document.title='k:'+this.value\"></textarea>"
+                        "<script>setInterval(function(){if(!window.typed)document.title='kb hf='+document.hasFocus()+' ae='+(document.activeElement.tagName=='TEXTAREA')},150)</script>", "kb"))
         s.wait_title("kb")
         time.sleep(1)
         nv.click(200, 200)
+        focused, ft = s.wait_title("hf=true ae=true", 10)
+        if not focused:
+            return "FAIL", f"the test could not type: the field never reported the focus ({ft[:40]!r}); not a typing result"
+        time.sleep(0.3)
         # (name, wanted text, action): the physical keys of a French, a German, a German-with-AltGr and a US layout
         cases = [("e-acute", "\u00e9", lambda: nv.key("\u00e9", "Digit2", "\u00e9")), ("sharp s", "\u00df", lambda: nv.key("\u00df", "Minus", "\u00df")),
                  ("euro", "\u20ac", lambda: nv.key("\u20ac", "KeyE", "\u20ac", modifiers=0)),
