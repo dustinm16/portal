@@ -13,7 +13,7 @@ The steps:
     4. x11vnc on a unix socket only, with the selection exchange switched off in both directions (decision D4)
     5. the built-in window manager (decision D2): every top-level window is the size of the screen at 0,0
     6. Chromium (no debugging pipe, no debugging port: nothing reads its tabs)
-    7. ctl.sock with three operations: ping, resize and clip
+    7. ctl.sock with four operations: ping, resize, clip and type
     8. a one second loop over all children, the control socket and the window manager's X events
 
 Exit codes: 0 when Chromium ended by itself with status 0, 3 when the display proof failed, 4 otherwise.
@@ -63,6 +63,21 @@ OPEN_PAUSE_S = 0.3
 CLIP_MAX = 262144             # bytes of the CLIPBOARD text a `clip` request returns; more is cut and flagged
 CLIP_WAIT_S = 2.0             # time limit of one `clip` request
 CTL_REPLY_S = 5.0             # how long a client may take to read a reply (a clip answer is up to about 1 MB)
+# `type` (1.26.3): text typed by this process through XTEST. Measured on the rig (5000 mixed characters incl. CJK and emoji per run, 4 CPUs,
+# also with 8 busy loops): with no wait between a key's new binding and its press thousands of characters were wrong, 2 ms gave 1 wrong
+# in 5000 under load, 5 ms none in 40000, 10 ms none. Chromium handles the change of the map on its own time, so the press must not come too
+# soon after it. A wait before a key is rebound again made it worse, not better (14 wrong in 5000 under load against none without it):
+# a busy Chromium works through the map change and the key in the order they were sent, an idle one starts on the key while it still reads the map.
+TYPE_MAX_CHARS = 5000         # characters of one `type` request (the page's own limit)
+CTL_TYPE_MAX = 70000          # bytes of a `type` request line: 5000 characters, an emoji as two \uXXXX escapes, about 60 KB
+TYPE_BUDGET_S = 55.0          # time limit of one `type` request (5000 different characters take 50 s); what is not typed by then is reported as not typed
+SCRATCH_COUNT = 8             # keys this process owns for typing; never empty, so x11vnc never takes one
+SCRATCH_SYM = 0xFFFFFF        # VoidSymbol: what a scratch key holds when it is not in use
+TYPE_MAP_WAIT_S = 0.010       # between a key's new binding and its press (Chromium reads the map on the change)
+TYPE_SETTLE_S = 0.080         # the scratch keys go back to the placeholder this long after the last press (Chromium reads a key later than it is sent)
+TYPE_PUMP_S = 0.05            # the window manager is served at least this often while typing
+KEYSYM_RETURN = 0xFF0D
+KEYSYM_TAB = 0xFF09
 BIN_DIRS = ("/usr/bin", "/bin")
 PATH_VALUE = "/usr/bin:/bin"
 # Everything a page can make Chromium write lives on the unit's own size-capped tmpfs (TemporaryFileSystem=/run/work in
@@ -581,6 +596,12 @@ class ModeHolder:
         except OSError:
             raise SupervisorError("libX11 or libXrandr is missing") from None
         x11, xr = self.x11, self.xr
+        self.scratch, self.typer, self.width = [], None, 0
+        try:
+            self.xtst = cdll("libXtst.so.6")           # typing text (`type`); without it only that request is unavailable
+            self.xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        except (OSError, AttributeError):
+            self.xtst = None
         vp, ul = ctypes.c_void_p, ctypes.c_ulong
         x11.XOpenDisplay.restype, x11.XOpenDisplay.argtypes = vp, [ctypes.c_char_p]
         x11.XDefaultRootWindow.restype, x11.XDefaultRootWindow.argtypes = ul, [vp]
@@ -705,18 +726,49 @@ class ModeHolder:
         finally:
             x11.XFree(table)
         plan = plan_keymap(rows, lo.value)
-        if not plan:
+        scratch = plan_scratch(rows, lo.value, plan) if self.xtst is not None else []
+        if not plan and not scratch:
             return 0
         x11.XSync(dpy, 0)
         first = x11.XNextRequest(dpy)
         for kc, row in sorted(plan.items()):
             arr = (ctypes.c_ulong * w)(*row)
             x11.XChangeKeyboardMapping(dpy, kc, w, arr, 1)
+        for kc in scratch:                       # never empty from here on: x11vnc adds keysyms only to empty keys
+            x11.XChangeKeyboardMapping(dpy, kc, w, (ctypes.c_ulong * w)(*([SCRATCH_SYM] * w)), 1)
         x11.XSync(dpy, 0)
         if self.errors_since(first):
             log("the keyboard map was not prepared")
             return 0
+        if scratch:
+            self.scratch, self.width = scratch, w
+            self.typer = ScratchTyper(x11, self.xtst, dpy, scratch, w)
         return len(plan)
+
+    def type_text(self, text, budget_s=TYPE_BUDGET_S, pump=lambda: None, stopping=lambda: False):
+        """Types `text` through the scratch keys (see ScratchTyper). Returns {"ok", "typed", "skipped", "complete"[, "why"]}; why is
+        "unavailable" when the keys or XTEST are not there (nothing was typed), else the reason it stopped early. Never raises."""
+        res = {"ok": False, "typed": 0, "skipped": 0, "complete": False}
+        if self.typer is None or not self.dpy:
+            return dict(res, why="unavailable")
+        try:
+            keys, skipped = type_keysyms(text)
+            res["skipped"] = skipped
+            self.x11.XSync(self.dpy, 0)
+            first = self.x11.XNextRequest(self.dpy)
+            typed, why = self.typer.type(keys, budget_s, pump, stopping, failed=lambda: bool(self.errors_since(first)))
+            res["typed"] = typed
+            self.typer.release()
+            if self.errors_since(first) and not why:
+                why = "failed"
+            res["complete"] = not why
+            res["ok"] = not why
+            if why:
+                res["why"] = why
+        except Exception:
+            res["why"] = "failed"
+            log("typing failed")
+        return res
 
     def close(self):
         if self.dpy:
@@ -1062,11 +1114,11 @@ class WindowManager:
 # ---- control socket
 
 def parse_ctl_request(data):
-    """One request line -> ('ping',), ('clip',) or ('resize', w, h). Raises CtlError. At most CTL_MAX bytes, one JSON
-    object, only the three operations that exist."""
+    """One request line -> ('ping',), ('clip',), ('resize', w, h) or ('type', text). Raises CtlError. At most CTL_MAX bytes
+    (CTL_TYPE_MAX for `type`), one JSON object, only the four operations that exist."""
     if not isinstance(data, (bytes, bytearray)):
         raise CtlError("type")
-    if len(data) > CTL_MAX:
+    if len(data) > CTL_TYPE_MAX:
         raise CtlError("size")
     line = bytes(data).split(b"\n", 1)[0]
     try:
@@ -1076,6 +1128,13 @@ def parse_ctl_request(data):
     if not isinstance(req, dict):
         raise CtlError("shape")
     op = req.get("op")
+    if op == "type":
+        text = req.get("text")
+        if not isinstance(text, str) or len(text) > TYPE_MAX_CHARS:
+            raise CtlError("text")
+        return ("type", text)
+    if len(data) > CTL_MAX:
+        raise CtlError("size")
     if op == "ping":
         return ("ping",)
     if op == "clip":
@@ -1090,6 +1149,116 @@ def parse_ctl_request(data):
 
 def ctl_reply(ok):
     return (json.dumps({"ok": bool(ok)}) + "\n").encode()
+
+
+def type_keysyms(text):
+    """(keysyms, skipped) for the text of a `type` request, by the filter the page applies (static/js/rbrowser.js keysymsForText): a line
+    break (CR, LF or CR LF) is Return, a tab is Tab, printable ASCII and Latin-1 are their own keysym, every other code point that is not
+    a surrogate or a control character is 0x01000000 + code point, anything else is skipped and counted."""
+    keys, skipped = [], 0
+    chars = list(text)
+    i = 0
+    while i < len(chars):
+        cp = ord(chars[i])
+        i += 1
+        if cp == 13:
+            if i < len(chars) and chars[i] == "\n":
+                i += 1
+            keys.append(KEYSYM_RETURN)
+        elif cp == 10:
+            keys.append(KEYSYM_RETURN)
+        elif cp == 9:
+            keys.append(KEYSYM_TAB)
+        elif 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
+            keys.append(cp)
+        elif 0xFF < cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF:
+            keys.append(0x01000000 | cp)
+        else:
+            skipped += 1
+    return keys, skipped
+
+
+def type_reply(res):
+    """The answer line of `type`: {"ok", "typed", "skipped", "complete"[, "why"]}. Never the text."""
+    out = {"ok": bool(res.get("ok")), "typed": int(res.get("typed", 0)), "skipped": int(res.get("skipped", 0)),
+           "complete": bool(res.get("complete"))}
+    if res.get("why"):
+        out["why"] = str(res["why"])[:20]
+    return (json.dumps(out) + "\n").encode()
+
+
+def plan_scratch(rows, min_keycode, plan, n=SCRATCH_COUNT):
+    """The keys to own for typing: `n` keys that are empty (in `rows`, or emptied by `plan`) and that `plan` does not fill, never the first
+    key, the highest ones. Fewer when fewer are free. Pure: no X."""
+    free = []
+    for i, row in enumerate(rows):
+        kc = min_keycode + i
+        if kc == min_keycode:
+            continue
+        written = plan.get(kc)
+        if (written is None and not any(row)) or (written is not None and not any(written)):
+            free.append(kc)
+    return sorted(free)[-n:] if n > 0 else []
+
+
+class ScratchTyper:
+    """Types keysyms through XTEST on `scratch` keys that only this object binds. A key is bound to the keysym, the server is synced,
+    10 ms pass, the key goes down and up; a keysym that a scratch key holds already needs no binding; the least recently used key is
+    the one rebound. Idle keys hold SCRATCH_SYM and are never empty: x11vnc takes only empty ones."""
+
+    def __init__(self, x11, xtst, dpy, scratch, width, clock=time.monotonic, sleep=time.sleep):
+        self.x11, self.xtst, self.dpy, self.width = x11, xtst, dpy, width
+        self.clock, self.sleep = clock, sleep
+        self.order = list(scratch)                      # least recently used first
+        self.bound = {kc: SCRATCH_SYM for kc in scratch}
+        self.last = {kc: float("-inf") for kc in scratch}
+
+    def _bind(self, kc, sym):
+        arr = (ctypes.c_ulong * self.width)(*([sym] * self.width))
+        self.x11.XChangeKeyboardMapping(self.dpy, kc, self.width, arr, 1)
+        self.x11.XSync(self.dpy, 0)
+        self.bound[kc] = sym
+
+    def type(self, keysyms, budget_s=TYPE_BUDGET_S, pump=lambda: None, stopping=lambda: False, failed=lambda: False):
+        """(typed, why): how many keysyms were typed and why it stopped early ("" = all typed; budget, stopping, failed)."""
+        deadline = self.clock() + budget_s
+        next_pump = self.clock()
+        typed = 0
+        for sym in keysyms:
+            now = self.clock()
+            if now >= deadline:
+                return typed, "budget"
+            if stopping():
+                return typed, "stopping"
+            if now >= next_pump:
+                pump()
+                next_pump = self.clock() + TYPE_PUMP_S
+            kc = next((k for k in self.order if self.bound[k] == sym), None)
+            if kc is None:
+                kc = self.order[0]
+                self._bind(kc, sym)
+                if failed():
+                    return typed, "failed"
+                self.sleep(TYPE_MAP_WAIT_S)
+            self.order.remove(kc)
+            self.order.append(kc)
+            down = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 1, 0)
+            up = self.xtst.XTestFakeKeyEvent(self.dpy, kc, 0, 0)
+            self.x11.XSync(self.dpy, 0)
+            self.last[kc] = self.clock()
+            if not down or not up:
+                return typed, "failed"
+            typed += 1
+        return typed, ""
+
+    def release(self):
+        """Every scratch key back to SCRATCH_SYM (after the last press has been read), so no character stays where x11vnc could find it."""
+        for kc in self.order:
+            if self.bound[kc] != SCRATCH_SYM:
+                wait = self.last[kc] + TYPE_SETTLE_S - self.clock()
+                if wait > 0:
+                    self.sleep(wait)
+                self._bind(kc, SCRATCH_SYM)
 
 
 def clip_cut(data, limit=CLIP_MAX):
@@ -1231,15 +1400,16 @@ class Xrandr:
 
 def handle_ctl(conn, state, now=time.monotonic):
     """Serve one control connection: read one line (<= 4 KB, 2 s), answer one line. ping and resize answer
-    {"ok": bool}; clip answers {"ok", "text", "truncated"}. `state` holds "xrandr", "wm", "clip" (a function returning
-    (ok, text, truncated)) and "clipboard" (the RB_CLIPBOARD value). Never raises."""
+    {"ok": bool}; clip answers {"ok", "text", "truncated"}; type answers {"ok", "typed", "skipped", "complete"[, "why"]}. `state` holds
+    "xrandr", "wm", "clip" (a function returning (ok, text, truncated)), "clipboard" (the RB_CLIPBOARD value) and "type" (a function
+    taking the text and returning type_text's dict; refused when the clipboard setting is off). Never raises."""
     try:
         conn.settimeout(0.5)
         end = now() + CTL_READ_S
         data = b""
-        while b"\n" not in data and len(data) <= CTL_MAX and now() < end:
+        while b"\n" not in data and len(data) <= CTL_TYPE_MAX and now() < end:
             try:
-                chunk = conn.recv(CTL_MAX + 1 - len(data))
+                chunk = conn.recv(CTL_TYPE_MAX + 1 - len(data))
             except (socket.timeout, BlockingIOError):
                 continue
             if not chunk:
@@ -1258,6 +1428,14 @@ def handle_ctl(conn, state, now=time.monotonic):
             ok, text, truncated = state["clip"]() if state.get("clipboard") == "both" else (False, "", False)
             conn.settimeout(CTL_REPLY_S)
             conn.sendall(clip_reply(ok, text, truncated))
+            return
+        if req[0] == "type":
+            if state.get("clipboard") == "off" or not state.get("type"):
+                res = {"ok": False, "why": "refused" if state.get("clipboard") == "off" else "unavailable"}
+            else:
+                res = state["type"](req[1])
+            conn.settimeout(CTL_REPLY_S)
+            conn.sendall(type_reply(res))
             return
         w, h = clamp_geometry(req[1], req[2])
         deadline = time.monotonic() + RESIZE_BUDGET_S
@@ -1500,7 +1678,8 @@ def run(cfg):
         sel.register(ctl, selectors.EVENT_READ, "ctl")
         sel.register(wm.fd, selectors.EVENT_READ, "wm")
         state = {"xrandr": xr, "wm": wm, "clipboard": cfg["clipboard"],
-                 "clip": lambda: read_clipboard(bins["xsel"], env)}
+                 "clip": lambda: read_clipboard(bins["xsel"], env),
+                 "type": lambda text: holder.type_text(text, TYPE_BUDGET_S, pump=wm.pump, stopping=lambda: stop["flag"])}
         log("session started")
 
         def wait_events():

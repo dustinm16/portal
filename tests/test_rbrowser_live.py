@@ -26,6 +26,9 @@ and it needs a host whose rbrowser state is not prepared, see the refusal below)
 policy still applies, the per-session theme file is root-owned, read-only in the unit and gone after the stop).
 1.26.2 adds G26 (written, not run): the probe's sandbox check passes with at least one renderer in its own namespaces, and fails when the
 probe's Chromium is started with the switch that turns its sandbox off (the negative control).
+1.26.3 adds G27 (written, not run): 60 different characters outside the keyboard table typed through the supervisor's `type` request
+all arrive, none wrong; typed on the picture through real noVNC no wrong character arrives (only as many as the keys x11vnc has left are
+typed, that limit stays); then the table's characters still type exactly through real noVNC.
 
 Output: one line per gate, `Gnn PASS|FAIL|FALLBACK detail`. A gate that needs a person to look at a picture
 prints FAIL with "manual:" and the path of the picture: nothing is called PASS that was not measured.
@@ -3080,6 +3083,105 @@ def g21(rig, ctx):
     if bad:
         return "FAIL", f"not arriving: {bad}; {note}"
     return "PASS", f"e-acute, sharp s, euro and AltGr @ arrived; {note}"
+
+
+# ---- G27 (1.26.3): characters outside the keyboard table through the supervisor's `type` request, and the table still types exactly ----
+G27_HASH_PAGE = ("<body style=margin:0><textarea autofocus style=width:100%;height:100%;font-size:40px oninput=\"var v=this.value,h=2166136261;"
+                 "for(var i=0;i<v.length;i++){h^=v.charCodeAt(i);h=Math.imul(h,16777619)>>>0}document.title='v:'+v.length+':'+h+':'+v.slice(0,80)\"></textarea>")
+
+
+def g27_fnv(text):
+    h = 2166136261
+    for i in range(0, len(text.encode("utf-16-le")), 2):
+        h ^= int.from_bytes(text.encode("utf-16-le")[i:i + 2], "little")
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def g27_chars(sess_mod):
+    """60 different characters that the keyboard table does not hold: Greek, Czech and Turkish letters, Hebrew, Arabic, kana, CJK, emoji."""
+    table = {cp for u in sess_mod.keymap_codepoint_units() for cp in u}
+    pool = (list(range(0x3B1, 0x3C9)) + [0x10D, 0x159, 0x161, 0x17E, 0x11F, 0x131, 0x15F, 0x130] + list(range(0x5D0, 0x5DC)) + list(range(0x627, 0x631))
+            + list(range(0x3042, 0x3048)) + list(range(0x4E00, 0x4E08)) + list(range(0x1F600, 0x1F608)))
+    out = [cp for cp in pool if cp not in table]
+    assert len(out) >= 60
+    return "".join(chr(cp) for cp in out[:60])
+
+
+def g27_read(s, want_len, timeout=25):
+    """(length, hash, head) of the remote textarea once it has stopped changing or has the wanted length."""
+    end, last, change = time.time() + timeout, None, time.time()
+    while time.time() < end:
+        t = s.title()
+        m = re.match(r"v:(\d+):(\d+):(.*)", t, re.S)
+        if m and int(m.group(1)) == want_len:
+            time.sleep(0.5)
+            return int(m.group(1)), int(m.group(2)), m.group(3)
+        if t != last:
+            last, change = t, time.time()
+        elif time.time() - change > 4:
+            break
+        time.sleep(0.3)
+    m = re.match(r"v:(\d+):(\d+):(.*)", s.title(), re.S)
+    return (int(m.group(1)), int(m.group(2)), m.group(3)) if m else (0, 0, "")
+
+
+@gate("G27", "characters outside the table through the type request; the table still types exactly through real noVNC")
+def g27(rig, ctx):
+    chars = g27_chars(rig.sess_mod)
+    table_text = "".join(chr(cp) for u in rig.sess_mod.keymap_codepoint_units() for cp in u)
+    notes, failed = [], []
+    s = rig.start_session()
+    s.wait_sockets()
+    try:
+        nv = s.open_page()
+        time.sleep(3)
+
+        def fresh_field(tag):
+            nv.nav(page_url(G27_HASH_PAGE, tag))
+            s.wait_title(tag)
+            time.sleep(1)
+            nv.click(200, 200)
+            time.sleep(0.5)
+
+        # 1. the type request: all 60, in order, none wrong
+        fresh_field("t1")
+        t0 = time.time()
+        r = s.ctl({"op": "type", "text": chars}, timeout=30)
+        took = time.time() - t0
+        n, h, head = g27_read(s, len(chars.encode("utf-16-le")) // 2)
+        if r.get("ok") is True and r.get("typed") == 60 and r.get("complete") is True and h == g27_fnv(chars) and n == len(chars.encode("utf-16-le")) // 2:
+            notes.append(f"type request: {len(chars)} characters outside the table, all arrived and exact (hash), {took:.1f} s")
+        else:
+            failed.append(f"type request: reply {r}, field length {n} of {len(chars.encode('utf-16-le')) // 2}, hash {'equal' if h == g27_fnv(chars) else 'DIFFERENT'}, head {head[:30]!r}")
+        # 2. a second text of other characters on the same session (the scratch keys are reused after the first)
+        again = chars[::-1]
+        fresh_field("t2")
+        r = s.ctl({"op": "type", "text": again}, timeout=30)
+        n, h, head = g27_read(s, len(again.encode("utf-16-le")) // 2)
+        (notes if h == g27_fnv(again) and r.get("typed") == 60 else failed).append(f"type request again on the same session: typed {r.get('typed')}, hash {'equal' if h == g27_fnv(again) else 'DIFFERENT'}")
+        # 3. the same 60 typed on the picture through real noVNC: x11vnc has only the keys the reserve and the scratch keys leave, so only some arrive; NONE may be wrong
+        fresh_field("t3")
+        nv.type_text(chars)
+        time.sleep(2)
+        t = s.title()
+        m = re.match(r"v:(\d+):(\d+):(.*)", t, re.S)
+        got = m.group(3) if m else ""
+        it = iter(chars)
+        in_order = all(ch in it for ch in got)            # every typed character is one of the 60, in the order sent
+        (notes if in_order and not any(ch not in chars for ch in got) else failed).append(
+            f"on the picture through real noVNC: {len(got)} of 60 arrived (the limit that stays: x11vnc's own free keys), wrong characters: {'none' if in_order else 'YES'}")
+        # 4. the table's own characters still type exactly through real noVNC
+        fresh_field("t4")
+        nv.type_text(table_text)
+        n, h, head = g27_read(s, len(table_text.encode("utf-16-le")) // 2, 40)
+        (notes if h == g27_fnv(table_text) else failed).append(f"table characters through real noVNC: {len(table_text)} typed, field length {n}, hash {'equal' if h == g27_fnv(table_text) else 'DIFFERENT'}")
+        nv.close()
+    finally:
+        s.stop()
+    if failed:
+        return "FAIL", "; ".join(failed + notes)
+    return "PASS", "; ".join(notes)
 
 
 @gate("G24", "hairpin to the public address")

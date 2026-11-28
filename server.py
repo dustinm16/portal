@@ -34229,6 +34229,7 @@ RBROWSER_SETTING_KEYS = tuple(RBROWSER_DEFAULTS)
 _rbrowser_start_rate = _viewers_mod.RateWindow(6, 600.0)
 _rbrowser_resize_rate = _viewers_mod.RateWindow(1, 1.0)
 _rbrowser_clip_rate = _viewers_mod.RateWindow(12, 60.0)
+_rbrowser_type_rate = _viewers_mod.RateWindow(300, 60.0)      # the page sends one request at a time and joins what is typed meanwhile
 _RBROWSER_NO_STORE = {"Cache-Control": "no-store"}
 _RBROWSER_SID_RE = re.compile(r"[A-Za-z0-9_-]{6,64}")
 
@@ -34403,7 +34404,8 @@ def _rbrowser_session_body(s) -> dict:
     d = rbrowser.deadlines(s, _rbrowser_cfg)
     return {"sid": s.sid, "ws": f"/ws/rbrowser/{s.sid}", "width": s.width, "height": s.height,
             "idle_deadline": d["idle_deadline"], "max_deadline": d["max_deadline"],
-            "clipboard": _rbrowser_clip_view(s), "net_warning": bool(s.net_warning)}
+            "clipboard": _rbrowser_clip_view(s), "net_warning": bool(s.net_warning),
+            "type_text": getattr(s, "clipboard", "off") != "off"}
 
 
 def _rbrowser_availability_view(av: dict) -> dict:
@@ -34792,6 +34794,34 @@ async def http_rbrowser_clipboard(request: web.Request) -> web.Response:
     if not r.get("ok"):
         return web.json_response({"error": "The text could not be read"}, status=502, headers=_RBROWSER_NO_STORE)
     return web.json_response({"text": r["text"], "truncated": bool(r["truncated"])}, headers=_RBROWSER_NO_STORE)
+
+
+async def http_rbrowser_type(request: web.Request) -> web.Response:
+    """POST /api/rbrowser/session/type {text} - the text is typed in the remote browser by the unit's supervisor (the characters the
+    keyboard table does not hold included). Answers {typed, skipped, complete, fallback, why}: fallback true means nothing was typed and
+    the page may send the text as key events. Only with the setting rbrowser_clipboard not off, by the sign-in that made the session.
+    The text is page-controlled: never logged, audited or stored here."""
+    s, user, err = await _rbrowser_own_session(request)
+    if err:
+        return err
+    if _rbrowser_cfg["rbrowser_clipboard"] == "off":
+        return web.json_response({"error": "Typing text is switched off"}, status=403, headers=_RBROWSER_NO_STORE)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400, headers=_RBROWSER_NO_STORE)
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str) or not text or len(text) > 5000:
+        return web.json_response({"error": "text must be 1 to 5000 characters"}, status=400, headers=_RBROWSER_NO_STORE)
+    if not _rbrowser_type_rate.allow(str(user["id"])):
+        return await _limited(request, "rbrowser_type", "Too much text sent", user_id=user["id"], headers={"Retry-After": "2"})
+    r = await rbrowser.type_text(s, text)
+    body = {"typed": r["typed"], "skipped": r["skipped"], "complete": bool(r["complete"]), "fallback": bool(r["fallback"]), "why": r.get("why", "")}
+    if r["ok"] or r["typed"] > 0:
+        return web.json_response(body, headers=_RBROWSER_NO_STORE)
+    if r.get("why") == "refused":
+        return web.json_response(dict(body, error="Typing text is switched off"), status=403, headers=_RBROWSER_NO_STORE)
+    return web.json_response(dict(body, error="The text could not be typed"), status=501 if r["fallback"] else 502, headers=_RBROWSER_NO_STORE)
 
 
 async def http_rbrowser_page(request: web.Request) -> web.Response:
@@ -35828,6 +35858,7 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/rbrowser/session", http_rbrowser_delete_session)
     app.router.add_post("/api/rbrowser/session/resize", http_rbrowser_resize)
     app.router.add_post("/api/rbrowser/session/clipboard", http_rbrowser_clipboard)
+    app.router.add_post("/api/rbrowser/session/type", http_rbrowser_type)
     app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
     app.router.add_post("/api/admin/cf-ranges/pending/approve", http_approve_cf_pending)

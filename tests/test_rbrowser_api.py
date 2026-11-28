@@ -238,8 +238,8 @@ async def main():
     body = {"width": 1280, "height": 720}
     async with bob.post(f"{base}/api/rbrowser/session", json=body) as r:
         j = await r.json()
-        check("create: 201 with the shape the page reads", r.status == 201 and set(j) == {"sid", "ws", "width", "height", "idle_deadline", "max_deadline", "clipboard", "net_warning"}
-              and j["ws"] == f"/ws/rbrowser/{j['sid']}" and isinstance(j["idle_deadline"], (int, float)) and j["max_deadline"] > j["idle_deadline"] - 1
+        check("create: 201 with the shape the page reads", r.status == 201 and set(j) == {"sid", "ws", "width", "height", "idle_deadline", "max_deadline", "clipboard", "net_warning", "type_text"}
+              and j["type_text"] is True and j["ws"] == f"/ws/rbrowser/{j['sid']}" and isinstance(j["idle_deadline"], (int, float)) and j["max_deadline"] > j["idle_deadline"] - 1
               and j["clipboard"] == "both" and j["net_warning"] is False and (j["width"], j["height"]) == (1280, 720), str(j))
         sid = j["sid"]
         check("the deadlines are epoch seconds (the registry's wall clock)", abs(j["idle_deadline"] - (time.time() + 15 * 60)) < 30)
@@ -258,6 +258,8 @@ async def main():
         check("another sign-in cannot resize (409)", r.status == 409)
     async with bob2.post(f"{base}/api/rbrowser/session/clipboard", json={}) as r:
         check("another sign-in cannot read the clipboard (409)", r.status == 409)
+    async with bob2.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+        check("another sign-in cannot type text (409)", r.status == 409)
     async with carol.post(f"{base}/api/rbrowser/session", json={"width": 1280, "height": 720}) as r:
         j = await r.json()
         check("a second member gets the second seat", r.status == 201)
@@ -411,6 +413,8 @@ async def main():
             check("cookie-header script token: clipboard is 403", r.status == 403, str(r.status))
         async with aiohttp_plain().post(f"{base}/api/rbrowser/session/resize", json={"width": 900, "height": 600}, headers={**J, **ck}) as r:
             check("cookie-header script token: resize is 403", r.status == 403, str(r.status))
+        async with aiohttp_plain().post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}, headers={**J, **ck}) as r:
+            check("cookie-header script token: type is 403", r.status == 403, str(r.status))
         async with aiohttp_plain().delete(f"{base}/api/rbrowser/session", headers={**J, **ck}) as r:
             check("cookie-header script token: DELETE is 403 and the session stays", r.status == 403 and s_carol.state == "running", str(r.status))
         row = await db.get_token(s_carol.token_id)
@@ -426,7 +430,7 @@ async def main():
         j = await r.json()
         check("limiter: the second is 429 through _limited (reference, Retry-After, no store)", r.status == 429 and r.headers.get("Retry-After") == "60"
               and r.headers.get("Cache-Control") == "no-store" and j.get("error"), str(r.status))
-    for fn in (server.http_rbrowser_create_session, server.http_rbrowser_resize, server.http_rbrowser_clipboard):
+    for fn in (server.http_rbrowser_create_session, server.http_rbrowser_resize, server.http_rbrowser_clipboard, server.http_rbrowser_type):
         check(f"{fn.__name__} has no hand-built 429", "status=429" not in inspect.getsource(fn) and "_limited(" in inspect.getsource(fn))
     server._rbrowser_start_rate = server._viewers_mod.RateWindow(6, 600.0)
 
@@ -469,11 +473,83 @@ async def main():
         rbrowser.clip = real_clip
     async with carol.post(f"{base}/api/rbrowser/session/clipboard", json={}, headers={"Sec-Fetch-Site": "cross-site"}) as r:
         check("clipboard: refused from another site", r.status == 403)
+    # ---------------------------------------------------------------- typed text (1.26.3)
+    TYPED = []
+
+    async def fake_type(session, text):
+        TYPED.append((session.sid, text))
+        return {"ok": True, "typed": len(text), "skipped": 0, "complete": True, "fallback": False, "why": ""}
+    real_type = rbrowser.type_text
+    rbrowser.type_text = fake_type
+    server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
+    try:
+        txt = "h\u00e9llo \u4e00 \U0001f600 " + SENTINEL
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": txt}) as r:
+            j = await r.json()
+            check("type: {typed, skipped, complete, fallback, why} and the text reached the registry once, unchanged",
+                  r.status == 200 and j == {"typed": len(txt), "skipped": 0, "complete": True, "fallback": False, "why": ""} and [t for _s, t in TYPED] == [txt]
+                  and r.headers.get("Cache-Control") == "no-store", str(j))
+        for bad in ({}, {"text": ""}, {"text": 5}, {"text": ["a"]}, {"text": "a" * 5001}, [1]):
+            async with carol.post(f"{base}/api/rbrowser/session/type", json=bad) as r:
+                check(f"type: a bad body is 400 and the registry is not asked: {str(bad)[:30]}", r.status == 400 and len(TYPED) == 1, str(r.status))
+        async with carol.post(f"{base}/api/rbrowser/session/type", data=b"{not json", headers={"Content-Type": "application/json"}) as r:
+            check("type: invalid JSON is 400", r.status == 400 and len(TYPED) == 1)
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "a" * 5000}) as r:
+            check("type: exactly 5000 characters are accepted", r.status == 200 and len(TYPED) == 2)
+        server._rbrowser_cfg["rbrowser_clipboard"] = "in"
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            check("type with the setting 'in' (send text only): served", r.status == 200 and len(TYPED) == 3)
+        server._rbrowser_cfg["rbrowser_clipboard"] = "off"
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            check("type with the setting 'off': 403 and the registry is not asked", r.status == 403 and len(TYPED) == 3)
+        server._rbrowser_cfg["rbrowser_clipboard"] = "both"
+
+        async def partial(session, text):
+            return {"ok": False, "typed": 4, "skipped": 0, "complete": False, "fallback": False, "why": "budget"}
+        rbrowser.type_text = partial
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abcdefgh"}) as r:
+            j = await r.json()
+            check("type: a partial run is 200 with the count and complete false (the page must not send the rest again as keys)",
+                  r.status == 200 and j["typed"] == 4 and j["complete"] is False and j["fallback"] is False and j["why"] == "budget", str(j))
+
+        async def old_unit(session, text):
+            return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": True, "why": "unsupported"}
+        rbrowser.type_text = old_unit
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            j = await r.json()
+            check("type: nothing typed and a fallback possible is 501 with fallback true", r.status == 501 and j["fallback"] is True and j["typed"] == 0, str(j))
+
+        async def lost(session, text):
+            return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "why": "reply"}
+        rbrowser.type_text = lost
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            j = await r.json()
+            check("type: an unknown outcome is 502 with fallback false", r.status == 502 and j["fallback"] is False, str(j))
+
+        async def refused(session, text):
+            return {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False, "why": "refused"}
+        rbrowser.type_text = refused
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+            check("type: the unit's refusal is 403", r.status == 403)
+        rbrowser.type_text = fake_type
+        server._rbrowser_type_rate = server._viewers_mod.RateWindow(2, 60.0)
+        codes = []
+        for _ in range(3):
+            async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}) as r:
+                codes.append(r.status)
+        check("type: the rate limit answers 429 through _limited, after the allowed calls", codes == [200, 200, 429], str(codes))
+        server._rbrowser_type_rate = server._viewers_mod.RateWindow(300, 60.0)
+        async with carol.post(f"{base}/api/rbrowser/session/type", json={"text": "abc"}, headers={"Sec-Fetch-Site": "cross-site"}) as r:
+            check("type: refused from another site", r.status == 403)
+    finally:
+        rbrowser.type_text = real_type
+        server._rbrowser_cfg["rbrowser_clipboard"] = "both"
+
     async with carol.post(f"{base}/api/rbrowser/session", json=body, headers={"Sec-Fetch-Site": "cross-site"}) as r:
         check("POST create: refused from another site", r.status == 403)
     async with carol.delete(f"{base}/api/rbrowser/session", headers={"Origin": "null"}) as r:
         check("DELETE: refused from a sandboxed document (Origin null)", r.status == 403)
-    check("the clipboard text was never logged", not any(SENTINEL in line for line in log.lines))
+    check("the clipboard text and the typed text were never logged", not any(SENTINEL in line for line in log.lines))
     check("nor audited", SENTINEL not in json.dumps(await db.get_audit_log(limit=200), default=str))
 
     # ---------------------------------------------------------------- admin list: states, no URL-like field
@@ -522,7 +598,7 @@ async def main():
     want_routes = sorted([("GET", "/api/admin/rbrowser"), ("PUT", "/api/admin/rbrowser"), ("POST", "/api/admin/rbrowser/preflight"),
                           ("POST", "/api/admin/rbrowser/sessions/{sid_prefix}/end"), ("GET", "/rbrowser"), ("GET", "/api/rbrowser/status"),
                           ("GET", "/api/rbrowser/session"), ("POST", "/api/rbrowser/session"), ("DELETE", "/api/rbrowser/session"),
-                          ("POST", "/api/rbrowser/session/resize"), ("POST", "/api/rbrowser/session/clipboard")])
+                          ("POST", "/api/rbrowser/session/resize"), ("POST", "/api/rbrowser/session/clipboard"), ("POST", "/api/rbrowser/session/type")])
     check("the route table is exactly the documented one (no observe or attach route for administrators)",
           [x for x in rb_routes if x[0] != "HEAD"] == want_routes, str(rb_routes))
 

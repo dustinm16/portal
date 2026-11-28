@@ -392,6 +392,71 @@ async def t_clip(r):
     check("no log record holds clipboard text", not any(SENTINEL in line for line in rec.lines), str(rec.lines)[:200])
 
 
+async def t_type(r):
+    s = r.session(clipboard="to_browser")
+    await r.serve_ctl()
+    rec = Records()
+    logging.getLogger().addHandler(rec)
+    logging.getLogger().setLevel(logging.DEBUG)
+    text = "h\u00e9llo \u4e00\U0001f600 " + SENTINEL
+    try:
+        r.ctl_reply = lambda q: {"ok": True, "typed": len(q["text"]), "skipped": 0, "complete": True}
+        res = await r.reg.type_text(s, text)
+        check("type: the text is typed, counted and complete; fallback is False",
+              res == {"ok": True, "typed": len(text), "skipped": 0, "complete": True, "fallback": False, "why": ""}, str(res)[:120])
+        check("type: the request is exactly {op: type, text}", json.loads(r.ctl_requests[-1]) == {"op": "type", "text": text})
+        r.ctl_reply = lambda q: {"ok": False, "typed": 3, "skipped": 0, "complete": False, "why": "budget"}
+        res = await r.reg.type_text(s, "abcdef")
+        check("type: a partial run keeps its count, is not ok and never asks for a fallback (the text would be typed twice)",
+              res["ok"] is False and res["typed"] == 3 and res["complete"] is False and res["fallback"] is False and res["why"] == "budget", str(res))
+        r.ctl_reply = lambda q: {"ok": False}
+        res = await r.reg.type_text(s, "abc")
+        check("type: an older unit (plain {ok: false}) is unsupported and may be answered with key events", res["ok"] is False and res["typed"] == 0 and res["fallback"] is True and res["why"] == "unsupported", str(res))
+        r.ctl_reply = lambda q: {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "unavailable"}
+        res = await r.reg.type_text(s, "abc")
+        check("type: a unit without typing keys says unavailable and may be answered with key events", res["fallback"] is True and res["why"] == "unavailable" and res["typed"] == 0, str(res))
+        r.ctl_reply = lambda q: {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "failed"}
+        check("type: a failure of the unit with nothing typed is no fallback either (its outcome is not known to be nothing)",
+              (await r.reg.type_text(s, "abc"))["fallback"] is False)
+        for bad in ({"ok": True, "typed": "3", "skipped": 0, "complete": True}, {"ok": True, "typed": True, "skipped": 0, "complete": True},
+                    {"ok": True, "typed": 6000, "skipped": 0, "complete": True}, {"ok": True, "typed": 1, "skipped": 0}, {"ok": True, "typed": -1, "skipped": 0, "complete": True}):
+            r.ctl_reply = lambda q, bad=bad: bad
+            res = await r.reg.type_text(s, "abc")
+            check(f"type: a reply of the wrong shape is never ok: {str(bad)[:50]}", res["ok"] is False and res["typed"] == 0 and res["fallback"] is False, str(res))
+        r.ctl_raw = b'{"ok": true, "typed": 3, "comp'
+        res = await r.reg.type_text(s, "abc")
+        check("type: a reply cut before its newline is a reply failure, no fallback", res["ok"] is False and res["why"] == "reply" and res["fallback"] is False, str(res))
+        r.ctl_raw = None
+        r.ctl_reply = lambda q: {"ok": True, "typed": 1, "skipped": 0, "complete": True}
+        n_before = len(r.ctl_requests)
+        check("type: more than 5000 characters and a non-string are refused before anything is sent",
+              (await r.reg.type_text(s, "a" * 5001))["why"] == "refused" and (await r.reg.type_text(s, 5))["why"] == "refused" and len(r.ctl_requests) == n_before)
+        s.clipboard = "off"
+        res = await r.reg.type_text(s, "abc")
+        check("type: a unit whose clipboard setting is off is refused and nothing is sent", res["why"] == "refused" and res["fallback"] is False and len(r.ctl_requests) == n_before)
+        s.clipboard = "both"
+        r.ctl_delay = 0.4
+        r.ctl_reply = lambda q: {"ok": True, "typed": 1, "skipped": 0, "complete": True}
+        a, b = await asyncio.gather(r.reg.type_text(s, "a"), r.reg.type_text(s, "b"))
+        results = sorted([a, b], key=lambda x: x["ok"])
+        check("type: one request at a time per session, the second answers busy (no fallback)",
+              results[0]["ok"] is False and results[0]["why"] == "busy" and results[0]["fallback"] is False and results[1]["ok"] is True)
+        r.ctl_delay = 1.0
+        saved = rbrowser.TYPE_REPLY_S
+        rbrowser.TYPE_REPLY_S = 0.3
+        slow = await r.reg.type_text(s, "abc")
+        rbrowser.TYPE_REPLY_S = saved
+        check("type: a reply that does not come is a failure with no fallback (the unit may have typed)", slow["ok"] is False and slow["fallback"] is False and slow["why"] == "reply", str(slow))
+        check("type: the reply time limit is longer than the unit's own 55 seconds", rbrowser.TYPE_REPLY_S > 55.0)
+        r.ctl_delay = 0
+        r.ctl_reply = lambda q: {"ok": True, "typed": 1, "skipped": 0, "complete": True}
+        await r.reg.type_text(s, SENTINEL)
+    finally:
+        logging.getLogger().removeHandler(rec)
+    await r.reg.end(s, "closed")
+    check("type: no log record holds the typed text", not any(SENTINEL in line for line in rec.lines), str(rec.lines)[:200])
+
+
 async def t_clip_gating(r):
     s = r.session(clipboard="to_browser")
     await r.serve_ctl()
@@ -417,7 +482,7 @@ async def t_clip_gating(r):
 
 
 CASES = [t_good, t_wrong_uid, t_wrong_cgroup, t_cgroup_reader_fails, t_symlink, t_not_a_socket, t_connect_failure, t_not_running, t_listener_check,
-         t_no_kind_branch, t_resize, t_ctl_peer_and_connect, t_clip, t_clip_gating]
+         t_no_kind_branch, t_resize, t_ctl_peer_and_connect, t_clip, t_clip_gating, t_type]
 
 
 async def main():

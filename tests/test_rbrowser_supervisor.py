@@ -246,7 +246,7 @@ for label, data in (("unknown op", b'{"op":"navigate","url":"x"}'), ("no op", b'
 check("ctl: exactly 4096 bytes accepted, 4097 refused",
       P(b'{"op":"ping"}' + b" " * (4096 - 13)) == ("ping",) and raises(S.CtlError, P, b'{"op":"ping"}' + b" " * (4097 - 13)))
 check("ctl: reply is one JSON line with only ok", S.ctl_reply(True) == b'{"ok": true}\n' and S.ctl_reply(0) == b'{"ok": false}\n')
-check("ctl: the only operations in the source are ping, resize and clip", set(re.findall(r'op == "(\w+)"', SRC)) == {"ping", "resize", "clip"})
+check("ctl: the only operations in the source are ping, resize, clip and type", set(re.findall(r'op == "(\w+)"', SRC)) == {"ping", "resize", "clip", "type"})
 check("ctl: clip", P(b'{"op":"clip"}\n') == ("clip",) and P(b'{"op":"clip","text":"x"}') == ("clip",))
 check("source: nothing of the debugging pipe is left",
       not any(w in SRC for w in ("CdpPipe", "cdp_frame", "reserve_pipe_fds", "remote-debugging", "window_bounds_params", "import fcntl", "Browser.", "pass_fds=(3")))
@@ -327,7 +327,7 @@ class FakeWm:
         return True
 
 
-def ask(payload, xr=None, wm=None, clipboard="both", clip=None):
+def ask(payload, xr=None, wm=None, clipboard="both", clip=None, typefn=None):
     a, b = socket.socketpair()
     a.sendall(payload)
     calls = []
@@ -336,6 +336,8 @@ def ask(payload, xr=None, wm=None, clipboard="both", clip=None):
         calls.append(1)
         return clip if clip is not None else (True, "x", False)
     state = {"xrandr": xr or FakeXr(), "wm": wm or FakeWm(), "clipboard": clipboard, "clip": fake_clip, "clip_calls": calls}
+    if typefn is not None:
+        state["type"] = typefn
     got = []
 
     def reader():
@@ -1391,14 +1393,14 @@ class KmLib:
 
 import ctypes
 h = object.__new__(S.ModeHolder)
-h.x11, h.dpy, h.recent, h.errors = KmLib(PLAN_ROWS), 1, __import__("collections").deque(maxlen=64), 0
+h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = KmLib(PLAN_ROWS), 1, __import__("collections").deque(maxlen=64), 0, None, [], None
 n = h.prefill_keymap()
 check("keymap: prefill_keymap reads the map, writes one key per planned key and returns how many", n == len(PLAN) and dict(h.x11.written) == PLAN, f"{n} {len(h.x11.written)}")
 h = object.__new__(S.ModeHolder)
-h.x11, h.dpy, h.recent, h.errors = KmLib(PLAN_ROWS), 1, __import__("collections").deque([(6, 8)], maxlen=64), 1
+h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = KmLib(PLAN_ROWS), 1, __import__("collections").deque([(6, 8)], maxlen=64), 1, None, [], None
 check("keymap: an X error during the writes means 0 and one neutral log line (the session goes on without)", h.prefill_keymap() == 0)
 h = object.__new__(S.ModeHolder)
-h.x11, h.dpy, h.recent, h.errors = KmLib(km_rows(40)), 1, __import__("collections").deque(maxlen=64), 0
+h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = KmLib(km_rows(40)), 1, __import__("collections").deque(maxlen=64), 0, None, [], None
 check("keymap: nothing to write means no write at all", h.prefill_keymap() == 0 and h.x11.written == [])
 _run = SRC[SRC.index("def run(cfg):"):]
 check("keymap: run() prepares the map after the size and before x11vnc starts, and a failure there is not fatal",
@@ -1406,6 +1408,181 @@ check("keymap: run() prepares the map after the size and before x11vnc starts, a
       and _run[_run.index("try:\n            holder.prefill_keymap()"):].split("# 4.")[0].count("except Exception") == 1)
 check("keymap: x11vnc's argument list did not change for it (the supervisor tests above pin the clipboard flags): no -add_keysyms/-remap/-xkb/-clear_keys flag",
       not any(f in S.x11vnc_argv("x", 1, "a", "s") for f in ("-add_keysyms", "-noadd_keysyms", "-remap", "-xkb", "-noxkb", "-clear_keys", "-clear_all", "-skip_keycodes", "-modtweak", "-nomodtweak")))
+
+# ---------------------------------------------------------------- 1.26.3: the `type` request (text typed by the supervisor through XTEST)
+
+import inspect  # noqa: E402
+
+
+def kt(text):
+    return S.type_keysyms(text)
+
+
+def raises_ctl(fn):
+    try:
+        fn()
+    except S.CtlError:
+        return True
+    return False
+
+
+check("type: ASCII and Latin-1 are their own keysym, other code points 0x01000000 + code point (CJK, emoji, Greek)",
+      kt("aZ ~éÿ") == ([0x61, 0x5A, 0x20, 0x7E, 0xE9, 0xFF], 0) and kt("一\U0001F600α") == ([0x01004E00, 0x0101F600, 0x010003B1], 0))
+check("type: CR LF, LF and a lone CR are one Return each, a tab is Tab",
+      kt("a\r\nb\nc\rd\te") == ([0x61, 0xFF0D, 0x62, 0xFF0D, 0x63, 0xFF0D, 0x64, 0xFF09, 0x65], 0))
+check("type: control characters, DEL, the C1 range and lone surrogates are skipped and counted, nothing else changes",
+      kt("a\x00\x01\x7f\x80\x9f" + chr(0xD800) + chr(0xDFFF) + "b") == ([0x61, 0x62], 7) and kt("") == ([], 0))
+check("type: the filter is the page's: every code point the page's keysymFor types is typed here (0x20-0x7e, 0xa0-0xff, above 0xff that is no surrogate)",
+      all(len(kt(chr(c))[0]) == 1 for c in list(range(0x20, 0x7F)) + list(range(0xA0, 0x100)) + [0x100, 0x20AC, 0x4E00, 0x10FFFF])
+      and all(kt(chr(c))[1] == 1 for c in (0x00, 0x1F, 0x7F, 0x9F)))
+
+SC_ROWS = km_rows(60, free=(0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19), xf=tuple(range(20, 40)), nav=(40,))
+SC_PLAN = S.plan_keymap(SC_ROWS, 8)
+SC = S.plan_scratch(SC_ROWS, 8, SC_PLAN)
+_empty = {8 + i for i, r in enumerate(SC_ROWS) if not any(r)} | {kc for kc, r in SC_PLAN.items() if not any(r)}
+check("scratch plan: SCRATCH_COUNT keys, ascending, all empty after the plan, none written by the plan, never the first key",
+      len(SC) == S.SCRATCH_COUNT and SC == sorted(SC) and all(k in _empty and (k not in SC_PLAN or not any(SC_PLAN[k])) for k in SC) and 8 not in SC, str(SC))
+check("scratch plan: the highest free keys; fewer free keys give fewer; no rows or n of 0 give none; the same input the same answer",
+      SC == sorted(_empty - {8})[-S.SCRATCH_COUNT:] and len(S.plan_scratch(SC_ROWS, 8, SC_PLAN, 3)) == 3 and S.plan_scratch([], 8, {}) == []
+      and S.plan_scratch(SC_ROWS, 8, SC_PLAN, 0) == [] and len(S.plan_scratch(km_rows(12, free=(0, 1, 2)), 8, {})) == 2 and S.plan_scratch(SC_ROWS, 8, SC_PLAN) == SC)
+check("scratch plan: with the plan's reserve the keys x11vnc keeps are what is left (the reserve minus the scratch keys)",
+      len(_empty - {8} - set(SC)) >= S.KEYMAP_RESERVE - S.SCRATCH_COUNT)
+
+
+class TyFake:
+    """libX11 and libXtst in one: the events (bind, down, up, sync) in order, with the clock moved by sleep()."""
+
+    def __init__(self, fail_after=None):
+        self.log, self.t, self.fail_after, self.fakes = [], 0.0, fail_after, 0
+        self.XChangeKeyboardMapping = lambda d, kc, w, arr, n: self.log.append(("bind", kc, tuple(arr[:w]), self.t))
+        self.XSync = lambda d, f: self.log.append(("sync", self.t))
+        self.XTestFakeKeyEvent = self._fake
+
+    def _fake(self, d, kc, down, delay):
+        self.fakes += 1
+        if self.fail_after is not None and self.fakes > self.fail_after:
+            return 0
+        self.log.append(("down" if down else "up", kc, self.t))
+        return 1
+
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def mk_typer(n=3, fail_after=None):
+    f = TyFake(fail_after)
+    return f, S.ScratchTyper(f, f, 1, [100 + i for i in range(n)], 4, clock=f.clock, sleep=f.sleep)
+
+
+f, ty = mk_typer()
+res = ty.type([0x61, 0x62, 0x63, 0x61])
+binds = [e for e in f.log if e[0] == "bind"]
+check("typer: three different keysyms bind three keys, a repeated one is typed on its key without a new binding",
+      res == (4, "") and len(binds) == 3 and [e[1] for e in f.log if e[0] == "down"] == [100, 101, 102, 100], str(f.log))
+check("typer: a key is bound with the keysym in every column and synced, then TYPE_MAP_WAIT_S passes before it goes down and up",
+      all(e[2] == (e[2][0],) * 4 for e in binds) and f.log[0][0] == "bind" and f.log[1][0] == "sync" and f.log[2][0] == "down" and f.log[2][-1] - f.log[0][-1] >= S.TYPE_MAP_WAIT_S - 1e-9)
+f, ty = mk_typer(2)
+ty.type([0x61, 0x62, 0x63, 0x64])
+check("typer: no key is ever written empty, and the keys written are only scratch keys",
+      all(any(e[2]) and e[1] in (100, 101) for e in f.log if e[0] == "bind"))
+ty.release()
+last = {}
+for e in f.log:
+    if e[0] == "bind":
+        last[e[1]] = e[2]
+check("typer: release puts every scratch key back to the placeholder (not empty), TYPE_SETTLE_S after its last press",
+      all(v == (S.SCRATCH_SYM,) * 4 for v in last.values()) and set(last) == {100, 101})
+f, ty = mk_typer()
+ty.type([0x61, 0x62])
+n_before = len(f.log)
+ty.release()
+check("typer: release of keys already at the placeholder writes nothing", len(f.log) > n_before and ty.type([], 1.0) == (0, "") )
+f, ty = mk_typer()
+check("typer: nothing to type is nothing done", ty.type([]) == (0, "") and f.log == [])
+f, ty = mk_typer()
+n = [0]
+
+
+def clk():
+    n[0] += 1
+    return n[0] * 10.0
+
+
+ty.clock = clk
+check("typer: the time limit stops it and says budget; what was typed is counted", ty.type([0x61, 0x62, 0x63, 0x64], budget_s=25.0) == (1, "budget"), str(ty.type))
+f, ty = mk_typer()
+flag = [False]
+res = ty.type([0x61, 0x62, 0x63], stopping=lambda: flag[0] or flag.__setitem__(0, True) or False)
+check("typer: a stop request ends it before the next key", res[1] == "stopping" and res[0] == 1, str(res))
+f, ty = mk_typer(fail_after=2)
+check("typer: a refused XTEST event ends it and says failed; a key that went down is not counted", ty.type([0x61, 0x62, 0x63]) == (1, "failed"))
+f, ty = mk_typer()
+calls = []
+ty.type([0x61 + i for i in range(200)], pump=lambda: calls.append(f.t))
+gaps2 = [b - a for a, b in zip(calls, calls[1:])]
+check("typer: the pump runs at least every TYPE_PUMP_S (plus the one key in progress) while it types",
+      len(calls) > 3 and max(gaps2) <= S.TYPE_PUMP_S + S.TYPE_MAP_WAIT_S + 1e-9, f"{len(calls)} {f.t} {max(gaps2)}")
+f, ty = mk_typer(2)
+check("typer: the error check after a binding stops it before the key goes down", ty.type([0x61, 0x62], failed=lambda: True) == (0, "failed") and not [e for e in f.log if e[0] == "down"])
+
+# ModeHolder.prefill_keymap and type_text with the fake
+h = object.__new__(S.ModeHolder)
+ty_lib = KmLib(SC_ROWS)
+h.x11, h.dpy, h.recent, h.errors, h.xtst, h.scratch, h.typer = ty_lib, 1, __import__("collections").deque(maxlen=64), 0, object(), [], None
+n = h.prefill_keymap()
+wr = dict(ty_lib.written)
+check("scratch: prefill_keymap writes the placeholder on the scratch keys in the same pass, returns only the plan's count, and keeps the keys",
+      n == len(SC_PLAN) and h.scratch == SC and all(wr[k] == (S.SCRATCH_SYM,) * len(SC_ROWS[0]) for k in SC) and h.typer is not None and set(wr) == set(SC_PLAN) | set(SC))
+h2 = object.__new__(S.ModeHolder)
+h2.x11, h2.dpy, h2.recent, h2.errors, h2.xtst, h2.scratch, h2.typer = KmLib(SC_ROWS), 1, __import__("collections").deque(maxlen=64), 0, None, [], None
+check("scratch: without libXtst there are no scratch keys and the old plan is written as before", h2.prefill_keymap() == len(SC_PLAN) and h2.scratch == [] and h2.typer is None)
+check("type_text: without scratch keys it types nothing and says unavailable (the portal then falls back to key events)",
+      h2.type_text("abc") == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "unavailable"})
+h3 = object.__new__(S.ModeHolder)
+f3 = TyFake()
+f3.XNextRequest = lambda d: 5
+h3.x11, h3.xtst, h3.dpy, h3.recent, h3.errors = f3, f3, 1, __import__("collections").deque(maxlen=64), 0
+h3.typer = S.ScratchTyper(f3, f3, 1, [100, 101], 4, clock=f3.clock, sleep=f3.sleep)
+r3 = h3.type_text("ab\x00一")
+check("type_text: typed, skipped and complete are counted, the keys are back at the placeholder, and the answer holds no text",
+      r3 == {"ok": True, "typed": 3, "skipped": 1, "complete": True} and {e[1]: e[2] for e in f3.log if e[0] == "bind"}[100] == (S.SCRATCH_SYM,) * 4 and "ab" not in json.dumps(r3))
+f4 = TyFake(fail_after=2)
+f4.XNextRequest = lambda d: 5
+h3.x11 = h3.xtst = f4
+h3.typer = S.ScratchTyper(f4, f4, 1, [100, 101], 4, clock=f4.clock, sleep=f4.sleep)
+r4 = h3.type_text("abc")
+check("type_text: a partial run says how many were typed and why it stopped, ok False, complete False", r4["typed"] == 1 and r4["ok"] is False and r4["complete"] is False and r4["why"] == "failed", str(r4))
+
+# the request line
+big = json.dumps({"op": "type", "text": "\U0001F600" * 5000}).encode()
+check("type request: 5000 emoji as escaped JSON fit in CTL_TYPE_MAX and parse; 5001 characters, a number and a missing text are refused",
+      len(big) < S.CTL_TYPE_MAX and S.parse_ctl_request(big + b"\n") == ("type", "\U0001F600" * 5000)
+      and all(raises_ctl(lambda b=b: S.parse_ctl_request(b)) for b in (json.dumps({"op": "type", "text": "a" * 5001}).encode(), b'{"op":"type","text":5}', b'{"op":"type"}')))
+check("type request: a line over CTL_TYPE_MAX is refused, and any other request over CTL_MAX still is (only `type` may be large)",
+      raises_ctl(lambda: S.parse_ctl_request(b'{"op":"type","text":"' + b"a" * S.CTL_TYPE_MAX + b'"}'))
+      and raises_ctl(lambda: S.parse_ctl_request(b'{"op":"ping","pad":"' + b"a" * 5000 + b'"}\n')) and S.parse_ctl_request(b'{"op":"ping"}\n') == ("ping",))
+typed_calls = []
+out, st = ask(json.dumps({"op": "type", "text": "héllo 一"}).encode() + b"\n",
+              typefn=lambda t: (typed_calls.append(t), {"ok": True, "typed": 7, "skipped": 0, "complete": True})[1])
+check("handle_ctl: type calls the typing function with the text and answers its counts, the text is not in the answer",
+      json.loads(out) == {"ok": True, "typed": 7, "skipped": 0, "complete": True} and typed_calls == ["héllo 一"] and b"llo" not in out and st["xrandr"].sizes == [])
+out, st = ask(json.dumps({"op": "type", "text": "abc"}).encode() + b"\n", clipboard="off", typefn=lambda t: typed_calls.append("BAD"))
+check("handle_ctl: type with the clipboard setting off is refused (nothing typed), to_browser and both are served",
+      json.loads(out) == {"ok": False, "typed": 0, "skipped": 0, "complete": False, "why": "refused"} and "BAD" not in typed_calls
+      and json.loads(ask(b'{"op":"type","text":"a"}\n', clipboard="to_browser", typefn=lambda t: {"ok": True, "typed": 1, "skipped": 0, "complete": True})[0])["typed"] == 1)
+out, st = ask(b'{"op":"type","text":"abc"}\n')
+check("handle_ctl: type without a typing function says unavailable", json.loads(out)["why"] == "unavailable" and json.loads(out)["typed"] == 0)
+out, st = ask(b'{"op":"type","text":' + b'"' + b"a" * 4900 + b'"}\n', typefn=lambda t: {"ok": True, "typed": len(t), "skipped": 0, "complete": True})
+check("handle_ctl: a type request above 4 KB is read whole and served (the ctl line limit is per operation)", json.loads(out)["typed"] == 4900)
+out, st = ask(b'{"op":"type","text":7}\n', typefn=lambda t: {"ok": True})
+check("handle_ctl: a type request without text answers the plain false of every refused request", json.loads(out) == {"ok": False})
+check("run(): the control state offers type through the holder, with the window manager's pump and the stop flag, and loads libXtst without making it required",
+      'holder.type_text(text, TYPE_BUDGET_S, pump=wm.pump, stopping=lambda: stop["flag"])' in _run and 'libXtst.so.6' in SRC and "except (OSError, AttributeError)" in SRC)
+check("type: the supervisor never logs or stores the text (no log call in the typing code mentions it)",
+      "log(" not in S.ScratchTyper.type.__doc__ and "text" not in "".join(l for l in inspect.getsource(S.ModeHolder.type_text).splitlines() if "log(" in l))
 
 if failures:
     print(f"\n{len(failures)} check(s) failed:")

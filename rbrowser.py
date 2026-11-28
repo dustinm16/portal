@@ -256,6 +256,8 @@ RESET_FAILED_S = 10.0         # one best-effort reset-failed of a unit the regis
 CONNECT_S = 2.0
 CTL_REPLY_S = 2.0              # resize
 CLIP_REPLY_S = 5.0             # clip: the unit itself waits up to 2 s for xsel and its send time-out is 5 s (A1 contract)
+TYPE_REPLY_S = 65.0            # type: the unit stops after 55 s of typing; its answer comes a moment later
+TYPE_MAX_CHARS = 5000          # type: the page's own limit
 CLIP_LINE_MAX = 2 * 1024 * 1024
 CLIP_TEXT_MAX = 262144
 STREAM_LIMIT = 1 << 20
@@ -489,6 +491,7 @@ class _Ext:
         self.cancelled = False              # the session was ended while its start was in flight
         self.samples: collections.deque = collections.deque()
         self.clip_lock = asyncio.Lock()
+        self.type_lock = asyncio.Lock()
         self.last_listener = 0.0
         self.unknown = 0
         self.last_here = -1e18
@@ -1381,6 +1384,43 @@ class Registry:
             return dict(bad, why="reply")
         return {"ok": True, "text": text, "truncated": trunc}
 
+    async def type_text(self, session: Session, text: str) -> dict:
+        """Types `text` in the unit through its own X connection (ctl.sock `type`). Returns {"ok", "typed", "skipped", "complete",
+        "fallback", "why"}: typed is how many characters the unit typed; fallback is True only when nothing was typed and nothing
+        can have been (an older unit that does not know the request, no typing keys, the unit not reachable), so the page may send the
+        same text as key events; with typed above 0 or an unknown outcome it never is (the text would be typed twice). why: refused, busy,
+        unsupported, unavailable, unreachable, reply, or the unit's own (budget, stopping, failed). The text is page-controlled:
+        untrusted, never logged, never stored here."""
+        bad = {"ok": False, "typed": 0, "skipped": 0, "complete": False, "fallback": False}
+        if not isinstance(text, str) or len(text) > TYPE_MAX_CHARS:
+            return dict(bad, why="refused")
+        if session.state != "running" or session.clipboard == "off":
+            return dict(bad, why="refused")
+        ext = self._x.get(session.sid)
+        if ext is None:
+            return dict(bad, why="unreachable", fallback=True)
+        if ext.type_lock.locked():
+            return dict(bad, why="busy")
+        async with ext.type_lock:
+            try:
+                obj = await self._ctl(session, {"op": "type", "text": text}, TYPE_REPLY_S, 4096)
+            except StreamRefused:
+                return dict(bad, why="unreachable", fallback=True)
+        if obj is None:
+            return dict(bad, why="reply")
+        typed, skipped, complete = obj.get("typed"), obj.get("skipped"), obj.get("complete")
+        if (isinstance(typed, bool) or not isinstance(typed, int) or isinstance(skipped, bool) or not isinstance(skipped, int)
+                or not isinstance(complete, bool) or not 0 <= typed <= TYPE_MAX_CHARS or not 0 <= skipped <= TYPE_MAX_CHARS):
+            # an older unit answers an unknown request with {"ok": false} and nothing else: nothing was typed
+            return dict(bad, why="unsupported", fallback=obj.get("ok") is False and "typed" not in obj)
+        why = obj.get("why")
+        why = why if isinstance(why, str) and len(why) <= 20 else ""
+        out = {"ok": obj.get("ok") is True and complete, "typed": typed, "skipped": skipped, "complete": complete, "fallback": False,
+               "why": why}
+        if not out["ok"] and typed == 0 and why in ("unavailable", "refused"):
+            out["fallback"] = why == "unavailable"
+        return out
+
     # ------------------------------------------------------------ usage
 
     async def usage(self, session: Session) -> dict:
@@ -2004,6 +2044,11 @@ async def resize(session: Session, width: int, height: int) -> bool:
 async def clip(session: Session) -> dict:
     """{"ok": bool, "text": str, "truncated": bool[, "why": str]}: ok False is never an empty clipboard."""
     return await registry().clip(session)
+
+
+async def type_text(session: Session, text: str) -> dict:
+    """{"ok", "typed", "skipped", "complete", "fallback", "why"}: the text typed in the unit (see Registry.type_text)."""
+    return await registry().type_text(session, text)
 
 
 async def end(session: Session, reason: str, marker: str | None = None, detail: str = "") -> None:

@@ -334,8 +334,18 @@ async def run(ctx):
                    f"{st} {sorted(j or {})}")
             st, j = await jsend(m1, "POST", api + "/session/clipboard", {})
             ctx.ok("rbrowser: a member below the role has no clipboard route (403)", st == 403, f"{st}")
+            text = "h\u00e9llo \u4e00 \U0001f600"
+            st, j = await jsend(sa, "POST", api + "/session/type", {"text": text})
+            ctx.ok("rbrowser: the type route has the fake's control socket type the text and counts it, complete, no fallback",
+                   st == 200 and (j or {}).get("typed") == len(text) and j.get("complete") is True and j.get("fallback") is False, f"{st} {j}")
+            st, j = await jsend(sa, "POST", api + "/session/type", {"text": ""})
+            ctx.ok("rbrowser: an empty text is 400", st == 400, f"{st}")
+            st, j = await jsend(m1, "POST", api + "/session/type", {"text": "a"})
+            ctx.ok("rbrowser: a member below the role has no type route (403)", st == 403, f"{st}")
             st, j = await jsend(sa, "PUT", adm_api, {"rbrowser_clipboard": "off"})
             ctx.ok("rbrowser: the clipboard setting is switched to off", st == 200, f"{st}")
+            st, j = await jsend(sa, "POST", api + "/session/type", {"text": "a"})
+            ctx.ok("rbrowser: with the clipboard off the type route answers 403 and types nothing", st == 403 and "typed" not in (j or {}), f"{st}")
             st, j = await jsend(sa, "POST", api + "/session/clipboard", {})
             ctx.ok("rbrowser: with the clipboard off the route answers 403 and no text",
                    st == 403 and "text" not in (j or {}), f"{st}")

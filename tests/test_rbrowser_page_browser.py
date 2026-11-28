@@ -79,7 +79,16 @@ def serve():
             fakes = list(getattr(rbrowser.registry().launcher, "servers", {}).values())
             keys = sum(1 for f in fakes for t, _ in f.records if t == 4)
             pointers = sum(1 for f in fakes for t, _ in f.records if t == 5)
-            return web.json_response({"keys": keys, "pointers": pointers, "sessions": len(rbrowser.all()), "attached": sum(1 for s in rbrowser.all() if s.viewer is not None)})
+            typed = 0
+            for f in fakes:
+                for line in f.ctl_requests:
+                    try:
+                        q = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(q, dict) and q.get("op") == "type" and isinstance(q.get("text"), str):
+                        typed += len(q["text"])
+            return web.json_response({"keys": keys, "typed": typed, "pointers": pointers, "sessions": len(rbrowser.all()), "attached": sum(1 for s in rbrowser.all() if s.viewer is not None)})
         app = web.Application()
         app.router.add_get("/info", info)
         ctl = TestServer(app, host="127.0.0.1")
@@ -301,30 +310,30 @@ def run_browser(info):
             page.locator("#rb-text-toggle").click()
             check(f"{L}: Text opens the panel with Send text and Copy from the browser", page.locator("#rb-textpanel").is_visible()
                   and page.locator("#rb-send-text").is_visible() and page.locator("#rb-get-clip").is_visible())
-            k0 = counts()["keys"]
+            k0, t0 = counts()["keys"], counts()["typed"]
             page.fill("#rb-textbox", "hi")
             page.locator("#rb-send-text").click()
-            moved = wait_for(lambda: counts()["keys"] - k0 >= 4, 10)
-            check(f"{L}: Send text becomes key events at the fake server (2 characters, press and release) and empties the box",
-                  bool(moved) and page.input_value("#rb-textbox") == "", f"{counts()['keys'] - k0}")
+            moved = wait_for(lambda: counts()["typed"] - t0 >= 2, 10)
+            check(f"{L}: Send text becomes one type request at the fake server's control socket (2 characters, no key event) and empties the box",
+                  bool(moved) and bool(wait_for(lambda: page.input_value("#rb-textbox") == "", 5)) and counts()["keys"] == k0, f"{counts()['typed'] - t0} {counts()['keys'] - k0}")
             page.locator("#rb-get-clip").click()
             got = wait_for(lambda: page.locator("#rb-received").inner_text() == FAKE_CLIP, 8)
             check(f"{L}: Copy from the browser shows the remote text in the box", bool(got) and page.locator("#rb-received-wrap").is_visible())
             check(f"{L}: the received text went in as text, not markup", page.evaluate("document.getElementById('rb-received').children.length") == 0)
             # a paste event outside the fields is typed
             page.locator("#rb-textpanel").evaluate("e => e.hidden = true")
-            k0 = counts()["keys"]
+            t0 = counts()["typed"]
             page.evaluate("""() => { const dt = new DataTransfer(); dt.setData('text/plain', 'abc');
                 document.body.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); }""")
-            moved = wait_for(lambda: counts()["keys"] - k0 >= 6, 10)
-            check(f"{L}: a paste event becomes key events (3 characters)", bool(moved), f"{counts()['keys'] - k0}")
+            moved = wait_for(lambda: counts()["typed"] - t0 >= 3, 10)
+            check(f"{L}: a paste event becomes a type request (3 characters)", bool(moved), f"{counts()['typed'] - t0}")
             # the keyboard button focuses the hidden field; typing in it reaches the server
             page.locator("#rb-keyboard").click()
             check(f"{L}: Keyboard focuses the hidden input field", page.evaluate("document.activeElement && document.activeElement.id") == "rb-kbd")
-            k0 = counts()["keys"]
+            t0 = counts()["typed"]
             page.keyboard.type("ok")
-            moved = wait_for(lambda: counts()["keys"] - k0 >= 4, 10)
-            check(f"{L}: characters typed there become key events", bool(moved), f"{counts()['keys'] - k0}")
+            moved = wait_for(lambda: counts()["typed"] - t0 >= 2, 10)
+            check(f"{L}: characters typed there become type requests", bool(moved), f"{counts()['typed'] - t0}")
             check(f"{L}: and the field is emptied again", wait_for(lambda: page.input_value("#rb-kbd") == "", 3))
             # themes
             def tb_colours():
@@ -406,10 +415,10 @@ def run_browser(info):
             check(f"{L}: Keyboard and End are on the toolbar", page.locator("#rb-keyboard").is_visible() and page.locator("#rb-end").is_visible())
             page.locator("#rb-keyboard").tap()
             check(f"{L}: Keyboard focuses the hidden input field", page.evaluate("document.activeElement && document.activeElement.id") == "rb-kbd")
-            k0 = counts()["keys"]
+            t0 = counts()["typed"]
             page.keyboard.type("hello")
-            moved = wait_for(lambda: counts()["keys"] - k0 >= 10, 10)
-            check(f"{L}: text typed on the phone keyboard path becomes key events at the fake server", bool(moved), f"{counts()['keys'] - k0}")
+            moved = wait_for(lambda: counts()["typed"] - t0 >= 5, 10)
+            check(f"{L}: text typed on the phone keyboard path becomes type requests at the fake server's control socket (5 characters, joined while one runs)", bool(moved), f"{counts()['typed'] - t0}")
             page.locator("#rb-text-toggle").tap()
             check(f"{L}: with in only the text panel opens and there is no Copy from the browser", page.locator("#rb-textpanel").is_visible()
                   and page.locator("#rb-send-text").is_visible() and not page.locator("#rb-get-clip").is_visible())

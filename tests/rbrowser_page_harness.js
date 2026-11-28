@@ -787,6 +787,64 @@ const hex = (a) => a.map(x => x.toString(16)).join(',');
     check('without a connection nothing is typed', !r.ok && r.reason === 'not_connected');
   });
 
+  // ---- typing through the server (1.26.3) ----
+  await withDeadline('typing through the server', async () => {
+    const TYPE = 'POST /api/rbrowser/session/type';
+    const typeCalls = (w) => w.calls.filter(c => c.url === '/api/rbrowser/session/type');
+    let w = world();
+    w.route(TYPE, json(200, { typed: 9, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true });
+    let r = await w.ctl.typeText('h\u00e9llo \u4e00\u{1F600}');
+    check('with type_text the text goes to POST /api/rbrowser/session/type as {text}, no key event is sent', typeCalls(w).length === 1 && typeCalls(w)[0].body.text === 'h\u00e9llo \u4e00\u{1F600}' && w.rfbs[0].keys.length === 0, JSON.stringify(typeCalls(w)));
+    check('... and the answer is ok with the count the page computed (keysyms of the text)', r.ok && r.sent === 8, JSON.stringify(r));
+    w = world();
+    w.route(TYPE, json(501, { error: 'x', typed: 0, fallback: true, why: 'unsupported' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('a refusal with fallback true (nothing typed) sends the same text as key events', r.ok && r.sent === 3 && hex(sent(w.rfbs[0])) === '61,62,63' && typeCalls(w).length === 1, hex(sent(w.rfbs[0])));
+    r = await w.ctl.typeText('de');
+    check('... and the page does not ask the server again for the rest of the session', typeCalls(w).length === 1 && hex(sent(w.rfbs[0])) === '61,62,63,64,65', typeCalls(w).length);
+    w = world();
+    w.route(TYPE, [json(429, { error: 'slow' }), json(200, { typed: 2, skipped: 0, complete: true, fallback: false, why: '' })]);
+    await connect(w, { type_text: true });
+    await w.ctl.typeText('ab');
+    r = await w.ctl.typeText('cd');
+    check('a 429 sends that text as keys and the next text asks the server again', typeCalls(w).length === 2 && hex(sent(w.rfbs[0])) === '61,62' && r.ok, hex(sent(w.rfbs[0])));
+    w = world();
+    w.route(TYPE, json(200, { typed: 3, skipped: 0, complete: false, fallback: false, why: 'budget' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abcdef');
+    check('a partial run is a failure with its count, says so on the screen and never sends the rest as keys (it would type twice)',
+      !r.ok && r.sent === 3 && w.rfbs[0].keys.length === 0 && /Only 3 of 6 characters were typed/.test(text(w, 'rb-text-msg')), JSON.stringify(r) + text(w, 'rb-text-msg'));
+    w = world();
+    w.route(TYPE, json(502, { error: 'x', typed: 0, fallback: false, why: 'reply' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('abc');
+    check('an unknown outcome (502, fallback false) is a failure and no key is sent', !r.ok && w.rfbs[0].keys.length === 0 && /could not be typed/.test(text(w, 'rb-text-msg')));
+    w = world();
+    w.route(TYPE, json(200, { typed: 1, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true, clipboard: 'off' });
+    await w.ctl.typeText('abc');
+    check('with the clipboard setting off the server is not asked and the text goes as keys (the phone field keeps working)', typeCalls(w).length === 0 && hex(sent(w.rfbs[0])) === '61,62,63');
+    w = world();
+    w.route(TYPE, json(200, { typed: 1, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true });
+    const p1 = w.ctl.typeText('abc'), p2 = w.ctl.typeText('de'), p3 = w.ctl.typeText('f');
+    await Promise.all([p1, p2, p3]);
+    check('texts that arrive while a request runs are joined into the next one: one request at a time, in order, nothing lost',
+      typeCalls(w).map(c => c.body.text).join('|') === 'abc|def', JSON.stringify(typeCalls(w).map(c => c.body.text)));
+    w = world();
+    w.route(TYPE, json(200, { typed: 5, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w, { type_text: true });
+    r = await w.ctl.typeText('y'.repeat(5001));
+    check('more than 5000 characters are refused before any request', !r.ok && r.reason === 'too_long' && typeCalls(w).length === 0);
+    w = world();
+    w.route(TYPE, json(200, { typed: 1, skipped: 0, complete: true, fallback: false, why: '' }));
+    await connect(w);
+    await w.ctl.typeText('abc');
+    check('a session that does not offer type_text types as key events, as before', typeCalls(w).length === 0 && hex(sent(w.rfbs[0])) === '61,62,63');
+  });
+
   // ---- paste ----
   await withDeadline('paste', async () => {
     const w = world();

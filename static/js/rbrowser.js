@@ -241,6 +241,9 @@ function create(env) {
     let typeQueue = [];
     let typeTimer = null;
     let typing = false;
+    let serverTyping = false;        // POST /api/rbrowser/session/type is used for text when the session offers it (info.type_text) until the server says it cannot (fallback: key events)
+    let routeQueue = [];             // jobs typed through the server, one request at a time: { text | keys, resolve, release }
+    let routing = false;
 
     // ---- storage (always inside try/catch) ----
     function storeGet(key) {
@@ -544,6 +547,7 @@ function create(env) {
         }
         session = info;
         if (typeof info.clipboard === 'string') clipMode = normaliseClip(info.clipboard);
+        serverTyping = info.type_text === true;
         rememberBoot();
         applyDeadlines(info, env.now());
         applyClipboardUi();
@@ -847,6 +851,9 @@ function create(env) {
         const q = typeQueue;
         typeQueue = [];
         for (const job of q) job.resolve({ ok: false, reason: 'cancelled', sent: job.idx });
+        const rq = routeQueue;                         // a request already sent goes on in the unit; the ones behind it do not start
+        routeQueue = [];
+        for (const job of rq) job.resolve({ ok: false, reason: 'cancelled', sent: 0 });
     }
 
     // The answer to something typed or copied. It goes into the text panel; when that panel is shut (a paste on the
@@ -860,6 +867,69 @@ function create(env) {
             show('rb-banner-msg', true);
             clearTimer(noteTimer);
             noteTimer = setTimer(() => { noteTimer = null; show('rb-banner-msg', false); }, NOTE_SHOW_MS);
+        }
+    }
+
+    // ---- text through the server (1.26.3): the unit types it itself, so any character types, not only those of the keyboard table ----
+    function routeAllowed(opts) {
+        return serverTyping && clipMode !== 'off' && !typing && !typeQueue.length;
+    }
+
+    function enqueueRoute(job) {
+        return new Promise((resolve) => {
+            job.resolve = resolve;
+            routeQueue.push(job);
+            if (!routing) pumpRoute();
+        });
+    }
+
+    async function pumpRoute() {
+        routing = true;
+        try {
+            while (routeQueue.length) {
+                const first = routeQueue[0];
+                if (first.keys) {                       // a key (Backspace, Enter of the phone field): in order, behind the text before it
+                    routeQueue.shift();
+                    first.resolve(await enqueueKeys(first.keys));
+                    continue;
+                }
+                const batch = [];                       // the text jobs at the head join into one request
+                while (routeQueue.length && !routeQueue[0].keys && (!batch.length || (!routeQueue[0].release && !batch[0].release))) {
+                    batch.push(routeQueue.shift());
+                }
+                await runRouteBatch(batch);
+            }
+        } finally {
+            routing = false;
+        }
+    }
+
+    async function runRouteBatch(batch) {
+        const text = batch.map((j) => j.text).join('');
+        if (batch[0].release && rfb) for (const k of MODIFIER_KEYSYMS) rfb.sendKey(k, null, false);
+        const r = await api('POST', '/api/rbrowser/session/type', { text: text });
+        const d = r.data || {};
+        const typed = typeof d.typed === 'number' ? d.typed : 0;
+        if (typed === 0 && (r.status === 429 || r.status === 403 || r.status === 404 || d.fallback === true)) {
+            if (r.status !== 429) serverTyping = false;     // the server or the unit cannot type text: key events for the rest of the session
+            for (const j of batch) j.resolve(await enqueueKeys(j.fkeys, { releaseModifiers: j.release, skipped: j.skipped }));
+            return;
+        }
+        let left = typed;
+        for (const j of batch) {
+            const n = j.fkeys.length;
+            if (r.ok && (d.complete === true || left >= n)) {
+                left -= n;
+                j.resolve({ ok: true, sent: n, skipped: j.skipped });
+            } else {
+                const part = Math.max(0, Math.min(n, left));
+                left -= part;
+                if (!j.said) {
+                    say(part ? 'Only ' + part + ' of ' + n + ' characters were typed.' : 'The text could not be typed.');
+                    j.said = true;
+                }
+                j.resolve({ ok: false, reason: 'failed', sent: part, skipped: j.skipped });
+            }
         }
     }
 
@@ -913,11 +983,15 @@ function create(env) {
         }
         const m = keysymsForText(chars.join(''));
         if (!m.keys.length) return Promise.resolve({ ok: true, sent: 0, skipped: m.skipped });
+        if (routeAllowed(opts) || (serverTyping && clipMode !== 'off' && (routing || routeQueue.length))) {
+            return enqueueRoute({ text: chars.join(''), fkeys: m.keys, skipped: m.skipped, release: !!(opts && opts.releaseModifiers) });
+        }
         return enqueueKeys(m.keys, { releaseModifiers: opts && opts.releaseModifiers, skipped: m.skipped });
     }
 
     function sendSpecial(keysym) {
         if (!rfb || state !== 'connected') return Promise.resolve({ ok: false, reason: 'not_connected', sent: 0, skipped: 0 });
+        if (routing || routeQueue.length) return enqueueRoute({ keys: [keysym] });
         return enqueueKeys([keysym]);
     }
 

@@ -6,7 +6,9 @@ records every client message it receives (the tests read `records`), can send Se
 to stall (stop answering update requests).
 
 The optional control socket answers the unit supervisor's operations: one JSON line per request,
-{"op":"ping"} and {"op":"resize","w":..,"h":..} get {"ok": true}, {"op":"clip"} gets {"ok": true, "text": CLIP_TEXT,
+{"op":"ping"} and {"op":"resize","w":..,"h":..} get {"ok": true}, {"op":"type","text":..} gets {"ok": true, "typed": n,
+"skipped": 0, "complete": true} (n = the characters of the text; `type_reply` replaces the whole answer, None gives the answer of
+an older unit, {"ok": false}), {"op":"clip"} gets {"ok": true, "text": CLIP_TEXT,
 "truncated": false} (a fixed demo text, so the "Copy from the browser" path can be shown in stage mode), anything
 else {"ok": false}.
 
@@ -36,6 +38,7 @@ class FakeRfb:
     def __init__(self, path, ctl_path=None, stall=False):
         self.path = str(path)
         self.ctl_path = str(ctl_path) if ctl_path else None
+        self.type_reply = "default"
         self.stall = stall
         self.records = []            # [(message type, whole message bytes)] after the handshake
         self.handshake = []          # [version line, security choice, client init] of the last client
@@ -52,7 +55,7 @@ class FakeRfb:
         os.chmod(self.path, 0o600)
         self._servers.append(srv)
         if self.ctl_path:
-            csrv = await asyncio.start_unix_server(self._ctl, path=self.ctl_path)
+            csrv = await asyncio.start_unix_server(self._ctl, path=self.ctl_path, limit=1 << 17)
             os.chmod(self.ctl_path, 0o600)
             self._servers.append(csrv)
 
@@ -144,12 +147,19 @@ class FakeRfb:
             self.ctl_requests.append(line)
             ok = False
             reply = None
-            if 0 < len(line) <= 4096:
+            if 0 < len(line) <= 70000:
                 try:
                     req = json.loads(line)
-                    ok = isinstance(req, dict) and req.get("op") in ("ping", "resize", "clip")
-                    if ok and req.get("op") == "clip":
-                        reply = {"ok": True, "text": CLIP_TEXT, "truncated": False}
+                    if isinstance(req, dict) and req.get("op") == "type":
+                        if isinstance(req.get("text"), str):
+                            if self.type_reply == "default":
+                                reply = {"ok": True, "typed": len(req["text"]), "skipped": 0, "complete": True}
+                            else:
+                                reply = self.type_reply
+                    elif len(line) <= 4096:
+                        ok = isinstance(req, dict) and req.get("op") in ("ping", "resize", "clip")
+                        if ok and req.get("op") == "clip":
+                            reply = {"ok": True, "text": CLIP_TEXT, "truncated": False}
                 except ValueError:
                     ok = False
             writer.write(json.dumps(reply if reply is not None else {"ok": ok}).encode() + b"\n")

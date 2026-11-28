@@ -52,7 +52,7 @@ check("no inline style attribute", not re.search(r"<[^>]+\sstyle\s*=", HTML, re.
 check("the theme script is in the head, before the body, as vnc.html has it",
       HTML.index("/static/js/theme.js?v=3") < HTML.index("<body"))
 check("the module script is rbrowser.js with a version",
-      '<script type="module" src="/static/js/rbrowser.js?v=4"></script>' in HTML)
+      '<script type="module" src="/static/js/rbrowser.js?v=5"></script>' in HTML)
 check("portal.css keeps its version and the page's own rules come from rbrowser.css",
       "/static/css/portal.css?v=56" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
 check("portal.js is loaded as a classic script before the module", HTML.index("/static/js/portal.js?v=52") < HTML.index("rbrowser.js"))
@@ -108,7 +108,7 @@ check("the About panel says the remote browser takes the portal theme at session
 check("the script reads the toolbar colour and the mode only at create, and sends one theme object with a colour and a mode",
       "readTheme(doc, win)" in JS and JS.count("body.theme = theme") == 1 and "data-theme-mode" in JS and "--bg-secondary" in (STATIC / "css" / "rbrowser.css").read_text(encoding="utf-8"))
 check("rbrowser.js is loaded at version 3 (the theme change) and rbrowser.css is unchanged at 2",
-      "/static/js/rbrowser.js?v=4" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
+      "/static/js/rbrowser.js?v=5" in HTML and "/static/css/rbrowser.css?v=2" in HTML)
 
 # ---- the script's source ----
 check("the module's first line is the noVNC import as vnc.html writes it",

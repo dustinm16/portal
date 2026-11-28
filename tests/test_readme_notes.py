@@ -2121,7 +2121,7 @@ _sess1261 = (ROOT / "rbrowser_unit" / "session.py").read_text(encoding="utf-8")
 check("1.26.1: README has an 'Upgrade notes for 1.26.1' section above the 1.26.0 one", _m1261 is not None and text.index("### Upgrade notes for 1.26.1") < text.index("### Upgrade notes for 1.26.0"))
 check("1.26.1: the notes say nothing is migrated, rbrowser.js v4 is the one static file (and the page loads it at v4, rbrowser.css stays v2), running sessions keep the old map, and rollback needs nothing",
       "nothing is migrated" in _s1261 and "`rbrowser.js` v4" in _s1261 and "unchanged at v2" in _s1261 and "keeps its old keyboard map" in _s1261 and "Going back to 1.26.0 needs nothing" in _s1261
-      and "/static/js/rbrowser.js?v=4" in _page250 and "rbrowser.css?v=2" in _page250)
+      and "/static/js/rbrowser.js?v=5" in _page250 and "rbrowser.css?v=2" in _page250)
 check("1.26.1: the notes say both typing paths give one keysym per character through noVNC's keysymdef, name the generator and the 19th character",
       "keysymdef.js" in _s1261 and "tools/keymap_table.py" in _s1261 and "KEYMAP_KEYSYMS" in _s1261 and "19th different non-US character" in _s1261 and "Two typing paths" in _s1261
       and (ROOT / "tools" / "keymap_table.py").is_file())
